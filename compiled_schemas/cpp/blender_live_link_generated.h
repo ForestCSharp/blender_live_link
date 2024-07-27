@@ -18,6 +18,9 @@ namespace LiveLink {
 
 struct Vec3;
 
+struct Object;
+struct ObjectBuilder;
+
 struct Scene;
 struct SceneBuilder;
 
@@ -50,8 +53,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec3 FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Vec3, 12);
 
-struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
-  typedef SceneBuilder Builder;
+struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_NAME = 4
   };
@@ -66,12 +69,73 @@ struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
 };
 
+struct ObjectBuilder {
+  typedef Object Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_name(::flatbuffers::Offset<::flatbuffers::String> name) {
+    fbb_.AddOffset(Object::VT_NAME, name);
+  }
+  explicit ObjectBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<Object> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<Object>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<Object> CreateObject(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    ::flatbuffers::Offset<::flatbuffers::String> name = 0) {
+  ObjectBuilder builder_(_fbb);
+  builder_.add_name(name);
+  return builder_.Finish();
+}
+
+inline ::flatbuffers::Offset<Object> CreateObjectDirect(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    const char *name = nullptr) {
+  auto name__ = name ? _fbb.CreateString(name) : 0;
+  return Blender::LiveLink::CreateObject(
+      _fbb,
+      name__);
+}
+
+struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef SceneBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_NAME = 4,
+    VT_OBJECTS = 6
+  };
+  const ::flatbuffers::String *name() const {
+    return GetPointer<const ::flatbuffers::String *>(VT_NAME);
+  }
+  const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects() const {
+    return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *>(VT_OBJECTS);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyOffset(verifier, VT_NAME) &&
+           verifier.VerifyString(name()) &&
+           VerifyOffset(verifier, VT_OBJECTS) &&
+           verifier.VerifyVector(objects()) &&
+           verifier.VerifyVectorOfTables(objects()) &&
+           verifier.EndTable();
+  }
+};
+
 struct SceneBuilder {
   typedef Scene Table;
   ::flatbuffers::FlatBufferBuilder &fbb_;
   ::flatbuffers::uoffset_t start_;
   void add_name(::flatbuffers::Offset<::flatbuffers::String> name) {
     fbb_.AddOffset(Scene::VT_NAME, name);
+  }
+  void add_objects(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects) {
+    fbb_.AddOffset(Scene::VT_OBJECTS, objects);
   }
   explicit SceneBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -86,19 +150,24 @@ struct SceneBuilder {
 
 inline ::flatbuffers::Offset<Scene> CreateScene(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    ::flatbuffers::Offset<::flatbuffers::String> name = 0) {
+    ::flatbuffers::Offset<::flatbuffers::String> name = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects = 0) {
   SceneBuilder builder_(_fbb);
+  builder_.add_objects(objects);
   builder_.add_name(name);
   return builder_.Finish();
 }
 
 inline ::flatbuffers::Offset<Scene> CreateSceneDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    const char *name = nullptr) {
+    const char *name = nullptr,
+    const std::vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects = nullptr) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
+  auto objects__ = objects ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Object>>(*objects) : 0;
   return Blender::LiveLink::CreateScene(
       _fbb,
-      name__);
+      name__,
+      objects__);
 }
 
 inline const Blender::LiveLink::Scene *GetScene(const void *buf) {

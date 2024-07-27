@@ -15,6 +15,7 @@ sys.path.append(dirname(realpath(__file__)) + "/compiled_schemas/python")
 
 import flatbuffers
 import Blender.LiveLink.Scene
+import Blender.LiveLink.Object
 
 class BlenderLiveLinkInit(bpy.types.Operator):
     """ Blender Live Link Init """          # Use this as a tooltip for menu items and buttons.
@@ -47,3 +48,6 @@ def unregister():
 # to test the add-on without having to install it.
 if __name__ == "__main__":
     register()
+
+
+#TODO: Helper function to uninstall, build, and reinstall add-on during dev

@@ -21,4 +21,6 @@ cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers
 # Package up addon
 cd $SCRIPT_DIR/..
 rm $SCRIPT_DIR.zip
-zip -r $SCRIPT_DIR.zip $BASE_DIR -x "$BASE_DIR/flatbuffers/*"
+zip -r $SCRIPT_DIR.zip $BASE_DIR \
+	-x "$BASE_DIR/flatbuffers/*" \
+	-x "$BASE_DIR/.git/*"

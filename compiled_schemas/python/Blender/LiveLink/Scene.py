@@ -31,8 +31,33 @@ class Scene(object):
             return self._tab.String(o + self._tab.Pos)
         return None
 
+    # Scene
+    def Objects(self, j):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            x = self._tab.Vector(o)
+            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 4
+            x = self._tab.Indirect(x)
+            from Blender.LiveLink.Object import Object
+            obj = Object()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Scene
+    def ObjectsLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Scene
+    def ObjectsIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        return o == 0
+
 def SceneStart(builder):
-    builder.StartObject(1)
+    builder.StartObject(2)
 
 def Start(builder):
     SceneStart(builder)
@@ -42,6 +67,18 @@ def SceneAddName(builder, name):
 
 def AddName(builder, name):
     SceneAddName(builder, name)
+
+def SceneAddObjects(builder, objects):
+    builder.PrependUOffsetTRelativeSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(objects), 0)
+
+def AddObjects(builder, objects):
+    SceneAddObjects(builder, objects)
+
+def SceneStartObjectsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartObjectsVector(builder, numElems):
+    return SceneStartObjectsVector(builder, numElems)
 
 def SceneEnd(builder):
     return builder.EndObject()

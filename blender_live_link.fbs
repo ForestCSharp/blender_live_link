@@ -9,8 +9,13 @@ struct Vec3 {
   z:float;
 }
 
+table Object {
+	name:string;
+}
+
 table Scene {
 	name:string;
+	objects:[Object];
 }
 
 root_type Scene;
