@@ -1,0 +1,16 @@
+
+// Flatbuffers IDL file for blender live link
+ 
+namespace Blender.LiveLink;
+  
+struct Vec3 {
+  x:float;
+  y:float;
+  z:float;
+}
+
+table Scene {
+	name:string;
+}
+
+root_type Scene;
