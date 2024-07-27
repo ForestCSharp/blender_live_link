@@ -23,13 +23,38 @@ class BlenderLiveLinkInit(bpy.types.Operator):
     bl_label = "Live Link: Init"            # Display name in the interface.
     bl_options = {'REGISTER', 'UNDO'}       # Enable undo for the operator.
 
-    def execute(self, context):        # execute() is called when running the operator.
+    def execute(self, context):
+
+        # init flatbuffers builder
         builder = flatbuffers.Builder(1024)
 
-        name_string = builder.CreateString('test')
+        # Build up objects to be added to scene objects vector
+        live_link_objects = []
+        for obj in bpy.context.scene.objects: 
+            object_name = builder.CreateString(obj.name)
+            Blender.LiveLink.Object.Start(builder)
+            Blender.LiveLink.Object.AddName(builder, object_name)
+            live_link_object = Blender.LiveLink.Object.End(builder)
+            live_link_objects.append(live_link_object)
+
+        # actually create the scene objects vector
+        Blender.LiveLink.Scene.SceneStartObjectsVector(builder, len(live_link_objects))
+        for live_link_object in live_link_objects: 
+            builder.PrependUOffsetTRelative(live_link_object)
+        scene_objects = builder.EndVector()
+
+        # create string for scene name
+        scene_name = builder.CreateString(bpy.data.filepath)
 
         Blender.LiveLink.Scene.Start(builder)
-        Blender.LiveLink.Scene.AddName(builder, name_string)
+
+        # set scene name
+        Blender.LiveLink.Scene.AddName(builder, scene_name)
+
+        # Add objects vector to scene
+        Blender.LiveLink.Scene.AddObjects(builder, scene_objects)
+
+        # finalize scene flatbuffer
         live_link_scene = Blender.LiveLink.Scene.End(builder)
 
         return {'FINISHED'}

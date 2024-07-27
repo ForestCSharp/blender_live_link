@@ -9,6 +9,20 @@ struct Vec3 {
   z:float;
 }
 
+struct Vec4 {
+  x:float;
+  y:float;
+  z:float;
+  w:float;
+}
+
+struct Quat {
+  x:float;
+  y:float;
+  z:float;
+  w:float;
+}
+
 table Object {
 	name:string;
 }
