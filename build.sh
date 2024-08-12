@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-
 BASE_DIR="${SCRIPT_DIR##*/}"
-echo $BASE_DIR
 
 # build flattbuffers 
 cd $SCRIPT_DIR
@@ -23,4 +21,9 @@ cd $SCRIPT_DIR/..
 rm $SCRIPT_DIR.zip
 zip -r $SCRIPT_DIR.zip $BASE_DIR \
 	-x "$BASE_DIR/flatbuffers/*" \
-	-x "$BASE_DIR/.git/*"
+	-x "$BASE_DIR/.git/*" \
+	-x "$BASE_DIR/game/*"
+
+# Compile game
+cd $SCRIPT_DIR/game
+./build.sh

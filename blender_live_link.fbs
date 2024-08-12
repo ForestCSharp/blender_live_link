@@ -25,6 +25,7 @@ struct Quat {
 
 table Object {
 	name:string;
+	location:Vec3;
 }
 
 table Scene {

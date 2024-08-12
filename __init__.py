@@ -16,6 +16,9 @@ sys.path.append(dirname(realpath(__file__)) + "/compiled_schemas/python")
 import flatbuffers
 import Blender.LiveLink.Scene
 import Blender.LiveLink.Object
+import Blender.LiveLink.Vec3
+
+import socket
 
 class BlenderLiveLinkInit(bpy.types.Operator):
     """ Blender Live Link Init """          # Use this as a tooltip for menu items and buttons.
@@ -28,12 +31,15 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         # init flatbuffers builder
         builder = flatbuffers.Builder(1024)
 
+        #FCS TODO: Smarter way to iterate collection hierarchy to maintain parentage?
         # Build up objects to be added to scene objects vector
         live_link_objects = []
         for obj in bpy.context.scene.objects: 
             object_name = builder.CreateString(obj.name)
             Blender.LiveLink.Object.Start(builder)
             Blender.LiveLink.Object.AddName(builder, object_name)
+            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder,obj.location.x, obj.location.y, obj.location.z);
+            Blender.LiveLink.Object.AddLocation(builder, location_vec3)
             live_link_object = Blender.LiveLink.Object.End(builder)
             live_link_objects.append(live_link_object)
 
@@ -56,6 +62,17 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
         # finalize scene flatbuffer
         live_link_scene = Blender.LiveLink.Scene.End(builder)
+
+	    #FCS TODO: Store magic IP and Port numbers in some shared file
+        HOST = '127.0.0.1'
+        PORT = 65432
+
+        my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        my_socket.connect((HOST,PORT))
+        my_socket.send(builder.Bytes)
+        my_socket.shutdown(socket.SHUT_RDWR)
+
+        print(builder.Bytes)
 
         return {'FINISHED'}
 

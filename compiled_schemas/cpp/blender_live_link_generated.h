@@ -130,15 +130,20 @@ FLATBUFFERS_STRUCT_END(Quat, 16);
 struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-    VT_NAME = 4
+    VT_NAME = 4,
+    VT_LOCATION = 6
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
+  }
+  const Blender::LiveLink::Vec3 *location() const {
+    return GetStruct<const Blender::LiveLink::Vec3 *>(VT_LOCATION);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_NAME) &&
            verifier.VerifyString(name()) &&
+           VerifyField<Blender::LiveLink::Vec3>(verifier, VT_LOCATION, 4) &&
            verifier.EndTable();
   }
 };
@@ -149,6 +154,9 @@ struct ObjectBuilder {
   ::flatbuffers::uoffset_t start_;
   void add_name(::flatbuffers::Offset<::flatbuffers::String> name) {
     fbb_.AddOffset(Object::VT_NAME, name);
+  }
+  void add_location(const Blender::LiveLink::Vec3 *location) {
+    fbb_.AddStruct(Object::VT_LOCATION, location);
   }
   explicit ObjectBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -163,19 +171,23 @@ struct ObjectBuilder {
 
 inline ::flatbuffers::Offset<Object> CreateObject(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    ::flatbuffers::Offset<::flatbuffers::String> name = 0) {
+    ::flatbuffers::Offset<::flatbuffers::String> name = 0,
+    const Blender::LiveLink::Vec3 *location = nullptr) {
   ObjectBuilder builder_(_fbb);
+  builder_.add_location(location);
   builder_.add_name(name);
   return builder_.Finish();
 }
 
 inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    const char *name = nullptr) {
+    const char *name = nullptr,
+    const Blender::LiveLink::Vec3 *location = nullptr) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateObject(
       _fbb,
-      name__);
+      name__,
+      location);
 }
 
 struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {

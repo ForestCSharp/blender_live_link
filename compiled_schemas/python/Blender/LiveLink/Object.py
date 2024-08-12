@@ -31,8 +31,19 @@ class Object(object):
             return self._tab.String(o + self._tab.Pos)
         return None
 
+    # Object
+    def Location(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.Vec3 import Vec3
+            obj = Vec3()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
 def ObjectStart(builder):
-    builder.StartObject(1)
+    builder.StartObject(2)
 
 def Start(builder):
     ObjectStart(builder)
@@ -42,6 +53,12 @@ def ObjectAddName(builder, name):
 
 def AddName(builder, name):
     ObjectAddName(builder, name)
+
+def ObjectAddLocation(builder, location):
+    builder.PrependStructSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(location), 0)
+
+def AddLocation(builder, location):
+    ObjectAddLocation(builder, location)
 
 def ObjectEnd(builder):
     return builder.EndObject()
