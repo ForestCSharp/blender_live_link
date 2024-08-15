@@ -30,6 +30,7 @@ clang src/main.cpp \
 	-I ../compiled_schemas/cpp \
 	--std=c++20 \
 	-L./bin \
+	-lc++ \
 	-lsokol \
 	-framework Cocoa \
 	-framework Metal \

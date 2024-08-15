@@ -1,6 +1,8 @@
 
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
+#include <thread>
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #define HANDMADE_MATH_NO_SSE
@@ -131,10 +133,10 @@ struct {
     sg_pipeline pip;
 	sbuffer(Mesh) meshes;
 	int blender_socket;
+	std::atomic<bool> blender_data_loaded = false;
 } state;
 
-// FCS TODO: Do this in thread so its non-blocking? callback when finished...
-void init_blender_socket(void)
+void live_link_init()
 {
 	// Init socket we'll use to talk to blender
 	struct addrinfo hints, *res;
@@ -215,6 +217,8 @@ void init_blender_socket(void)
 			}
 		}
 	}
+
+	state.blender_data_loaded = true;
 }
 
 void init(void) {
@@ -224,13 +228,9 @@ void init(void) {
         .logger.func = slog_func,
     });
 
-	state.meshes = nullptr;
-	init_blender_socket();
+	// Spin up a thread that blocks until we receive our init event, and then listens for updates
+	std::thread(live_link_init).detach();
 	
-	//arrput(state.meshes, make_cube(HMM_Vec4(0,0,0,1)));
-	//arrput(state.meshes, make_cube(HMM_Vec4(2.5,1,0,1)));
-	//arrput(state.meshes, make_cube(HMM_Vec4(-2.5,1,0,1)));
-
     /* create shader */
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
 
@@ -282,8 +282,7 @@ void frame(void) {
         .swapchain = sglue_swapchain()
     });
 
-	bool blender_data_loaded = true;
-	if (!blender_data_loaded)
+	if (!state.blender_data_loaded)
 	{	
 		sdtx_canvas(sapp_width()*0.5f, sapp_height()*0.5f);
 		sdtx_origin(1.0f, 2.0f);
