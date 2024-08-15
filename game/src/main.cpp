@@ -27,6 +27,9 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+// Flatbuffers generated file
+#include "blender_live_link_generated.h"
+
 static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_t g, uint8_t b)
 {
     sdtx_font(font_index);
@@ -155,7 +158,7 @@ void init_blender_socket(void)
 	socklen_t addr_size = sizeof their_addr;
 	int connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
 
-	sbuffer(u8) scene_data = nullptr;
+	sbuffer(u8) flatbuffer_data = nullptr;
 
 	int bytes_read = 0;
 	int packets_read = 0;
@@ -171,39 +174,62 @@ void init_blender_socket(void)
 			printf("recv_error: %s\n", strerror(errno));
 			exit(0);
 		}
-		else
+		
+		if (bytes_read > 0)
 		{
-			i32 next_idx = arrlen(scene_data);
-			arraddn(scene_data, buffer_len);
-			memcpy(&scene_data[next_idx], buffer, buffer_len);
+			i32 next_idx = arrlen(flatbuffer_data);
+			arraddn(flatbuffer_data, bytes_read);
+			memcpy(&flatbuffer_data[next_idx], buffer, bytes_read);
 			++packets_read;
 		}
 	}
 	while (bytes_read > 0);
 
-	if (arrlen(scene_data) > 0)
+	if (arrlen(flatbuffer_data) > 0)
 	{
-		printf("We've got some data! Data Length: %td Packets Read: %i\n", arrlen(scene_data), packets_read);
+		printf("We've got some data! Data Length: %td Packets Read: %i\n", arrlen(flatbuffer_data), packets_read);
 	}
 
 	shutdown(connection_socket,2);
 	shutdown(state.blender_socket,2);
+
+	// Interpret Flatbuffer data
+	auto* scene = Blender::LiveLink::GetScene(flatbuffer_data);
+	assert(scene);
+	auto scene_name = scene->name(); 
+	assert(scene_name);
+	printf("Scene Name: %s\n", scene_name->c_str());
+	if (auto objects = scene->objects())
+	{
+		for (i32 idx = 0; idx < objects->size(); ++idx)
+	   	{
+			auto object = objects->Get(idx);
+			if (auto object_name = object->name())
+			{
+				printf("\tObject Name: %s\n", object_name->c_str());
+			}
+			if (auto object_location = object->location())
+			{
+				printf("\tObject Location: %f, %f, %f\n", object_location->x(), object_location->y(), object_location->z());
+				arrput(state.meshes, make_cube(HMM_Vec4(object_location->x(), object_location->y(), object_location->z(), 1)));
+			}
+		}
+	}
 }
 
 void init(void) {
-
-	init_blender_socket();
 
     sg_setup((sg_desc){
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
 
-
 	state.meshes = nullptr;
-	arrput(state.meshes, make_cube(HMM_Vec4(0,0,0,1)));
-	arrput(state.meshes, make_cube(HMM_Vec4(2.5,1,0,1)));
-	arrput(state.meshes, make_cube(HMM_Vec4(-2.5,1,0,1)));
+	init_blender_socket();
+	
+	//arrput(state.meshes, make_cube(HMM_Vec4(0,0,0,1)));
+	//arrput(state.meshes, make_cube(HMM_Vec4(2.5,1,0,1)));
+	//arrput(state.meshes, make_cube(HMM_Vec4(-2.5,1,0,1)));
 
     /* create shader */
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
@@ -256,8 +282,8 @@ void frame(void) {
         .swapchain = sglue_swapchain()
     });
 
-	bool waiting_on_blender = true;
-	if (waiting_on_blender)
+	bool blender_data_loaded = true;
+	if (!blender_data_loaded)
 	{	
 		sdtx_canvas(sapp_width()*0.5f, sapp_height()*0.5f);
 		sdtx_origin(1.0f, 2.0f);
@@ -273,7 +299,7 @@ void frame(void) {
 		const float h = sapp_heightf();
 		const float t = (float)(sapp_frame_duration() * 60.0);
 		hmm_mat4 proj = HMM_Perspective(60.0f, w/h, 0.01f, 10.0f);
-		hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, 1.5f, 6.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 1.0f, 0.0f));
+		hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, -9.0, 0.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 0.0f, 1.0f));
 		hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
 		vs_params.vp = view_proj;
 

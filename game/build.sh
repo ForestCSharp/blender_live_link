@@ -26,6 +26,8 @@ clang -c src/sokol/sokol_single_file.c \
 clang src/main.cpp \
 	-o bin/game \
 	-I bin/shaders \
+	-I ../flatbuffers/include \
+	-I ../compiled_schemas/cpp \
 	--std=c++20 \
 	-L./bin \
 	-lsokol \

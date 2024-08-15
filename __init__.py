@@ -29,7 +29,7 @@ class BlenderLiveLinkInit(bpy.types.Operator):
     def execute(self, context):
 
         # init flatbuffers builder
-        builder = flatbuffers.Builder(1024)
+        builder = flatbuffers.Builder(0)
 
         #FCS TODO: Smarter way to iterate collection hierarchy to maintain parentage?
         # Build up objects to be added to scene objects vector
@@ -51,6 +51,7 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
         # create string for scene name
         scene_name = builder.CreateString(bpy.data.filepath)
+        print("filepath: " + bpy.data.filepath)
 
         Blender.LiveLink.Scene.Start(builder)
 
@@ -63,17 +64,20 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         # finalize scene flatbuffer
         live_link_scene = Blender.LiveLink.Scene.End(builder)
 
+        builder.Finish(live_link_scene)
+        
+        flatbuffer_data = builder.Output()
+
 	    #FCS TODO: Store magic IP and Port numbers in some shared file
         HOST = '127.0.0.1'
         PORT = 65432
 
         my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         my_socket.connect((HOST,PORT))
-        my_socket.send(builder.Bytes)
+        my_socket.send(flatbuffer_data)
         my_socket.shutdown(socket.SHUT_RDWR)
 
-        print(builder.Bytes)
-
+        print(flatbuffer_data)
         return {'FINISHED'}
 
 def menu_func(self, context):
