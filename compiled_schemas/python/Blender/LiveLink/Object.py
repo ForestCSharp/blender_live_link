@@ -42,8 +42,19 @@ class Object(object):
             return obj
         return None
 
+    # Object
+    def Mesh(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        if o != 0:
+            x = self._tab.Indirect(o + self._tab.Pos)
+            from Blender.LiveLink.Mesh import Mesh
+            obj = Mesh()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
 def ObjectStart(builder):
-    builder.StartObject(2)
+    builder.StartObject(3)
 
 def Start(builder):
     ObjectStart(builder)
@@ -59,6 +70,12 @@ def ObjectAddLocation(builder, location):
 
 def AddLocation(builder, location):
     ObjectAddLocation(builder, location)
+
+def ObjectAddMesh(builder, mesh):
+    builder.PrependUOffsetTRelativeSlot(2, flatbuffers.number_types.UOffsetTFlags.py_type(mesh), 0)
+
+def AddMesh(builder, mesh):
+    ObjectAddMesh(builder, mesh)
 
 def ObjectEnd(builder):
     return builder.EndObject()

@@ -15,7 +15,7 @@ readonly buffer ObjectDataBuffer {
 };
 
 in vec4 position;
-in vec4 color0;
+in vec4 normal;
 
 out vec4 color;
 
@@ -30,7 +30,7 @@ mat4 BuildTranslation(vec4 in_translation)
 
 void main() {
     gl_Position = vp * BuildTranslation(object_data_array[0].location) * position;
-    color = color0;
+    color = normal;
 }
 @end
 

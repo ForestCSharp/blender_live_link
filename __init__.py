@@ -14,9 +14,11 @@ import sys
 sys.path.append(dirname(realpath(__file__)) + "/compiled_schemas/python") 
 
 import flatbuffers
-import Blender.LiveLink.Scene
+import Blender.LiveLink.Mesh
 import Blender.LiveLink.Object
+import Blender.LiveLink.Scene
 import Blender.LiveLink.Vec3
+import Blender.LiveLink.Vertex
 
 import socket
 
@@ -35,11 +37,66 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         # Build up objects to be added to scene objects vector
         live_link_objects = []
         for obj in bpy.context.scene.objects: 
+            # Allocate string for object name
             object_name = builder.CreateString(obj.name)
+
+            # If we're a mesh object, setup mesh data 
+            mesh = None
+            if (obj.type == 'MESH'):
+
+                blender_vertices = obj.data.vertices;
+                
+                #REMOVE ME: Just printing values
+                for blender_vertex in blender_vertices:
+                    position = blender_vertex.co.to_4d()
+                    normal = blender_vertex.normal.to_4d()
+                    print("Vertex: Pos:   " + str(position))
+                    print("Vertex Normal: " + str(normal))
+
+                Blender.LiveLink.Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
+                for blender_vertex in reversed(blender_vertices):
+                    position = blender_vertex.co.to_4d()
+                    normal = blender_vertex.normal.to_4d()
+                    Blender.LiveLink.Vertex.CreateVertex(
+                        builder,
+                        position.x, position.y, position.z, position.w,
+                        normal.x, normal.y, normal.z, normal.w
+                    )
+                mesh_vertices = builder.EndVector()
+
+                indices = []
+                for blender_polygon in obj.data.polygons:
+                    #FCS TODO: Can't assume triangles here...
+                    indices.append(blender_polygon.vertices[0])
+                    indices.append(blender_polygon.vertices[1])
+                    indices.append(blender_polygon.vertices[2])
+
+                Blender.LiveLink.Mesh.MeshStartIndicesVector(builder, len(indices))
+                for index in reversed(indices):
+                    print("Index: " + str(index))
+                    builder.PrependUint32(index)
+                mesh_indices = builder.EndVector()
+ 
+                Blender.LiveLink.Mesh.Start(builder)
+                Blender.LiveLink.Mesh.AddVertices(builder, mesh_vertices)
+                Blender.LiveLink.Mesh.AddIndices(builder, mesh_indices)
+                mesh = Blender.LiveLink.Mesh.End(builder)
+            
+            # Begin New Object 
             Blender.LiveLink.Object.Start(builder)
+            
+            # Object Name
             Blender.LiveLink.Object.AddName(builder, object_name)
-            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder,obj.location.x, obj.location.y, obj.location.z);
+
+            # Object Location
+            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder,obj.location.x, obj.location.y, obj.location.z)
             Blender.LiveLink.Object.AddLocation(builder, location_vec3)
+
+            # Object Mesh Data
+            if (mesh != None):
+                Blender.LiveLink.Object.AddMesh(builder, mesh)
+
+            # End New Object add add to array
             live_link_object = Blender.LiveLink.Object.End(builder)
             live_link_objects.append(live_link_object)
 
@@ -77,7 +134,6 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         my_socket.send(flatbuffer_data)
         my_socket.shutdown(socket.SHUT_RDWR)
 
-        print(flatbuffer_data)
         return {'FINISHED'}
 
 def menu_func(self, context):

@@ -23,9 +23,22 @@ struct Quat {
   w:float;
 }
 
+struct Vertex {
+	position:Vec4;
+	normal:Vec4;
+}
+
+table Mesh {
+	vertices:[Vertex];
+	indices:[uint];
+}
+
 table Object {
 	name:string;
 	location:Vec3;
+
+	//optional mesh data
+	mesh:Mesh;
 }
 
 table Scene {

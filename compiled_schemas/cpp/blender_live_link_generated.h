@@ -22,6 +22,11 @@ struct Vec4;
 
 struct Quat;
 
+struct Vertex;
+
+struct Mesh;
+struct MeshBuilder;
+
 struct Object;
 struct ObjectBuilder;
 
@@ -127,11 +132,100 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Quat FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Quat, 16);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vertex FLATBUFFERS_FINAL_CLASS {
+ private:
+  Blender::LiveLink::Vec4 position_;
+  Blender::LiveLink::Vec4 normal_;
+
+ public:
+  Vertex()
+      : position_(),
+        normal_() {
+  }
+  Vertex(const Blender::LiveLink::Vec4 &_position, const Blender::LiveLink::Vec4 &_normal)
+      : position_(_position),
+        normal_(_normal) {
+  }
+  const Blender::LiveLink::Vec4 &position() const {
+    return position_;
+  }
+  const Blender::LiveLink::Vec4 &normal() const {
+    return normal_;
+  }
+};
+FLATBUFFERS_STRUCT_END(Vertex, 32);
+
+struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef MeshBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_VERTICES = 4,
+    VT_INDICES = 6
+  };
+  const ::flatbuffers::Vector<const Blender::LiveLink::Vertex *> *vertices() const {
+    return GetPointer<const ::flatbuffers::Vector<const Blender::LiveLink::Vertex *> *>(VT_VERTICES);
+  }
+  const ::flatbuffers::Vector<uint32_t> *indices() const {
+    return GetPointer<const ::flatbuffers::Vector<uint32_t> *>(VT_INDICES);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyOffset(verifier, VT_VERTICES) &&
+           verifier.VerifyVector(vertices()) &&
+           VerifyOffset(verifier, VT_INDICES) &&
+           verifier.VerifyVector(indices()) &&
+           verifier.EndTable();
+  }
+};
+
+struct MeshBuilder {
+  typedef Mesh Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_vertices(::flatbuffers::Offset<::flatbuffers::Vector<const Blender::LiveLink::Vertex *>> vertices) {
+    fbb_.AddOffset(Mesh::VT_VERTICES, vertices);
+  }
+  void add_indices(::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices) {
+    fbb_.AddOffset(Mesh::VT_INDICES, indices);
+  }
+  explicit MeshBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<Mesh> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<Mesh>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<Mesh> CreateMesh(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    ::flatbuffers::Offset<::flatbuffers::Vector<const Blender::LiveLink::Vertex *>> vertices = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices = 0) {
+  MeshBuilder builder_(_fbb);
+  builder_.add_indices(indices);
+  builder_.add_vertices(vertices);
+  return builder_.Finish();
+}
+
+inline ::flatbuffers::Offset<Mesh> CreateMeshDirect(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    const std::vector<Blender::LiveLink::Vertex> *vertices = nullptr,
+    const std::vector<uint32_t> *indices = nullptr) {
+  auto vertices__ = vertices ? _fbb.CreateVectorOfStructs<Blender::LiveLink::Vertex>(*vertices) : 0;
+  auto indices__ = indices ? _fbb.CreateVector<uint32_t>(*indices) : 0;
+  return Blender::LiveLink::CreateMesh(
+      _fbb,
+      vertices__,
+      indices__);
+}
+
 struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_NAME = 4,
-    VT_LOCATION = 6
+    VT_LOCATION = 6,
+    VT_MESH = 8
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
@@ -139,11 +233,16 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::Vec3 *location() const {
     return GetStruct<const Blender::LiveLink::Vec3 *>(VT_LOCATION);
   }
+  const Blender::LiveLink::Mesh *mesh() const {
+    return GetPointer<const Blender::LiveLink::Mesh *>(VT_MESH);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_NAME) &&
            verifier.VerifyString(name()) &&
            VerifyField<Blender::LiveLink::Vec3>(verifier, VT_LOCATION, 4) &&
+           VerifyOffset(verifier, VT_MESH) &&
+           verifier.VerifyTable(mesh()) &&
            verifier.EndTable();
   }
 };
@@ -157,6 +256,9 @@ struct ObjectBuilder {
   }
   void add_location(const Blender::LiveLink::Vec3 *location) {
     fbb_.AddStruct(Object::VT_LOCATION, location);
+  }
+  void add_mesh(::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh) {
+    fbb_.AddOffset(Object::VT_MESH, mesh);
   }
   explicit ObjectBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -172,8 +274,10 @@ struct ObjectBuilder {
 inline ::flatbuffers::Offset<Object> CreateObject(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::String> name = 0,
-    const Blender::LiveLink::Vec3 *location = nullptr) {
+    const Blender::LiveLink::Vec3 *location = nullptr,
+    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
   ObjectBuilder builder_(_fbb);
+  builder_.add_mesh(mesh);
   builder_.add_location(location);
   builder_.add_name(name);
   return builder_.Finish();
@@ -182,12 +286,14 @@ inline ::flatbuffers::Offset<Object> CreateObject(
 inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *name = nullptr,
-    const Blender::LiveLink::Vec3 *location = nullptr) {
+    const Blender::LiveLink::Vec3 *location = nullptr,
+    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateObject(
       _fbb,
       name__,
-      location);
+      location,
+      mesh);
 }
 
 struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {

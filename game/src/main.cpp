@@ -51,66 +51,36 @@ typedef uint32_t 	u32;
 typedef uint16_t 	u16;
 typedef uint8_t 	u8;
 
-
-float cube_vertices[] = {
-	-1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-	1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-	1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-	-1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-
-	-1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-	1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-	1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-	-1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-
-	-1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-	-1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-	-1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-	-1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-
-	1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-	1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-	1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-	1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-
-	-1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-	-1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-	1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-	1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-
-	-1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-	-1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-	1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-	1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0
-};
-
-uint16_t cube_indices[] = {
-	0, 1, 2,  0, 2, 3,
-	6, 5, 4,  7, 6, 4,
-	8, 9, 10,  8, 10, 11,
-	14, 13, 12,  15, 14, 12,
-	16, 17, 18,  16, 18, 19,
-	22, 21, 20,  23, 22, 20
-};
-
 struct Mesh {
 	hmm_vec4 location;
-	i32 idx_count;
+	u32 idx_count;
 	sg_buffer vbuf;
 	sg_buffer ibuf;
 	sg_buffer sbuf;
 };
 
-Mesh make_cube(hmm_vec4 location)
+struct Vertex
+{
+	hmm_vec4 position;
+	hmm_vec4 normal;
+};
+
+Mesh make_mesh(hmm_vec4 location, Vertex* vertices, u32 vertices_len, u32* indices, u32 indices_len)
 {
 	sg_buffer vbuf = sg_make_buffer((sg_buffer_desc){
-		.data = SG_RANGE(cube_vertices),
+		.data = {
+			.ptr = vertices,
+			.size = vertices_len * sizeof(Vertex)
+		},
 		.label = "mesh-vertices"
 	});
 
 	sg_buffer ibuf = sg_make_buffer((sg_buffer_desc){
 		.type = SG_BUFFERTYPE_INDEXBUFFER,
-		.data = SG_RANGE(cube_indices),
+		.data = {
+			.ptr = indices,
+			.size = indices_len * sizeof(u32)
+		},
 		.label = "mesh-indices"
 	});
 
@@ -122,15 +92,65 @@ Mesh make_cube(hmm_vec4 location)
 
 	return (Mesh) {
 		.location = location,
-		.idx_count = sizeof(cube_indices) / sizeof(cube_indices[0]),
+		.idx_count = indices_len,
 		.vbuf = vbuf,
 		.ibuf = ibuf,
 		.sbuf = sbuf,
 	};
 }
 
+Vertex cube_vertices[] = {
+	{	-1.0, -1.0, -1.0, 1.0,		1.0, 0.0, 0.0, 0.0},
+	{	1.0, -1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
+	{	1.0,  1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
+	{	-1.0,  1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
+	
+	{	-1.0, -1.0,  1.0, 1.0,  	0.0, 1.0, 0.0, 0.0},
+	{	1.0, -1.0,  1.0,  1.0, 		0.0, 1.0, 0.0, 0.0},
+	{	1.0,  1.0,  1.0,  1.0,		0.0, 1.0, 0.0, 0.0},
+	{	-1.0,  1.0,  1.0, 1.0,		0.0, 1.0, 0.0, 0.0},
+
+	{	-1.0, -1.0, -1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
+	{	-1.0,  1.0, -1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
+	{	-1.0,  1.0,  1.0, 1.0, 		0.0, 0.0, 1.0, 0.0},
+	{	-1.0, -1.0,  1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
+	
+	{	1.0, -1.0, -1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
+	{	1.0,  1.0, -1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
+	{	1.0,  1.0,  1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
+	{	1.0, -1.0,  1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
+	
+	{	-1.0, -1.0, -1.0, 1.0,		0.0, 0.5, 1.0, 0.0},
+	{	-1.0, -1.0,  1.0, 1.0,		0.0, 0.5, 1.0, 0.0},
+	{	1.0, -1.0,  1.0,  1.0,		0.0, 0.5, 1.0, 0.0},
+	{	1.0, -1.0, -1.0,  1.0,		0.0, 0.5, 1.0, 0.0},
+	
+	{	-1.0,  1.0, -1.0, 1.0,		1.0, 0.0, 0.5, 0.0},
+	{	-1.0,  1.0,  1.0, 1.0,		1.0, 0.0, 0.5, 0.0},
+	{	1.0,  1.0,  1.0,  1.0,		1.0, 0.0, 0.5, 0.0},
+	{	1.0,  1.0, -1.0,  1.0,		1.0, 0.0, 0.5, 0.0},
+};
+
+uint32_t cube_indices[] = {
+	0, 1, 2,  0, 2, 3,
+	6, 5, 4,  7, 6, 4,
+	8, 9, 10,  8, 10, 11,
+	14, 13, 12,  15, 14, 12,
+	16, 17, 18,  16, 18, 19,
+	22, 21, 20,  23, 22, 20
+};
+
+Mesh make_cube(hmm_vec4 location)
+{
+	return make_mesh(
+		location, 
+		cube_vertices, sizeof(cube_vertices) / sizeof(Vertex), 
+		cube_indices, sizeof(cube_indices) / sizeof(u32)
+	);
+}
+
 struct {
-    sg_pipeline pip;
+    sg_pipeline pipeline;
 	sbuffer(Mesh) meshes;
 	int blender_socket;
 	std::atomic<bool> blender_data_loaded = false;
@@ -210,10 +230,58 @@ void live_link_init()
 			{
 				printf("\tObject Name: %s\n", object_name->c_str());
 			}
-			if (auto object_location = object->location())
+			auto object_location = object->location();
+			auto object_mesh = object->mesh();
+
+			//FCS TODO: Create some generic "game object" and then add mesh/light/etc. data based on existence of that data in flatbuffer
+			if (object_location && object_mesh)
 			{
-				printf("\tObject Location: %f, %f, %f\n", object_location->x(), object_location->y(), object_location->z());
-				arrput(state.meshes, make_cube(HMM_Vec4(object_location->x(), object_location->y(), object_location->z(), 1)));
+				printf("We have location and mesh!\n");	
+				hmm_vec4 location = HMM_Vec4(object_location->x(), object_location->y(), object_location->z(), 1);
+
+				sbuffer(Vertex) vertices = nullptr;
+				if (auto flatbuffer_vertices = object_mesh->vertices())
+				{
+					for (i32 vertex_idx = 0; vertex_idx < flatbuffer_vertices->size(); ++vertex_idx)
+					{
+						auto vertex = flatbuffer_vertices->Get(vertex_idx);
+						auto vertex_position = vertex->position();
+						auto vertex_normal = vertex->normal();
+
+						Vertex new_vertex = {
+							.position = {
+								.X = vertex_position.x(),
+								.Y = vertex_position.y(),
+								.Z = vertex_position.z(),
+								.W = vertex_position.w(),
+							},
+							.normal = {
+								.X = vertex_normal.x(),
+								.Y = vertex_normal.y(),
+								.Z = vertex_normal.z(),
+								.W = vertex_normal.w(),
+							},
+						};
+
+						arrput(vertices, new_vertex);
+						printf("Vertex Position: %f, %f, %f, %f\n", new_vertex.position.X, new_vertex.position.Y, new_vertex.position.Z, new_vertex.position.W);
+						printf("Vertex Normal:   %f, %f, %f, %f\n", new_vertex.normal.X, new_vertex.normal.Y, new_vertex.normal.Z, new_vertex.normal.W);
+					}
+				}
+
+				sbuffer(u32) indices = nullptr;
+				if (auto flatbuffer_indices = object_mesh->indices())
+				{
+					for (i32 indices_idx = 0; indices_idx < flatbuffer_indices->size(); ++indices_idx)
+					{
+						u32 new_index = flatbuffer_indices->Get(indices_idx);
+						arrput(indices, new_index);
+						printf("Indices: %u\n", new_index);
+					}
+				}
+
+				//arrput(state.meshes, make_cube(location));
+				arrput(state.meshes, make_mesh(location, vertices, arrlen(vertices), indices, arrlen(indices)));
 			}
 		}
 	}
@@ -235,17 +303,17 @@ void init(void) {
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
 
     /* create pipeline object */
-    state.pip = sg_make_pipeline((sg_pipeline_desc){
+    state.pipeline = sg_make_pipeline((sg_pipeline_desc){
         .layout = {
             /* test to provide buffer stride, but no attr offsets */
-            .buffers[0].stride = 28,
+            .buffers[0].stride = 32,
             .attrs = {
-                [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
-                [ATTR_vs_color0].format   = SG_VERTEXFORMAT_FLOAT4
+                [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT4,
+                [ATTR_vs_normal].format   = SG_VERTEXFORMAT_FLOAT4
             }
         },
         .shader = shd,
-        .index_type = SG_INDEXTYPE_UINT16,
+        .index_type = SG_INDEXTYPE_UINT32,
         .cull_mode = SG_CULLMODE_BACK,
         .depth = {
             .write_enabled = true,
@@ -302,7 +370,7 @@ void frame(void) {
 		hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
 		vs_params.vp = view_proj;
 
-		sg_apply_pipeline(state.pip);
+		sg_apply_pipeline(state.pipeline);
 		sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(vs_params));
 
 		for (i32 mesh_idx = 0; mesh_idx < arrlen(state.meshes); ++mesh_idx)
