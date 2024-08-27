@@ -7,6 +7,7 @@ bl_info = {
 }
 
 import bpy
+import bmesh
 import sys
 
 from os.path import dirname, realpath
@@ -30,6 +31,9 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
     def execute(self, context):
 
+        # Evaluate Depsgraph
+        dg = bpy.context.evaluated_depsgraph_get()
+
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
 
@@ -42,17 +46,21 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
             # If we're a mesh object, setup mesh data 
             mesh = None
-            if (obj.type == 'MESH'):
+            if (obj.type == 'MESH'): 
+                # Evaluate Modifiers
+                obj_evaluated = obj.evaluated_get(dg)
+                # Get Mesh Data
+                mesh = obj_evaluated.data
 
-                blender_vertices = obj.data.vertices;
+                # Make sure Mesh is triangulated
+                bm = bmesh.new()
+                bm.from_mesh(mesh)
+                bmesh.ops.triangulate(bm, faces=bm.faces[:])
+                bm.to_mesh(mesh)
+
+                # Export Vertices
+                blender_vertices = mesh.vertices;
                 
-                #REMOVE ME: Just printing values
-                for blender_vertex in blender_vertices:
-                    position = blender_vertex.co.to_4d()
-                    normal = blender_vertex.normal.to_4d()
-                    print("Vertex: Pos:   " + str(position))
-                    print("Vertex Normal: " + str(normal))
-
                 Blender.LiveLink.Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
                 for blender_vertex in reversed(blender_vertices):
                     position = blender_vertex.co.to_4d()
@@ -64,8 +72,9 @@ class BlenderLiveLinkInit(bpy.types.Operator):
                     )
                 mesh_vertices = builder.EndVector()
 
+                # Export Indices
                 indices = []
-                for blender_polygon in obj.data.polygons:
+                for blender_polygon in mesh.polygons:
                     #FCS TODO: Can't assume triangles here...
                     indices.append(blender_polygon.vertices[0])
                     indices.append(blender_polygon.vertices[1])
@@ -73,7 +82,6 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
                 Blender.LiveLink.Mesh.MeshStartIndicesVector(builder, len(indices))
                 for index in reversed(indices):
-                    print("Index: " + str(index))
                     builder.PrependUint32(index)
                 mesh_indices = builder.EndVector()
  
