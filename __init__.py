@@ -1,7 +1,7 @@
 # Reminder to self: Need to zip up folder to install as add-on
 
 bl_info = {
-    "name": "Live Link Init",
+    "name": "Blender Live Link",
     "blender": (4, 00, 0),
     "category": "Object",
 }
@@ -19,6 +19,8 @@ import Blender.LiveLink.Mesh
 import Blender.LiveLink.Object
 import Blender.LiveLink.Scene
 import Blender.LiveLink.Vec3
+import Blender.LiveLink.Vec4
+import Blender.LiveLink.Quat
 import Blender.LiveLink.Vertex
 
 import socket
@@ -97,8 +99,17 @@ class BlenderLiveLinkInit(bpy.types.Operator):
             Blender.LiveLink.Object.AddName(builder, object_name)
 
             # Object Location
-            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder,obj.location.x, obj.location.y, obj.location.z)
+            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder, obj.location.x, obj.location.y, obj.location.z)
             Blender.LiveLink.Object.AddLocation(builder, location_vec3)
+
+            # Object Scale
+            scale_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder, obj.scale.x, obj.scale.y, obj.scale.z)
+            Blender.LiveLink.Object.AddScale(builder, scale_vec3)
+
+            # Object Rotation
+            rot = obj.rotation_euler.to_quaternion();
+            rotation_quat = Blender.LiveLink.Quat.CreateQuat(builder, rot.x, rot.y, rot.z, rot.w);
+            Blender.LiveLink.Object.AddRotation(builder, rotation_quat);
 
             # Object Mesh Data
             if (mesh != None):

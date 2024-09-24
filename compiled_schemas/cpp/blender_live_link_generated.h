@@ -225,13 +225,21 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_NAME = 4,
     VT_LOCATION = 6,
-    VT_MESH = 8
+    VT_SCALE = 8,
+    VT_ROTATION = 10,
+    VT_MESH = 12
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
   }
   const Blender::LiveLink::Vec3 *location() const {
     return GetStruct<const Blender::LiveLink::Vec3 *>(VT_LOCATION);
+  }
+  const Blender::LiveLink::Vec3 *scale() const {
+    return GetStruct<const Blender::LiveLink::Vec3 *>(VT_SCALE);
+  }
+  const Blender::LiveLink::Quat *rotation() const {
+    return GetStruct<const Blender::LiveLink::Quat *>(VT_ROTATION);
   }
   const Blender::LiveLink::Mesh *mesh() const {
     return GetPointer<const Blender::LiveLink::Mesh *>(VT_MESH);
@@ -241,6 +249,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyOffset(verifier, VT_NAME) &&
            verifier.VerifyString(name()) &&
            VerifyField<Blender::LiveLink::Vec3>(verifier, VT_LOCATION, 4) &&
+           VerifyField<Blender::LiveLink::Vec3>(verifier, VT_SCALE, 4) &&
+           VerifyField<Blender::LiveLink::Quat>(verifier, VT_ROTATION, 4) &&
            VerifyOffset(verifier, VT_MESH) &&
            verifier.VerifyTable(mesh()) &&
            verifier.EndTable();
@@ -256,6 +266,12 @@ struct ObjectBuilder {
   }
   void add_location(const Blender::LiveLink::Vec3 *location) {
     fbb_.AddStruct(Object::VT_LOCATION, location);
+  }
+  void add_scale(const Blender::LiveLink::Vec3 *scale) {
+    fbb_.AddStruct(Object::VT_SCALE, scale);
+  }
+  void add_rotation(const Blender::LiveLink::Quat *rotation) {
+    fbb_.AddStruct(Object::VT_ROTATION, rotation);
   }
   void add_mesh(::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh) {
     fbb_.AddOffset(Object::VT_MESH, mesh);
@@ -275,9 +291,13 @@ inline ::flatbuffers::Offset<Object> CreateObject(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::String> name = 0,
     const Blender::LiveLink::Vec3 *location = nullptr,
+    const Blender::LiveLink::Vec3 *scale = nullptr,
+    const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
   ObjectBuilder builder_(_fbb);
   builder_.add_mesh(mesh);
+  builder_.add_rotation(rotation);
+  builder_.add_scale(scale);
   builder_.add_location(location);
   builder_.add_name(name);
   return builder_.Finish();
@@ -287,12 +307,16 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *name = nullptr,
     const Blender::LiveLink::Vec3 *location = nullptr,
+    const Blender::LiveLink::Vec3 *scale = nullptr,
+    const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateObject(
       _fbb,
       name__,
       location,
+      scale,
+      rotation,
       mesh);
 }
 

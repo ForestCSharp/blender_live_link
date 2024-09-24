@@ -36,6 +36,8 @@ table Mesh {
 table Object {
 	name:string;
 	location:Vec3;
+	scale:Vec3;
+	rotation:Quat;
 
 	//optional mesh data
 	mesh:Mesh;

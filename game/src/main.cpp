@@ -52,7 +52,7 @@ typedef uint16_t 	u16;
 typedef uint8_t 	u8;
 
 struct Mesh {
-	hmm_vec4 location;
+	HMM_Vec4 location;
 	u32 idx_count;
 	sg_buffer vbuf;
 	sg_buffer ibuf;
@@ -61,11 +61,19 @@ struct Mesh {
 
 struct Vertex
 {
-	hmm_vec4 position;
-	hmm_vec4 normal;
+	HMM_Vec4 position;
+	HMM_Vec4 normal;
 };
 
-Mesh make_mesh(hmm_vec4 location, Vertex* vertices, u32 vertices_len, u32* indices, u32 indices_len)
+Mesh make_mesh(
+	HMM_Vec4 location, 
+	HMM_Vec4 scale, 
+	HMM_Quat rotation, 
+	Vertex* vertices, 
+	u32 vertices_len, 
+	u32* indices, 
+	u32 indices_len
+)
 {
 	sg_buffer vbuf = sg_make_buffer((sg_buffer_desc){
 		.data = {
@@ -84,9 +92,16 @@ Mesh make_mesh(hmm_vec4 location, Vertex* vertices, u32 vertices_len, u32* indic
 		.label = "mesh-indices"
 	});
 
+	// From shader header
+	ObjectData_t object_data = {};
+	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
+	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
+	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
+	object_data.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));	
+
 	sg_buffer sbuf = sg_make_buffer((sg_buffer_desc){
 		.type = SG_BUFFERTYPE_STORAGEBUFFER,
-		.data = SG_RANGE(location),
+		.data = SG_RANGE(object_data),
 		.label = "mesh-storage-buffer"
 	});
 
@@ -97,56 +112,6 @@ Mesh make_mesh(hmm_vec4 location, Vertex* vertices, u32 vertices_len, u32* indic
 		.ibuf = ibuf,
 		.sbuf = sbuf,
 	};
-}
-
-Vertex cube_vertices[] = {
-	{	-1.0, -1.0, -1.0, 1.0,		1.0, 0.0, 0.0, 0.0},
-	{	1.0, -1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
-	{	1.0,  1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
-	{	-1.0,  1.0, -1.0, 1.0,   	1.0, 0.0, 0.0, 0.0},
-	
-	{	-1.0, -1.0,  1.0, 1.0,  	0.0, 1.0, 0.0, 0.0},
-	{	1.0, -1.0,  1.0,  1.0, 		0.0, 1.0, 0.0, 0.0},
-	{	1.0,  1.0,  1.0,  1.0,		0.0, 1.0, 0.0, 0.0},
-	{	-1.0,  1.0,  1.0, 1.0,		0.0, 1.0, 0.0, 0.0},
-
-	{	-1.0, -1.0, -1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
-	{	-1.0,  1.0, -1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
-	{	-1.0,  1.0,  1.0, 1.0, 		0.0, 0.0, 1.0, 0.0},
-	{	-1.0, -1.0,  1.0, 1.0,		0.0, 0.0, 1.0, 0.0},
-	
-	{	1.0, -1.0, -1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
-	{	1.0,  1.0, -1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
-	{	1.0,  1.0,  1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
-	{	1.0, -1.0,  1.0, 1.0,		1.0, 0.5, 0.0, 0.0},
-	
-	{	-1.0, -1.0, -1.0, 1.0,		0.0, 0.5, 1.0, 0.0},
-	{	-1.0, -1.0,  1.0, 1.0,		0.0, 0.5, 1.0, 0.0},
-	{	1.0, -1.0,  1.0,  1.0,		0.0, 0.5, 1.0, 0.0},
-	{	1.0, -1.0, -1.0,  1.0,		0.0, 0.5, 1.0, 0.0},
-	
-	{	-1.0,  1.0, -1.0, 1.0,		1.0, 0.0, 0.5, 0.0},
-	{	-1.0,  1.0,  1.0, 1.0,		1.0, 0.0, 0.5, 0.0},
-	{	1.0,  1.0,  1.0,  1.0,		1.0, 0.0, 0.5, 0.0},
-	{	1.0,  1.0, -1.0,  1.0,		1.0, 0.0, 0.5, 0.0},
-};
-
-uint32_t cube_indices[] = {
-	0, 1, 2,  0, 2, 3,
-	6, 5, 4,  7, 6, 4,
-	8, 9, 10,  8, 10, 11,
-	14, 13, 12,  15, 14, 12,
-	16, 17, 18,  16, 18, 19,
-	22, 21, 20,  23, 22, 20
-};
-
-Mesh make_cube(hmm_vec4 location)
-{
-	return make_mesh(
-		location, 
-		cube_vertices, sizeof(cube_vertices) / sizeof(Vertex), 
-		cube_indices, sizeof(cube_indices) / sizeof(u32)
-	);
 }
 
 struct {
@@ -231,13 +196,18 @@ void live_link_init()
 				printf("\tObject Name: %s\n", object_name->c_str());
 			}
 			auto object_location = object->location();
+			auto object_scale = object->scale();
+			auto object_rotation = object->rotation();
 			auto object_mesh = object->mesh();
 
 			//FCS TODO: Create some generic "game object" and then add mesh/light/etc. data based on existence of that data in flatbuffer
-			if (object_location && object_mesh)
+			if (object_location && object_scale && object_rotation && object_mesh)
 			{
-				printf("We have location and mesh!\n");	
-				hmm_vec4 location = HMM_Vec4(object_location->x(), object_location->y(), object_location->z(), 1);
+				HMM_Vec4 location = HMM_V4(object_location->x(), object_location->y(), object_location->z(), 1);
+
+				HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
+
+				HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
 
 				sbuffer(Vertex) vertices = nullptr;
 				if (auto flatbuffer_vertices = object_mesh->vertices())
@@ -280,8 +250,7 @@ void live_link_init()
 					}
 				}
 
-				//arrput(state.meshes, make_cube(location));
-				arrput(state.meshes, make_mesh(location, vertices, arrlen(vertices), indices, arrlen(indices)));
+				arrput(state.meshes, make_mesh(location, scale, rotation, vertices, arrlen(vertices), indices, arrlen(indices)));
 			}
 		}
 	}
@@ -314,7 +283,7 @@ void init(void) {
         },
         .shader = shd,
         .index_type = SG_INDEXTYPE_UINT32,
-        .cull_mode = SG_CULLMODE_BACK,
+        .cull_mode = SG_CULLMODE_NONE,
         .depth = {
             .write_enabled = true,
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
@@ -365,9 +334,9 @@ void frame(void) {
 		const float w = sapp_widthf();
 		const float h = sapp_heightf();
 		const float t = (float)(sapp_frame_duration() * 60.0);
-		hmm_mat4 proj = HMM_Perspective(60.0f, w/h, 0.01f, 10.0f);
-		hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, -9.0, 0.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 0.0f, 1.0f));
-		hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
+		HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
+		HMM_Mat4 view = HMM_LookAt_RH(HMM_V3(0.0f, -9.0, 0.0f), HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 0.0f, 1.0f));
+		HMM_Mat4 view_proj = HMM_MulM4(proj, view);
 		vs_params.vp = view_proj;
 
 		sg_apply_pipeline(state.pipeline);

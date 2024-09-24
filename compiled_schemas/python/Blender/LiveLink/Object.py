@@ -43,8 +43,30 @@ class Object(object):
         return None
 
     # Object
-    def Mesh(self):
+    def Scale(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.Vec3 import Vec3
+            obj = Vec3()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Object
+    def Rotation(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.Quat import Quat
+            obj = Quat()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Object
+    def Mesh(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
         if o != 0:
             x = self._tab.Indirect(o + self._tab.Pos)
             from Blender.LiveLink.Mesh import Mesh
@@ -54,7 +76,7 @@ class Object(object):
         return None
 
 def ObjectStart(builder):
-    builder.StartObject(3)
+    builder.StartObject(5)
 
 def Start(builder):
     ObjectStart(builder)
@@ -71,8 +93,20 @@ def ObjectAddLocation(builder, location):
 def AddLocation(builder, location):
     ObjectAddLocation(builder, location)
 
+def ObjectAddScale(builder, scale):
+    builder.PrependStructSlot(2, flatbuffers.number_types.UOffsetTFlags.py_type(scale), 0)
+
+def AddScale(builder, scale):
+    ObjectAddScale(builder, scale)
+
+def ObjectAddRotation(builder, rotation):
+    builder.PrependStructSlot(3, flatbuffers.number_types.UOffsetTFlags.py_type(rotation), 0)
+
+def AddRotation(builder, rotation):
+    ObjectAddRotation(builder, rotation)
+
 def ObjectAddMesh(builder, mesh):
-    builder.PrependUOffsetTRelativeSlot(2, flatbuffers.number_types.UOffsetTFlags.py_type(mesh), 0)
+    builder.PrependUOffsetTRelativeSlot(4, flatbuffers.number_types.UOffsetTFlags.py_type(mesh), 0)
 
 def AddMesh(builder, mesh):
     ObjectAddMesh(builder, mesh)

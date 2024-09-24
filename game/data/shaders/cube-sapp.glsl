@@ -1,13 +1,14 @@
-@ctype mat4 hmm_mat4
+@ctype mat4 HMM_Mat4
 
 @vs vs
 uniform vs_params {
     mat4 vp;
 };
 
+// TODO: should probably just pass in a Model matrix...
 struct ObjectData
 {
-	vec4 location;
+	mat4 model_matrix;
 };
 
 readonly buffer ObjectDataBuffer {
@@ -19,17 +20,8 @@ in vec4 normal;
 
 out vec4 color;
 
-mat4 BuildTranslation(vec4 in_translation)
-{
-    return mat4(
-        vec4(1.0, 0.0, 0.0, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(0.0, 0.0, 1.0, 0.0),
-        vec4(in_translation.x, in_translation.y, in_translation.z, 1.0));
-}
-
 void main() {
-    gl_Position = vp * BuildTranslation(object_data_array[0].location) * position;
+    gl_Position = vp * object_data_array[0].model_matrix * position;
     color = normal;
 }
 @end
