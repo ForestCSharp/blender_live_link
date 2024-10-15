@@ -35,6 +35,9 @@ table Mesh {
 
 table Object {
 	name:string;
+	unique_id:int;
+	visibility:bool;
+
 	location:Vec3;
 	scale:Vec3;
 	rotation:Quat;
@@ -43,9 +46,8 @@ table Object {
 	mesh:Mesh;
 }
 
-table Scene {
-	name:string;
+table Update {
 	objects:[Object];
 }
 
-root_type Scene;
+root_type Update;

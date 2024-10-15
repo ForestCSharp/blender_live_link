@@ -1,0 +1,6 @@
+
+
+- Key objects by session_uid so we can live-update
+- Subsequent object change updates will be the same struct, but with less Objects
+- uniquely identify objects with "object.id_data.session_uid"
+- 

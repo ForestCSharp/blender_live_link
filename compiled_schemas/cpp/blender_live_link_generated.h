@@ -30,8 +30,8 @@ struct MeshBuilder;
 struct Object;
 struct ObjectBuilder;
 
-struct Scene;
-struct SceneBuilder;
+struct Update;
+struct UpdateBuilder;
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec3 FLATBUFFERS_FINAL_CLASS {
  private:
@@ -224,13 +224,21 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_NAME = 4,
-    VT_LOCATION = 6,
-    VT_SCALE = 8,
-    VT_ROTATION = 10,
-    VT_MESH = 12
+    VT_UNIQUE_ID = 6,
+    VT_VISIBILITY = 8,
+    VT_LOCATION = 10,
+    VT_SCALE = 12,
+    VT_ROTATION = 14,
+    VT_MESH = 16
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
+  }
+  int32_t unique_id() const {
+    return GetField<int32_t>(VT_UNIQUE_ID, 0);
+  }
+  bool visibility() const {
+    return GetField<uint8_t>(VT_VISIBILITY, 0) != 0;
   }
   const Blender::LiveLink::Vec3 *location() const {
     return GetStruct<const Blender::LiveLink::Vec3 *>(VT_LOCATION);
@@ -248,6 +256,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_NAME) &&
            verifier.VerifyString(name()) &&
+           VerifyField<int32_t>(verifier, VT_UNIQUE_ID, 4) &&
+           VerifyField<uint8_t>(verifier, VT_VISIBILITY, 1) &&
            VerifyField<Blender::LiveLink::Vec3>(verifier, VT_LOCATION, 4) &&
            VerifyField<Blender::LiveLink::Vec3>(verifier, VT_SCALE, 4) &&
            VerifyField<Blender::LiveLink::Quat>(verifier, VT_ROTATION, 4) &&
@@ -263,6 +273,12 @@ struct ObjectBuilder {
   ::flatbuffers::uoffset_t start_;
   void add_name(::flatbuffers::Offset<::flatbuffers::String> name) {
     fbb_.AddOffset(Object::VT_NAME, name);
+  }
+  void add_unique_id(int32_t unique_id) {
+    fbb_.AddElement<int32_t>(Object::VT_UNIQUE_ID, unique_id, 0);
+  }
+  void add_visibility(bool visibility) {
+    fbb_.AddElement<uint8_t>(Object::VT_VISIBILITY, static_cast<uint8_t>(visibility), 0);
   }
   void add_location(const Blender::LiveLink::Vec3 *location) {
     fbb_.AddStruct(Object::VT_LOCATION, location);
@@ -290,6 +306,8 @@ struct ObjectBuilder {
 inline ::flatbuffers::Offset<Object> CreateObject(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::String> name = 0,
+    int32_t unique_id = 0,
+    bool visibility = false,
     const Blender::LiveLink::Vec3 *location = nullptr,
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
@@ -299,13 +317,17 @@ inline ::flatbuffers::Offset<Object> CreateObject(
   builder_.add_rotation(rotation);
   builder_.add_scale(scale);
   builder_.add_location(location);
+  builder_.add_unique_id(unique_id);
   builder_.add_name(name);
+  builder_.add_visibility(visibility);
   return builder_.Finish();
 }
 
 inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *name = nullptr,
+    int32_t unique_id = 0,
+    bool visibility = false,
     const Blender::LiveLink::Vec3 *location = nullptr,
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
@@ -314,28 +336,24 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
   return Blender::LiveLink::CreateObject(
       _fbb,
       name__,
+      unique_id,
+      visibility,
       location,
       scale,
       rotation,
       mesh);
 }
 
-struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
-  typedef SceneBuilder Builder;
+struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef UpdateBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-    VT_NAME = 4,
-    VT_OBJECTS = 6
+    VT_OBJECTS = 4
   };
-  const ::flatbuffers::String *name() const {
-    return GetPointer<const ::flatbuffers::String *>(VT_NAME);
-  }
   const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects() const {
     return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *>(VT_OBJECTS);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
-           VerifyOffset(verifier, VT_NAME) &&
-           verifier.VerifyString(name()) &&
            VerifyOffset(verifier, VT_OBJECTS) &&
            verifier.VerifyVector(objects()) &&
            verifier.VerifyVectorOfTables(objects()) &&
@@ -343,76 +361,68 @@ struct Scene FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
 };
 
-struct SceneBuilder {
-  typedef Scene Table;
+struct UpdateBuilder {
+  typedef Update Table;
   ::flatbuffers::FlatBufferBuilder &fbb_;
   ::flatbuffers::uoffset_t start_;
-  void add_name(::flatbuffers::Offset<::flatbuffers::String> name) {
-    fbb_.AddOffset(Scene::VT_NAME, name);
-  }
   void add_objects(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects) {
-    fbb_.AddOffset(Scene::VT_OBJECTS, objects);
+    fbb_.AddOffset(Update::VT_OBJECTS, objects);
   }
-  explicit SceneBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+  explicit UpdateBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
   }
-  ::flatbuffers::Offset<Scene> Finish() {
+  ::flatbuffers::Offset<Update> Finish() {
     const auto end = fbb_.EndTable(start_);
-    auto o = ::flatbuffers::Offset<Scene>(end);
+    auto o = ::flatbuffers::Offset<Update>(end);
     return o;
   }
 };
 
-inline ::flatbuffers::Offset<Scene> CreateScene(
+inline ::flatbuffers::Offset<Update> CreateUpdate(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    ::flatbuffers::Offset<::flatbuffers::String> name = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects = 0) {
-  SceneBuilder builder_(_fbb);
+  UpdateBuilder builder_(_fbb);
   builder_.add_objects(objects);
-  builder_.add_name(name);
   return builder_.Finish();
 }
 
-inline ::flatbuffers::Offset<Scene> CreateSceneDirect(
+inline ::flatbuffers::Offset<Update> CreateUpdateDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    const char *name = nullptr,
     const std::vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects = nullptr) {
-  auto name__ = name ? _fbb.CreateString(name) : 0;
   auto objects__ = objects ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Object>>(*objects) : 0;
-  return Blender::LiveLink::CreateScene(
+  return Blender::LiveLink::CreateUpdate(
       _fbb,
-      name__,
       objects__);
 }
 
-inline const Blender::LiveLink::Scene *GetScene(const void *buf) {
-  return ::flatbuffers::GetRoot<Blender::LiveLink::Scene>(buf);
+inline const Blender::LiveLink::Update *GetUpdate(const void *buf) {
+  return ::flatbuffers::GetRoot<Blender::LiveLink::Update>(buf);
 }
 
-inline const Blender::LiveLink::Scene *GetSizePrefixedScene(const void *buf) {
-  return ::flatbuffers::GetSizePrefixedRoot<Blender::LiveLink::Scene>(buf);
+inline const Blender::LiveLink::Update *GetSizePrefixedUpdate(const void *buf) {
+  return ::flatbuffers::GetSizePrefixedRoot<Blender::LiveLink::Update>(buf);
 }
 
-inline bool VerifySceneBuffer(
+inline bool VerifyUpdateBuffer(
     ::flatbuffers::Verifier &verifier) {
-  return verifier.VerifyBuffer<Blender::LiveLink::Scene>(nullptr);
+  return verifier.VerifyBuffer<Blender::LiveLink::Update>(nullptr);
 }
 
-inline bool VerifySizePrefixedSceneBuffer(
+inline bool VerifySizePrefixedUpdateBuffer(
     ::flatbuffers::Verifier &verifier) {
-  return verifier.VerifySizePrefixedBuffer<Blender::LiveLink::Scene>(nullptr);
+  return verifier.VerifySizePrefixedBuffer<Blender::LiveLink::Update>(nullptr);
 }
 
-inline void FinishSceneBuffer(
+inline void FinishUpdateBuffer(
     ::flatbuffers::FlatBufferBuilder &fbb,
-    ::flatbuffers::Offset<Blender::LiveLink::Scene> root) {
+    ::flatbuffers::Offset<Blender::LiveLink::Update> root) {
   fbb.Finish(root);
 }
 
-inline void FinishSizePrefixedSceneBuffer(
+inline void FinishSizePrefixedUpdateBuffer(
     ::flatbuffers::FlatBufferBuilder &fbb,
-    ::flatbuffers::Offset<Blender::LiveLink::Scene> root) {
+    ::flatbuffers::Offset<Blender::LiveLink::Update> root) {
   fbb.FinishSizePrefixed(root);
 }
 

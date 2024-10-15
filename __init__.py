@@ -9,21 +9,21 @@ bl_info = {
 import bpy
 import bmesh
 import sys
+import socket
 
-from os.path import dirname, realpath
-import sys
+from os.path import dirname, realpath, basename, isfile, join
+import glob
+
 sys.path.append(dirname(realpath(__file__)) + "/compiled_schemas/python") 
 
 import flatbuffers
-import Blender.LiveLink.Mesh
+import Blender.LiveLink.Update
 import Blender.LiveLink.Object
-import Blender.LiveLink.Scene
-import Blender.LiveLink.Vec3
+import Blender.LiveLink.Mesh
 import Blender.LiveLink.Vec4
+import Blender.LiveLink.Vec3
 import Blender.LiveLink.Quat
 import Blender.LiveLink.Vertex
-
-import socket
 
 class BlenderLiveLinkInit(bpy.types.Operator):
     """ Blender Live Link Init """          # Use this as a tooltip for menu items and buttons.
@@ -98,6 +98,13 @@ class BlenderLiveLinkInit(bpy.types.Operator):
             # Object Name
             Blender.LiveLink.Object.AddName(builder, object_name)
 
+            # Session UID (note that this is a fairly new addition to the python API)
+            session_uid = obj.session_uid
+            Blender.LiveLink.Object.AddUniqueId(builder, session_uid)
+
+            is_visible = obj.visible_get()
+            Blender.LiveLink.Object.AddVisibility(builder, is_visible)
+
             # Object Location
             location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder, obj.location.x, obj.location.y, obj.location.z)
             Blender.LiveLink.Object.AddLocation(builder, location_vec3)
@@ -120,7 +127,7 @@ class BlenderLiveLinkInit(bpy.types.Operator):
             live_link_objects.append(live_link_object)
 
         # actually create the scene objects vector
-        Blender.LiveLink.Scene.SceneStartObjectsVector(builder, len(live_link_objects))
+        Blender.LiveLink.Update.UpdateStartObjectsVector(builder, len(live_link_objects))
         for live_link_object in live_link_objects: 
             builder.PrependUOffsetTRelative(live_link_object)
         scene_objects = builder.EndVector()
@@ -129,16 +136,13 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         scene_name = builder.CreateString(bpy.data.filepath)
         print("filepath: " + bpy.data.filepath)
 
-        Blender.LiveLink.Scene.Start(builder)
-
-        # set scene name
-        Blender.LiveLink.Scene.AddName(builder, scene_name)
+        Blender.LiveLink.Update.Start(builder)
 
         # Add objects vector to scene
-        Blender.LiveLink.Scene.AddObjects(builder, scene_objects)
+        Blender.LiveLink.Update.AddObjects(builder, scene_objects)
 
         # finalize scene flatbuffer
-        live_link_scene = Blender.LiveLink.Scene.End(builder)
+        live_link_scene = Blender.LiveLink.Update.End(builder)
 
         builder.Finish(live_link_scene)
         
