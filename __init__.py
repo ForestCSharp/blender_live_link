@@ -1,10 +1,10 @@
 # Reminder to self: Need to zip up folder to install as add-on
 
-bl_info = {
-    "name": "Blender Live Link",
-    "blender": (4, 00, 0),
-    "category": "Object",
-}
+#bl_info = {
+#    "name": "Blender Live Link",
+#    "blender": (4, 00, 0),
+#    "category": "Object",
+#}
 
 import bpy
 import bmesh
@@ -16,14 +16,14 @@ import glob
 
 sys.path.append(dirname(realpath(__file__)) + "/compiled_schemas/python") 
 
-import flatbuffers
-import Blender.LiveLink.Update
-import Blender.LiveLink.Object
-import Blender.LiveLink.Mesh
-import Blender.LiveLink.Vec4
-import Blender.LiveLink.Vec3
-import Blender.LiveLink.Quat
-import Blender.LiveLink.Vertex
+from .compiled_schemas.python import flatbuffers
+from .compiled_schemas.python.Blender.LiveLink import Update
+from .compiled_schemas.python.Blender.LiveLink import Object
+from .compiled_schemas.python.Blender.LiveLink import Mesh
+from .compiled_schemas.python.Blender.LiveLink import Vec4
+from .compiled_schemas.python.Blender.LiveLink import Vec3
+from .compiled_schemas.python.Blender.LiveLink import Quat
+from .compiled_schemas.python.Blender.LiveLink import Vertex
 
 class BlenderLiveLinkInit(bpy.types.Operator):
     """ Blender Live Link Init """          # Use this as a tooltip for menu items and buttons.
@@ -63,11 +63,11 @@ class BlenderLiveLinkInit(bpy.types.Operator):
                 # Export Vertices
                 blender_vertices = mesh.vertices;
                 
-                Blender.LiveLink.Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
+                Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
                 for blender_vertex in reversed(blender_vertices):
                     position = blender_vertex.co.to_4d()
                     normal = blender_vertex.normal.to_4d()
-                    Blender.LiveLink.Vertex.CreateVertex(
+                    Vertex.CreateVertex(
                         builder,
                         position.x, position.y, position.z, position.w,
                         normal.x, normal.y, normal.z, normal.w
@@ -82,52 +82,52 @@ class BlenderLiveLinkInit(bpy.types.Operator):
                     indices.append(blender_polygon.vertices[1])
                     indices.append(blender_polygon.vertices[2])
 
-                Blender.LiveLink.Mesh.MeshStartIndicesVector(builder, len(indices))
+                Mesh.MeshStartIndicesVector(builder, len(indices))
                 for index in reversed(indices):
                     builder.PrependUint32(index)
                 mesh_indices = builder.EndVector()
  
-                Blender.LiveLink.Mesh.Start(builder)
-                Blender.LiveLink.Mesh.AddVertices(builder, mesh_vertices)
-                Blender.LiveLink.Mesh.AddIndices(builder, mesh_indices)
-                mesh = Blender.LiveLink.Mesh.End(builder)
+                Mesh.Start(builder)
+                Mesh.AddVertices(builder, mesh_vertices)
+                Mesh.AddIndices(builder, mesh_indices)
+                mesh = Mesh.End(builder)
             
             # Begin New Object 
-            Blender.LiveLink.Object.Start(builder)
+            Object.Start(builder)
             
             # Object Name
-            Blender.LiveLink.Object.AddName(builder, object_name)
+            Object.AddName(builder, object_name)
 
             # Session UID (note that this is a fairly new addition to the python API)
             session_uid = obj.session_uid
-            Blender.LiveLink.Object.AddUniqueId(builder, session_uid)
+            Object.AddUniqueId(builder, session_uid)
 
             is_visible = obj.visible_get()
-            Blender.LiveLink.Object.AddVisibility(builder, is_visible)
+            Object.AddVisibility(builder, is_visible)
 
             # Object Location
-            location_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder, obj.location.x, obj.location.y, obj.location.z)
-            Blender.LiveLink.Object.AddLocation(builder, location_vec3)
+            location_vec3 = Vec3.CreateVec3(builder, obj.location.x, obj.location.y, obj.location.z)
+            Object.AddLocation(builder, location_vec3)
 
             # Object Scale
-            scale_vec3 = Blender.LiveLink.Vec3.CreateVec3(builder, obj.scale.x, obj.scale.y, obj.scale.z)
-            Blender.LiveLink.Object.AddScale(builder, scale_vec3)
+            scale_vec3 = Vec3.CreateVec3(builder, obj.scale.x, obj.scale.y, obj.scale.z)
+            Object.AddScale(builder, scale_vec3)
 
             # Object Rotation
             rot = obj.rotation_euler.to_quaternion();
-            rotation_quat = Blender.LiveLink.Quat.CreateQuat(builder, rot.x, rot.y, rot.z, rot.w);
-            Blender.LiveLink.Object.AddRotation(builder, rotation_quat);
+            rotation_quat = Quat.CreateQuat(builder, rot.x, rot.y, rot.z, rot.w);
+            Object.AddRotation(builder, rotation_quat);
 
             # Object Mesh Data
             if (mesh != None):
-                Blender.LiveLink.Object.AddMesh(builder, mesh)
+                Object.AddMesh(builder, mesh)
 
             # End New Object add add to array
-            live_link_object = Blender.LiveLink.Object.End(builder)
+            live_link_object = Object.End(builder)
             live_link_objects.append(live_link_object)
 
         # actually create the scene objects vector
-        Blender.LiveLink.Update.UpdateStartObjectsVector(builder, len(live_link_objects))
+        Update.UpdateStartObjectsVector(builder, len(live_link_objects))
         for live_link_object in live_link_objects: 
             builder.PrependUOffsetTRelative(live_link_object)
         scene_objects = builder.EndVector()
@@ -136,13 +136,13 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         scene_name = builder.CreateString(bpy.data.filepath)
         print("filepath: " + bpy.data.filepath)
 
-        Blender.LiveLink.Update.Start(builder)
+        Update.Start(builder)
 
         # Add objects vector to scene
-        Blender.LiveLink.Update.AddObjects(builder, scene_objects)
+        Update.AddObjects(builder, scene_objects)
 
         # finalize scene flatbuffer
-        live_link_scene = Blender.LiveLink.Update.End(builder)
+        live_link_scene = Update.End(builder)
 
         builder.Finish(live_link_scene)
         

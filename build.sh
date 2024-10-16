@@ -10,6 +10,8 @@ mkdir -p compiled_schemas/python
 ./flatbuffers/build/build.sh
 
 # compile schema for python and cpp
+touch compiled_schemas/__init__.py
+touch compiled_schemas/python/__init__.py
 ./flatbuffers/build/flatc -o compiled_schemas/python --python blender_live_link.fbs 
 ./flatbuffers/build/flatc -o compiled_schemas/cpp --cpp blender_live_link.fbs 
 
