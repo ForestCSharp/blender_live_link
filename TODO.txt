@@ -1,6 +1,5 @@
 
 
-- Key objects by session_uid so we can live-update
+- V1: live update just replaces object-data wholesale (make sure to clean up old data)
 - Subsequent object change updates will be the same struct, but with less Objects
-- uniquely identify objects with "object.id_data.session_uid"
-- 
+- don't close socket (both sides) so we can keep listening for updates
