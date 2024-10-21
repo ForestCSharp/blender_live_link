@@ -41,10 +41,6 @@ class BlenderLiveLinkInit(bpy.types.Operator):
     bl_label = "Live Link: Send Update"         # Display name in the interface.
     bl_options = {'REGISTER', 'UNDO'}           # Enable undo for the operator.
 
-    #FCS TODO: Store magic IP and Port numbers in some shared file
-    HOST = '127.0.0.1'
-    PORT = 65432
-
     my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     def make_flatbuffer_object(self, builder, obj, dependency_graph):
@@ -174,7 +170,10 @@ class BlenderLiveLinkInit(bpy.types.Operator):
     def execute(self, context):
 
         if not is_socket_connected(self.my_socket):
-            self.my_socket.connect((self.HOST,self.PORT))
+            #FCS TODO: Store magic IP and Port numbers in some shared file
+            HOST = '127.0.0.1'
+            PORT = 65432
+            self.my_socket.connect((HOST,PORT))
 
         #FCS TODO: Smarter way to iterate collection hierarchy to maintain parentage?
         # Create Initial flatbuffer update message

@@ -1,5 +1,7 @@
 
 #include <atomic>
+using std::atomic;
+
 #include <cerrno>
 #include <cstdio>
 
@@ -150,9 +152,15 @@ struct Camera {
 
 struct {
     sg_pipeline pipeline;
+
 	map<i32, Object> objects;
+	atomic<i32> updating_object_uid;
+
 	int blender_socket;
-	std::atomic<bool> blender_data_loaded = false;
+
+	//TODO: Remove
+	atomic<bool> blender_data_loaded = false;
+
 	Camera camera = {
 		.position = HMM_V3(0.0f, -9.0f, 0.0f),
 		.forward = HMM_V3(0.0f, 1.0f, 0.0f),
@@ -171,7 +179,9 @@ void live_link_init()
 	hints.ai_socktype = SOCK_STREAM;
 
 	//FCS TODO: Store magic IP and Port numbers in some shared file
-	getaddrinfo("127.0.0.1", "65432", &hints, &res);
+	const char* HOST = "127.0.0.1";
+	const char* PORT = "65432";
+	getaddrinfo(HOST, PORT, &hints, &res);
 
 	// make a socket
 	state.blender_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
@@ -276,14 +286,11 @@ void live_link_init()
 				HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
 				HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
 
+				// Used to ensure we aren't reading from this object's data on the main thread 
+				state.updating_object_uid = unique_id;
+
 				if (state.objects.contains(unique_id))
-				{
-					//TODO: just clean up old object for now. Eventually we'll modify in-place
-
-					//TODO:
-					continue;
-
-					//TODO: Need to handle race condition with rendering code
+				{	
 					Object& existing_object = state.objects[unique_id];
 					sg_destroy_buffer(existing_object.storage_buffer);
 					if (existing_object.has_mesh)
@@ -348,6 +355,7 @@ void live_link_init()
 				}
 
 				state.objects[unique_id] = game_object;
+				state.updating_object_uid = -1;
 			}
 
 			state.blender_data_loaded = true;
@@ -495,6 +503,11 @@ void frame(void)
 
 			for (auto const& [unique_id, object] : state.objects)
 			{
+				if (unique_id == state.updating_object_uid)
+				{
+					continue;	
+				}
+
 				if (!object.has_mesh || !object.visibility)
 				{
 					continue;
