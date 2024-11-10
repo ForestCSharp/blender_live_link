@@ -1,5 +1,4 @@
 
 
 - V1: live update just replaces object-data wholesale (make sure to clean up old data)
-- Subsequent object change updates will be the same struct, but with less Objects
-- don't close socket (both sides) so we can keep listening for updates
+- TODO: keep data layout the same as blender, hopefully avoid a big 'ol python loop and just memcpy vertex data

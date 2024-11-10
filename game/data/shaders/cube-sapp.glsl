@@ -5,7 +5,6 @@ uniform vs_params {
     mat4 vp;
 };
 
-// TODO: should probably just pass in a Model matrix...
 struct ObjectData
 {
 	mat4 model_matrix;
