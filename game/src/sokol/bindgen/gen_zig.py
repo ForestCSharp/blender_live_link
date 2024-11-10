@@ -56,7 +56,7 @@ overrides = {
     'sgl_error':                            'sgl_get_error',   # 'error' is reserved in Zig
     'sgl_deg':                              'sgl_as_degrees',
     'sgl_rad':                              'sgl_as_radians',
-    'sg_apply_uniforms.ub_index':           'uint32_t',
+    'sg_apply_uniforms.ub_slot':            'uint32_t',
     'sg_draw.base_element':                 'uint32_t',
     'sg_draw.num_elements':                 'uint32_t',
     'sg_draw.num_instances':                'uint32_t',
@@ -65,7 +65,7 @@ overrides = {
     'sdtx_font.font_index':                 'uint32_t',
     'SGL_NO_ERROR':                         'SGL_ERROR_NO_ERROR',
     'sfetch_continue':                      'continue_fetching',  # 'continue' is reserved in Zig
-    'sfetch_desc':                          'sfetch_get_desc'     # 'desc' shadowed by earlier definiton
+    'sfetch_desc':                          'sfetch_get_desc'     # 'desc' shadowed by earlier definition
 }
 
 prim_types = {
@@ -466,20 +466,39 @@ def gen_helpers(inp):
         l('// helper function to convert "anything" to a Range struct')
         l('pub fn asRange(val: anytype) Range {')
         l('    const type_info = @typeInfo(@TypeOf(val));')
-        l('    switch (type_info) {')
-        l('        .Pointer => {')
-        l('            switch (type_info.Pointer.size) {')
-        l('                .One => return .{ .ptr = val, .size = @sizeOf(type_info.Pointer.child) },')
-        l('                .Slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.Pointer.child) * val.len },')
-        l('                else => @compileError("FIXME: Pointer type!"),')
-        l('            }')
-        l('        },')
-        l('        .Struct, .Array => {')
-        l('            @compileError("Structs and arrays must be passed as pointers to asRange");')
-        l('        },')
-        l('        else => {')
-        l('            @compileError("Cannot convert to range!");')
-        l('        },')
+        l('    // FIXME: naming convention change between 0.13 and 0.14-dev')
+        l('    if (@hasField(@TypeOf(type_info), "Pointer")) {')
+        l('        switch (type_info) {')
+        l('            .Pointer => {')
+        l('                switch (type_info.Pointer.size) {')
+        l('                    .One => return .{ .ptr = val, .size = @sizeOf(type_info.Pointer.child) },')
+        l('                    .Slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.Pointer.child) * val.len },')
+        l('                    else => @compileError("FIXME: Pointer type!"),')
+        l('                }')
+        l('            },')
+        l('            .Struct, .Array => {')
+        l('                @compileError("Structs and arrays must be passed as pointers to asRange");')
+        l('            },')
+        l('            else => {')
+        l('                @compileError("Cannot convert to range!");')
+        l('            },')
+        l('        }')
+        l('    } else {')
+        l('        switch (type_info) {')
+        l('            .pointer => {')
+        l('                switch (type_info.pointer.size) {')
+        l('                    .One => return .{ .ptr = val, .size = @sizeOf(type_info.pointer.child) },')
+        l('                    .Slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.pointer.child) * val.len },')
+        l('                    else => @compileError("FIXME: Pointer type!"),')
+        l('                }')
+        l('            },')
+        l('            .@"struct", .array => {')
+        l('                @compileError("Structs and arrays must be passed as pointers to asRange");')
+        l('            },')
+        l('            else => {')
+        l('                @compileError("Cannot convert to range!");')
+        l('            },')
+        l('        }')
         l('    }')
         l('}')
         l('')

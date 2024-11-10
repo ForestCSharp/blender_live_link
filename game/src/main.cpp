@@ -385,8 +385,8 @@ void init(void) {
             /* test to provide buffer stride, but no attr offsets */
             .buffers[0].stride = 32,
             .attrs = {
-                [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT4,
-                [ATTR_vs_normal].format   = SG_VERTEXFORMAT_FLOAT4
+                [ATTR_cube_position].format = SG_VERTEXFORMAT_FLOAT4,
+                [ATTR_cube_normal].format   = SG_VERTEXFORMAT_FLOAT4
             }
         },
         .shader = shd,
@@ -499,7 +499,7 @@ void frame(void)
 			vs_params.vp = view_proj;
 
 			sg_apply_pipeline(state.pipeline);
-			sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(vs_params));
+			sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 			for (auto const& [unique_id, object] : state.objects)
 			{
@@ -517,8 +517,8 @@ void frame(void)
 				sg_bindings bindings = {
 					.vertex_buffers[0] = mesh.vertex_buffer,
 					.index_buffer = mesh.index_buffer,
-					.vs = {
-						.storage_buffers[SLOT_ObjectDataBuffer] = object.storage_buffer,
+					.storage_buffers = {
+						[0] = object.storage_buffer,
 					},
 				};
 				sg_apply_bindings(&bindings);

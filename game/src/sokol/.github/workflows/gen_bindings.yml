@@ -6,7 +6,7 @@ jobs:
   test-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
       - name: test_win
         run: |
           cd tests
@@ -16,7 +16,7 @@ jobs:
   test-mac:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
       - uses: seanmiddleditch/gha-setup-ninja@master
       - name: test_macos
         run: |
@@ -26,7 +26,7 @@ jobs:
   test-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
       - uses: seanmiddleditch/gha-setup-ninja@master
       - name: prepare
         run: |
@@ -41,45 +41,49 @@ jobs:
     needs: [ test-windows, test-mac, test-linux ]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-zig
           path: bindgen/sokol-zig
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-nim
           path: bindgen/sokol-nim
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-odin
           path: bindgen/sokol-odin
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-rust
           path: bindgen/sokol-rust
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: kassane/sokol-d
           path: bindgen/sokol-d
+      - uses: actions/checkout@main
+        with:
+          repository: colinbellino/sokol-jai
+          path: bindgen/sokol-jai
       - name: generate
         run: |
           cd bindgen
           python3 gen_all.py
       - name: upload-zig-artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@main
         with:
           name: ignore-me-zig
           retention-days: 1
           path: bindgen/sokol-zig/src/sokol
       - name: upload-nim-artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@main
         with:
           name: ignore-me-nim
           retention-days: 1
           path: bindgen/sokol-nim/src/sokol
       - name: upload-odin-artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@main
         with:
           name: ignore-me-odin
           retention-days: 1
@@ -87,17 +91,23 @@ jobs:
             bindgen/sokol-odin/sokol
             bindgen/sokol-odin/c
       - name: upload-rust-artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@main
         with:
           name: ignore-me-rust
           retention-days: 1
           path: bindgen/sokol-rust/src
       - name: upload-d-artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@main
         with:
           name: ignore-me-d
           retention-days: 1
           path: bindgen/sokol-d/src/sokol
+      - name: upload-jai-artifact
+        uses: actions/upload-artifact@main
+        with:
+          name: ignore-me-jai
+          retention-days: 1
+          path: bindgen/sokol-jai/sokol
 
   test-zig:
     needs: gen-bindings
@@ -106,11 +116,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-zig
-      - uses: goto-bus-stop/setup-zig@v2
-      - uses: actions/download-artifact@v4
+      - uses: goto-bus-stop/setup-zig@default
+      - uses: actions/download-artifact@main
         with:
           name: ignore-me-zig
           path: src/sokol
@@ -127,30 +137,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        #os: [ubuntu-latest, macos-latest, windows-latest]
-        os: [ubuntu-latest, macos-latest ]
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{matrix.os}}
     steps:
-      - uses: jiro4989/setup-nim-action@v1
-        with:
-         nim-version: '2.x'
-         repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/checkout@v4
-        with:
-          repository: floooh/sokol-nim
-      - uses: actions/download-artifact@v4
-        with:
-          name: ignore-me-nim
-          path: src/sokol
       - if: runner.os == 'Linux'
         name: prepare
         run: |
             sudo apt-get update
-            sudo apt-get install libgl1-mesa-dev libegl1-mesa-dev mesa-common-dev xorg-dev libasound-dev
+            sudo apt-get install libglu1-mesa-dev mesa-common-dev xorg-dev libasound-dev
+      - uses: actions/checkout@main
+        with:
+          repository: floooh/sokol-nim
+      - uses: actions/download-artifact@main
+        with:
+          name: ignore-me-nim
+          path: src/sokol
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+         nim-version: '2.0.x'
+         repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: build
         run: |
           nimble install -Y
-          nimble install glm -Y
           nimble build_all
 
   test-odin:
@@ -161,10 +170,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-odin
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@main
         with:
           name: ignore-me-odin
       # NOTE: see https://github.com/floooh/sokol-odin/blob/main/.github/workflows/main.yml
@@ -243,10 +252,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: floooh/sokol-rust
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@main
         with:
           name: ignore-me-rust
           path: src
@@ -270,16 +279,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
         with:
           repository: kassane/sokol-d
-      - uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.12.0
+      - uses: goto-bus-stop/setup-zig@default
       - uses: dlang-community/setup-dlang@v1
         with:
           compiler: ldc-master
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@main
         with:
           name: ignore-me-d
           path: src/sokol
@@ -290,6 +297,27 @@ jobs:
             sudo apt-get install libgl1-mesa-dev libegl1-mesa-dev mesa-common-dev xorg-dev libasound-dev
       - name: build
         run: zig build --summary all
+  test-jai:
+    needs: gen-bindings
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{matrix.os}}
+    steps:
+      - uses: actions/checkout@main
+        with:
+          repository: colinbellino/sokol-jai
+      - uses: actions/download-artifact@v4
+        with:
+          name: ignore-me-jai
+          path: sokol
+      - name: prepare
+        if: runner.os == 'Linux'
+        run: |
+            sudo apt-get update
+            sudo apt-get install libgl1-mesa-dev libegl1-mesa-dev mesa-common-dev xorg-dev libasound-dev
+      - name: build
+        run: echo "run jai here"
 
   # only deploy the bindings for commits on the main branch
   deploy-zig:
@@ -392,10 +420,31 @@ jobs:
         with:
           repository: kassane/sokol-d
           ssh-key: ${{ secrets.GHACTIONS_D_PUSH }}
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: ignore-me-d
           path: src/sokol
+      - name: "commit and push"
+        run: |
+          git config user.email "none"
+          git config user.name "GH Action"
+          git add -A
+          git diff-index --quiet HEAD || git commit -m "updated (https://github.com/floooh/sokol/commit/${{ github.sha }})"
+          git push
+
+  deploy-jai:
+    needs: test-jai
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: colinbellino/sokol-jai
+          ssh-key: ${{ secrets.GHACTIONS_JAI_PUSH }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ignore-me-jai
+          path: sokol
       - name: "commit and push"
         run: |
           git config user.email "none"

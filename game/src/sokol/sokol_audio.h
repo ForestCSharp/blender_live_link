@@ -453,6 +453,7 @@
     the standard logger in sokol_log.h instead, otherwise you won't see any warnings or
     errors.
 
+
     LICENSE
     =======
 
@@ -2472,7 +2473,7 @@ void _saudio_backend_shutdown(void) {
     #elif defined(SAUDIO_ANDROID_SLES)
         _saudio_sles_backend_shutdown();
     #elif defined(_SAUDIO_APPLE)
-        return _saudio_coreaudio_backend_shutdown();
+        _saudio_coreaudio_backend_shutdown();
     #else
     #error "unknown platform"
     #endif

@@ -1,7 +1,7 @@
 @ctype mat4 HMM_Mat4
 
 @vs vs
-uniform vs_params {
+layout(binding=0) uniform vs_params {
     mat4 vp;
 };
 
@@ -10,7 +10,7 @@ struct ObjectData
 	mat4 model_matrix;
 };
 
-readonly buffer ObjectDataBuffer {
+layout(binding=0) readonly buffer ObjectDataBuffer {
 	ObjectData object_data_array[];
 };
 
