@@ -28,18 +28,37 @@ from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
 from .compiled_schemas.python.Blender.LiveLink import Vertex
 
+class LiveLinkSettings(bpy.types.PropertyGroup):
+    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+
+class LiveLinkSettingsPanel(bpy.types.Panel):
+    bl_label = "Live Link Settings"
+    bl_idname = "OBJECT_PT_tester"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'object'
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object is not None)
+
+    def draw(self, context):
+        for property in LiveLinkSettings.bl_rna.properties:
+            if property.is_runtime: 
+                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
+
 def is_socket_connected(socket):
     try:
-        socket.getpeername()
+        socket.send(b'')
         return True
     except OSError:
         return False
 
 class BlenderLiveLinkInit(bpy.types.Operator):
-    """ Blender Live Link Send Update """       # Use this as a tooltip for menu items and buttons.
+    """ Blender Live Link Send Update """       # Sends live-link updates to our running game.
     bl_idname = "live_link.send_update"         # Unique identifier for buttons and menu items to reference.
     bl_label = "Live Link: Send Update"         # Display name in the interface.
-    bl_options = {'REGISTER', 'UNDO'}           # Enable undo for the operator.
+    bl_options = {'REGISTER'} 
 
     my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -140,7 +159,9 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         # Build up objects to be added to scene objects vector
         live_link_objects = []
         for blender_object in in_object_list: 
-            live_link_objects.append(self.make_flatbuffer_object(builder, blender_object, dependency_graph))
+            # Only add if enable_live_link is set
+            if (blender_object.live_link_settings.enable_live_link):
+                live_link_objects.append(self.make_flatbuffer_object(builder, blender_object, dependency_graph))
 
         # actually create the scene objects vector
         Update.UpdateStartObjectsVector(builder, len(live_link_objects))
@@ -176,17 +197,9 @@ class BlenderLiveLinkInit(bpy.types.Operator):
             self.my_socket.connect((HOST,PORT))
 
         #FCS TODO: Smarter way to iterate collection hierarchy to maintain parentage?
-        # Create Initial flatbuffer update message
+        # Create Initial flatbuffer update message with all objects in scene
         flatbuffer_update = self.make_update(bpy.context.scene.objects);
         self.my_socket.send(flatbuffer_update)
-
-        # Testing sending one object at a time
-        #for blender_object in bpy.context.scene.objects:
-        #    flatbuffer_update = self.make_update([blender_object]);
-        #    my_socket.send(flatbuffer_update)
-
-        # FCS TODO: Remove Shutdown
-        #my_socket.shutdown(socket.SHUT_RDWR)
 
         return {'FINISHED'}
 
@@ -197,13 +210,21 @@ def register():
     bpy.utils.register_class(BlenderLiveLinkInit)
     bpy.types.VIEW3D_MT_object.append(menu_func)  # Adds the new operator to an existing menu.
 
+    # Set up settings on objects
+    bpy.utils.register_class(LiveLinkSettings)
+    bpy.utils.register_class(LiveLinkSettingsPanel);
+    bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkSettings)
+
 def unregister():
     bpy.utils.unregister_class(BlenderLiveLinkInit)
+
+    # Set up settings on objects
+    bpy.utils.unregister_class(LiveLinkSettings)
+    bpy.utils.unregister_class(LiveLinkSettingsPanel);
+    del bpy.types.Object.live_link_settings
 
 # This allows you to run the script directly from Blender's Text editor
 # to test the add-on without having to install it.
 if __name__ == "__main__":
     register()
 
-
-#TODO: Helper function to uninstall, build, and reinstall add-on during dev

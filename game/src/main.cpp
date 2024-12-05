@@ -168,7 +168,18 @@ struct {
 	};
 } state;
 
-void live_link_init()
+#define SOCKET_OP(f) \
+{\
+	int result = (f);\
+	if (result != 0)\
+	{\
+		printf("Line %i error on %s: %i\n", __LINE__, #f, result);\
+		exit(0);\
+	}\
+}
+
+// Live Link Function. Runs on its own thread
+void live_link_thread_function()
 {
 	// Init socket we'll use to talk to blender
 	struct addrinfo hints, *res;
@@ -185,9 +196,10 @@ void live_link_init()
 
 	// make a socket
 	state.blender_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-	bind(state.blender_socket, res->ai_addr, res->ai_addrlen);
+	SOCKET_OP(bind(state.blender_socket, res->ai_addr, res->ai_addrlen));
+
 	const i32 backlog = 1;
-	listen(state.blender_socket, backlog);
+	SOCKET_OP(listen(state.blender_socket, backlog));
 
 	// accept connection from blender
 	struct sockaddr_storage their_addr;
@@ -286,7 +298,8 @@ void live_link_init()
 				HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
 				HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
 
-				// Used to ensure we aren't reading from this object's data on the main thread 
+				// set atomic updating object uid
+				// used to ensure we aren't reading from this object's data on the main thread 
 				state.updating_object_uid = unique_id;
 
 				if (state.objects.contains(unique_id))
@@ -308,7 +321,6 @@ void live_link_init()
 					rotation
 				);
 
-				//FCS TODO: Create some generic "game object" and then add mesh/light/etc. data based on existence of that data in flatbuffer
 				if (auto object_mesh = object->mesh())
 				{
 					sbuffer(Vertex) vertices = nullptr;
@@ -355,6 +367,7 @@ void live_link_init()
 				}
 
 				state.objects[unique_id] = game_object;
+				// clear atomic updating object uid
 				state.updating_object_uid = -1;
 			}
 
@@ -374,7 +387,7 @@ void init(void) {
     });
 
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
-	std::thread(live_link_init).detach();
+	std::thread(live_link_thread_function).detach();
 	
     /* create shader */
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));

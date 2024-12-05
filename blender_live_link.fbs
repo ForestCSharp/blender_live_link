@@ -1,53 +1,53 @@
-
+// blender_live_link.fbs
 // Flatbuffers IDL file for blender live link
  
 namespace Blender.LiveLink;
   
 struct Vec3 {
-  x:float;
-  y:float;
-  z:float;
+  x	: float;
+  y	: float;
+  z	: float;
 }
 
 struct Vec4 {
-  x:float;
-  y:float;
-  z:float;
-  w:float;
+  x	: float;
+  y	: float;
+  z	: float;
+  w	: float;
 }
 
 struct Quat {
-  x:float;
-  y:float;
-  z:float;
-  w:float;
+  x	: float;
+  y	: float;
+  z	: float;
+  w	: float;
 }
 
 struct Vertex {
-	position:Vec4;
-	normal:Vec4;
+	position	: Vec4;
+	normal		: Vec4;
 }
 
 table Mesh {
-	vertices:[Vertex];
-	indices:[uint];
+	vertices	: [Vertex];
+	indices		: [uint];
 }
 
 table Object {
-	name:string;
-	unique_id:int;
-	visibility:bool;
+	name		: string;
+	unique_id	: int;
+	visibility	: bool;
 
-	location:Vec3;
-	scale:Vec3;
-	rotation:Quat;
+	location	: Vec3;
+	scale		: Vec3;
+	rotation	: Quat;
 
 	//optional mesh data
-	mesh:Mesh;
+	mesh		: Mesh;
 }
 
 table Update {
-	objects:[Object];
+	objects	: [Object];
 }
 
 root_type Update;
