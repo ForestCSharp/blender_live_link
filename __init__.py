@@ -28,39 +28,28 @@ from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
 from .compiled_schemas.python.Blender.LiveLink import Vertex
 
-class LiveLinkSettings(bpy.types.PropertyGroup):
-    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+# Class to manage our live link connection
+class LiveLinkConnection():
+    def __init__(self):
+        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-class LiveLinkSettingsPanel(bpy.types.Panel):
-    bl_label = "Live Link Settings"
-    bl_idname = "OBJECT_PT_tester"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = 'object'
+    def is_connected(self):
+        try:
+            self.my_socket.send(b'')
+            return True
+        except OSError:
+            return False
 
-    @classmethod
-    def poll(cls, context):
-        return (context.object is not None)
+    def connect(self):
+        #FCS TODO: Store magic IP and Port numbers in some shared file
+        HOST = '127.0.0.1'
+        PORT = 65432
+        self.my_socket.connect((HOST,PORT))
 
-    def draw(self, context):
-        for property in LiveLinkSettings.bl_rna.properties:
-            if property.is_runtime: 
-                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
-
-def is_socket_connected(socket):
-    try:
-        socket.send(b'')
-        return True
-    except OSError:
-        return False
-
-class BlenderLiveLinkInit(bpy.types.Operator):
-    """ Blender Live Link Send Update """       # Sends live-link updates to our running game.
-    bl_idname = "live_link.send_update"         # Unique identifier for buttons and menu items to reference.
-    bl_label = "Live Link: Send Update"         # Display name in the interface.
-    bl_options = {'REGISTER'} 
-
-    my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def send(self, data):
+        if not self.is_connected():
+            self.connect()
+        self.my_socket.send(data)
 
     def make_flatbuffer_object(self, builder, obj, dependency_graph):
         # Allocate string for object name
@@ -172,7 +161,6 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
         # create string for scene name
         scene_name = builder.CreateString(bpy.data.filepath)
-        print("filepath: " + bpy.data.filepath)
 
         Update.Start(builder)
 
@@ -186,42 +174,112 @@ class BlenderLiveLinkInit(bpy.types.Operator):
         
         return builder.Output()
 
+    def send_object_list(self, in_object_list):
+        self.send(self.make_update(in_object_list))
+
+live_link_connection = []
+
+# Callback when depsgraph has finished updated
+def depsgraph_update_post_callback(scene, depsgraph):
+
+    if not depsgraph_update_post_callback.enabled:
+        return
+
+    updated_objects = []
+
+    for update in depsgraph.updates:
+        update_id = update.id
+        if isinstance(update_id, bpy.types.Object):
+            if update.is_updated_transform:
+                # appending update_id won't work, need to look up object in scene.objects
+                updated_object = scene.objects[update_id.name]
+                updated_objects.append(updated_object)
+
+    if len(updated_objects) > 0: 
+        # Temporarily disable depsgraph_update_post_callback to prevent infinite recursion
+        depsgraph_update_post_callback.enabled = False 
+
+        live_link_connection.send_object_list(updated_objects)
+
+        # Re-Enable depsgraph_update_post_callback
+        depsgraph_update_post_callback.enabled = True 
+
+
+depsgraph_update_post_callback.enabled = True
+
+# Per-Object Live Link Settings
+class LiveLinkSettings(bpy.types.PropertyGroup):
+    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+
+# Settings Panel for LiveLinkSettings, shows up under object properties
+class LiveLinkSettingsPanel(bpy.types.Panel):
+    bl_label = "Live Link Settings"
+    bl_idname = "OBJECT_PT_tester"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'object'
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object is not None)
+
+    def draw(self, context):
+        for property in LiveLinkSettings.bl_rna.properties:
+            if property.is_runtime: 
+                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
+
+# Begin BlenderLiveLinkInit
+class BlenderLiveLinkInit(bpy.types.Operator):
+    """Live Link: Send Full Update """          # Sends live-link updates to our running game.
+    bl_idname = "live_link.send_full_update"    # Unique identifier for buttons and menu items to reference.
+    bl_label = "Live Link: Send Full Update"    # Display name in the interface.
+    bl_options = {'REGISTER'} 
+
+    # Socket used for sending data
+    my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     # Called when operator is run
     def execute(self, context):
-
-        if not is_socket_connected(self.my_socket):
-            #FCS TODO: Store magic IP and Port numbers in some shared file
-            HOST = '127.0.0.1'
-            PORT = 65432
-            self.my_socket.connect((HOST,PORT))
-
-        #FCS TODO: Smarter way to iterate collection hierarchy to maintain parentage?
-        # Create Initial flatbuffer update message with all objects in scene
-        flatbuffer_update = self.make_update(bpy.context.scene.objects);
-        self.my_socket.send(flatbuffer_update)
-
+        live_link_connection.send_object_list(list(bpy.context.scene.objects)) 
         return {'FINISHED'}
+# End BlenderLiveLinkInit 
 
 def menu_func(self, context):
     self.layout.operator(BlenderLiveLinkInit.bl_idname)
 
 def register():
+    global live_link_connection  
+    live_link_connection = LiveLinkConnection()
+
     bpy.utils.register_class(BlenderLiveLinkInit)
-    bpy.types.VIEW3D_MT_object.append(menu_func)  # Adds the new operator to an existing menu.
 
     # Set up settings on objects
     bpy.utils.register_class(LiveLinkSettings)
     bpy.utils.register_class(LiveLinkSettingsPanel);
     bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkSettings)
 
+    # Register depsgraph update post callback
+    bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
+
+    # add to menu
+    bpy.types.VIEW3D_MT_object.append(menu_func)
+
 def unregister():
+    global live_link_connection
+    del live_link_connection
+
     bpy.utils.unregister_class(BlenderLiveLinkInit)
 
-    # Set up settings on objects
+    # Clean up settings on objects
     bpy.utils.unregister_class(LiveLinkSettings)
     bpy.utils.unregister_class(LiveLinkSettingsPanel);
     del bpy.types.Object.live_link_settings
+
+    # Remove depsgraph update post callback
+    bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_post_callback)
+
+    # remove from menu
+    bpy.types.VIEW3D_MT_object.remove(menu_func)
 
 # This allows you to run the script directly from Blender's Text editor
 # to test the add-on without having to install it.
