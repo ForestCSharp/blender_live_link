@@ -153,10 +153,15 @@ struct Camera {
 struct {
     sg_pipeline pipeline;
 
+	atomic<bool> game_running = true;
+
 	map<i32, Object> objects;
 	atomic<i32> updating_object_uid;
 
+	std::thread live_link_thread;
+
 	int blender_socket;
+	int connection_socket;
 
 	//TODO: Remove
 	atomic<bool> blender_data_loaded = false;
@@ -204,10 +209,10 @@ void live_link_thread_function()
 	// accept connection from blender
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size = sizeof their_addr;
-	int connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
+	state.connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
 
 	// infinite recv loop
-	while (true)
+	while (state.game_running)
 	{
 		sbuffer(u8) flatbuffer_data = nullptr;
 
@@ -220,7 +225,7 @@ void live_link_thread_function()
 			const size_t buffer_len = 4096; 
 			u8 buffer[buffer_len];
 			const int flags = 0;
-			current_bytes_read = recv(connection_socket, buffer, buffer_len, flags);
+			current_bytes_read = recv(state.connection_socket, buffer, buffer_len, flags);
 
 			// Less than zero is an error
 			if (current_bytes_read < 0)
@@ -362,8 +367,11 @@ void live_link_thread_function()
 					}
 
 					// Set Mesh Data on Game Object
-					game_object.has_mesh = true;
-					game_object.mesh = make_mesh(vertices, arrlen(vertices), indices, arrlen(indices));
+					if (arrlen(vertices) > 0 && arrlen(indices) > 0)
+					{
+						game_object.has_mesh = true;
+						game_object.mesh = make_mesh(vertices, arrlen(vertices), indices, arrlen(indices));
+					}
 				}
 
 				state.objects[unique_id] = game_object;
@@ -375,19 +383,20 @@ void live_link_thread_function()
 		}
 	}
 
-	shutdown(connection_socket,2);
+	printf("Shutting down sockets\n");
+	shutdown(state.connection_socket,2);
 	shutdown(state.blender_socket,2);
 }
 
-void init(void) {
-
+void init(void)
+{
     sg_setup((sg_desc){
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
 
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
-	std::thread(live_link_thread_function).detach();
+	state.live_link_thread = std::thread(live_link_thread_function);
 	
     /* create shader */
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
@@ -546,6 +555,7 @@ void frame(void)
 
 void cleanup(void)
 {
+	state.game_running = false;
     sg_shutdown();
 }
 
@@ -558,7 +568,7 @@ void event(const sapp_event* event)
 			// stop execution on escape key 
 			if (event->key_code == SAPP_KEYCODE_ESCAPE)
 			{
-				exit(0);
+				sapp_quit();
 			}
 
 			keycodes[event->key_code] = true;

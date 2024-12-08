@@ -51,6 +51,33 @@ class LiveLinkConnection():
             self.connect()
         self.my_socket.send(data)
 
+    def get_mesh(self, obj, dependency_graph):
+        # Evaluate Modifiers
+        obj_evaluated = obj.evaluated_get(dependency_graph)
+        # Get a copy of the mesh data
+        mesh = obj_evaluated.data 
+
+        if obj.mode == 'EDIT':
+            bm = bmesh.from_edit_mesh(mesh)
+            new_mesh = bpy.data.meshes.new("Modified_Mesh")
+            bm.to_mesh(new_mesh)
+
+            bm = bmesh.new()
+            bm.from_mesh(new_mesh)
+            bmesh.ops.triangulate(bm, faces=bm.faces[:])
+            bm.to_mesh(new_mesh)
+
+            return new_mesh 
+        else:
+            # create a new bmesh and set its data from our mesh data
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+            # triangulate the mesh
+            bmesh.ops.triangulate(bm, faces=bm.faces[:])
+            # assign back to mesh
+            bm.to_mesh(mesh)
+            return mesh
+
     def make_flatbuffer_object(self, builder, obj, dependency_graph):
         # Allocate string for object name
         object_name = builder.CreateString(obj.name)
@@ -58,17 +85,8 @@ class LiveLinkConnection():
         # If we're a mesh object, setup mesh data 
         mesh = None
 
-        if (obj.type == 'MESH'): 
-            # Evaluate Modifiers
-            obj_evaluated = obj.evaluated_get(dependency_graph)
-            # Get Mesh Data
-            mesh = obj_evaluated.data
-
-            # Make sure Mesh is triangulated
-            bm = bmesh.new()
-            bm.from_mesh(mesh)
-            bmesh.ops.triangulate(bm, faces=bm.faces[:])
-            bm.to_mesh(mesh)
+        if obj.type == 'MESH': 
+            mesh = self.get_mesh(obj, dependency_graph)
 
             # Export Vertices
             blender_vertices = mesh.vertices
@@ -190,7 +208,7 @@ def depsgraph_update_post_callback(scene, depsgraph):
     for update in depsgraph.updates:
         update_id = update.id
         if isinstance(update_id, bpy.types.Object):
-            if update.is_updated_transform:
+            if update.is_updated_transform or update.is_updated_geometry:
                 # appending update_id won't work, need to look up object in scene.objects
                 updated_object = scene.objects[update_id.name]
                 updated_objects.append(updated_object)
