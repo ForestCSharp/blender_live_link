@@ -347,16 +347,22 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
 struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef UpdateBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-    VT_OBJECTS = 4
+    VT_OBJECTS = 4,
+    VT_DELETED_OBJECT_UIDS = 6
   };
   const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects() const {
     return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *>(VT_OBJECTS);
+  }
+  const ::flatbuffers::Vector<int32_t> *deleted_object_uids() const {
+    return GetPointer<const ::flatbuffers::Vector<int32_t> *>(VT_DELETED_OBJECT_UIDS);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_OBJECTS) &&
            verifier.VerifyVector(objects()) &&
            verifier.VerifyVectorOfTables(objects()) &&
+           VerifyOffset(verifier, VT_DELETED_OBJECT_UIDS) &&
+           verifier.VerifyVector(deleted_object_uids()) &&
            verifier.EndTable();
   }
 };
@@ -367,6 +373,9 @@ struct UpdateBuilder {
   ::flatbuffers::uoffset_t start_;
   void add_objects(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects) {
     fbb_.AddOffset(Update::VT_OBJECTS, objects);
+  }
+  void add_deleted_object_uids(::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> deleted_object_uids) {
+    fbb_.AddOffset(Update::VT_DELETED_OBJECT_UIDS, deleted_object_uids);
   }
   explicit UpdateBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -381,19 +390,24 @@ struct UpdateBuilder {
 
 inline ::flatbuffers::Offset<Update> CreateUpdate(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects = 0) {
+    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> deleted_object_uids = 0) {
   UpdateBuilder builder_(_fbb);
+  builder_.add_deleted_object_uids(deleted_object_uids);
   builder_.add_objects(objects);
   return builder_.Finish();
 }
 
 inline ::flatbuffers::Offset<Update> CreateUpdateDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    const std::vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects = nullptr) {
+    const std::vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects = nullptr,
+    const std::vector<int32_t> *deleted_object_uids = nullptr) {
   auto objects__ = objects ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Object>>(*objects) : 0;
+  auto deleted_object_uids__ = deleted_object_uids ? _fbb.CreateVector<int32_t>(*deleted_object_uids) : 0;
   return Blender::LiveLink::CreateUpdate(
       _fbb,
-      objects__);
+      objects__,
+      deleted_object_uids__);
 }
 
 inline const Blender::LiveLink::Update *GetUpdate(const void *buf) {

@@ -33,6 +33,10 @@ class LiveLinkConnection():
     def __init__(self):
         self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+    def __del__(self):
+        self.my_socket.shutdown(socket.SHUT_RDWR)
+        self.my_socket.close()
+
     def is_connected(self):
         try:
             self.my_socket.send(b'')
@@ -58,6 +62,7 @@ class LiveLinkConnection():
         mesh = obj_evaluated.data 
 
         if obj.mode == 'EDIT':
+            # TODO: we shouldn't do this for meshes that are too complex
             bm = bmesh.from_edit_mesh(mesh)
             new_mesh = bpy.data.meshes.new("Modified_Mesh")
             bm.to_mesh(new_mesh)
@@ -156,7 +161,7 @@ class LiveLinkConnection():
         return live_link_object
 
     # Creates an update for objects in in_object_list
-    def make_update(self, in_object_list):
+    def make_update(self, in_object_list, in_deleted_object_uids):
         # Evaluate Depsgraph
         dependency_graph = bpy.context.evaluated_depsgraph_get()
 
@@ -174,16 +179,21 @@ class LiveLinkConnection():
         Update.UpdateStartObjectsVector(builder, len(live_link_objects))
         for live_link_object in live_link_objects: 
             builder.PrependUOffsetTRelative(live_link_object)
-
-        scene_objects = builder.EndVector()
+        update_objects = builder.EndVector()
 
         # create string for scene name
         scene_name = builder.CreateString(bpy.data.filepath)
 
+        Update.UpdateStartDeletedObjectUidsVector(builder, len(in_deleted_object_uids))
+        for deleted_object_uid in in_deleted_object_uids:
+            builder.PrependInt32(deleted_object_uid)
+        update_deleted_object_uids = builder.EndVector()
+
         Update.Start(builder)
 
         # Add objects vector to scene
-        Update.AddObjects(builder, scene_objects)
+        Update.AddObjects(builder, update_objects)
+        Update.AddDeletedObjectUids(builder, update_deleted_object_uids)
 
         # finalize scene flatbuffer
         live_link_scene = Update.End(builder)
@@ -191,19 +201,33 @@ class LiveLinkConnection():
         builder.FinishSizePrefixed(live_link_scene)
         
         return builder.Output()
-
-    def send_object_list(self, in_object_list):
-        self.send(self.make_update(in_object_list))
+ 
+    def send_object_list(self, updated_objects, deleted_object_uids):
+        self.send(self.make_update(updated_objects, deleted_object_uids))
 
 live_link_connection = []
 
 # Callback when depsgraph has finished updated
 def depsgraph_update_post_callback(scene, depsgraph):
-
     if not depsgraph_update_post_callback.enabled:
         return
 
     updated_objects = []
+    deleted_object_uids = []
+
+    # Determine if any objects were deleted
+    current_objects = set(obj.session_uid for obj in scene.objects)
+
+    # Track the objects at the last update
+    if hasattr(depsgraph_update_post_callback, "previous_objects"):
+        previous_objects = depsgraph_update_post_callback.previous_objects
+        # Find the difference (deleted objects)
+        deleted_object_uids = list(previous_objects - current_objects)
+        if len(deleted_object_uids) > 0:
+            print(f"Deleted Objects UIDs: {', '.join(map(str, deleted_object_uids))}")
+    
+    # Store the current object names for the next update
+    depsgraph_update_post_callback.previous_objects = current_objects
 
     for update in depsgraph.updates:
         update_id = update.id
@@ -217,12 +241,15 @@ def depsgraph_update_post_callback(scene, depsgraph):
         # Temporarily disable depsgraph_update_post_callback to prevent infinite recursion
         depsgraph_update_post_callback.enabled = False 
 
-        live_link_connection.send_object_list(updated_objects)
+        live_link_connection.send_object_list(
+            updated_objects = updated_objects, 
+            deleted_object_uids = deleted_object_uids
+        )
 
         # Re-Enable depsgraph_update_post_callback
         depsgraph_update_post_callback.enabled = True 
 
-
+# Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
 
 # Per-Object Live Link Settings
@@ -258,7 +285,10 @@ class BlenderLiveLinkInit(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        live_link_connection.send_object_list(list(bpy.context.scene.objects)) 
+        live_link_connection.send_object_list(
+            updated_objects = list(bpy.context.scene.objects), 
+            deleted_object_uids = []
+        ) 
         return {'FINISHED'}
 # End BlenderLiveLinkInit 
 
@@ -273,7 +303,7 @@ def register():
 
     # Set up settings on objects
     bpy.utils.register_class(LiveLinkSettings)
-    bpy.utils.register_class(LiveLinkSettingsPanel);
+    bpy.utils.register_class(LiveLinkSettingsPanel)
     bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkSettings)
 
     # Register depsgraph update post callback
@@ -283,6 +313,7 @@ def register():
     bpy.types.VIEW3D_MT_object.append(menu_func)
 
 def unregister():
+    print("UNREGISTERING LIVE LINK")
     global live_link_connection
     del live_link_connection
 
@@ -290,7 +321,7 @@ def unregister():
 
     # Clean up settings on objects
     bpy.utils.unregister_class(LiveLinkSettings)
-    bpy.utils.unregister_class(LiveLinkSettingsPanel);
+    bpy.utils.unregister_class(LiveLinkSettingsPanel)
     del bpy.types.Object.live_link_settings
 
     # Remove depsgraph update post callback

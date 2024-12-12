@@ -49,8 +49,35 @@ class Update(object):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(4))
         return o == 0
 
+    # Update
+    def DeletedObjectUids(self, j):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            a = self._tab.Vector(o)
+            return self._tab.Get(flatbuffers.number_types.Int32Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 4))
+        return 0
+
+    # Update
+    def DeletedObjectUidsAsNumpy(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Int32Flags, o)
+        return 0
+
+    # Update
+    def DeletedObjectUidsLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Update
+    def DeletedObjectUidsIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        return o == 0
+
 def UpdateStart(builder):
-    builder.StartObject(1)
+    builder.StartObject(2)
 
 def Start(builder):
     UpdateStart(builder)
@@ -66,6 +93,18 @@ def UpdateStartObjectsVector(builder, numElems):
 
 def StartObjectsVector(builder, numElems):
     return UpdateStartObjectsVector(builder, numElems)
+
+def UpdateAddDeletedObjectUids(builder, deletedObjectUids):
+    builder.PrependUOffsetTRelativeSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(deletedObjectUids), 0)
+
+def AddDeletedObjectUids(builder, deletedObjectUids):
+    UpdateAddDeletedObjectUids(builder, deletedObjectUids)
+
+def UpdateStartDeletedObjectUidsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartDeletedObjectUidsVector(builder, numElems):
+    return UpdateStartDeletedObjectUidsVector(builder, numElems)
 
 def UpdateEnd(builder):
     return builder.EndObject()

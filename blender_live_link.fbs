@@ -48,6 +48,7 @@ table Object {
 
 table Update {
 	objects	: [Object];
+	deleted_object_uids: [int];
 }
 
 root_type Update;

@@ -35,6 +35,7 @@ using ankerl::unordered_dense::map;
 #define FONT_ORIC  (5)
 
 //FCS TODO: Make crossplat
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
@@ -178,9 +179,35 @@ struct {
 	int result = (f);\
 	if (result != 0)\
 	{\
-		printf("Line %i error on %s: %i\n", __LINE__, #f, result);\
+		printf("Line %i error on %s: %i\n", __LINE__, #f, errno);\
 		exit(0);\
 	}\
+}
+
+#if defined(__WIN32__)
+#define PLATFORM_WINDOWS 
+#endif
+
+#if !defined(PLATFORM_WINDOWS)
+#define SOCKET int
+#endif
+
+void socket_set_recv_timeout(SOCKET in_socket, const struct timeval& in_timeval)
+{
+	#if defined(PLATFORM_WINDOWS)
+		DWORD timeout = in_timeval.tv_sec * 1000 + in_timeval.tv_usec / 1000;
+		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof timeout);
+	#else
+		// MAC & LINUX
+		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const void*)&in_timeval, sizeof(in_timeval));
+	#endif
+}
+
+void socket_set_reuse_addr_and_port(SOCKET in_socket, bool in_enable)
+{
+	int optval = in_enable ? 1 : 0;
+	SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)));
+	SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)));
 }
 
 // Live Link Function. Runs on its own thread
@@ -199,8 +226,14 @@ void live_link_thread_function()
 	const char* PORT = "65432";
 	getaddrinfo(HOST, PORT, &hints, &res);
 
+	
 	// make a socket
 	state.blender_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+
+	// Allow us to reuse address and port
+	socket_set_reuse_addr_and_port(state.blender_socket, true);
+
+	// bind our socket
 	SOCKET_OP(bind(state.blender_socket, res->ai_addr, res->ai_addrlen));
 
 	const i32 backlog = 1;
@@ -210,6 +243,14 @@ void live_link_thread_function()
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size = sizeof their_addr;
 	state.connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
+
+
+	// set recv timeout
+	struct timeval recv_timeout = {
+		.tv_sec = 1,
+		.tv_usec = 0
+	};
+	socket_set_recv_timeout(state.connection_socket, recv_timeout);
 
 	// infinite recv loop
 	while (state.game_running)
@@ -230,8 +271,16 @@ void live_link_thread_function()
 			// Less than zero is an error
 			if (current_bytes_read < 0)
 			{
-				printf("recv_error: %s\n", strerror(errno));
-				exit(0);
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				{
+					current_bytes_read = 0;
+					continue;
+				}
+				else
+				{
+					printf("recv_error: %s\n", strerror(errno));
+					exit(0);
+				}
 			}
 
 			// No bytes read this iteration. Try again
@@ -257,135 +306,158 @@ void live_link_thread_function()
 				++packets_read;	
 			}
 		}
-		while (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value()));
+		while (state.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
 
 		if (arrlen(flatbuffer_data) > 0)
 		{
 			printf("We've got some data! Data Length: %td Packets Read: %i\n", arrlen(flatbuffer_data), packets_read);
-		}
 
-		// Interpret Flatbuffer data
-		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data);
-		assert(update);
-		if (auto objects = update->objects())
-		{
-			for (i32 idx = 0; idx < objects->size(); ++idx)
+			// Interpret Flatbuffer data
+			auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data);
+			assert(update);
+
+			if (auto objects = update->objects())
 			{
-				auto object = objects->Get(idx);
-				if (auto object_name = object->name())
+				for (i32 idx = 0; idx < objects->size(); ++idx)
 				{
-					printf("\tObject Name: %s\n", object_name->c_str());
-				}
-
-				int unique_id = object->unique_id();
-				bool visibility = object->visibility();
-
-				auto object_location = object->location();
-				if (!object_location)
-				{
-					continue;
-				}
-
-				auto object_scale = object->scale();
-				if (!object_scale)
-				{
-					continue;
-				}
-
-				auto object_rotation = object->rotation();
-				if (!object_rotation)
-				{
-					continue;
-				}
-
-
-				HMM_Vec4 location = HMM_V4(object_location->x(), object_location->y(), object_location->z(), 1);
-				HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
-				HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
-
-				// set atomic updating object uid
-				// used to ensure we aren't reading from this object's data on the main thread 
-				state.updating_object_uid = unique_id;
-
-				if (state.objects.contains(unique_id))
-				{	
-					Object& existing_object = state.objects[unique_id];
-					sg_destroy_buffer(existing_object.storage_buffer);
-					if (existing_object.has_mesh)
+					auto object = objects->Get(idx);
+					if (auto object_name = object->name())
 					{
-						sg_destroy_buffer(existing_object.mesh.index_buffer);
-						sg_destroy_buffer(existing_object.mesh.vertex_buffer);
+						printf("\tObject Name: %s\n", object_name->c_str());
 					}
-				}
 
-				Object game_object = make_object(
-					unique_id, 
-					visibility, 
-					location, 
-					scale, 
-					rotation
-				);
+					int unique_id = object->unique_id();
+					bool visibility = object->visibility();
 
-				if (auto object_mesh = object->mesh())
-				{
-					sbuffer(Vertex) vertices = nullptr;
-					if (auto flatbuffer_vertices = object_mesh->vertices())
+					auto object_location = object->location();
+					if (!object_location)
 					{
-						for (i32 vertex_idx = 0; vertex_idx < flatbuffer_vertices->size(); ++vertex_idx)
+						continue;
+					}
+
+					auto object_scale = object->scale();
+					if (!object_scale)
+					{
+						continue;
+					}
+
+					auto object_rotation = object->rotation();
+					if (!object_rotation)
+					{
+						continue;
+					}
+
+
+					HMM_Vec4 location = HMM_V4(object_location->x(), object_location->y(), object_location->z(), 1);
+					HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
+					HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
+
+					// set atomic updating object uid
+					// used to ensure we aren't reading from this object's data on the main thread 
+					state.updating_object_uid = unique_id;
+
+					if (state.objects.contains(unique_id))
+					{	
+						Object& existing_object = state.objects[unique_id];
+						sg_destroy_buffer(existing_object.storage_buffer);
+						if (existing_object.has_mesh)
 						{
-							auto vertex = flatbuffer_vertices->Get(vertex_idx);
-							auto vertex_position = vertex->position();
-							auto vertex_normal = vertex->normal();
-
-							Vertex new_vertex = {
-								.position = {
-									.X = vertex_position.x(),
-									.Y = vertex_position.y(),
-									.Z = vertex_position.z(),
-									.W = vertex_position.w(),
-								},
-								.normal = {
-									.X = vertex_normal.x(),
-									.Y = vertex_normal.y(),
-									.Z = vertex_normal.z(),
-									.W = vertex_normal.w(),
-								},
-							};
-
-							arrput(vertices, new_vertex);
+							sg_destroy_buffer(existing_object.mesh.index_buffer);
+							sg_destroy_buffer(existing_object.mesh.vertex_buffer);
 						}
 					}
 
-					sbuffer(u32) indices = nullptr;
-					if (auto flatbuffer_indices = object_mesh->indices())
+					Object game_object = make_object(
+						unique_id, 
+						visibility, 
+						location, 
+						scale, 
+						rotation
+					);
+
+					if (auto object_mesh = object->mesh())
 					{
-						for (i32 indices_idx = 0; indices_idx < flatbuffer_indices->size(); ++indices_idx)
+		 				sbuffer(Vertex) vertices = nullptr;
+						if (auto flatbuffer_vertices = object_mesh->vertices())
 						{
-							u32 new_index = flatbuffer_indices->Get(indices_idx);
-							arrput(indices, new_index);
+							for (i32 vertex_idx = 0; vertex_idx < flatbuffer_vertices->size(); ++vertex_idx)
+							{
+								auto vertex = flatbuffer_vertices->Get(vertex_idx);
+								auto vertex_position = vertex->position();
+								auto vertex_normal = vertex->normal();
+
+								Vertex new_vertex = {
+									.position = {
+										.X = vertex_position.x(),
+										.Y = vertex_position.y(),
+										.Z = vertex_position.z(),
+										.W = vertex_position.w(),
+									},
+									.normal = {
+										.X = vertex_normal.x(),
+										.Y = vertex_normal.y(),
+										.Z = vertex_normal.z(),
+										.W = vertex_normal.w(),
+									},
+								};
+
+								arrput(vertices, new_vertex);
+							}
+						}
+
+		 				sbuffer(u32) indices = nullptr;
+						if (auto flatbuffer_indices = object_mesh->indices())
+						{
+							for (i32 indices_idx = 0; indices_idx < flatbuffer_indices->size(); ++indices_idx)
+							{
+								u32 new_index = flatbuffer_indices->Get(indices_idx);
+								arrput(indices, new_index);
+							}
+						}
+
+						// Set Mesh Data on Game Object
+						if (arrlen(vertices) > 0 && arrlen(indices) > 0)
+						{
+							game_object.has_mesh = true;
+							game_object.mesh = make_mesh(vertices, arrlen(vertices), indices, arrlen(indices));
 						}
 					}
 
-					// Set Mesh Data on Game Object
-					if (arrlen(vertices) > 0 && arrlen(indices) > 0)
-					{
-						game_object.has_mesh = true;
-						game_object.mesh = make_mesh(vertices, arrlen(vertices), indices, arrlen(indices));
-					}
+					state.objects[unique_id] = game_object;
+					// clear atomic updating object uid
+					state.updating_object_uid = -1;
 				}
 
-				state.objects[unique_id] = game_object;
-				// clear atomic updating object uid
-				state.updating_object_uid = -1;
+				state.blender_data_loaded = true;
 			}
 
-			state.blender_data_loaded = true;
+			if (auto deleted_object_uids = update->deleted_object_uids())
+			{
+				for (i32 deleted_object_uid : *deleted_object_uids)
+				{
+					printf("Attempting to delete object. UID: %i\n", deleted_object_uid);
+					state.updating_object_uid = deleted_object_uid;
+
+					//FCS TODO: look up to see if object exists in set
+					if (state.objects.contains(deleted_object_uid))
+					{
+						printf("Removing object. UID: %i\n", deleted_object_uid);
+						state.objects.erase(deleted_object_uid);
+					}
+
+					state.updating_object_uid = -1;
+				}
+			}
 		}
 	}
 
 	printf("Shutting down sockets\n");
+
 	shutdown(state.connection_socket,2);
+	close(state.connection_socket);
+
 	shutdown(state.blender_socket,2);
+	close(state.blender_socket);
 }
 
 void init(void)
@@ -555,7 +627,11 @@ void frame(void)
 
 void cleanup(void)
 {
+	// Tell live_link_thread we're done running and wait for it to complete
 	state.game_running = false;
+	state.live_link_thread.join();
+
+	// shutdown game
     sg_shutdown();
 }
 
