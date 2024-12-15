@@ -23,6 +23,9 @@ from .compiled_schemas.python import flatbuffers
 from .compiled_schemas.python.Blender.LiveLink import Update
 from .compiled_schemas.python.Blender.LiveLink import Object
 from .compiled_schemas.python.Blender.LiveLink import Mesh
+from .compiled_schemas.python.Blender.LiveLink import LightType
+from .compiled_schemas.python.Blender.LiveLink import Light
+from .compiled_schemas.python.Blender.LiveLink import PointLight
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
@@ -89,7 +92,6 @@ class LiveLinkConnection():
 
         # If we're a mesh object, setup mesh data 
         mesh = None
-
         if obj.type == 'MESH': 
             mesh = self.get_mesh(obj, dependency_graph)
 
@@ -124,6 +126,58 @@ class LiveLinkConnection():
             Mesh.AddVertices(builder, mesh_vertices)
             Mesh.AddIndices(builder, mesh_indices)
             mesh = Mesh.End(builder)
+
+        light = None
+        if obj.type == 'LIGHT':
+            light_data = obj.data
+
+            print(f"Light Type: {light_data.type}")
+            print(f"Light Color: {light_data.color}")
+
+            Light.Start(builder)
+
+            # Light Color
+            light_color = Vec3.CreateVec3(builder, light_data.color.r, light_data.color.g, light_data.color.b)
+            Light.AddColor(builder, light_color)
+
+            light_type_enum = LightType.LightType()
+            def determine_light_type(in_light_data):
+                match in_light_data.type:
+                    case 'POINT': return light_type_enum.Point
+                    case 'SPOT' : return light_type_enum.Spot
+                    case 'SUN'  : return light_type_enum.Sun
+                    case 'AREA' : return light_type_enum.Area
+                    case '_': 
+                        print("Unsupported Light Type")
+                        return []
+            
+            # Light Type
+            light_type = determine_light_type(light_data)
+            Light.AddType(builder, light_type)
+
+            match light_type:
+                case light_type_enum.Point:
+                    print("Adding Point Light Data")
+                    point_light = PointLight.CreatePointLight(
+                        builder, 
+                        energy = light_data.energy
+                    )
+                    Light.AddPointLight(builder, point_light)
+                case light_type_enum.Spot:
+                    #TODO:
+                    pass
+                case light_type_enum.Sun:
+                    #TODO:
+                    pass
+                case light_type_enum.Area:
+                    #TODO:
+                    pass
+
+            Light.AddUseShadow(builder, light_data.use_shadow);
+
+            # Light Power
+
+            light = Light.End(builder)
         
         # Begin New Object 
         Object.Start(builder)
@@ -151,9 +205,13 @@ class LiveLinkConnection():
         rotation_quat = Quat.CreateQuat(builder, rot.x, rot.y, rot.z, rot.w)
         Object.AddRotation(builder, rotation_quat)
 
-        # Object Mesh Data
-        if (mesh != None):
+        # Add Object Mesh Data if it exists
+        if mesh != None:
             Object.AddMesh(builder, mesh)
+
+        # Add Object Light Data if it exists
+        if light != None:
+            Object.AddLight(builder, light)
 
         # End New Object add add to array
         live_link_object = Object.End(builder)
@@ -180,9 +238,6 @@ class LiveLinkConnection():
         for live_link_object in live_link_objects: 
             builder.PrependUOffsetTRelative(live_link_object)
         update_objects = builder.EndVector()
-
-        # create string for scene name
-        scene_name = builder.CreateString(bpy.data.filepath)
 
         Update.UpdateStartDeletedObjectUidsVector(builder, len(in_deleted_object_uids))
         for deleted_object_uid in in_deleted_object_uids:

@@ -42,6 +42,53 @@ using ankerl::unordered_dense::map;
 // Flatbuffers generated file
 #include "blender_live_link_generated.h"
 
+// Flatbuffer helper functions
+namespace flatbuffer_helpers
+{
+	HMM_Vec3 to_hmm_vec3(const Blender::LiveLink::Vec3* in_flatbuffers_vector)
+	{
+		assert(in_flatbuffers_vector);
+		return HMM_V3(
+			in_flatbuffers_vector->x(), 
+			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->z()
+		);
+	}
+
+	HMM_Vec4 to_hmm_vec4(const Blender::LiveLink::Vec4* in_flatbuffers_vector)
+	{
+		assert(in_flatbuffers_vector);
+		return HMM_V4(
+			in_flatbuffers_vector->x(), 
+			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->z(),
+			in_flatbuffers_vector->w()
+		);
+	}
+
+	HMM_Vec4 to_hmm_vec4(const Blender::LiveLink::Vec3* in_flatbuffers_vector, float in_w)
+	{
+		assert(in_flatbuffers_vector);
+		return HMM_V4(
+			in_flatbuffers_vector->x(), 
+			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->z(),
+			in_w
+		);
+	}
+
+	HMM_Quat to_hmm_quat(const Blender::LiveLink::Quat* in_flatbuffers_quat)
+	{
+		assert(in_flatbuffers_quat);
+		return HMM_Q(
+			in_flatbuffers_quat->x(),
+			in_flatbuffers_quat->y(),
+			in_flatbuffers_quat->z(),
+			in_flatbuffers_quat->w()
+		);
+	}
+}
+
 static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_t g, uint8_t b)
 {
     sdtx_font(font_index);
@@ -104,15 +151,49 @@ Mesh make_mesh(
 	};
 }
 
-struct Object {
+enum class LightType : u8
+{
+	Point	= 0,
+	Sun 	= 1,
+	Spot 	= 2,
+	Area	= 3,
+};
+
+// Make sure this stays in sync with value in cube-sapp.glsl
+#define MAX_POINT_LIGHTS 100
+
+struct PointLight {
+	float energy;
+};
+
+struct Light 
+{
+	LightType type;
+	HMM_Vec3 color;	
+	union
+	{
+		PointLight point;
+	};
+};
+
+struct Object 
+{
 	i32 unique_id;
 	bool visibility;
+
+	// Object's world location
+	HMM_Vec4 location;
 
 	sg_buffer storage_buffer; 
 
 	// Mesh Data, stored inline
 	bool has_mesh;
 	Mesh mesh;
+
+	// Light Data, stored inline
+	bool has_light;
+	Light light;
+	
 };
 
 Object make_object(
@@ -139,10 +220,21 @@ Object make_object(
 	return (Object) {
 		.unique_id = unique_id,
 		.visibility = visibility,
+		.location = location,
 		.storage_buffer = storage_buffer,
 		.has_mesh = false,
 		.mesh = {},
 	};
+}
+
+void cleanup_object(Object& in_object)
+{
+	sg_destroy_buffer(in_object.storage_buffer);
+	if (in_object.has_mesh)
+	{
+		sg_destroy_buffer(in_object.mesh.index_buffer);
+		sg_destroy_buffer(in_object.mesh.vertex_buffer);
+	}
 }
 
 struct Camera {
@@ -155,17 +247,18 @@ struct {
     sg_pipeline pipeline;
 
 	atomic<bool> game_running = true;
+	atomic<bool> blender_data_loaded = false;
 
 	map<i32, Object> objects;
 	atomic<i32> updating_object_uid;
 
+	optional<sg_buffer> lights_buffer;
+	atomic<bool> updating_lights_buffer = false;
+	
 	std::thread live_link_thread;
 
 	int blender_socket;
 	int connection_socket;
-
-	//TODO: Remove
-	atomic<bool> blender_data_loaded = false;
 
 	Camera camera = {
 		.position = HMM_V3(0.0f, -9.0f, 0.0f),
@@ -315,7 +408,6 @@ void live_link_thread_function()
 			// Interpret Flatbuffer data
 			auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data);
 			assert(update);
-
 			if (auto objects = update->objects())
 			{
 				for (i32 idx = 0; idx < objects->size(); ++idx)
@@ -347,10 +439,9 @@ void live_link_thread_function()
 						continue;
 					}
 
-
-					HMM_Vec4 location = HMM_V4(object_location->x(), object_location->y(), object_location->z(), 1);
-					HMM_Vec4 scale = HMM_V4(object_scale->x(), object_scale->y(), object_scale->z(), 0);
-					HMM_Quat rotation = HMM_Q(object_rotation->x(), object_rotation->y(), object_rotation->z(), object_rotation->w());
+					HMM_Vec4 location = flatbuffer_helpers::to_hmm_vec4(object_location, 1.0f);
+					HMM_Vec4 scale = flatbuffer_helpers::to_hmm_vec4(object_scale, 0.0f);
+					HMM_Quat rotation = flatbuffer_helpers::to_hmm_quat(object_rotation);
 
 					// set atomic updating object uid
 					// used to ensure we aren't reading from this object's data on the main thread 
@@ -359,12 +450,7 @@ void live_link_thread_function()
 					if (state.objects.contains(unique_id))
 					{	
 						Object& existing_object = state.objects[unique_id];
-						sg_destroy_buffer(existing_object.storage_buffer);
-						if (existing_object.has_mesh)
-						{
-							sg_destroy_buffer(existing_object.mesh.index_buffer);
-							sg_destroy_buffer(existing_object.mesh.vertex_buffer);
-						}
+						cleanup_object(existing_object);
 					}
 
 					Object game_object = make_object(
@@ -423,6 +509,53 @@ void live_link_thread_function()
 						}
 					}
 
+					if (auto object_light = object->light())
+					{
+						LightType light_type = (LightType) object_light->type();
+
+						game_object.has_light = true;
+						game_object.light = (Light){
+							.type = light_type,
+							.color = flatbuffer_helpers::to_hmm_vec3(object_light->color()),
+						};
+
+						switch (game_object.light.type)
+						{
+							case LightType::Point:
+		 					{
+								auto point_light = object_light->point_light();
+								assert(point_light);
+								game_object.light.point = (PointLight) {
+									.energy = point_light->energy(),
+								};
+		 						break;
+		 					}
+							case LightType::Sun:
+							{
+								//FCS TODO:
+								break;
+							}
+							case LightType::Spot:
+							{
+								//FCS TODO:
+								break;
+							}
+							case LightType::Area:
+							{
+								//FCS TODO:
+								break;
+							}
+							default:
+								printf("Unsupported Light Type\n");
+								exit(0);
+						}
+
+						if (game_object.visibility)
+						{
+							//Add to our buffer that contains all light data that we'll pass to the GPU when rendering meshes
+						}
+					}
+
 					state.objects[unique_id] = game_object;
 					// clear atomic updating object uid
 					state.updating_object_uid = -1;
@@ -435,18 +568,80 @@ void live_link_thread_function()
 			{
 				for (i32 deleted_object_uid : *deleted_object_uids)
 				{
-					printf("Attempting to delete object. UID: %i\n", deleted_object_uid);
 					state.updating_object_uid = deleted_object_uid;
-
-					//FCS TODO: look up to see if object exists in set
 					if (state.objects.contains(deleted_object_uid))
 					{
 						printf("Removing object. UID: %i\n", deleted_object_uid);
+						cleanup_object(state.objects[deleted_object_uid]);
 						state.objects.erase(deleted_object_uid);
 					}
-
 					state.updating_object_uid = -1;
 				}
+			}
+
+			// Update Lights List
+			{
+				//FCS TODO: replace this atomic bool. keep old buffer around until we're done with it
+				state.updating_lights_buffer = true;
+				if (state.lights_buffer)
+				{
+					sg_destroy_buffer(*state.lights_buffer);
+					state.lights_buffer.reset();
+				}
+
+				LightsData_t lights_data = {}; 
+
+				i32 current_point_light_index = 0;
+				// FCS TODO: other light types
+
+				for (auto const& [unique_id, object] : state.objects)
+				{
+					if (object.has_light)
+					{
+						const Light& light = object.light;
+						switch(light.type)
+						{
+							case LightType::Point:
+							{
+								if (current_point_light_index >= MAX_POINT_LIGHTS)
+								{
+									printf("Max Number of Point Lights Added\n");
+									continue;
+								}
+
+								auto& current_point_light = lights_data.point_lights[current_point_light_index];
+								memcpy(current_point_light.location, &object.location, sizeof(float) * 4);
+								memcpy(current_point_light.color, &object.light.color, sizeof(float) * 3);
+								current_point_light.color[3] = 1.0;
+								current_point_light.power = object.light.point.energy;
+
+								printf(
+									"Point Light color: {%f,%f,%f}\n", 
+									current_point_light.color[0],
+									current_point_light.color[1], 
+									current_point_light.color[2]
+								);
+
+								++current_point_light_index;
+								break;
+							}
+							default: break;
+						}
+					}
+				}
+
+				lights_data.num_point_lights = current_point_light_index;
+				printf("Num Point Lights: %i\n", lights_data.num_point_lights);
+	
+				state.lights_buffer = sg_make_buffer((sg_buffer_desc){
+					.type = SG_BUFFERTYPE_STORAGEBUFFER,
+					.data = {
+						.ptr = &lights_data,
+						.size = sizeof(LightsData_t), 
+					},
+					.label = "lights-data"
+				});
+				state.updating_lights_buffer = false;
 			}
 		}
 	}
@@ -579,7 +774,7 @@ void frame(void)
 		}
 		else
 		{
-			/* NOTE: struct vs_params_t has been code-generated by the shader-code-gen */
+			/* NOTE: struct vs_params_t has been generated by the shader-code-gen */
 			vs_params_t vs_params;
 			const float w = sapp_widthf();
 			const float h = sapp_heightf();
@@ -595,28 +790,40 @@ void frame(void)
 			sg_apply_pipeline(state.pipeline);
 			sg_apply_uniforms(0, SG_RANGE(vs_params));
 
-			for (auto const& [unique_id, object] : state.objects)
+			if (!state.updating_lights_buffer && state.lights_buffer)
 			{
-				if (unique_id == state.updating_object_uid)
+				for (auto const& [unique_id, object] : state.objects)
 				{
-					continue;	
-				}
+					if (unique_id == state.updating_object_uid)
+					{
+						continue;	
+					}
 
-				if (!object.has_mesh || !object.visibility)
-				{
-					continue;
-				}
+					if (!object.visibility)
+					{
+						continue;
+					}
 
-				const Mesh& mesh = object.mesh;
-				sg_bindings bindings = {
-					.vertex_buffers[0] = mesh.vertex_buffer,
-					.index_buffer = mesh.index_buffer,
-					.storage_buffers = {
-						[0] = object.storage_buffer,
-					},
-				};
-				sg_apply_bindings(&bindings);
-				sg_draw(0, mesh.idx_count, 1);
+					if (object.has_mesh)
+					{
+						const Mesh& mesh = object.mesh;
+						sg_bindings bindings = {
+							.vertex_buffers[0] = mesh.vertex_buffer,
+							.index_buffer = mesh.index_buffer,
+							.storage_buffers = {
+								[0] = object.storage_buffer,
+								[1] = *state.lights_buffer,
+							},
+						};
+						sg_apply_bindings(&bindings);
+						sg_draw(0, mesh.idx_count, 1);
+					}
+
+					if (object.has_light)
+					{
+						//FCS TODO: Draw Light Icon
+					}
+				}
 			}
 		}
 
@@ -662,7 +869,7 @@ void event(const sapp_event* event)
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
-    return (sapp_desc){
+    return (sapp_desc) {
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,

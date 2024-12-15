@@ -89,8 +89,19 @@ class Object(object):
             return obj
         return None
 
+    # Object
+    def Light(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(18))
+        if o != 0:
+            x = self._tab.Indirect(o + self._tab.Pos)
+            from Blender.LiveLink.Light import Light
+            obj = Light()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
 def ObjectStart(builder):
-    builder.StartObject(7)
+    builder.StartObject(8)
 
 def Start(builder):
     ObjectStart(builder)
@@ -136,6 +147,12 @@ def ObjectAddMesh(builder, mesh):
 
 def AddMesh(builder, mesh):
     ObjectAddMesh(builder, mesh)
+
+def ObjectAddLight(builder, light):
+    builder.PrependUOffsetTRelativeSlot(7, flatbuffers.number_types.UOffsetTFlags.py_type(light), 0)
+
+def AddLight(builder, light):
+    ObjectAddLight(builder, light)
 
 def ObjectEnd(builder):
     return builder.EndObject()

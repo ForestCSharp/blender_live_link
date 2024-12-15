@@ -27,11 +27,52 @@ struct Vertex;
 struct Mesh;
 struct MeshBuilder;
 
+struct PointLight;
+
+struct Light;
+struct LightBuilder;
+
 struct Object;
 struct ObjectBuilder;
 
 struct Update;
 struct UpdateBuilder;
+
+enum LightType : int8_t {
+  LightType_Point = 0,
+  LightType_Sun = 1,
+  LightType_Spot = 2,
+  LightType_Area = 3,
+  LightType_MIN = LightType_Point,
+  LightType_MAX = LightType_Area
+};
+
+inline const LightType (&EnumValuesLightType())[4] {
+  static const LightType values[] = {
+    LightType_Point,
+    LightType_Sun,
+    LightType_Spot,
+    LightType_Area
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesLightType() {
+  static const char * const names[5] = {
+    "Point",
+    "Sun",
+    "Spot",
+    "Area",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameLightType(LightType e) {
+  if (::flatbuffers::IsOutRange(e, LightType_Point, LightType_Area)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesLightType()[index];
+}
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec3 FLATBUFFERS_FINAL_CLASS {
  private:
@@ -155,6 +196,23 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vertex FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Vertex, 32);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) PointLight FLATBUFFERS_FINAL_CLASS {
+ private:
+  float energy_;
+
+ public:
+  PointLight()
+      : energy_(0) {
+  }
+  PointLight(float _energy)
+      : energy_(::flatbuffers::EndianScalar(_energy)) {
+  }
+  float energy() const {
+    return ::flatbuffers::EndianScalar(energy_);
+  }
+};
+FLATBUFFERS_STRUCT_END(PointLight, 4);
+
 struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef MeshBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -220,6 +278,77 @@ inline ::flatbuffers::Offset<Mesh> CreateMeshDirect(
       indices__);
 }
 
+struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef LightBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_TYPE = 4,
+    VT_COLOR = 6,
+    VT_USE_SHADOW = 8,
+    VT_POINT_LIGHT = 10
+  };
+  Blender::LiveLink::LightType type() const {
+    return static_cast<Blender::LiveLink::LightType>(GetField<int8_t>(VT_TYPE, 0));
+  }
+  const Blender::LiveLink::Vec3 *color() const {
+    return GetStruct<const Blender::LiveLink::Vec3 *>(VT_COLOR);
+  }
+  bool use_shadow() const {
+    return GetField<uint8_t>(VT_USE_SHADOW, 0) != 0;
+  }
+  const Blender::LiveLink::PointLight *point_light() const {
+    return GetStruct<const Blender::LiveLink::PointLight *>(VT_POINT_LIGHT);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<int8_t>(verifier, VT_TYPE, 1) &&
+           VerifyField<Blender::LiveLink::Vec3>(verifier, VT_COLOR, 4) &&
+           VerifyField<uint8_t>(verifier, VT_USE_SHADOW, 1) &&
+           VerifyField<Blender::LiveLink::PointLight>(verifier, VT_POINT_LIGHT, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct LightBuilder {
+  typedef Light Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_type(Blender::LiveLink::LightType type) {
+    fbb_.AddElement<int8_t>(Light::VT_TYPE, static_cast<int8_t>(type), 0);
+  }
+  void add_color(const Blender::LiveLink::Vec3 *color) {
+    fbb_.AddStruct(Light::VT_COLOR, color);
+  }
+  void add_use_shadow(bool use_shadow) {
+    fbb_.AddElement<uint8_t>(Light::VT_USE_SHADOW, static_cast<uint8_t>(use_shadow), 0);
+  }
+  void add_point_light(const Blender::LiveLink::PointLight *point_light) {
+    fbb_.AddStruct(Light::VT_POINT_LIGHT, point_light);
+  }
+  explicit LightBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<Light> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<Light>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<Light> CreateLight(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    Blender::LiveLink::LightType type = Blender::LiveLink::LightType_Point,
+    const Blender::LiveLink::Vec3 *color = nullptr,
+    bool use_shadow = false,
+    const Blender::LiveLink::PointLight *point_light = nullptr) {
+  LightBuilder builder_(_fbb);
+  builder_.add_point_light(point_light);
+  builder_.add_color(color);
+  builder_.add_use_shadow(use_shadow);
+  builder_.add_type(type);
+  return builder_.Finish();
+}
+
 struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -229,7 +358,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_LOCATION = 10,
     VT_SCALE = 12,
     VT_ROTATION = 14,
-    VT_MESH = 16
+    VT_MESH = 16,
+    VT_LIGHT = 18
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
@@ -252,6 +382,9 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::Mesh *mesh() const {
     return GetPointer<const Blender::LiveLink::Mesh *>(VT_MESH);
   }
+  const Blender::LiveLink::Light *light() const {
+    return GetPointer<const Blender::LiveLink::Light *>(VT_LIGHT);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_NAME) &&
@@ -263,6 +396,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<Blender::LiveLink::Quat>(verifier, VT_ROTATION, 4) &&
            VerifyOffset(verifier, VT_MESH) &&
            verifier.VerifyTable(mesh()) &&
+           VerifyOffset(verifier, VT_LIGHT) &&
+           verifier.VerifyTable(light()) &&
            verifier.EndTable();
   }
 };
@@ -292,6 +427,9 @@ struct ObjectBuilder {
   void add_mesh(::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh) {
     fbb_.AddOffset(Object::VT_MESH, mesh);
   }
+  void add_light(::flatbuffers::Offset<Blender::LiveLink::Light> light) {
+    fbb_.AddOffset(Object::VT_LIGHT, light);
+  }
   explicit ObjectBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -311,8 +449,10 @@ inline ::flatbuffers::Offset<Object> CreateObject(
     const Blender::LiveLink::Vec3 *location = nullptr,
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
-    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
+    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
+    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
   ObjectBuilder builder_(_fbb);
+  builder_.add_light(light);
   builder_.add_mesh(mesh);
   builder_.add_rotation(rotation);
   builder_.add_scale(scale);
@@ -331,7 +471,8 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     const Blender::LiveLink::Vec3 *location = nullptr,
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
-    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0) {
+    ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
+    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateObject(
       _fbb,
@@ -341,7 +482,8 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
       location,
       scale,
       rotation,
-      mesh);
+      mesh,
+      light);
 }
 
 struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
