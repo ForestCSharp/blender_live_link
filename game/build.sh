@@ -20,7 +20,7 @@ clang -c src/sokol/sokol_single_file.c \
 		-o bin/libsokol.$lib
 
 # Sokol shader compile (Mac)
-./tools/sokol-tools/bin/osx_arm64/sokol-shdc -i data/shaders/cube-sapp.glsl -o bin/shaders/cube-sapp.glsl.h --slang metal_macos
+./tools/sokol-tools/bin/osx_arm64/sokol-shdc -i data/shaders/basic_draw.glsl -o bin/shaders/basic_draw.glsl.h --slang metal_macos
 
 # Main Mac build
 clang src/main.cpp \

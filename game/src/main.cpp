@@ -21,6 +21,7 @@ using ankerl::unordered_dense::map;
 #include "stb/stb_ds.h"
 #define sbuffer(type) type*
 
+// Sokol Headers
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_log.h"
@@ -41,6 +42,23 @@ using ankerl::unordered_dense::map;
 
 // Flatbuffers generated file
 #include "blender_live_link_generated.h"
+
+// Generated Shader File
+#include "basic_draw.glsl.h"
+
+// Thread-Safe Channel
+#include "network/channel.h"
+
+// Primitive Typedefs
+#include <cstdint>
+typedef int64_t 	i64;
+typedef int32_t 	i32;
+typedef int16_t		i16;
+typedef int8_t		i8;
+typedef uint64_t 	u64;
+typedef uint32_t 	u32;
+typedef uint16_t 	u16;
+typedef uint8_t 	u8;
 
 // Flatbuffer helper functions
 namespace flatbuffer_helpers
@@ -97,27 +115,98 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_crlf();
 }
 
-#include "cube-sapp.glsl.h"
+// Helper primarily used to pass
+template<typename T>
+struct GpuBuffer
+{
+public:
+	GpuBuffer() = default;
+	GpuBuffer(T* in_data, u64 in_data_size, sg_buffer_type in_gpu_buffer_type, const char* in_label)
+	: data(in_data)
+	, data_size(in_data_size)
+	, gpu_buffer_type(in_gpu_buffer_type)
+	{
+		set_label(in_label);
+	}
 
-// Primitive Typedefs
-#include <cstdint>
-typedef int32_t 	i32;
-typedef int16_t		i16;
-typedef int8_t		i8;
-typedef uint32_t 	u32;
-typedef uint16_t 	u16;
-typedef uint8_t 	u8;
+	GpuBuffer(T& in_data_ref, sg_buffer_type in_gpu_buffer_type, const char* in_label)
+	{
+		data_size = sizeof(in_data_ref);
+		data = (T*) malloc(data_size);
+		memcpy(data, &in_data_ref, data_size);
+		gpu_buffer_type = in_gpu_buffer_type;
+		set_label(in_label);
+	}
 
-struct Mesh {
-	u32 idx_count;
-	sg_buffer index_buffer; 
-	sg_buffer vertex_buffer; 
+	sg_buffer get_gpu_buffer()
+	{
+		if (!gpu_buffer.has_value())
+		{
+			assert(data != nullptr);
+
+			gpu_buffer = sg_make_buffer((sg_buffer_desc){
+				.type = gpu_buffer_type,
+				.data = {
+					.ptr = data,
+					.size = data_size,
+				},
+				.label = label ? label->c_str() : "",
+			});
+	
+			if (!keep_data)
+			{
+				free(data);	
+			}
+		}
+
+		return *gpu_buffer;
+	}
+
+	void destroy_gpu_buffer()
+	{	
+		if (gpu_buffer.has_value())
+		{
+			sg_destroy_buffer(*gpu_buffer);
+			gpu_buffer.reset();
+		}
+	}
+
+	void set_label(const char* in_label)
+	{
+		label = std::string(in_label);
+	}
+
+protected:
+	// Underlying Buffer Data
+	T* data;
+
+	// Data Size
+	u64 data_size;
+
+	// Gpu Buffer Type
+	sg_buffer_type gpu_buffer_type;
+
+	// Buffer used for gpu operations
+	optional<sg_buffer> gpu_buffer;
+
+	// If true, data is kept alive after initialing gpu_buffer
+	bool keep_data = false;
+
+	// Optional Label
+	optional<std::string> label;
 };
 
 struct Vertex
 {
 	HMM_Vec4 position;
 	HMM_Vec4 normal;
+};
+
+struct Mesh 
+{
+	u32 idx_count;
+	GpuBuffer<u32> index_buffer; 
+	GpuBuffer<Vertex> vertex_buffer; 
 };
 
 Mesh make_mesh(
@@ -127,27 +216,13 @@ Mesh make_mesh(
 	u32 indices_len
 )
 {
-	sg_buffer index_buffer = sg_make_buffer((sg_buffer_desc){
-		.type = SG_BUFFERTYPE_INDEXBUFFER,
-		.data = {
-			.ptr = indices,
-			.size = indices_len * sizeof(u32)
-		},
-		.label = "mesh-indices"
-	});
-
-	sg_buffer vertex_buffer = sg_make_buffer((sg_buffer_desc){
-		.data = {
-			.ptr = vertices,
-			.size = vertices_len * sizeof(Vertex)
-		},
-		.label = "mesh-vertices"
-	});
+	u64 indices_size = sizeof(u32) * indices_len;
+	u64 vertices_size = sizeof(Vertex) * vertices_len;
 
 	return (Mesh) {
 		.idx_count = indices_len,
-		.index_buffer = index_buffer,
-		.vertex_buffer = vertex_buffer,
+		.index_buffer = GpuBuffer<u32>(indices, indices_size, SG_BUFFERTYPE_INDEXBUFFER, "Mesh::index_buffer"),
+		.vertex_buffer = GpuBuffer<Vertex>(vertices, vertices_size, SG_BUFFERTYPE_VERTEXBUFFER, "Mesh::vertex_buffer"),
 	};
 }
 
@@ -184,7 +259,7 @@ struct Object
 	// Object's world location
 	HMM_Vec4 location;
 
-	sg_buffer storage_buffer; 
+	GpuBuffer<ObjectData_t> storage_buffer; 
 
 	// Mesh Data, stored inline
 	bool has_mesh;
@@ -205,23 +280,21 @@ Object make_object(
 )
 {
 	// From shader header
-	ObjectData_t object_data = {};
+	ObjectData_t object_data = {}; 
 	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
 	object_data.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));	
 
-	sg_buffer storage_buffer = sg_make_buffer((sg_buffer_desc){
-		.type = SG_BUFFERTYPE_STORAGEBUFFER,
-		.data = SG_RANGE(object_data),
-		.label = "object-storage-buffer"
-	});
-
 	return (Object) {
 		.unique_id = unique_id,
 		.visibility = visibility,
 		.location = location,
-		.storage_buffer = storage_buffer,
+		.storage_buffer = GpuBuffer<ObjectData_t>(
+			object_data,
+			SG_BUFFERTYPE_STORAGEBUFFER,
+			"Object::storage_buffer"
+		),
 		.has_mesh = false,
 		.mesh = {},
 	};
@@ -229,11 +302,11 @@ Object make_object(
 
 void cleanup_object(Object& in_object)
 {
-	sg_destroy_buffer(in_object.storage_buffer);
+	in_object.storage_buffer.destroy_gpu_buffer();
 	if (in_object.has_mesh)
 	{
-		sg_destroy_buffer(in_object.mesh.index_buffer);
-		sg_destroy_buffer(in_object.mesh.vertex_buffer);
+		in_object.mesh.index_buffer.destroy_gpu_buffer();
+		in_object.mesh.vertex_buffer.destroy_gpu_buffer();
 	}
 }
 
@@ -250,10 +323,15 @@ struct {
 	atomic<bool> blender_data_loaded = false;
 
 	map<i32, Object> objects;
-	atomic<i32> updating_object_uid;
 
-	optional<sg_buffer> lights_buffer;
-	atomic<bool> updating_lights_buffer = false;
+	// These channels are how we pass our data from our live-link thread to the main thread
+	Channel<Object> updated_objects;
+	Channel<i32> deleted_objects;
+
+	// Contains Lights Data packed up for gpu usage
+	GpuBuffer<LightsData_t> lights_buffer;
+	bool needs_light_data_update = true;
+
 	
 	std::thread live_link_thread;
 
@@ -443,16 +521,6 @@ void live_link_thread_function()
 					HMM_Vec4 scale = flatbuffer_helpers::to_hmm_vec4(object_scale, 0.0f);
 					HMM_Quat rotation = flatbuffer_helpers::to_hmm_quat(object_rotation);
 
-					// set atomic updating object uid
-					// used to ensure we aren't reading from this object's data on the main thread 
-					state.updating_object_uid = unique_id;
-
-					if (state.objects.contains(unique_id))
-					{	
-						Object& existing_object = state.objects[unique_id];
-						cleanup_object(existing_object);
-					}
-
 					Object game_object = make_object(
 						unique_id, 
 						visibility, 
@@ -463,16 +531,20 @@ void live_link_thread_function()
 
 					if (auto object_mesh = object->mesh())
 					{
-		 				sbuffer(Vertex) vertices = nullptr;
+						u32 num_vertices = 0;
+		 				Vertex* vertices = nullptr;
 						if (auto flatbuffer_vertices = object_mesh->vertices())
 						{
-							for (i32 vertex_idx = 0; vertex_idx < flatbuffer_vertices->size(); ++vertex_idx)
+							num_vertices = flatbuffer_vertices->size();
+							vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
+
+							for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 							{
 								auto vertex = flatbuffer_vertices->Get(vertex_idx);
 								auto vertex_position = vertex->position();
 								auto vertex_normal = vertex->normal();
 
-								Vertex new_vertex = {
+								vertices[vertex_idx] = {
 									.position = {
 										.X = vertex_position.x(),
 										.Y = vertex_position.y(),
@@ -486,26 +558,28 @@ void live_link_thread_function()
 										.W = vertex_normal.w(),
 									},
 								};
-
-								arrput(vertices, new_vertex);
 							}
 						}
 
-		 				sbuffer(u32) indices = nullptr;
+						u32 num_indices = 0;
+		 				u32* indices = nullptr;
 						if (auto flatbuffer_indices = object_mesh->indices())
 						{
-							for (i32 indices_idx = 0; indices_idx < flatbuffer_indices->size(); ++indices_idx)
+							num_indices = flatbuffer_indices->size();
+							indices = (u32*) malloc(sizeof(u32) * num_indices);
+
+							for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
 							{
-								u32 new_index = flatbuffer_indices->Get(indices_idx);
-								arrput(indices, new_index);
+								indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+								//arrput(indices, new_index);
 							}
 						}
 
 						// Set Mesh Data on Game Object
-						if (arrlen(vertices) > 0 && arrlen(indices) > 0)
+						if (num_vertices > 0 && num_indices > 0)
 						{
 							game_object.has_mesh = true;
-							game_object.mesh = make_mesh(vertices, arrlen(vertices), indices, arrlen(indices));
+							game_object.mesh = make_mesh(vertices, num_vertices, indices, num_indices);
 						}
 					}
 
@@ -556,9 +630,8 @@ void live_link_thread_function()
 						}
 					}
 
-					state.objects[unique_id] = game_object;
-					// clear atomic updating object uid
-					state.updating_object_uid = -1;
+					// Send updated object data to main thread
+					state.updated_objects.send(game_object);
 				}
 
 				state.blender_data_loaded = true;
@@ -568,81 +641,9 @@ void live_link_thread_function()
 			{
 				for (i32 deleted_object_uid : *deleted_object_uids)
 				{
-					state.updating_object_uid = deleted_object_uid;
-					if (state.objects.contains(deleted_object_uid))
-					{
-						printf("Removing object. UID: %i\n", deleted_object_uid);
-						cleanup_object(state.objects[deleted_object_uid]);
-						state.objects.erase(deleted_object_uid);
-					}
-					state.updating_object_uid = -1;
+					state.deleted_objects.send(deleted_object_uid);
 				}
-			}
-
-			// Update Lights List
-			{
-				//FCS TODO: replace this atomic bool. keep old buffer around until we're done with it
-				state.updating_lights_buffer = true;
-				if (state.lights_buffer)
-				{
-					sg_destroy_buffer(*state.lights_buffer);
-					state.lights_buffer.reset();
-				}
-
-				LightsData_t lights_data = {}; 
-
-				i32 current_point_light_index = 0;
-				// FCS TODO: other light types
-
-				for (auto const& [unique_id, object] : state.objects)
-				{
-					if (object.has_light)
-					{
-						const Light& light = object.light;
-						switch(light.type)
-						{
-							case LightType::Point:
-							{
-								if (current_point_light_index >= MAX_POINT_LIGHTS)
-								{
-									printf("Max Number of Point Lights Added\n");
-									continue;
-								}
-
-								auto& current_point_light = lights_data.point_lights[current_point_light_index];
-								memcpy(current_point_light.location, &object.location, sizeof(float) * 4);
-								memcpy(current_point_light.color, &object.light.color, sizeof(float) * 3);
-								current_point_light.color[3] = 1.0;
-								current_point_light.power = object.light.point.energy;
-
-								printf(
-									"Point Light color: {%f,%f,%f}\n", 
-									current_point_light.color[0],
-									current_point_light.color[1], 
-									current_point_light.color[2]
-								);
-
-								++current_point_light_index;
-								break;
-							}
-							default: break;
-						}
-					}
-				}
-
-				lights_data.num_point_lights = current_point_light_index;
-				printf("Num Point Lights: %i\n", lights_data.num_point_lights);
-	
-				state.lights_buffer = sg_make_buffer((sg_buffer_desc){
-					.type = SG_BUFFERTYPE_STORAGEBUFFER,
-					.data = {
-						.ptr = &lights_data,
-						.size = sizeof(LightsData_t), 
-					},
-					.label = "lights-data"
-				});
-				state.updating_lights_buffer = false;
-			}
+			}	
 		}
 	}
 
@@ -764,6 +765,103 @@ void frame(void)
 			.swapchain = sglue_swapchain()
 		});
 
+		// Receive Updated Objects
+		while (optional<Object> received_updated_object = state.updated_objects.receive())
+		{
+			Object& updated_object = *received_updated_object;
+			i32 updated_object_uid = updated_object.unique_id;
+
+			printf("Updating Object. UID: %i\n", updated_object_uid);
+
+			if (state.objects.contains(updated_object_uid))
+			{	
+				Object& existing_object = state.objects[updated_object_uid];
+				cleanup_object(existing_object);
+			}
+
+			if (updated_object.has_light)
+			{
+				state.needs_light_data_update = true;
+			}
+
+			state.objects[updated_object_uid] = updated_object;
+		}
+
+		// Receive Deleted Objects
+		while (optional<i32> received_deleted_object = state.deleted_objects.receive())
+		{
+			i32 deleted_object_uid = *received_deleted_object;
+			if (state.objects.contains(deleted_object_uid))
+			{
+				printf("Removing object. UID: %i\n", deleted_object_uid);
+				Object& object_to_delete = state.objects[deleted_object_uid];
+				
+				if (object_to_delete.has_light)
+				{
+					state.needs_light_data_update = true;
+				}
+
+				cleanup_object(object_to_delete);
+				state.objects.erase(deleted_object_uid);
+			}
+		}
+
+		// Run initially, and then only if our updates encounter a light
+		if (state.needs_light_data_update)
+		{
+			state.needs_light_data_update = false;
+
+			// Clean up old lights data
+			state.lights_buffer.destroy_gpu_buffer();
+
+			LightsData_t lights_data = {}; 
+
+			i32 current_point_light_index = 0;	
+			//i32 current_sun_light_index = 0;
+			//i32 current_spot_light_index = 0;
+			//i32 current_area_light_index = 0;
+			// ^^^ FCS TODO: other light types
+
+			// FCS TODO: Move to main thread
+			for (auto const& [unique_id, object] : state.objects)
+			{
+				if (object.has_light)
+				{
+					const Light& light = object.light;
+					switch(light.type)
+					{
+						case LightType::Point:
+						{
+							if (current_point_light_index >= MAX_POINT_LIGHTS)
+							{
+								printf("Max Number of Point Lights Added\n");
+								continue;
+							}
+
+							auto& current_point_light = lights_data.point_lights[current_point_light_index];
+							memcpy(current_point_light.location, &object.location, sizeof(float) * 4);
+							memcpy(current_point_light.color, &object.light.color, sizeof(float) * 3);
+							current_point_light.color[3] = 1.0;
+							current_point_light.power = object.light.point.energy;
+							++current_point_light_index;
+							break;
+						}
+						default: break;
+					}
+				}
+			}
+
+			lights_data.num_point_lights = current_point_light_index;
+			printf("Num Point Lights: %i\n", lights_data.num_point_lights);
+
+			state.lights_buffer = GpuBuffer<LightsData_t>(
+				lights_data, 
+				SG_BUFFERTYPE_STORAGEBUFFER, 
+				"lights_data"
+			);
+		}
+
+
 		if (!state.blender_data_loaded)
 		{	
 			sdtx_canvas(sapp_width()*0.5f, sapp_height()*0.5f);
@@ -790,39 +888,31 @@ void frame(void)
 			sg_apply_pipeline(state.pipeline);
 			sg_apply_uniforms(0, SG_RANGE(vs_params));
 
-			if (!state.updating_lights_buffer && state.lights_buffer)
+			for (auto& [unique_id, object] : state.objects)
 			{
-				for (auto const& [unique_id, object] : state.objects)
+				if (!object.visibility)
 				{
-					if (unique_id == state.updating_object_uid)
-					{
-						continue;	
-					}
+					continue;
+				}
 
-					if (!object.visibility)
-					{
-						continue;
-					}
+				if (object.has_mesh)
+				{
+					Mesh& mesh = object.mesh;
+					sg_bindings bindings = {
+						.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
+						.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+						.storage_buffers = {
+							[0] = object.storage_buffer.get_gpu_buffer(),
+							[1] = state.lights_buffer.get_gpu_buffer(),
+						},
+					};
+					sg_apply_bindings(&bindings);
+					sg_draw(0, mesh.idx_count, 1);
+				}
 
-					if (object.has_mesh)
-					{
-						const Mesh& mesh = object.mesh;
-						sg_bindings bindings = {
-							.vertex_buffers[0] = mesh.vertex_buffer,
-							.index_buffer = mesh.index_buffer,
-							.storage_buffers = {
-								[0] = object.storage_buffer,
-								[1] = *state.lights_buffer,
-							},
-						};
-						sg_apply_bindings(&bindings);
-						sg_draw(0, mesh.idx_count, 1);
-					}
-
-					if (object.has_light)
-					{
-						//FCS TODO: Draw Light Icon
-					}
+				if (object.has_light)
+				{
+					//FCS TODO: Draw Light Icon
 				}
 			}
 		}
