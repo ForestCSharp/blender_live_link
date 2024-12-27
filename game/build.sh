@@ -10,7 +10,11 @@ rm -rf bin
 mkdir bin
 mkdir bin/shaders
 
-if [[ $OS = Windows ]]; then
+OS_ARG=$1
+
+echo OS in game/build.sh is $OS_ARG
+
+if [[ $OS_ARG = Windows ]]; then
 	# Sokol Windows Build
 	clang -c src/sokol/sokol_single_file.c \
 			-I src/sokol/ \
@@ -34,7 +38,7 @@ if [[ $OS = Windows ]]; then
 	# Run game
 	./bin/game.exe
 
-elif [[ $OS = Mac ]]; then
+elif [[ $OS_ARG = Mac ]]; then
 	# Sokol Mac Build
 	clang -c src/sokol/sokol_single_file.c \
 			-ObjC \
@@ -62,7 +66,7 @@ elif [[ $OS = Mac ]]; then
 
 	# Run game
 	./bin/game
-elif [[ $OS = Linux ]]; then
+elif [[ $OS_ARG = Linux ]]; then
 	echo "Building Game for Linux: [TODO]"
 else
 	echo "Invalid OS Passed to game/build.sh"

@@ -19,7 +19,7 @@ echo OS is ${OS}
 cd $SCRIPT_DIR
 rm -rf compiled_schemas
 mkdir -p compiled_schemas/python
-./flatbuffers/build/build.sh
+./flatbuffers/build.sh $OS
 
 
 if [[ $OS = Windows ]]; then
@@ -55,4 +55,4 @@ fi
 
 # Compile game, passing in OS as first arg
 cd $SCRIPT_DIR/game
-./build.sh
+./build.sh $OS
