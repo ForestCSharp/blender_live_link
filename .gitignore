@@ -1,5 +1,4 @@
 
 /game/bin/*
 /compiled_schemas/*
-/flatbuffers/build/CMakeFiles/*
-/flatbuffers/build/CMakeCache.txt
+/flatbuffers/build/*
