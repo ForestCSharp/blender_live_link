@@ -1,0 +1,416 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{9D223E66-0A88-3327-A513-0423EEF6C6A0}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>flatc</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flatc.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flatc</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flatc.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flatc</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">flatc.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">flatc</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">flatc.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">flatc</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4512;4316;4456</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImportLibrary>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Debug/flatc.lib</ImportLibrary>
+      <ProgramDataBaseFile>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Debug/flatc.pdb</ProgramDataBaseFile>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DisableSpecificWarnings>4512;4316;4456</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImportLibrary>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Release/flatc.lib</ImportLibrary>
+      <ProgramDataBaseFile>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Release/flatc.pdb</ProgramDataBaseFile>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DisableSpecificWarnings>4512;4316;4456</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImportLibrary>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/MinSizeRel/flatc.lib</ImportLibrary>
+      <ProgramDataBaseFile>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/MinSizeRel/flatc.pdb</ProgramDataBaseFile>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4512;4316;4456</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;FLATBUFFERS_LOCALE_INDEPENDENT=1;FLATBUFFERS_TEST_PATH_PREFIX=C:/Users/fores/Desktop/blender_live_link/flatbuffers/;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\fores\Desktop\blender_live_link\flatbuffers\include;C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\samples;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImportLibrary>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/RelWithDebInfo/flatc.lib</ImportLibrary>
+      <ProgramDataBaseFile>C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/RelWithDebInfo/flatc.pdb</ProgramDataBaseFile>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/fores/Desktop/blender_live_link/flatbuffers -BC:/Users/fores/Desktop/blender_live_link/flatbuffers/build --check-stamp-file C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\GNUInstallDirs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\WindowsPaths.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\BuildFlatBuffers.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\Version.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers-config-version.cmake.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers.pc.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeCXXCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeRCCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/fores/Desktop/blender_live_link/flatbuffers -BC:/Users/fores/Desktop/blender_live_link/flatbuffers/build --check-stamp-file C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\GNUInstallDirs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\WindowsPaths.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\BuildFlatBuffers.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\Version.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers-config-version.cmake.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers.pc.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeCXXCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeRCCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/fores/Desktop/blender_live_link/flatbuffers -BC:/Users/fores/Desktop/blender_live_link/flatbuffers/build --check-stamp-file C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\GNUInstallDirs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\WindowsPaths.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\BuildFlatBuffers.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\Version.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers-config-version.cmake.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers.pc.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeCXXCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeRCCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/fores/Desktop/blender_live_link/flatbuffers -BC:/Users/fores/Desktop/blender_live_link/flatbuffers/build --check-stamp-file C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\CheckSymbolExists.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\GNUInstallDirs.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-3.28\Modules\Platform\WindowsPaths.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\BuildFlatBuffers.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\Version.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers-config-version.cmake.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMake\flatbuffers.pc.in;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeCXXCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeRCCompiler.cmake;C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\3.28.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\allocator.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\array.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\base.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\buffer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\buffer_ref.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\default_allocator.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\detached_buffer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\code_generator.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\file_manager.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\flatbuffer_builder.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\flatbuffers.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\flexbuffers.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\flex_flat_util.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\hash.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\idl.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\minireflect.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\reflection.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\reflection_generated.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\registry.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\stl_emulation.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\string.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\struct.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\table.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\util.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\vector.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\vector_downward.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\verifier.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_parser.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_text.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\reflection.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\util.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_binary.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_cpp.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_csharp.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_dart.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_kotlin.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_kotlin_kmp.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_go.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_java.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_ts.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_php.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_python.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_lobster.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_rust.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_fbs.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_grpc.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_json_schema.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_gen_swift.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\file_name_saving_file_manager.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\file_binary_writer.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\file_writer.cpp" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\idl_namer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\namer.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\flatc.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\flatc_main.cpp" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_gen.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_gen_lua.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_gen_nim.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_namer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\codegen\idl_namer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\codegen\namer.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\codegen\python.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\codegen\python.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\include\flatbuffers\code_generators.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\binary_annotator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\binary_annotator.cpp" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\annotated_binary_text_gen.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\annotated_binary_text_gen.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_gen_lua.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\bfbs_gen_nim.cpp" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\src\code_generators.cpp" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\schema_interface.h" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\cpp_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\cpp_generator.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\go_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\go_generator.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\java_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\java_generator.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\python_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\python_generator.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\swift_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\swift_generator.cc" />
+    <ClInclude Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\ts_generator.h" />
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\grpc\src\compiler\ts_generator.cc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\build\ZERO_CHECK.vcxproj">
+      <Project>{4A1D1C9A-D589-3F2E-B2C0-6C36617F5D47}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

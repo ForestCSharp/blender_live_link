@@ -4,313 +4,228 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineSystem.cmake:233 (message)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeDetermineSystem.cmake:233 (message)"
       - "CMakeLists.txt:7 (project)"
     message: |
-      The system is: Darwin - 23.3.0 - arm64
+      The system is: Windows - 10.0.22631 - AMD64
   -
     kind: "message-v1"
     backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
       - "CMakeLists.txt:7 (project)"
     message: |
-      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ 
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler:  
       Build flags: 
       Id flags:  
       
       The output was:
-      1
-      ld: library 'c++' not found
-      clang: error: linker command failed with exit code 1 (use -v to see invocation)
-      
-      
-  -
-    kind: "message-v1"
-    backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
-      - "CMakeLists.txt:7 (project)"
-    message: |
-      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ 
-      Build flags: 
-      Id flags: -c 
-      
-      The output was:
       0
+      MSBuild version 17.12.12+1cce77968 for .NET Framework
+      Build started 12/27/2024 9:51:17 AM.
+      
+      Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\3.28.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" on node 1 (default targets).
+      PrepareForBuild:
+        Creating directory "Debug\\".
+        Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+        Creating directory "Debug\\CompilerIdCXX.tlog\\".
+      InitializeBuildStatus:
+        Creating "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        Touching "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild".
+      ClCompile:
+        C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\CL.exe /c /nologo /W0 /WX- /diagnostics:column /Od /D _MBCS /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\\\" /Fd"Debug\\vc143.pdb" /external:W0 /Gd /TP /FC /errorReport:queue CMakeCXXCompilerId.cpp
+        CMakeCXXCompilerId.cpp
+      Link:
+        C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:".\\CompilerIdCXX.exe" /INCREMENTAL:NO /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /PDB:".\\CompilerIdCXX.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:".\\CompilerIdCXX.lib" /MACHINE:X64 Debug\\CMakeCXXCompilerId.obj
+        CompilerIdCXX.vcxproj -> C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\3.28.3\\CompilerIdCXX\\CompilerIdCXX.exe
+      PostBuildEvent:
+        for %%i in (cl.exe) do @echo CMAKE_CXX_COMPILER=%%~$PATH:i
+        :VCEnd
+        CMAKE_CXX_COMPILER=C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\Hostx64\\x64\\cl.exe
+      FinalizeBuildStatus:
+        Deleting file "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild".
+        Touching "Debug\\CompilerIdCXX.tlog\\CompilerIdCXX.lastbuildstate".
+      Done Building Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\3.28.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (default targets).
+      
+      Build succeeded.
+          0 Warning(s)
+          0 Error(s)
+      
+      Time Elapsed 00:00:01.12
       
       
-      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.o"
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.exe"
       
-      The CXX compiler identification is AppleClang, found in:
-        /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/3.28.3/CompilerIdCXX/CMakeCXXCompilerId.o
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.vcxproj"
+      
+      The CXX compiler identification is MSVC, found in:
+        C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/3.28.3/CompilerIdCXX/CompilerIdCXX.exe
       
   -
     kind: "try_compile-v1"
     backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:7 (project)"
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj"
-      binary: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj"
+      source: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-hfxp8l"
+      binary: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-hfxp8l"
     cmakeVariables:
-      CMAKE_CXX_FLAGS: ""
-      CMAKE_CXX_FLAGS_DEBUG: "-g"
-      CMAKE_EXE_LINKER_FLAGS: ""
-      CMAKE_OSX_ARCHITECTURES: ""
-      CMAKE_OSX_DEPLOYMENT_TARGET: ""
-      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk"
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /EHsc"
+      CMAKE_CXX_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
     buildResult:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: '/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj'
+        Change Dir: 'C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-hfxp8l'
         
-        Run Build Command(s): /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_d62fe/fast
-        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_d62fe.dir/build.make CMakeFiles/cmTC_d62fe.dir/build
-        Building CXX object CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk   -v -Wl,-v -MD -MT CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeCXXCompilerABI.cpp
-        Apple clang version 15.0.0 (clang-1500.1.0.2.5)
-        Target: arm64-apple-darwin23.3.0
-        Thread model: posix
-        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
-        clang: warning: -Wl,-v: 'linker' input unused [-Wunused-command-line-argument]
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx14.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all --mrelax-relocations -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=14.2 -fvisibility-inlines-hidden-static-local-var -target-cpu apple-m1 -target-feature +v8.5a -target-feature +crc -target-feature +lse -target-feature +rdm -target-feature +crypto -target-feature +dotprod -target-feature +fp-armv8 -target-feature +neon -target-feature +fp16fml -target-feature +ras -target-feature +rcpc -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-feature +sm4 -target-feature +sha3 -target-feature +sha2 -target-feature +aes -target-abi darwinpcs -mllvm -treat-scalable-fixed-error-as-warning -debugger-tuning=lldb -target-linker-version 1022.1 -v -fcoverage-compilation-dir=/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0 -dependency-file CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdeprecated-macro -fdebug-compilation-dir=/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -mllvm -disable-aligned-alloc-awareness=1 -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -x c++ /opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeCXXCompilerABI.cpp
-        clang -cc1 version 15.0.0 (clang-1500.1.0.2.5) default target arm64-apple-darwin23.3.0
-        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/local/include"
-        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/Library/Frameworks"
-        #include "..." search starts here:
-        #include <...> search starts here:
-         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1
-         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include
-         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include
-         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include
-         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/System/Library/Frameworks (framework directory)
-        End of search list.
-        Linking CXX executable cmTC_d62fe
-        /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E cmake_link_script CMakeFiles/cmTC_d62fe.dir/link.txt --verbose=1
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names  -v -Wl,-v CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_d62fe 
-        Apple clang version 15.0.0 (clang-1500.1.0.2.5)
-        Target: arm64-apple-darwin23.3.0
-        Thread model: posix
-        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 14.0.0 14.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -o cmTC_d62fe -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/lib/darwin/libclang_rt.osx.a
-        @(#)PROGRAM:ld  PROJECT:dyld-1022.1
-        BUILD 05:27:37 Dec  7 2023
-        configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h
-        will use ld-classic for: armv6 armv7 armv7s arm64_32 i386 armv6m armv7k armv7m armv7em
-        LTO support using: LLVM version 15.0.0 (static support for 29, runtime is 29)
-        TAPI support using: Apple TAPI version 15.0.0 (tapi-1500.0.12.8)
-        Library search paths:
-        Framework search paths:
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_4bb0b.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        MSBuild version 17.12.12+1cce77968 for .NET Framework
+        Build started 12/27/2024 9:51:19 AM.
+        
+        Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-hfxp8l\\cmTC_4bb0b.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "cmTC_4bb0b.dir\\Debug\\".
+          Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+          Creating directory "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-hfxp8l\\Debug\\".
+          Creating directory "cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Touching "cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.tlog\\unsuccessfulbuild".
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_4bb0b.dir\\Debug\\\\" /Fd"cmTC_4bb0b.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.28\\Modules\\CMakeCXXCompilerABI.cpp"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.42.34435 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_4bb0b.dir\\Debug\\\\" /Fd"cmTC_4bb0b.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.28\\Modules\\CMakeCXXCompilerABI.cpp"
+          CMakeCXXCompilerABI.cpp
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-hfxp8l\\Debug\\cmTC_4bb0b.exe" /INCREMENTAL /ILK:"cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-hfxp8l/Debug/cmTC_4bb0b.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-hfxp8l/Debug/cmTC_4bb0b.lib" /MACHINE:X64  /machine:x64 cmTC_4bb0b.dir\\Debug\\CMakeCXXCompilerABI.obj
+          cmTC_4bb0b.vcxproj -> C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-hfxp8l\\Debug\\cmTC_4bb0b.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.tlog\\unsuccessfulbuild".
+          Touching "cmTC_4bb0b.dir\\Debug\\cmTC_4bb0b.tlog\\cmTC_4bb0b.lastbuildstate".
+        Done Building Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-hfxp8l\\cmTC_4bb0b.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:01.05
         
       exitCode: 0
   -
-    kind: "message-v1"
-    backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
-      - "CMakeLists.txt:7 (project)"
-    message: |
-      Parsed CXX implicit include dir info: rv=done
-        found start of include info
-        found start of implicit include info
-          add: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1]
-          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include]
-          add: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include]
-          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-        end of search list found
-        collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1]
-        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include]
-        collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include]
-        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-        implicit include dirs: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-      
-      
-  -
-    kind: "message-v1"
-    backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:159 (message)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
-      - "CMakeLists.txt:7 (project)"
-    message: |
-      Parsed CXX implicit link information:
-        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
-        ignore line: [Change Dir: '/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj']
-        ignore line: []
-        ignore line: [Run Build Command(s): /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_d62fe/fast]
-        ignore line: [/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_d62fe.dir/build.make CMakeFiles/cmTC_d62fe.dir/build]
-        ignore line: [Building CXX object CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o]
-        ignore line: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk   -v -Wl -v -MD -MT CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
-        ignore line: [Apple clang version 15.0.0 (clang-1500.1.0.2.5)]
-        ignore line: [Target: arm64-apple-darwin23.3.0]
-        ignore line: [Thread model: posix]
-        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
-        ignore line: [clang: warning: -Wl -v: 'linker' input unused [-Wunused-command-line-argument]]
-        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx14.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all --mrelax-relocations -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=14.2 -fvisibility-inlines-hidden-static-local-var -target-cpu apple-m1 -target-feature +v8.5a -target-feature +crc -target-feature +lse -target-feature +rdm -target-feature +crypto -target-feature +dotprod -target-feature +fp-armv8 -target-feature +neon -target-feature +fp16fml -target-feature +ras -target-feature +rcpc -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-feature +sm4 -target-feature +sha3 -target-feature +sha2 -target-feature +aes -target-abi darwinpcs -mllvm -treat-scalable-fixed-error-as-warning -debugger-tuning=lldb -target-linker-version 1022.1 -v -fcoverage-compilation-dir=/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0 -dependency-file CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdeprecated-macro -fdebug-compilation-dir=/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-2enOgj -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -mllvm -disable-aligned-alloc-awareness=1 -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -x c++ /opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
-        ignore line: [clang -cc1 version 15.0.0 (clang-1500.1.0.2.5) default target arm64-apple-darwin23.3.0]
-        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/local/include"]
-        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/Library/Frameworks"]
-        ignore line: [#include "..." search starts here:]
-        ignore line: [#include <...> search starts here:]
-        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/c++/v1]
-        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include]
-        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include]
-        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/System/Library/Frameworks (framework directory)]
-        ignore line: [End of search list.]
-        ignore line: [Linking CXX executable cmTC_d62fe]
-        ignore line: [/opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E cmake_link_script CMakeFiles/cmTC_d62fe.dir/link.txt --verbose=1]
-        ignore line: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -Wl -search_paths_first -Wl -headerpad_max_install_names  -v -Wl -v CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_d62fe ]
-        ignore line: [Apple clang version 15.0.0 (clang-1500.1.0.2.5)]
-        ignore line: [Target: arm64-apple-darwin23.3.0]
-        ignore line: [Thread model: posix]
-        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
-        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 14.0.0 14.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -o cmTC_d62fe -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/lib/darwin/libclang_rt.osx.a]
-          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld] ==> ignore
-          arg [-demangle] ==> ignore
-          arg [-lto_library] ==> ignore, skip following value
-          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib] ==> skip value of -lto_library
-          arg [-dynamic] ==> ignore
-          arg [-arch] ==> ignore
-          arg [arm64] ==> ignore
-          arg [-platform_version] ==> ignore
-          arg [macos] ==> ignore
-          arg [14.0.0] ==> ignore
-          arg [14.2] ==> ignore
-          arg [-syslibroot] ==> ignore
-          arg [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk] ==> ignore
-          arg [-o] ==> ignore
-          arg [cmTC_d62fe] ==> ignore
-          arg [-search_paths_first] ==> ignore
-          arg [-headerpad_max_install_names] ==> ignore
-          arg [-v] ==> ignore
-          arg [CMakeFiles/cmTC_d62fe.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
-          arg [-lc++] ==> lib [c++]
-          arg [-lSystem] ==> lib [System]
-          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/lib/darwin/libclang_rt.osx.a] ==> lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/lib/darwin/libclang_rt.osx.a]
-        remove lib [System]
-        remove lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/lib/darwin/libclang_rt.osx.a]
-        implicit libs: [c++]
-        implicit objs: []
-        implicit dirs: []
-        implicit fwks: []
-      
-      
-  -
     kind: "try_compile-v1"
     backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckSymbolExists.cmake:140 (try_compile)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckCXXSymbolExists.cmake:72 (__CHECK_SYMBOL_EXISTS_IMPL)"
-      - "CMakeLists.txt:105 (check_cxx_symbol_exists)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CheckSymbolExists.cmake:140 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CheckCXXSymbolExists.cmake:72 (__CHECK_SYMBOL_EXISTS_IMPL)"
+      - "CMakeLists.txt:102 (check_cxx_symbol_exists)"
     checks:
-      - "Looking for strtof_l"
+      - "Looking for _strtof_l"
     directories:
-      source: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-gwuMs2"
-      binary: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-gwuMs2"
+      source: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-l3kjfx"
+      binary: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-l3kjfx"
     cmakeVariables:
-      CMAKE_CXX_FLAGS: ""
-      CMAKE_CXX_FLAGS_DEBUG: "-g"
-      CMAKE_EXE_LINKER_FLAGS: ""
-      CMAKE_OSX_ARCHITECTURES: ""
-      CMAKE_OSX_DEPLOYMENT_TARGET: ""
-      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk"
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /EHsc"
+      CMAKE_CXX_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
     buildResult:
       variable: "FLATBUFFERS_HAS_STRTOF_L"
       cached: true
       stdout: |
-        Change Dir: '/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-gwuMs2'
+        Change Dir: 'C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-l3kjfx'
         
-        Run Build Command(s): /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_3f97e/fast
-        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_3f97e.dir/build.make CMakeFiles/cmTC_3f97e.dir/build
-        Building CXX object CMakeFiles/cmTC_3f97e.dir/CheckSymbolExists.cxx.o
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -MD -MT CMakeFiles/cmTC_3f97e.dir/CheckSymbolExists.cxx.o -MF CMakeFiles/cmTC_3f97e.dir/CheckSymbolExists.cxx.o.d -o CMakeFiles/cmTC_3f97e.dir/CheckSymbolExists.cxx.o -c /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-gwuMs2/CheckSymbolExists.cxx
-        /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-gwuMs2/CheckSymbolExists.cxx:8:19: error: use of undeclared identifier 'strtof_l'
-          return ((int*)(&strtof_l))[argc];
-                          ^
-        1 error generated.
-        make[1]: *** [CMakeFiles/cmTC_3f97e.dir/CheckSymbolExists.cxx.o] Error 1
-        make: *** [cmTC_3f97e/fast] Error 2
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_ee167.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        MSBuild version 17.12.12+1cce77968 for .NET Framework
+        Build started 12/27/2024 9:51:21 AM.
         
-      exitCode: 2
+        Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\cmTC_ee167.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "cmTC_ee167.dir\\Debug\\".
+          Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+          Creating directory "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\Debug\\".
+          Creating directory "cmTC_ee167.dir\\Debug\\cmTC_ee167.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_ee167.dir\\Debug\\cmTC_ee167.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Touching "cmTC_ee167.dir\\Debug\\cmTC_ee167.tlog\\unsuccessfulbuild".
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_ee167.dir\\Debug\\\\" /Fd"cmTC_ee167.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\CheckSymbolExists.cxx"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.42.34435 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_ee167.dir\\Debug\\\\" /Fd"cmTC_ee167.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\CheckSymbolExists.cxx"
+          CheckSymbolExists.cxx
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\Debug\\cmTC_ee167.exe" /INCREMENTAL /ILK:"cmTC_ee167.dir\\Debug\\cmTC_ee167.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-l3kjfx/Debug/cmTC_ee167.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-l3kjfx/Debug/cmTC_ee167.lib" /MACHINE:X64  /machine:x64 cmTC_ee167.dir\\Debug\\CheckSymbolExists.obj
+          cmTC_ee167.vcxproj -> C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\Debug\\cmTC_ee167.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_ee167.dir\\Debug\\cmTC_ee167.tlog\\unsuccessfulbuild".
+          Touching "cmTC_ee167.dir\\Debug\\cmTC_ee167.tlog\\cmTC_ee167.lastbuildstate".
+        Done Building Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-l3kjfx\\cmTC_ee167.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:01.06
+        
+      exitCode: 0
   -
     kind: "try_compile-v1"
     backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckSymbolExists.cmake:140 (try_compile)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckCXXSymbolExists.cmake:72 (__CHECK_SYMBOL_EXISTS_IMPL)"
-      - "CMakeLists.txt:106 (check_cxx_symbol_exists)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CheckSymbolExists.cmake:140 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-3.28/Modules/CheckCXXSymbolExists.cmake:72 (__CHECK_SYMBOL_EXISTS_IMPL)"
+      - "CMakeLists.txt:103 (check_cxx_symbol_exists)"
     checks:
-      - "Looking for strtoull_l"
+      - "Looking for _strtoui64_l"
     directories:
-      source: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-b9SZrs"
-      binary: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-b9SZrs"
+      source: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-371wa3"
+      binary: "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-371wa3"
     cmakeVariables:
-      CMAKE_CXX_FLAGS: ""
-      CMAKE_CXX_FLAGS_DEBUG: "-g"
-      CMAKE_EXE_LINKER_FLAGS: ""
-      CMAKE_OSX_ARCHITECTURES: ""
-      CMAKE_OSX_DEPLOYMENT_TARGET: ""
-      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk"
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /EHsc"
+      CMAKE_CXX_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
     buildResult:
       variable: "FLATBUFFERS_HAS_STRTOULL_L"
       cached: true
       stdout: |
-        Change Dir: '/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-b9SZrs'
+        Change Dir: 'C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-371wa3'
         
-        Run Build Command(s): /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_37574/fast
-        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_37574.dir/build.make CMakeFiles/cmTC_37574.dir/build
-        Building CXX object CMakeFiles/cmTC_37574.dir/CheckSymbolExists.cxx.o
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -MD -MT CMakeFiles/cmTC_37574.dir/CheckSymbolExists.cxx.o -MF CMakeFiles/cmTC_37574.dir/CheckSymbolExists.cxx.o.d -o CMakeFiles/cmTC_37574.dir/CheckSymbolExists.cxx.o -c /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-b9SZrs/CheckSymbolExists.cxx
-        /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-b9SZrs/CheckSymbolExists.cxx:8:19: error: use of undeclared identifier 'strtoull_l'; did you mean 'strtoull'?
-          return ((int*)(&strtoull_l))[argc];
-                          ^~~~~~~~~~
-                          strtoull
-        /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk/usr/include/stdlib.h:178:3: note: 'strtoull' declared here
-                 strtoull(const char *__str, char **__endptr, int __base);
-                 ^
-        1 error generated.
-        make[1]: *** [CMakeFiles/cmTC_37574.dir/CheckSymbolExists.cxx.o] Error 1
-        make: *** [cmTC_37574/fast] Error 2
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_224eb.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        MSBuild version 17.12.12+1cce77968 for .NET Framework
+        Build started 12/27/2024 9:51:22 AM.
         
-      exitCode: 2
-  -
-    kind: "try_compile-v1"
-    backtrace:
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckSymbolExists.cmake:140 (try_compile)"
-      - "/opt/homebrew/Cellar/cmake/3.28.3/share/cmake/Modules/CheckSymbolExists.cmake:70 (__CHECK_SYMBOL_EXISTS_IMPL)"
-      - "CMakeLists.txt:115 (check_symbol_exists)"
-    checks:
-      - "Looking for realpath"
-    directories:
-      source: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-btFC6Z"
-      binary: "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-btFC6Z"
-    cmakeVariables:
-      CMAKE_CXX_FLAGS: ""
-      CMAKE_CXX_FLAGS_DEBUG: "-g"
-      CMAKE_EXE_LINKER_FLAGS: ""
-      CMAKE_OSX_ARCHITECTURES: ""
-      CMAKE_OSX_DEPLOYMENT_TARGET: ""
-      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk"
-    buildResult:
-      variable: "HAVE_REALPATH"
-      cached: true
-      stdout: |
-        Change Dir: '/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-btFC6Z'
+        Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\cmTC_224eb.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "cmTC_224eb.dir\\Debug\\".
+          Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+          Creating directory "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\Debug\\".
+          Creating directory "cmTC_224eb.dir\\Debug\\cmTC_224eb.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_224eb.dir\\Debug\\cmTC_224eb.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Touching "cmTC_224eb.dir\\Debug\\cmTC_224eb.tlog\\unsuccessfulbuild".
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_224eb.dir\\Debug\\\\" /Fd"cmTC_224eb.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\CheckSymbolExists.cxx"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.42.34435 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"cmTC_224eb.dir\\Debug\\\\" /Fd"cmTC_224eb.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\CheckSymbolExists.cxx"
+          CheckSymbolExists.cxx
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.42.34433\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\Debug\\cmTC_224eb.exe" /INCREMENTAL /ILK:"cmTC_224eb.dir\\Debug\\cmTC_224eb.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-371wa3/Debug/cmTC_224eb.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-371wa3/Debug/cmTC_224eb.lib" /MACHINE:X64  /machine:x64 cmTC_224eb.dir\\Debug\\CheckSymbolExists.obj
+          cmTC_224eb.vcxproj -> C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\Debug\\cmTC_224eb.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_224eb.dir\\Debug\\cmTC_224eb.tlog\\unsuccessfulbuild".
+          Touching "cmTC_224eb.dir\\Debug\\cmTC_224eb.tlog\\cmTC_224eb.lastbuildstate".
+        Done Building Project "C:\\Users\\fores\\Desktop\\blender_live_link\\flatbuffers\\build\\CMakeFiles\\CMakeScratch\\TryCompile-371wa3\\cmTC_224eb.vcxproj" (default targets).
         
-        Run Build Command(s): /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_70ce0/fast
-        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_70ce0.dir/build.make CMakeFiles/cmTC_70ce0.dir/build
-        Building CXX object CMakeFiles/cmTC_70ce0.dir/CheckSymbolExists.cxx.o
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -MD -MT CMakeFiles/cmTC_70ce0.dir/CheckSymbolExists.cxx.o -MF CMakeFiles/cmTC_70ce0.dir/CheckSymbolExists.cxx.o.d -o CMakeFiles/cmTC_70ce0.dir/CheckSymbolExists.cxx.o -c /Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/CMakeScratch/TryCompile-btFC6Z/CheckSymbolExists.cxx
-        Linking CXX executable cmTC_70ce0
-        /opt/homebrew/Cellar/cmake/3.28.3/bin/cmake -E cmake_link_script CMakeFiles/cmTC_70ce0.dir/link.txt --verbose=1
-        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.2.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_70ce0.dir/CheckSymbolExists.cxx.o -o cmTC_70ce0 
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:01.06
         
       exitCode: 0
 ...

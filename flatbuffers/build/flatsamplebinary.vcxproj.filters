@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\samples\sample_binary.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\fores\Desktop\blender_live_link\flatbuffers\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{777D6041-E4DA-3E0B-94A7-F12EE673C1DA}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

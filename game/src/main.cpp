@@ -35,16 +35,15 @@ using ankerl::unordered_dense::map;
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
 
-//FCS TODO: Make crossplat
-#include <unistd.h>
-#include <sys/socket.h>
-#include <netdb.h>
 
 // Flatbuffers generated file
 #include "blender_live_link_generated.h"
 
 // Generated Shader File
-#include "basic_draw.glsl.h"
+#include "basic_draw.compiled.h"
+
+// Wrapper for sockets 
+#include "network/socket_wrapper.h"
 
 // Thread-Safe Channel
 #include "network/channel.h"

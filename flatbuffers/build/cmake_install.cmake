@@ -1,8 +1,8 @@
-# Install script for directory: /Users/forest/Desktop/blender_live_link/flatbuffers
+# Install script for directory: C:/Users/fores/Desktop/blender_live_link/flatbuffers
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "/usr/local")
+  set(CMAKE_INSTALL_PREFIX "C:/Program Files (x86)/FlatBuffers")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -12,7 +12,7 @@ if(NOT DEFINED CMAKE_INSTALL_CONFIG_NAME)
     string(REGEX REPLACE "^[^A-Za-z0-9_]+" ""
            CMAKE_INSTALL_CONFIG_NAME "${BUILD_TYPE}")
   else()
-    set(CMAKE_INSTALL_CONFIG_NAME "")
+    set(CMAKE_INSTALL_CONFIG_NAME "Release")
   endif()
   message(STATUS "Install configuration: \"${CMAKE_INSTALL_CONFIG_NAME}\"")
 endif()
@@ -32,28 +32,27 @@ if(NOT DEFINED CMAKE_CROSSCOMPILING)
   set(CMAKE_CROSSCOMPILING "FALSE")
 endif()
 
-# Set default install directory permissions.
-if(NOT DEFINED CMAKE_OBJDUMP)
-  set(CMAKE_OBJDUMP "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/objdump")
-endif()
-
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/include" TYPE DIRECTORY FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/include/flatbuffers")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/include" TYPE DIRECTORY FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/include/flatbuffers")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES
-    "/Users/forest/Desktop/blender_live_link/flatbuffers/CMake/flatbuffers-config.cmake"
-    "/Users/forest/Desktop/blender_live_link/flatbuffers/CMake/BuildFlatBuffers.cmake"
-    "/Users/forest/Desktop/blender_live_link/flatbuffers/build/flatbuffers-config-version.cmake"
+    "C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMake/flatbuffers-config.cmake"
+    "C:/Users/fores/Desktop/blender_live_link/flatbuffers/CMake/BuildFlatBuffers.cmake"
+    "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/flatbuffers-config-version.cmake"
     )
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/libflatbuffers.a")
-  if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libflatbuffers.a" AND
-     NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libflatbuffers.a")
-    execute_process(COMMAND "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib" "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libflatbuffers.a")
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Debug/flatbuffers.lib")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Release/flatbuffers.lib")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/MinSizeRel/flatbuffers.lib")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/RelWithDebInfo/flatbuffers.lib")
   endif()
 endif()
 
@@ -61,7 +60,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
   if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatBuffersTargets.cmake")
     file(DIFFERENT _cmake_export_file_changed FILES
          "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatBuffersTargets.cmake"
-         "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets.cmake")
+         "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets.cmake")
     if(_cmake_export_file_changed)
       file(GLOB _cmake_old_config_files "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatBuffersTargets-*.cmake")
       if(_cmake_old_config_files)
@@ -74,19 +73,30 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     endif()
     unset(_cmake_export_file_changed)
   endif()
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets.cmake")
-  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^()$")
-    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets-noconfig.cmake")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets.cmake")
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets-debug.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets-minsizerel.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets-relwithdebinfo.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatBuffersTargets-release.cmake")
   endif()
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/flatc")
-  if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/flatc" AND
-     NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/flatc")
-    if(CMAKE_INSTALL_DO_STRIP)
-      execute_process(COMMAND "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/strip" -u -r "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/flatc")
-    endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Debug/flatc.exe")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/Release/flatc.exe")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/MinSizeRel/flatc.exe")
+  elseif(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/RelWithDebInfo/flatc.exe")
   endif()
 endif()
 
@@ -94,7 +104,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
   if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatcTargets.cmake")
     file(DIFFERENT _cmake_export_file_changed FILES
          "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatcTargets.cmake"
-         "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets.cmake")
+         "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets.cmake")
     if(_cmake_export_file_changed)
       file(GLOB _cmake_old_config_files "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers/FlatcTargets-*.cmake")
       if(_cmake_old_config_files)
@@ -107,14 +117,23 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     endif()
     unset(_cmake_export_file_changed)
   endif()
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets.cmake")
-  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^()$")
-    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets-noconfig.cmake")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets.cmake")
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets-debug.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets-minsizerel.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets-relwithdebinfo.cmake")
+  endif()
+  if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/cmake/flatbuffers" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/CMakeFiles/Export/71b83468706c459fb1a02b1113714617/FlatcTargets-release.cmake")
   endif()
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig" TYPE FILE FILES "/Users/forest/Desktop/blender_live_link/flatbuffers/build/flatbuffers.pc")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig" TYPE FILE FILES "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/flatbuffers.pc")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -125,5 +144,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/Users/forest/Desktop/blender_live_link/flatbuffers/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "C:/Users/fores/Desktop/blender_live_link/flatbuffers/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
