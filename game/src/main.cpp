@@ -2,7 +2,6 @@
 #include <atomic>
 using std::atomic;
 
-#include <cerrno>
 #include <cstdio>
 
 #include <optional>
@@ -334,8 +333,8 @@ struct {
 	
 	std::thread live_link_thread;
 
-	int blender_socket;
-	int connection_socket;
+	SOCKET blender_socket;
+	SOCKET connection_socket;
 
 	Camera camera = {
 		.position = HMM_V3(0.0f, -9.0f, 0.0f),
@@ -344,45 +343,11 @@ struct {
 	};
 } state;
 
-#define SOCKET_OP(f) \
-{\
-	int result = (f);\
-	if (result != 0)\
-	{\
-		printf("Line %i error on %s: %i\n", __LINE__, #f, errno);\
-		exit(0);\
-	}\
-}
-
-#if defined(__WIN32__)
-#define PLATFORM_WINDOWS 
-#endif
-
-#if !defined(PLATFORM_WINDOWS)
-#define SOCKET int
-#endif
-
-void socket_set_recv_timeout(SOCKET in_socket, const struct timeval& in_timeval)
-{
-	#if defined(PLATFORM_WINDOWS)
-		DWORD timeout = in_timeval.tv_sec * 1000 + in_timeval.tv_usec / 1000;
-		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof timeout);
-	#else
-		// MAC & LINUX
-		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const void*)&in_timeval, sizeof(in_timeval));
-	#endif
-}
-
-void socket_set_reuse_addr_and_port(SOCKET in_socket, bool in_enable)
-{
-	int optval = in_enable ? 1 : 0;
-	SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)));
-	SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)));
-}
-
 // Live Link Function. Runs on its own thread
 void live_link_thread_function()
 {
+	socket_lib_init();
+
 	// Init socket we'll use to talk to blender
 	struct addrinfo hints, *res;
 	// first, load up address structs with getaddrinfo():
@@ -395,10 +360,9 @@ void live_link_thread_function()
 	const char* HOST = "127.0.0.1";
 	const char* PORT = "65432";
 	getaddrinfo(HOST, PORT, &hints, &res);
-
 	
 	// make a socket
-	state.blender_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	state.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
 
 	// Allow us to reuse address and port
 	socket_set_reuse_addr_and_port(state.blender_socket, true);
@@ -436,19 +400,22 @@ void live_link_thread_function()
 			const size_t buffer_len = 4096; 
 			u8 buffer[buffer_len];
 			const int flags = 0;
-			current_bytes_read = recv(state.connection_socket, buffer, buffer_len, flags);
+			current_bytes_read = socket_recv(state.connection_socket, buffer, buffer_len, flags);
 
 			// Less than zero is an error
 			if (current_bytes_read < 0)
 			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				int last_error = socket_get_last_error();
+				if (	last_error == socket_error_again()
+					|| 	last_error == socket_error_would_block() 
+					|| 	last_error == socket_error_timed_out())
 				{
 					current_bytes_read = 0;
 					continue;
 				}
 				else
 				{
-					printf("recv_error: %s\n", strerror(errno));
+					printf("recv_error: %i\n", last_error);
 					exit(0);
 				}
 			}
@@ -648,11 +615,10 @@ void live_link_thread_function()
 
 	printf("Shutting down sockets\n");
 
-	shutdown(state.connection_socket,2);
-	close(state.connection_socket);
+	socket_close(state.connection_socket);
+	socket_close(state.blender_socket);
 
-	shutdown(state.blender_socket,2);
-	close(state.blender_socket);
+	socket_lib_quit();
 }
 
 void init(void)
@@ -969,5 +935,6 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .window_title = "Blender Game",
         .icon.sokol_default = true,
         .logger.func = slog_func,
+		.win32_console_attach = true,
     };
 }
