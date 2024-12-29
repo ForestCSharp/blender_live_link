@@ -2,3 +2,5 @@
 /game/bin/*
 /compiled_schemas/*
 /flatbuffers/build/*
+
+.DS_Store
