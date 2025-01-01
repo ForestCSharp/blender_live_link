@@ -11,10 +11,10 @@ if [[ $OS_ARG = Windows ]]; then
   cmake --build . --target flatc
 elif [[ $OS_ARG = Mac ]]; then
   cmake .. -G "Unix Makefiles"
-  make -j
+  cmake --build . --target flatc
 elif [[ $OS_ARG = Linux ]]; then
   cmake .. -G "Unix Makefiles"
-  make flatc
+  cmake --build . --target flatc
 else
 	echo "Invalid OS Passed to flatbuffers/build.sh"
 fi

@@ -42,7 +42,6 @@ cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers
 cd $SCRIPT_DIR/..
 rm $SCRIPT_DIR.zip
 
-
 if [[ $OS = Windows ]]; then
 	#TODO: exclude directories
 	7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/.
