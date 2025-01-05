@@ -60,8 +60,19 @@ class Light(object):
             return obj
         return None
 
+    # Light
+    def SpotLight(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.SpotLight import SpotLight
+            obj = SpotLight()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
 def LightStart(builder):
-    builder.StartObject(4)
+    builder.StartObject(5)
 
 def Start(builder):
     LightStart(builder)
@@ -89,6 +100,12 @@ def LightAddPointLight(builder, pointLight):
 
 def AddPointLight(builder, pointLight):
     LightAddPointLight(builder, pointLight)
+
+def LightAddSpotLight(builder, spotLight):
+    builder.PrependStructSlot(4, flatbuffers.number_types.UOffsetTFlags.py_type(spotLight), 0)
+
+def AddSpotLight(builder, spotLight):
+    LightAddSpotLight(builder, spotLight)
 
 def LightEnd(builder):
     return builder.EndObject()

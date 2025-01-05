@@ -18,9 +18,9 @@ class PointLight(object):
         self._tab = flatbuffers.table.Table(buf, pos)
 
     # PointLight
-    def Energy(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(0))
+    def Power(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(0))
 
-def CreatePointLight(builder, energy):
+def CreatePointLight(builder, power):
     builder.Prep(4, 4)
-    builder.PrependFloat32(energy)
+    builder.PrependFloat32(power)
     return builder.Offset()

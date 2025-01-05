@@ -4,6 +4,6 @@
 
 class LightType(object):
     Point = 0
-    Sun = 1
-    Spot = 2
+    Spot = 1
+    Sun = 2
     Area = 3

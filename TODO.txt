@@ -1,6 +1,12 @@
 
 TODO
 
+Next:
+	- SpotLights:
+		- proper formula for spot lights in GLSL
+
+	- Play/Reset in game: (resets to state loaded from Blender...)
+
 Tasks:
 	- send light data
 		- actually use lights to light scene
@@ -11,5 +17,7 @@ Tasks:
 	- option to enable physics
 
 Bugs:
+	- last 'mesh' object can't be deleted for some reason
+	- delete-all doesn't work either, likely related to above
 	- object deletion or undo/redo sends full update?
 

@@ -26,6 +26,7 @@ from .compiled_schemas.python.Blender.LiveLink import Mesh
 from .compiled_schemas.python.Blender.LiveLink import LightType
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import PointLight
+from .compiled_schemas.python.Blender.LiveLink import SpotLight
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
@@ -160,11 +161,17 @@ class LiveLinkConnection():
                     print("Adding Point Light Data")
                     point_light = PointLight.CreatePointLight(
                         builder, 
-                        energy = light_data.energy
+                        power = light_data.energy
                     )
                     Light.AddPointLight(builder, point_light)
                 case light_type_enum.Spot:
-                    #TODO:
+                    spot_light = SpotLight.CreateSpotLight(
+                        builder,
+                        power = light_data.energy,
+                        beamAngle = light_data.spot_size,
+                        edgeBlend = light_data.spot_blend
+                    )
+                    Light.AddSpotLight(builder, spot_light)
                     pass
                 case light_type_enum.Sun:
                     #TODO:

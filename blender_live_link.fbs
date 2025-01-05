@@ -40,18 +40,30 @@ table Mesh
 
 enum LightType : byte
 { 
-	Point		= 0, 
-	Sun			= 1, 
-	Spot		= 2,
+	Point		= 0,
+	Spot		= 1,
+	Sun			= 2, 
 	Area 		= 3,
 }
 
 struct PointLight
 {
-	energy		: float;
+	// power in watts
+	power		: float;
 }
 
-//TODO: SpotLight
+struct SpotLight
+{
+	// power in watts
+	power		: float;
+
+	// Beam Angle in Radians 
+	beam_angle	: float;
+
+	// Softness of Spotlight Edge (0.0 - 1.0)
+	edge_blend	: float;
+}
+
 //TODO: SunLight
 //TODO: AreaLight
 
@@ -62,6 +74,7 @@ table Light
 	use_shadow 	: bool;
 
 	point_light	: PointLight;
+	spot_light  : SpotLight;
 }
 
 table Object 

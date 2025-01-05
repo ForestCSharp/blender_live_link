@@ -32,23 +32,42 @@ void main() {
 
 @fs fs
 
-#define MAX_POINT_LIGHTS 100
 #define M_PI 3.1415926535897932384626433832795
+
+#define TOKEN_PASTE(x, y) x##y
+#define COMBINE(a,b) TOKEN_PASTE(a,b)
+#define PADDING(count) float COMBINE(padding_line_, __LINE__)[count]
 
 struct PointLight {
 	vec4 location;
 	vec4 color;
 	float power;
-	float padding[3];
+	PADDING(3);
 };
 
-struct LightsData {
-	int num_point_lights;
-	PointLight point_lights[MAX_POINT_LIGHTS];
+struct SpotLight {
+	vec4 location;
+	vec4 color;
+	float power;
+	PADDING(3);
+
+	vec3 direction;
+	float spot_angle_radians;
+	float edge_blend;
+	PADDING(2);
 };
 
-layout(binding=1) readonly buffer LightsDataBuffer {
-	LightsData light_data_array[];
+layout(binding=1) uniform fs_params {
+    int num_point_lights;
+	int num_spot_lights;
+};
+
+layout(binding=1) readonly buffer PointLightsBuffer {
+	PointLight point_lights[];
+};
+
+layout(binding=2) readonly buffer SpotLightsBuffer {
+	SpotLight spot_lights[];
 };
 
 in vec4 world_position;
@@ -56,6 +75,11 @@ in vec4 world_normal;
 in vec4 color;
 
 out vec4 frag_color;
+
+float vec2_length_squared(vec2 v)
+{
+	return dot(v,v);
+}
 
 float dist_squared( vec3 a, vec3 b)
 {
@@ -68,6 +92,11 @@ float cosine_angle(vec3 a, vec3 b)
 	return dot(normalize(a), normalize(b));
 }
 
+float remap(float value, float old_min, float old_max, float new_min, float new_max)
+{
+  return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min);
+}
+
 vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_normal, vec4 in_color)
 {
 	float numerator = in_point_light.power * cosine_angle(in_world_position, in_normal);
@@ -76,14 +105,41 @@ vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 
 	return in_color * in_point_light.color * lighting_factor;
 }
 
-void main() {
-	LightsData lights_data = light_data_array[0];
+vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_normal, vec4 in_color)
+{
+	vec3 spot_light_location = in_spot_light.location.xyz;
+	vec3 light_to_world_pos = normalize(in_world_position - spot_light_location);
 
-	vec4 final_color = vec4(0);
-	for (int i = 0; i < lights_data.num_point_lights; ++i)
+	float surface_cosine_angle = cosine_angle(light_to_world_pos, in_spot_light.direction);
+	float outer_cone_cosine_angle = cos(in_spot_light.spot_angle_radians);
+	if (surface_cosine_angle > outer_cone_cosine_angle)
 	{
-		PointLight point_light = lights_data.point_lights[i];
-		final_color += sample_point_light(point_light, world_position.xyz, world_normal.xyz, color);
+		// Attenuate based on inner and outer cone
+		float inner_cone_cosine_angle = mix(0.0, cos(in_spot_light.spot_angle_radians), 1.0 - in_spot_light.edge_blend);
+		float epsilon = outer_cone_cosine_angle - inner_cone_cosine_angle;
+		float intensity = clamp((surface_cosine_angle - outer_cone_cosine_angle) / epsilon, 0.0, 1.0);
+		
+		// Create a point light based on spot-lights location, color, power and sample that
+		PointLight point_light;
+		point_light.location = in_spot_light.location;
+		point_light.color = in_spot_light.color;
+		point_light.power = in_spot_light.power;
+		return sample_point_light(point_light, in_world_position, in_normal, in_color) * intensity;
+	}
+
+	return vec4(0,0,0,1);
+}
+
+void main() {
+	vec4 final_color = vec4(0);
+	for (int i = 0; i < num_point_lights; ++i)
+	{
+		final_color += sample_point_light(point_lights[i], world_position.xyz, world_normal.xyz, color);
+	}
+
+	for (int i = 0; i < num_spot_lights; ++i)
+	{
+		final_color += sample_spot_light(spot_lights[i], world_position.xyz, world_normal.xyz, color);
 	}
 
 	frag_color = final_color;

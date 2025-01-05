@@ -1,24 +1,56 @@
 
-#include <atomic>
-using std::atomic;
+// Primitive Typedefs
+#include <cstdint>
+typedef int64_t 	i64;
+typedef int32_t 	i32;
+typedef int16_t		i16;
+typedef int8_t		i8;
+typedef uint64_t 	u64;
+typedef uint32_t 	u32;
+typedef uint16_t 	u16;
+typedef uint8_t 	u8;
+// C std lib I/O
 
 #include <cstdio>
 
+// C++ std lib Optional
 #include <optional>
 using std::optional;
 
+// C++ std lib threading
 #include <thread>
+#include <atomic>
+using std::atomic;
 
+// Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
 using ankerl::unordered_dense::map;
 
+// Handmade Math
 #define HANDMADE_MATH_IMPLEMENTATION
-#define HANDMADE_MATH_NO_SSE
+//#define HANDMADE_MATH_NO_SSE
 #include "handmade_math/HandmadeMath.h"
 
+// STB Dynamic Array
 #define STB_DS_IMPLEMENTATION
 #include "stb/stb_ds.h"
-#define sbuffer(type) type*
+
+// Basic Template-wrapper around stb_ds array functionality
+template<typename T>
+struct StretchyBuffer
+{	
+public:
+	StretchyBuffer() { _data = nullptr; }
+	~StretchyBuffer() { reset(); }
+	void add(const T& value) { arrput(_data, value); }
+	void add_unitialized(const size_t num) { arraddn(_data, num); }
+	void reset() { arrfree(_data); _data = nullptr; }
+	size_t length() { return arrlen(_data); }
+	T* data() { return _data; }
+	T& operator[](i32 idx) { return _data[idx]; }
+protected:
+	T* _data = nullptr;
+};
 
 // Sokol Headers
 #include "sokol/sokol_gfx.h"
@@ -26,6 +58,7 @@ using ankerl::unordered_dense::map;
 #include "sokol/sokol_log.h"
 #include "sokol/sokol_glue.h"
 
+// Sokol Debug Text
 #include "sokol/util/sokol_debugtext.h"
 #define FONT_KC853 (0)
 #define FONT_KC854 (1)
@@ -33,7 +66,6 @@ using ankerl::unordered_dense::map;
 #define FONT_CPC   (3)
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
-
 
 // Flatbuffers generated file
 #include "blender_live_link_generated.h"
@@ -46,17 +78,6 @@ using ankerl::unordered_dense::map;
 
 // Thread-Safe Channel
 #include "network/channel.h"
-
-// Primitive Typedefs
-#include <cstdint>
-typedef int64_t 	i64;
-typedef int32_t 	i32;
-typedef int16_t		i16;
-typedef int8_t		i8;
-typedef uint64_t 	u64;
-typedef uint32_t 	u32;
-typedef uint16_t 	u16;
-typedef uint8_t 	u8;
 
 // Flatbuffer helper functions
 namespace flatbuffer_helpers
@@ -113,43 +134,93 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_crlf();
 }
 
-// Helper primarily used to pass
+// Helper primarily used to pass between live link and main threads. 
+// We want to wait until our data is back on the main thread to create GPU resources.
+template<typename T> 
+struct GpuBufferDesc
+{
+	/* Data to initialize the GpuBuffer with */
+	T* data;
+	
+	/* Size of data */
+	u64 data_size;
+
+	/* max size of this buffer. Only meaningful if is_dynamic is true */
+	u64 max_size;
+	
+	/* type of the GpuBuffer */
+	sg_buffer_type type;
+
+	/* can the GpuBuffer be updated after creation? */
+	bool is_dynamic = false;
+
+	/* Debug Label */
+	const char* label;
+};
+
 template<typename T>
 struct GpuBuffer
 {
 public:
 	GpuBuffer() = default;
-	GpuBuffer(T* in_data, u64 in_data_size, sg_buffer_type in_gpu_buffer_type, const char* in_label)
-	: data(in_data)
-	, data_size(in_data_size)
-	, gpu_buffer_type(in_gpu_buffer_type)
+
+	GpuBuffer(GpuBufferDesc<T> in_desc)
+	: data(in_desc.data)
+	, data_size(in_desc.data_size)
+	, max_size(in_desc.max_size)
+	, gpu_buffer_type(in_desc.type)
+	, is_dynamic(in_desc.is_dynamic)
 	{
-		set_label(in_label);
+		//Static Buffers max_size and data_size should be identical
+		if (!is_dynamic && max_size != data_size)
+		{
+			max_size = data_size;
+		}
+
+		set_label(in_desc.label);
 	}
 
-	GpuBuffer(T& in_data_ref, sg_buffer_type in_gpu_buffer_type, const char* in_label)
+	bool is_gpu_buffer_valid()
 	{
-		data_size = sizeof(in_data_ref);
-		data = (T*) malloc(data_size);
-		memcpy(data, &in_data_ref, data_size);
-		gpu_buffer_type = in_gpu_buffer_type;
-		set_label(in_label);
+		return gpu_buffer.has_value();
 	}
 
 	sg_buffer get_gpu_buffer()
 	{
 		if (!gpu_buffer.has_value())
 		{
-			assert(data != nullptr);
+			sg_usage usage = is_dynamic ? SG_USAGE_DYNAMIC : SG_USAGE_IMMUTABLE;
 
-			gpu_buffer = sg_make_buffer((sg_buffer_desc){
+			sg_buffer_desc buffer_desc = {
 				.type = gpu_buffer_type,
-				.data = {
-					.ptr = data,
-					.size = data_size,
+				.usage = usage,
+				.data = {	
+					/* 
+					 * Static Buffers Set up their data in sg_make_buffer
+					 * Dynamic Buffers only need to init to their max size
+					 */
+					.ptr = is_dynamic ? nullptr : data,
+					.size = is_dynamic ? max_size : data_size,
 				},
 				.label = label ? label->c_str() : "",
-			});
+			};
+
+			gpu_buffer = sg_make_buffer(buffer_desc);
+
+			// Dynamic Buffer Update can happen now
+			if (is_dynamic && data != nullptr && data_size > 0)
+			{
+				// If Dynamic Buffer has data, send via sg_update_buffer now
+				const sg_range update_range = {
+					.ptr = data,
+					.size = data_size,
+				};
+
+				sg_update_buffer(
+					*gpu_buffer, 
+					update_range				
+				);
+			}
 	
 			if (!keep_data)
 			{
@@ -158,6 +229,12 @@ public:
 		}
 
 		return *gpu_buffer;
+	}
+
+	void update_gpu_buffer(const sg_range& in_range)
+	{
+		assert(is_dynamic);
+		sg_update_buffer(get_gpu_buffer(), &in_range);
 	}
 
 	void destroy_gpu_buffer()
@@ -174,6 +251,11 @@ public:
 		label = std::string(in_label);
 	}
 
+	void set_keep_data(bool in_keep_data)
+	{
+		keep_data = in_keep_data;
+	}
+
 protected:
 	// Underlying Buffer Data
 	T* data;
@@ -181,8 +263,14 @@ protected:
 	// Data Size
 	u64 data_size;
 
+	// Max Possible Size
+	u64 max_size;
+
 	// Gpu Buffer Type
 	sg_buffer_type gpu_buffer_type;
+
+	// is this Gpu Buffer dynamic
+	bool is_dynamic = false;
 
 	// Buffer used for gpu operations
 	optional<sg_buffer> gpu_buffer;
@@ -219,24 +307,41 @@ Mesh make_mesh(
 
 	return (Mesh) {
 		.idx_count = indices_len,
-		.index_buffer = GpuBuffer<u32>(indices, indices_size, SG_BUFFERTYPE_INDEXBUFFER, "Mesh::index_buffer"),
-		.vertex_buffer = GpuBuffer<Vertex>(vertices, vertices_size, SG_BUFFERTYPE_VERTEXBUFFER, "Mesh::vertex_buffer"),
+		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
+			.data = indices,
+			.data_size = indices_size,
+			.max_size = indices_size,
+			.type = SG_BUFFERTYPE_INDEXBUFFER,
+			.is_dynamic = false,
+			.label = "Mesh::index_buffer",
+		}),
+		.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>){
+			.data = vertices,
+			.data_size = vertices_size,
+			.max_size = vertices_size,
+			.type = SG_BUFFERTYPE_VERTEXBUFFER,
+			.is_dynamic = false,
+			.label = "Mesh::vertex_buffer",
+		}),	
 	};
 }
 
 enum class LightType : u8
 {
 	Point	= 0,
-	Sun 	= 1,
-	Spot 	= 2,
+	Spot 	= 1,
+	Sun 	= 2,
 	Area	= 3,
 };
 
-// Make sure this stays in sync with value in cube-sapp.glsl
-#define MAX_POINT_LIGHTS 100
-
 struct PointLight {
-	float energy;
+	float power;
+};
+
+struct SpotLight {
+	float power;
+	float beam_angle;
+	float edge_blend;
 };
 
 struct Light 
@@ -246,6 +351,7 @@ struct Light
 	union
 	{
 		PointLight point;
+		SpotLight spot;
 	};
 };
 
@@ -256,6 +362,7 @@ struct Object
 
 	// Object's world location
 	HMM_Vec4 location;
+	HMM_Quat rotation;
 
 	GpuBuffer<ObjectData_t> storage_buffer; 
 
@@ -277,22 +384,29 @@ Object make_object(
 	HMM_Quat rotation
 )
 {
-	// From shader header
-	ObjectData_t object_data = {}; 
+	/* 	
+		We allocate here because GpuBuffer will take ownership of this memory and 
+		free it after it creates the actual gpu resource on the main thread 
+	*/
+	ObjectData_t* object_data = (ObjectData_t*) malloc(sizeof(ObjectData_t)); 
 	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
-	object_data.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));	
+	object_data->model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));	
 
 	return (Object) {
 		.unique_id = unique_id,
 		.visibility = visibility,
 		.location = location,
-		.storage_buffer = GpuBuffer<ObjectData_t>(
-			object_data,
-			SG_BUFFERTYPE_STORAGEBUFFER,
-			"Object::storage_buffer"
-		),
+		.rotation = rotation,
+		.storage_buffer = GpuBuffer((GpuBufferDesc<ObjectData_t>){
+			.data = object_data,
+			.data_size = sizeof(*object_data),
+			.max_size = sizeof(*object_data),
+			.type = SG_BUFFERTYPE_STORAGEBUFFER,
+			.is_dynamic = false,
+			.label = "Object::storage_buffer",
+		}),
 		.has_mesh = false,
 		.mesh = {},
 	};
@@ -326,10 +440,17 @@ struct {
 	Channel<Object> updated_objects;
 	Channel<i32> deleted_objects;
 
-	// Contains Lights Data packed up for gpu usage
-	GpuBuffer<LightsData_t> lights_buffer;
-	bool needs_light_data_update = true;
+	// Fragment shader params
+	fs_params_t fs_params;
 
+	// Contains Lights Data packed up for gpu usage
+	bool needs_light_data_update = true;	
+
+	StretchyBuffer<PointLight_t> point_lights;
+	GpuBuffer<PointLight_t> point_lights_buffer;
+
+	StretchyBuffer<SpotLight_t> spot_lights;
+	GpuBuffer<SpotLight_t> spot_lights_buffer;
 	
 	std::thread live_link_thread;
 
@@ -389,7 +510,7 @@ void live_link_thread_function()
 	// infinite recv loop
 	while (state.game_running)
 	{
-		sbuffer(u8) flatbuffer_data = nullptr;
+		StretchyBuffer<u8> flatbuffer_data; 
 
 		int current_bytes_read = 0;
 		int total_bytes_read = 0;
@@ -437,20 +558,21 @@ void live_link_thread_function()
 				}
 
 				total_bytes_read += current_bytes_read;
-				i32 next_idx = arrlen(flatbuffer_data);
-				arraddn(flatbuffer_data, current_bytes_read);
+				i32 next_idx = flatbuffer_data.length(); 
+				//arraddn(flatbuffer_data, current_bytes_read);
+				flatbuffer_data.add_unitialized(current_bytes_read);
 				memcpy(&flatbuffer_data[next_idx], buffer, current_bytes_read);
 				++packets_read;	
 			}
 		}
 		while (state.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
 
-		if (arrlen(flatbuffer_data) > 0)
+		if (flatbuffer_data.length() > 0)
 		{
-			printf("We've got some data! Data Length: %td Packets Read: %i\n", arrlen(flatbuffer_data), packets_read);
+			printf("We've got some data! Data Length: %td Packets Read: %i\n", flatbuffer_data.length(), packets_read);
 
 			// Interpret Flatbuffer data
-			auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data);
+			auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 			assert(update);
 			if (auto objects = update->objects())
 			{
@@ -537,7 +659,6 @@ void live_link_thread_function()
 							for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
 							{
 								indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
-								//arrput(indices, new_index);
 							}
 						}
 
@@ -566,16 +687,22 @@ void live_link_thread_function()
 								auto point_light = object_light->point_light();
 								assert(point_light);
 								game_object.light.point = (PointLight) {
-									.energy = point_light->energy(),
+								.power = point_light->power(),
 								};
 		 						break;
 		 					}
-							case LightType::Sun:
+							case LightType::Spot:
 							{
-								//FCS TODO:
+								auto spot_light = object_light->spot_light();
+								assert(spot_light);
+								game_object.light.spot = (SpotLight) {
+									.power = spot_light->power(),
+									.beam_angle = spot_light->beam_angle(),
+									.edge_blend = spot_light->edge_blend(),
+								};
 								break;
 							}
-							case LightType::Spot:
+							case LightType::Sun:
 							{
 								//FCS TODO:
 								break;
@@ -627,6 +754,13 @@ void init(void)
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
+
+	// Check for Storage Buffer Support
+	if (!sg_query_features().storage_buffer)
+	{
+		printf("Sokol Gfx Error: Storage Buffers are Required\n");
+		exit(0);
+	}
 
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
 	state.live_link_thread = std::thread(live_link_thread_function);
@@ -776,18 +910,43 @@ void frame(void)
 		{
 			state.needs_light_data_update = false;
 
-			// Clean up old lights data
-			state.lights_buffer.destroy_gpu_buffer();
+			const i32 MAX_LIGHTS_PER_TYPE = 1024;
 
-			LightsData_t lights_data = {}; 
+			// Init point_lights_buffer if we haven't already
+			if (!state.point_lights_buffer.is_gpu_buffer_valid())
+			{
+				state.point_lights_buffer = GpuBuffer((GpuBufferDesc<PointLight_t>){
+					.data = nullptr,
+					.data_size = 0,
+					.max_size = sizeof(PointLight_t) * MAX_LIGHTS_PER_TYPE,
+					.type = SG_BUFFERTYPE_STORAGEBUFFER,
+					.is_dynamic = true,
+					.label = "point_lights",
+				});
 
-			i32 current_point_light_index = 0;	
-			//i32 current_sun_light_index = 0;
-			//i32 current_spot_light_index = 0;
-			//i32 current_area_light_index = 0;
-			// ^^^ FCS TODO: other light types
+				//FCS TODO: GpuBuffer shouldn't manage data memory
+				state.point_lights_buffer.set_keep_data(true);
+			}
 
-			// FCS TODO: Move to main thread
+			// Init spot_lights_buffer if we haven't already
+			if (!state.spot_lights_buffer.is_gpu_buffer_valid())
+			{
+				state.spot_lights_buffer = GpuBuffer((GpuBufferDesc<SpotLight_t>){
+					.data = nullptr,
+					.data_size = 0,
+					.max_size = sizeof(SpotLight_t) * MAX_LIGHTS_PER_TYPE,
+					.type = SG_BUFFERTYPE_STORAGEBUFFER,
+					.is_dynamic = true,
+					.label = "spot_lights",
+				});
+
+				//FCS TODO: GpuBuffer shouldn't manage data memory
+				state.spot_lights_buffer.set_keep_data(true);
+			}
+
+			state.point_lights.reset();
+			state.spot_lights.reset();
+
 			for (auto const& [unique_id, object] : state.objects)
 			{
 				if (object.has_light)
@@ -797,18 +956,51 @@ void frame(void)
 					{
 						case LightType::Point:
 						{
-							if (current_point_light_index >= MAX_POINT_LIGHTS)
+							if (state.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
 							{
-								printf("Max Number of Point Lights Added\n");
+								printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
 								continue;
 							}
 
-							auto& current_point_light = lights_data.point_lights[current_point_light_index];
-							memcpy(current_point_light.location, &object.location, sizeof(float) * 4);
-							memcpy(current_point_light.color, &object.light.color, sizeof(float) * 3);
-							current_point_light.color[3] = 1.0;
-							current_point_light.power = object.light.point.energy;
-							++current_point_light_index;
+							PointLight_t new_point_light = {};
+							memcpy(new_point_light.location, &object.location, sizeof(float) * 4);
+							memcpy(new_point_light.color, &object.light.color, sizeof(float) * 3);
+							new_point_light.color[3] = 1.0;
+							new_point_light.power = object.light.point.power;
+							state.point_lights.add(new_point_light);
+							break;
+						}
+						case LightType::Spot:
+						{
+							if (state.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
+							{
+								printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+								continue;
+							}
+
+							SpotLight_t new_spot_light = {};
+							memcpy(new_spot_light.location, &object.location, sizeof(float) * 4);
+							memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
+							new_spot_light.color[3] = 1.0;
+
+							HMM_Vec3 spot_light_dir = HMM_RotateV3Q(HMM_V3(0,0,-1), object.rotation);
+							memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
+
+							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
+							
+							new_spot_light.power = object.light.spot.power;
+							new_spot_light.edge_blend = object.light.spot.edge_blend;
+							state.spot_lights.add(new_spot_light);
+							break;
+						}
+						case LightType::Sun:
+						{
+							//FCS TODO:	
+							break;
+						}
+						case LightType::Area:
+						{
+							//FCS TODO: 
 							break;
 						}
 						default: break;
@@ -816,20 +1008,34 @@ void frame(void)
 				}
 			}
 
-			lights_data.num_point_lights = current_point_light_index;
-			printf("Num Point Lights: %i\n", lights_data.num_point_lights);
+			state.fs_params.num_point_lights = state.point_lights.length();
+			printf("Num Point Lights: %i\n", state.fs_params.num_point_lights);
+			if (state.fs_params.num_point_lights > 0)
+			{
+				state.point_lights_buffer.update_gpu_buffer(
+					(sg_range){
+						.ptr = state.point_lights.data(),
+						.size = sizeof(PointLight_t) * state.fs_params.num_point_lights,
+					}
+				);
+			}
 
-			state.lights_buffer = GpuBuffer<LightsData_t>(
-				lights_data, 
-				SG_BUFFERTYPE_STORAGEBUFFER, 
-				"lights_data"
-			);
+			state.fs_params.num_spot_lights = state.spot_lights.length();	
+			printf("Num Spot Lights: %i\n", state.fs_params.num_spot_lights);
+			if (state.fs_params.num_spot_lights > 0)
+			{
+				state.spot_lights_buffer.update_gpu_buffer(
+					(sg_range){
+						.ptr = state.spot_lights.data(),
+						.size = sizeof(SpotLight_t) * state.fs_params.num_spot_lights,
+					}
+				);
+			}
 		}
-
 
 		if (!state.blender_data_loaded)
 		{	
-			sdtx_canvas(sapp_width()*0.5f, sapp_height()*0.5f);
+			sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
 			sdtx_origin(1.0f, 2.0f);
 			sdtx_home();
 			draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
@@ -851,7 +1057,12 @@ void frame(void)
 			vs_params.vp = view_proj;
 
 			sg_apply_pipeline(state.pipeline);
+
+			// Apply Vertex Uniforms
 			sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+			// Apply Fragment Uniforms
+			sg_apply_uniforms(1, SG_RANGE(state.fs_params));
 
 			for (auto& [unique_id, object] : state.objects)
 			{
@@ -868,7 +1079,8 @@ void frame(void)
 						.index_buffer = mesh.index_buffer.get_gpu_buffer(),
 						.storage_buffers = {
 							[0] = object.storage_buffer.get_gpu_buffer(),
-							[1] = state.lights_buffer.get_gpu_buffer(),
+							[1] = state.point_lights_buffer.get_gpu_buffer(),
+							[2] = state.spot_lights_buffer.get_gpu_buffer(),
 						},
 					};
 					sg_apply_bindings(&bindings);

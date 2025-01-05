@@ -29,6 +29,8 @@ struct MeshBuilder;
 
 struct PointLight;
 
+struct SpotLight;
+
 struct Light;
 struct LightBuilder;
 
@@ -40,8 +42,8 @@ struct UpdateBuilder;
 
 enum LightType : int8_t {
   LightType_Point = 0,
-  LightType_Sun = 1,
-  LightType_Spot = 2,
+  LightType_Spot = 1,
+  LightType_Sun = 2,
   LightType_Area = 3,
   LightType_MIN = LightType_Point,
   LightType_MAX = LightType_Area
@@ -50,8 +52,8 @@ enum LightType : int8_t {
 inline const LightType (&EnumValuesLightType())[4] {
   static const LightType values[] = {
     LightType_Point,
-    LightType_Sun,
     LightType_Spot,
+    LightType_Sun,
     LightType_Area
   };
   return values;
@@ -60,8 +62,8 @@ inline const LightType (&EnumValuesLightType())[4] {
 inline const char * const *EnumNamesLightType() {
   static const char * const names[5] = {
     "Point",
-    "Sun",
     "Spot",
+    "Sun",
     "Area",
     nullptr
   };
@@ -198,20 +200,49 @@ FLATBUFFERS_STRUCT_END(Vertex, 32);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) PointLight FLATBUFFERS_FINAL_CLASS {
  private:
-  float energy_;
+  float power_;
 
  public:
   PointLight()
-      : energy_(0) {
+      : power_(0) {
   }
-  PointLight(float _energy)
-      : energy_(::flatbuffers::EndianScalar(_energy)) {
+  PointLight(float _power)
+      : power_(::flatbuffers::EndianScalar(_power)) {
   }
-  float energy() const {
-    return ::flatbuffers::EndianScalar(energy_);
+  float power() const {
+    return ::flatbuffers::EndianScalar(power_);
   }
 };
 FLATBUFFERS_STRUCT_END(PointLight, 4);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) SpotLight FLATBUFFERS_FINAL_CLASS {
+ private:
+  float power_;
+  float beam_angle_;
+  float edge_blend_;
+
+ public:
+  SpotLight()
+      : power_(0),
+        beam_angle_(0),
+        edge_blend_(0) {
+  }
+  SpotLight(float _power, float _beam_angle, float _edge_blend)
+      : power_(::flatbuffers::EndianScalar(_power)),
+        beam_angle_(::flatbuffers::EndianScalar(_beam_angle)),
+        edge_blend_(::flatbuffers::EndianScalar(_edge_blend)) {
+  }
+  float power() const {
+    return ::flatbuffers::EndianScalar(power_);
+  }
+  float beam_angle() const {
+    return ::flatbuffers::EndianScalar(beam_angle_);
+  }
+  float edge_blend() const {
+    return ::flatbuffers::EndianScalar(edge_blend_);
+  }
+};
+FLATBUFFERS_STRUCT_END(SpotLight, 12);
 
 struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef MeshBuilder Builder;
@@ -284,7 +315,8 @@ struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_TYPE = 4,
     VT_COLOR = 6,
     VT_USE_SHADOW = 8,
-    VT_POINT_LIGHT = 10
+    VT_POINT_LIGHT = 10,
+    VT_SPOT_LIGHT = 12
   };
   Blender::LiveLink::LightType type() const {
     return static_cast<Blender::LiveLink::LightType>(GetField<int8_t>(VT_TYPE, 0));
@@ -298,12 +330,16 @@ struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::PointLight *point_light() const {
     return GetStruct<const Blender::LiveLink::PointLight *>(VT_POINT_LIGHT);
   }
+  const Blender::LiveLink::SpotLight *spot_light() const {
+    return GetStruct<const Blender::LiveLink::SpotLight *>(VT_SPOT_LIGHT);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<int8_t>(verifier, VT_TYPE, 1) &&
            VerifyField<Blender::LiveLink::Vec3>(verifier, VT_COLOR, 4) &&
            VerifyField<uint8_t>(verifier, VT_USE_SHADOW, 1) &&
            VerifyField<Blender::LiveLink::PointLight>(verifier, VT_POINT_LIGHT, 4) &&
+           VerifyField<Blender::LiveLink::SpotLight>(verifier, VT_SPOT_LIGHT, 4) &&
            verifier.EndTable();
   }
 };
@@ -324,6 +360,9 @@ struct LightBuilder {
   void add_point_light(const Blender::LiveLink::PointLight *point_light) {
     fbb_.AddStruct(Light::VT_POINT_LIGHT, point_light);
   }
+  void add_spot_light(const Blender::LiveLink::SpotLight *spot_light) {
+    fbb_.AddStruct(Light::VT_SPOT_LIGHT, spot_light);
+  }
   explicit LightBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -340,8 +379,10 @@ inline ::flatbuffers::Offset<Light> CreateLight(
     Blender::LiveLink::LightType type = Blender::LiveLink::LightType_Point,
     const Blender::LiveLink::Vec3 *color = nullptr,
     bool use_shadow = false,
-    const Blender::LiveLink::PointLight *point_light = nullptr) {
+    const Blender::LiveLink::PointLight *point_light = nullptr,
+    const Blender::LiveLink::SpotLight *spot_light = nullptr) {
   LightBuilder builder_(_fbb);
+  builder_.add_spot_light(spot_light);
   builder_.add_point_light(point_light);
   builder_.add_color(color);
   builder_.add_use_shadow(use_shadow);
