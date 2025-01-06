@@ -79,6 +79,9 @@ protected:
 // Thread-Safe Channel
 #include "network/channel.h"
 
+// Jolt Physics
+#include "Jolt/jolt_singlefile.cpp"
+
 // Flatbuffer helper functions
 namespace flatbuffer_helpers
 {

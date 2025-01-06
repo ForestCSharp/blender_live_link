@@ -117,16 +117,17 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 		// Attenuate based on inner and outer cone
 		float inner_cone_cosine_angle = mix(0.0, cos(in_spot_light.spot_angle_radians), 1.0 - in_spot_light.edge_blend);
 		float epsilon = outer_cone_cosine_angle - inner_cone_cosine_angle;
-		float intensity = clamp((surface_cosine_angle - outer_cone_cosine_angle) / epsilon, 0.0, 1.0);
+		float spot_attenuation = clamp((surface_cosine_angle - outer_cone_cosine_angle) / epsilon, 0.0, 1.0);
 		
 		// Create a point light based on spot-lights location, color, power and sample that
 		PointLight point_light;
 		point_light.location = in_spot_light.location;
 		point_light.color = in_spot_light.color;
 		point_light.power = in_spot_light.power;
-		return sample_point_light(point_light, in_world_position, in_normal, in_color) * intensity;
+		return sample_point_light(point_light, in_world_position, in_normal, in_color) * spot_attenuation;
 	}
 
+	// Outside spotlight cone, return black
 	return vec4(0,0,0,1);
 }
 

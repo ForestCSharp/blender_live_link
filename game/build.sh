@@ -28,6 +28,7 @@ if [[ $OS_ARG = Windows ]]; then
 	clang src/main.cpp \
 		-g -gcodeview -O0 \
 		-o bin/game.exe \
+		-I src \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
@@ -52,6 +53,7 @@ elif [[ $OS_ARG = Mac ]]; then
 	# Main Mac Build
 	clang src/main.cpp \
 		-o bin/game \
+		-I src \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
