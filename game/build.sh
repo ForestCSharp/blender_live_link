@@ -52,6 +52,7 @@ elif [[ $OS_ARG = Mac ]]; then
 
 	# Main Mac Build
 	clang src/main.cpp \
+		-g -O0 \
 		-o bin/game \
 		-I src \
 		-I bin/shaders \

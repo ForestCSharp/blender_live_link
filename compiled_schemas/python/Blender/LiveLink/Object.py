@@ -90,8 +90,19 @@ class Object(object):
         return None
 
     # Object
-    def Light(self):
+    def RigidBody(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(18))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.RigidBody import RigidBody
+            obj = RigidBody()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Object
+    def Light(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(20))
         if o != 0:
             x = self._tab.Indirect(o + self._tab.Pos)
             from Blender.LiveLink.Light import Light
@@ -101,7 +112,7 @@ class Object(object):
         return None
 
 def ObjectStart(builder):
-    builder.StartObject(8)
+    builder.StartObject(9)
 
 def Start(builder):
     ObjectStart(builder)
@@ -148,8 +159,14 @@ def ObjectAddMesh(builder, mesh):
 def AddMesh(builder, mesh):
     ObjectAddMesh(builder, mesh)
 
+def ObjectAddRigidBody(builder, rigidBody):
+    builder.PrependStructSlot(7, flatbuffers.number_types.UOffsetTFlags.py_type(rigidBody), 0)
+
+def AddRigidBody(builder, rigidBody):
+    ObjectAddRigidBody(builder, rigidBody)
+
 def ObjectAddLight(builder, light):
-    builder.PrependUOffsetTRelativeSlot(7, flatbuffers.number_types.UOffsetTFlags.py_type(light), 0)
+    builder.PrependUOffsetTRelativeSlot(8, flatbuffers.number_types.UOffsetTFlags.py_type(light), 0)
 
 def AddLight(builder, light):
     ObjectAddLight(builder, light)

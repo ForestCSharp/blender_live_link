@@ -27,6 +27,8 @@ struct Vertex;
 struct Mesh;
 struct MeshBuilder;
 
+struct RigidBody;
+
 struct PointLight;
 
 struct SpotLight;
@@ -197,6 +199,38 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vertex FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(Vertex, 32);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) RigidBody FLATBUFFERS_FINAL_CLASS {
+ private:
+  uint8_t is_dynamic_;
+  int8_t padding0__;  int16_t padding1__;
+  float mass_;
+
+ public:
+  RigidBody()
+      : is_dynamic_(0),
+        padding0__(0),
+        padding1__(0),
+        mass_(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  RigidBody(bool _is_dynamic, float _mass)
+      : is_dynamic_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_is_dynamic))),
+        padding0__(0),
+        padding1__(0),
+        mass_(::flatbuffers::EndianScalar(_mass)) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  bool is_dynamic() const {
+    return ::flatbuffers::EndianScalar(is_dynamic_) != 0;
+  }
+  float mass() const {
+    return ::flatbuffers::EndianScalar(mass_);
+  }
+};
+FLATBUFFERS_STRUCT_END(RigidBody, 8);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) PointLight FLATBUFFERS_FINAL_CLASS {
  private:
@@ -400,7 +434,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_SCALE = 12,
     VT_ROTATION = 14,
     VT_MESH = 16,
-    VT_LIGHT = 18
+    VT_RIGID_BODY = 18,
+    VT_LIGHT = 20
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
@@ -423,6 +458,9 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::Mesh *mesh() const {
     return GetPointer<const Blender::LiveLink::Mesh *>(VT_MESH);
   }
+  const Blender::LiveLink::RigidBody *rigid_body() const {
+    return GetStruct<const Blender::LiveLink::RigidBody *>(VT_RIGID_BODY);
+  }
   const Blender::LiveLink::Light *light() const {
     return GetPointer<const Blender::LiveLink::Light *>(VT_LIGHT);
   }
@@ -437,6 +475,7 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<Blender::LiveLink::Quat>(verifier, VT_ROTATION, 4) &&
            VerifyOffset(verifier, VT_MESH) &&
            verifier.VerifyTable(mesh()) &&
+           VerifyField<Blender::LiveLink::RigidBody>(verifier, VT_RIGID_BODY, 4) &&
            VerifyOffset(verifier, VT_LIGHT) &&
            verifier.VerifyTable(light()) &&
            verifier.EndTable();
@@ -468,6 +507,9 @@ struct ObjectBuilder {
   void add_mesh(::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh) {
     fbb_.AddOffset(Object::VT_MESH, mesh);
   }
+  void add_rigid_body(const Blender::LiveLink::RigidBody *rigid_body) {
+    fbb_.AddStruct(Object::VT_RIGID_BODY, rigid_body);
+  }
   void add_light(::flatbuffers::Offset<Blender::LiveLink::Light> light) {
     fbb_.AddOffset(Object::VT_LIGHT, light);
   }
@@ -491,9 +533,11 @@ inline ::flatbuffers::Offset<Object> CreateObject(
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
+    const Blender::LiveLink::RigidBody *rigid_body = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
   ObjectBuilder builder_(_fbb);
   builder_.add_light(light);
+  builder_.add_rigid_body(rigid_body);
   builder_.add_mesh(mesh);
   builder_.add_rotation(rotation);
   builder_.add_scale(scale);
@@ -513,6 +557,7 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     const Blender::LiveLink::Vec3 *scale = nullptr,
     const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
+    const Blender::LiveLink::RigidBody *rigid_body = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateObject(
@@ -524,6 +569,7 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
       scale,
       rotation,
       mesh,
+      rigid_body,
       light);
 }
 

@@ -27,6 +27,7 @@ from .compiled_schemas.python.Blender.LiveLink import LightType
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import PointLight
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
+from .compiled_schemas.python.Blender.LiveLink import RigidBody 
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
@@ -57,7 +58,11 @@ class LiveLinkConnection():
     def send(self, data):
         if not self.is_connected():
             self.connect()
-        self.my_socket.send(data)
+
+        try:
+            self.my_socket.send(data)
+        except:
+            print("Error: LiveLinkConnection::send")
 
     def get_mesh(self, obj, dependency_graph):
         # Evaluate Modifiers
@@ -91,7 +96,7 @@ class LiveLinkConnection():
         # Allocate string for object name
         object_name = builder.CreateString(obj.name)
 
-        # If we're a mesh object, setup mesh data 
+        # Mesh Data
         mesh = None
         if obj.type == 'MESH': 
             mesh = self.get_mesh(obj, dependency_graph)
@@ -128,6 +133,7 @@ class LiveLinkConnection():
             Mesh.AddIndices(builder, mesh_indices)
             mesh = Mesh.End(builder)
 
+        # Light Info
         light = None
         if obj.type == 'LIGHT':
             light_data = obj.data
@@ -219,6 +225,14 @@ class LiveLinkConnection():
         # Add Object Light Data if it exists
         if light != None:
             Object.AddLight(builder, light)
+
+        # Add Rigid Body Data if it exists
+        if obj.rigid_body:
+            Object.AddRigidBody(builder, RigidBody.CreateRigidBody(
+                builder, 
+                isDynamic = obj.rigid_body.enabled,
+                mass = obj.rigid_body.mass
+            ))
 
         # End New Object add add to array
         live_link_object = Object.End(builder)

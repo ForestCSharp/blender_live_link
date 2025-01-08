@@ -38,6 +38,17 @@ table Mesh
 	indices		: [uint];
 }
 
+struct RigidBody
+{
+	// Does this rigid body actively participate in the simulation?
+	is_dynamic	: bool;
+
+	// Mass in kg
+	mass		: float;
+
+	//TODO: Shape Enum
+}
+
 enum LightType : byte
 { 
 	Point		= 0,
@@ -89,6 +100,9 @@ table Object
 
 	// optional mesh data
 	mesh		: Mesh;
+
+	// optional rigid body data
+	rigid_body  : RigidBody;
 
 	// optional light data
 	light 		: Light;

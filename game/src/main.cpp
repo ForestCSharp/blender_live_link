@@ -1,16 +1,14 @@
 
-// Primitive Typedefs
-#include <cstdint>
-typedef int64_t 	i64;
-typedef int32_t 	i32;
-typedef int16_t		i16;
-typedef int8_t		i8;
-typedef uint64_t 	u64;
-typedef uint32_t 	u32;
-typedef uint16_t 	u16;
-typedef uint8_t 	u8;
-// C std lib I/O
+// Basic Types
+#include "types.h"
 
+// Game Objects we receive from Blender
+#include "game_object.h"
+
+// Gpu Buffer Wrapper
+#include "gpu_buffer.h"
+
+// C std lib I/O
 #include <cstdio>
 
 // C++ std lib Optional
@@ -19,6 +17,7 @@ using std::optional;
 
 // C++ std lib threading
 #include <thread>
+
 #include <atomic>
 using std::atomic;
 
@@ -80,9 +79,10 @@ protected:
 #include "network/channel.h"
 
 // Jolt Physics
-#include "Jolt/jolt_singlefile.cpp"
+#include "Jolt/jolt_single_file.cpp"
+#include "physics_system.h"
 
-// Flatbuffer helper functions
+// Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
 {
 	HMM_Vec3 to_hmm_vec3(const Blender::LiveLink::Vec3* in_flatbuffers_vector)
@@ -135,294 +135,6 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_color3b(r, g, b);
     sdtx_puts(title);
     sdtx_crlf();
-}
-
-// Helper primarily used to pass between live link and main threads. 
-// We want to wait until our data is back on the main thread to create GPU resources.
-template<typename T> 
-struct GpuBufferDesc
-{
-	/* Data to initialize the GpuBuffer with */
-	T* data;
-	
-	/* Size of data */
-	u64 data_size;
-
-	/* max size of this buffer. Only meaningful if is_dynamic is true */
-	u64 max_size;
-	
-	/* type of the GpuBuffer */
-	sg_buffer_type type;
-
-	/* can the GpuBuffer be updated after creation? */
-	bool is_dynamic = false;
-
-	/* Debug Label */
-	const char* label;
-};
-
-template<typename T>
-struct GpuBuffer
-{
-public:
-	GpuBuffer() = default;
-
-	GpuBuffer(GpuBufferDesc<T> in_desc)
-	: data(in_desc.data)
-	, data_size(in_desc.data_size)
-	, max_size(in_desc.max_size)
-	, gpu_buffer_type(in_desc.type)
-	, is_dynamic(in_desc.is_dynamic)
-	{
-		//Static Buffers max_size and data_size should be identical
-		if (!is_dynamic && max_size != data_size)
-		{
-			max_size = data_size;
-		}
-
-		set_label(in_desc.label);
-	}
-
-	bool is_gpu_buffer_valid()
-	{
-		return gpu_buffer.has_value();
-	}
-
-	sg_buffer get_gpu_buffer()
-	{
-		if (!gpu_buffer.has_value())
-		{
-			sg_usage usage = is_dynamic ? SG_USAGE_DYNAMIC : SG_USAGE_IMMUTABLE;
-
-			sg_buffer_desc buffer_desc = {
-				.type = gpu_buffer_type,
-				.usage = usage,
-				.data = {	
-					/* 
-					 * Static Buffers Set up their data in sg_make_buffer
-					 * Dynamic Buffers only need to init to their max size
-					 */
-					.ptr = is_dynamic ? nullptr : data,
-					.size = is_dynamic ? max_size : data_size,
-				},
-				.label = label ? label->c_str() : "",
-			};
-
-			gpu_buffer = sg_make_buffer(buffer_desc);
-
-			// Dynamic Buffer Update can happen now
-			if (is_dynamic && data != nullptr && data_size > 0)
-			{
-				// If Dynamic Buffer has data, send via sg_update_buffer now
-				const sg_range update_range = {
-					.ptr = data,
-					.size = data_size,
-				};
-
-				sg_update_buffer(
-					*gpu_buffer, 
-					update_range				
-				);
-			}
-	
-			if (!keep_data)
-			{
-				free(data);	
-			}
-		}
-
-		return *gpu_buffer;
-	}
-
-	void update_gpu_buffer(const sg_range& in_range)
-	{
-		assert(is_dynamic);
-		sg_update_buffer(get_gpu_buffer(), &in_range);
-	}
-
-	void destroy_gpu_buffer()
-	{	
-		if (gpu_buffer.has_value())
-		{
-			sg_destroy_buffer(*gpu_buffer);
-			gpu_buffer.reset();
-		}
-	}
-
-	void set_label(const char* in_label)
-	{
-		label = std::string(in_label);
-	}
-
-	void set_keep_data(bool in_keep_data)
-	{
-		keep_data = in_keep_data;
-	}
-
-protected:
-	// Underlying Buffer Data
-	T* data;
-
-	// Data Size
-	u64 data_size;
-
-	// Max Possible Size
-	u64 max_size;
-
-	// Gpu Buffer Type
-	sg_buffer_type gpu_buffer_type;
-
-	// is this Gpu Buffer dynamic
-	bool is_dynamic = false;
-
-	// Buffer used for gpu operations
-	optional<sg_buffer> gpu_buffer;
-
-	// If true, data is kept alive after initialing gpu_buffer
-	bool keep_data = false;
-
-	// Optional Label
-	optional<std::string> label;
-};
-
-struct Vertex
-{
-	HMM_Vec4 position;
-	HMM_Vec4 normal;
-};
-
-struct Mesh 
-{
-	u32 idx_count;
-	GpuBuffer<u32> index_buffer; 
-	GpuBuffer<Vertex> vertex_buffer; 
-};
-
-Mesh make_mesh(
-	Vertex* vertices, 
-	u32 vertices_len, 
-	u32* indices, 
-	u32 indices_len
-)
-{
-	u64 indices_size = sizeof(u32) * indices_len;
-	u64 vertices_size = sizeof(Vertex) * vertices_len;
-
-	return (Mesh) {
-		.idx_count = indices_len,
-		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
-			.data = indices,
-			.data_size = indices_size,
-			.max_size = indices_size,
-			.type = SG_BUFFERTYPE_INDEXBUFFER,
-			.is_dynamic = false,
-			.label = "Mesh::index_buffer",
-		}),
-		.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>){
-			.data = vertices,
-			.data_size = vertices_size,
-			.max_size = vertices_size,
-			.type = SG_BUFFERTYPE_VERTEXBUFFER,
-			.is_dynamic = false,
-			.label = "Mesh::vertex_buffer",
-		}),	
-	};
-}
-
-enum class LightType : u8
-{
-	Point	= 0,
-	Spot 	= 1,
-	Sun 	= 2,
-	Area	= 3,
-};
-
-struct PointLight {
-	float power;
-};
-
-struct SpotLight {
-	float power;
-	float beam_angle;
-	float edge_blend;
-};
-
-struct Light 
-{
-	LightType type;
-	HMM_Vec3 color;	
-	union
-	{
-		PointLight point;
-		SpotLight spot;
-	};
-};
-
-struct Object 
-{
-	i32 unique_id;
-	bool visibility;
-
-	// Object's world location
-	HMM_Vec4 location;
-	HMM_Quat rotation;
-
-	GpuBuffer<ObjectData_t> storage_buffer; 
-
-	// Mesh Data, stored inline
-	bool has_mesh;
-	Mesh mesh;
-
-	// Light Data, stored inline
-	bool has_light;
-	Light light;
-	
-};
-
-Object make_object(
-	i32 unique_id,	
-	bool visibility,
-	HMM_Vec4 location, 
-	HMM_Vec4 scale, 
-	HMM_Quat rotation
-)
-{
-	/* 	
-		We allocate here because GpuBuffer will take ownership of this memory and 
-		free it after it creates the actual gpu resource on the main thread 
-	*/
-	ObjectData_t* object_data = (ObjectData_t*) malloc(sizeof(ObjectData_t)); 
-	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
-	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
-	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
-	object_data->model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));	
-
-	return (Object) {
-		.unique_id = unique_id,
-		.visibility = visibility,
-		.location = location,
-		.rotation = rotation,
-		.storage_buffer = GpuBuffer((GpuBufferDesc<ObjectData_t>){
-			.data = object_data,
-			.data_size = sizeof(*object_data),
-			.max_size = sizeof(*object_data),
-			.type = SG_BUFFERTYPE_STORAGEBUFFER,
-			.is_dynamic = false,
-			.label = "Object::storage_buffer",
-		}),
-		.has_mesh = false,
-		.mesh = {},
-	};
-}
-
-void cleanup_object(Object& in_object)
-{
-	in_object.storage_buffer.destroy_gpu_buffer();
-	if (in_object.has_mesh)
-	{
-		in_object.mesh.index_buffer.destroy_gpu_buffer();
-		in_object.mesh.vertex_buffer.destroy_gpu_buffer();
-	}
 }
 
 struct Camera {
@@ -608,16 +320,16 @@ void live_link_thread_function()
 						continue;
 					}
 
-					HMM_Vec4 location = flatbuffer_helpers::to_hmm_vec4(object_location, 1.0f);
-					HMM_Vec4 scale = flatbuffer_helpers::to_hmm_vec4(object_scale, 0.0f);
-					HMM_Quat rotation = flatbuffer_helpers::to_hmm_quat(object_rotation);
+					HMM_Vec4 location 	= flatbuffer_helpers::to_hmm_vec4(object_location, 1.0f);
+					HMM_Vec3 scale 		= flatbuffer_helpers::to_hmm_vec3(object_scale);
+					HMM_Quat rotation 	= flatbuffer_helpers::to_hmm_quat(object_rotation);
 
-					Object game_object = make_object(
+					Object game_object = object_create(
 						unique_id, 
 						visibility, 
 						location, 
-						scale, 
-						rotation
+						rotation,
+						scale
 					);
 
 					if (auto object_mesh = object->mesh())
@@ -719,11 +431,16 @@ void live_link_thread_function()
 								printf("Unsupported Light Type\n");
 								exit(0);
 						}
+					}
 
-						if (game_object.visibility)
-						{
-							//Add to our buffer that contains all light data that we'll pass to the GPU when rendering meshes
-						}
+					if (auto object_rigid_body = object->rigid_body())
+					{
+						game_object.has_rigid_body = true;
+						game_object.rigid_body = (RigidBody){
+							.is_dynamic = object_rigid_body->is_dynamic(),
+							.mass = object_rigid_body->mass(),
+							.jolt_body = nullptr,
+						};
 					}
 
 					// Send updated object data to main thread
@@ -753,7 +470,9 @@ void live_link_thread_function()
 
 void init(void)
 {
-    sg_setup((sg_desc){
+	jolt_init();
+
+    sg_setup((sg_desc) {
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
@@ -815,6 +534,70 @@ bool is_key_pressed(sapp_keycode keycode)
 void frame(void)
 {
 	double delta_time = sapp_frame_duration();
+
+	// Receive Any Updated Objects
+	while (optional<Object> received_updated_object = state.updated_objects.receive())
+	{
+		Object& updated_object = *received_updated_object;
+		i32 updated_object_uid = updated_object.unique_id;
+
+		printf("Updating Object. UID: %i\n", updated_object_uid);
+
+		if (state.objects.contains(updated_object_uid))
+		{	
+			Object& existing_object = state.objects[updated_object_uid];
+			object_cleanup_gpu_resources(existing_object);
+
+			if (existing_object.has_rigid_body)
+			{
+				object_remove_jolt_body(existing_object);
+			}
+		}
+
+		if (updated_object.has_light)
+		{
+			state.needs_light_data_update = true;
+		}
+
+		if (updated_object.has_rigid_body)
+		{
+			object_add_jolt_body(updated_object);
+		}
+
+		state.objects[updated_object_uid] = updated_object;
+	}
+
+	// Receive Any Deleted Objects
+	while (optional<i32> received_deleted_object = state.deleted_objects.receive())
+	{
+		i32 deleted_object_uid = *received_deleted_object;
+		if (state.objects.contains(deleted_object_uid))
+		{
+			printf("Removing object. UID: %i\n", deleted_object_uid);
+			Object& object_to_delete = state.objects[deleted_object_uid];
+			
+			if (object_to_delete.has_light)
+			{
+				state.needs_light_data_update = true;
+			}
+
+			if (object_to_delete.has_rigid_body)
+			{
+				object_remove_jolt_body(object_to_delete);
+			}
+
+			object_cleanup_gpu_resources(object_to_delete);
+			state.objects.erase(deleted_object_uid);
+		}
+	}
+
+	// Jolt Physics Update
+	if (is_key_pressed(SAPP_KEYCODE_P))
+	{
+		jolt_update(delta_time);
+
+		//FCS TODO: Update Rigid Body Object Positions Before Rendering
+	}
 	
 	// Camera Control
 	{
@@ -866,47 +649,6 @@ void frame(void)
 			},
 			.swapchain = sglue_swapchain()
 		});
-
-		// Receive Updated Objects
-		while (optional<Object> received_updated_object = state.updated_objects.receive())
-		{
-			Object& updated_object = *received_updated_object;
-			i32 updated_object_uid = updated_object.unique_id;
-
-			printf("Updating Object. UID: %i\n", updated_object_uid);
-
-			if (state.objects.contains(updated_object_uid))
-			{	
-				Object& existing_object = state.objects[updated_object_uid];
-				cleanup_object(existing_object);
-			}
-
-			if (updated_object.has_light)
-			{
-				state.needs_light_data_update = true;
-			}
-
-			state.objects[updated_object_uid] = updated_object;
-		}
-
-		// Receive Deleted Objects
-		while (optional<i32> received_deleted_object = state.deleted_objects.receive())
-		{
-			i32 deleted_object_uid = *received_deleted_object;
-			if (state.objects.contains(deleted_object_uid))
-			{
-				printf("Removing object. UID: %i\n", deleted_object_uid);
-				Object& object_to_delete = state.objects[deleted_object_uid];
-				
-				if (object_to_delete.has_light)
-				{
-					state.needs_light_data_update = true;
-				}
-
-				cleanup_object(object_to_delete);
-				state.objects.erase(deleted_object_uid);
-			}
-		}
 
 		// Run initially, and then only if our updates encounter a light
 		if (state.needs_light_data_update)
@@ -1067,11 +809,35 @@ void frame(void)
 			// Apply Fragment Uniforms
 			sg_apply_uniforms(1, SG_RANGE(state.fs_params));
 
+			// Get our jolt body interface
+			BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
 			for (auto& [unique_id, object] : state.objects)
 			{
 				if (!object.visibility)
 				{
 					continue;
+				}
+
+				if (object.has_rigid_body)
+				{
+					if (object.rigid_body.jolt_body)
+					{
+						const BodyID body_id = object.rigid_body.jolt_body->GetID();
+						JPH::RVec3 body_position;
+						JPH::Quat body_rotation;
+						body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+						object.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+						object.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+						object.storage_buffer_needs_update = true;
+					}
+				}
+
+				if (object.storage_buffer_needs_update)
+				{
+					object.storage_buffer_needs_update = false;
+					object_update_storage_buffer(object);
 				}
 
 				if (object.has_mesh)
@@ -1104,6 +870,8 @@ void frame(void)
 
 void cleanup(void)
 {
+	jolt_shutdown();
+
 	// Tell live_link_thread we're done running and wait for it to complete
 	state.game_running = false;
 	state.live_link_thread.join();

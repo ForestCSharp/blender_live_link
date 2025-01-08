@@ -15,6 +15,7 @@ Tasks:
 
 	- send skeletal mesh data (and animations)
 	- option to enable physics
+	- don't build up vertex format until you get to c++, the big vtx/idx loops in python are likely very slow and we should just memcpy those if possible
 
 Bugs:
 	- last 'mesh' object can't be deleted for some reason
