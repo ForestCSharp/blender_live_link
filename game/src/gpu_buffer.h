@@ -93,12 +93,7 @@ public:
 					*gpu_buffer, 
 					update_range				
 				);
-			}
-	
-			if (!keep_data)
-			{
-				free(data);	
-			}
+			}	
 		}
 
 		return *gpu_buffer;
@@ -124,11 +119,6 @@ public:
 		label = std::string(in_label);
 	}
 
-	void set_keep_data(bool in_keep_data)
-	{
-		keep_data = in_keep_data;
-	}
-
 protected:
 	// Underlying Buffer Data
 	T* data;
@@ -147,9 +137,6 @@ protected:
 
 	// Buffer used for gpu operations
 	std::optional<sg_buffer> gpu_buffer;
-
-	// If true, data is kept alive after initialing gpu_buffer
-	bool keep_data = false;
 
 	// Optional Label
 	std::optional<std::string> label;

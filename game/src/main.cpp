@@ -668,9 +668,6 @@ void frame(void)
 					.is_dynamic = true,
 					.label = "point_lights",
 				});
-
-				//FCS TODO: GpuBuffer shouldn't manage data memory
-				state.point_lights_buffer.set_keep_data(true);
 			}
 
 			// Init spot_lights_buffer if we haven't already
@@ -684,9 +681,6 @@ void frame(void)
 					.is_dynamic = true,
 					.label = "spot_lights",
 				});
-
-				//FCS TODO: GpuBuffer shouldn't manage data memory
-				state.spot_lights_buffer.set_keep_data(true);
 			}
 
 			state.point_lights.reset();
@@ -853,7 +847,7 @@ void frame(void)
 						},
 					};
 					sg_apply_bindings(&bindings);
-					sg_draw(0, mesh.idx_count, 1);
+					sg_draw(0, mesh.index_count, 1);
 				}
 
 				if (object.has_light)

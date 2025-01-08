@@ -20,11 +20,16 @@ struct Vertex
 
 struct Mesh 
 {
-	u32 idx_count;
+	u32 index_count;
+	u32* indices;
 	GpuBuffer<u32> index_buffer; 
+
+	u32 vertex_count;
+	Vertex* vertices;
 	GpuBuffer<Vertex> vertex_buffer; 
 };
 
+// Takes ownership of vertices and indices
 Mesh make_mesh(
 	Vertex* vertices, 
 	u32 vertices_len, 
@@ -36,7 +41,8 @@ Mesh make_mesh(
 	u64 vertices_size = sizeof(Vertex) * vertices_len;
 
 	return (Mesh) {
-		.idx_count = indices_len,
+		.index_count = indices_len,
+		.indices = indices,
 		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
 			.data = indices,
 			.data_size = indices_size,
@@ -45,6 +51,8 @@ Mesh make_mesh(
 			.is_dynamic = false,
 			.label = "Mesh::index_buffer",
 		}),
+		.vertex_count = vertices_len,
+		.vertices = vertices,
 		.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>){
 			.data = vertices,
 			.data_size = vertices_size,
@@ -120,16 +128,14 @@ struct Object
 	RigidBody rigid_body;	
 };
 
-//FCS TODO: Setup Object Collision Shape
-//FCS TODO: Setup Object Position
-//FCS TODO: Setup Object Rotation
-
-//FCS TODO: SEtup Object Scale
-// Shapes can be scaled using the ScaledShape class. You can scale a shape like:
-//JPH::Shape::ShapeResult my_scaled_shape = my_non_scaled_shape->ScaleShape(JPH::Vec3(x_scale, y_scale, z_scale));
-
 void object_add_jolt_body(Object& in_object)
 {
+	if (!in_object.has_mesh)
+	{
+		printf("jolt_add_body error: mesh is currently required\n");
+		return;
+	}
+
 	if (!in_object.has_rigid_body)
 	{
 		printf("jolt_add_body error: in_object doesn't have a rigid_body\n");
@@ -146,8 +152,43 @@ void object_add_jolt_body(Object& in_object)
 	// Get our body interface from the physics_system
 	BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-	//FCS TODO: Create Real Shape from mesh data
-	BoxShapeSettings shape_settings(Vec3(10.0f, 10.0f, 10.0f));
+	//FCS TODO: Support various shape types from blender...
+
+	Mesh& mesh = in_object.mesh;	
+
+	Array<Vec3> convex_hull_points;
+	for (i32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+	{
+		Vertex& mesh_vertex = mesh.vertices[vertex_index];
+		HMM_Vec4 position = mesh_vertex.position;
+		convex_hull_points.emplace_back(Vec3(position.X, position.Y, position.Z));
+	}
+
+	// Create the settings object for a convex hull
+    JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
+
+	{
+		// TODO: Will need to force mesh shapes to always be static...
+
+		//VertexList vertices;
+		//for (i32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+		//{
+		//	Vertex& mesh_vertex = mesh.vertices[vertex_index];
+		//	HMM_Vec4 position = mesh_vertex.position;
+		//	vertices.emplace_back(Float3(position.X, position.Y, position.Z));
+		//}
+
+		//IndexedTriangleList triangles;
+		//for (i32 indices_index = 0; indices_index < mesh.index_count; indices_index += 3)
+		//{
+		//	u32 idx_0 = mesh.indices[indices_index + 0];
+		//	u32 idx_1 = mesh.indices[indices_index + 1];
+		//	u32 idx_2 = mesh.indices[indices_index + 2];
+		//	triangles.emplace_back(IndexedTriangle(idx_0, idx_1, idx_2));
+		//}
+
+		//MeshShapeSettings shape_settings(vertices, triangles);
+	}
 
 	// Create the shape
 	ShapeSettings::ShapeResult shape_result = shape_settings.Create();
@@ -166,6 +207,13 @@ void object_add_jolt_body(Object& in_object)
 		in_object.rigid_body.is_dynamic ? EMotionType::Dynamic : EMotionType::Static, 
 		in_object.rigid_body.is_dynamic ? Layers::MOVING : Layers::NON_MOVING
 	);
+
+	// Set Rigid Body Mass 
+	JPH::MassProperties msp;
+	msp.ScaleToMass(in_object.rigid_body.mass); 
+
+	body_creation_settings.mMassPropertiesOverride = msp;
+	body_creation_settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
 
 	// Note that if we run out of bodies this can return nullptr
 	in_object.rigid_body.jolt_body = body_interface.CreateBody(body_creation_settings); 
@@ -246,8 +294,18 @@ Object object_create(
 			.label = "Object::storage_buffer",
 		}),
 		.storage_buffer_needs_update = true,
+
+		// No mesh yet
 		.has_mesh = false,
 		.mesh = {},
+
+		// No light yet
+		.has_light = false,
+		.light = {},
+
+		// No rigid body yet
+		.has_rigid_body = false,
+		.rigid_body = {},
 	};
 
 	return out_object;
@@ -259,7 +317,10 @@ void object_cleanup_gpu_resources(Object& in_object)
 	in_object.storage_buffer.destroy_gpu_buffer();
 	if (in_object.has_mesh)
 	{
+		free(in_object.mesh.indices);
 		in_object.mesh.index_buffer.destroy_gpu_buffer();
+
+		free(in_object.mesh.vertices);
 		in_object.mesh.vertex_buffer.destroy_gpu_buffer();
 	}
 }
