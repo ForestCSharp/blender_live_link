@@ -102,15 +102,20 @@ struct RigidBody
 	JPH::Body* jolt_body = nullptr;
 };
 
+struct Transform
+{
+	HMM_Vec4 location;
+	HMM_Quat rotation;
+	HMM_Vec3 scale;
+};
+
 struct Object 
 {
 	i32 unique_id;
 	bool visibility;
 
-	// Object's world location
-	HMM_Vec4 location;
-	HMM_Quat rotation;
-	HMM_Vec3 scale;
+	Transform initial_transform;
+	Transform current_transform;
 
 	GpuBuffer<ObjectData_t> storage_buffer; 
 	bool storage_buffer_needs_update = false;
@@ -193,11 +198,13 @@ void object_add_jolt_body(Object& in_object)
 	// Create the shape
 	ShapeSettings::ShapeResult shape_result = shape_settings.Create();
 
-	JPH::Vec3 object_scale(in_object.scale.X, in_object.scale.Y, in_object.scale.Z);
+	const Transform& current_transform = in_object.current_transform;
+
+	JPH::Vec3 object_scale(current_transform.scale.X, current_transform.scale.Y, current_transform.scale.Z);
 	ShapeSettings::ShapeResult scaled_shape_result = shape_result.Get()->ScaleShape(object_scale);
 
-	JPH::Vec3 object_location(in_object.location.X, in_object.location.Y, in_object.location.Z);
-	JPH::Quat object_rotation(in_object.rotation.X, in_object.rotation.Y, in_object.rotation.Z, in_object.rotation.W);
+	JPH::Vec3 object_location(current_transform.location.X, current_transform.location.Y, current_transform.location.Z);
+	JPH::Quat object_rotation(current_transform.rotation.X, current_transform.rotation.Y, current_transform.rotation.Z, current_transform.rotation.W);
 
 	// Create the settings for the body itself. Note that here you can also set other properties like the restitution / friction.
 	BodyCreationSettings body_creation_settings(
@@ -246,11 +253,18 @@ void object_remove_jolt_body(Object& in_object)
 	in_object.rigid_body.jolt_body = nullptr;
 }
 
+void object_reset_jolt_body(Object& in_object)
+{
+	object_remove_jolt_body(in_object);
+	object_add_jolt_body(in_object);
+}
+
 void object_update_storage_buffer(Object& in_object)
 {
-	HMM_Vec4 location = in_object.location;
-	HMM_Quat rotation = in_object.rotation;
-	HMM_Vec3 scale = in_object.scale;
+	const Transform& current_transform = in_object.current_transform;
+	HMM_Vec4 location = current_transform.location;
+	HMM_Quat rotation = current_transform.rotation;
+	HMM_Vec3 scale = current_transform.scale;
 
 	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
@@ -277,12 +291,17 @@ Object object_create(
 	HMM_Vec3 scale
 )
 {
-	Object out_object = {
-		.unique_id = unique_id,
-		.visibility = visibility,
+	Transform transform = {
 		.location = location,
 		.rotation = rotation,
 		.scale = scale,
+	};
+
+	Object out_object = {
+		.unique_id = unique_id,
+		.visibility = visibility,
+		.initial_transform = transform,
+		.current_transform = transform,
 
 		// Create our dynamic storage buffer and mark it for update later on the game thread
 		.storage_buffer = GpuBuffer((GpuBufferDesc<ObjectData_t>){

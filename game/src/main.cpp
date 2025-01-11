@@ -591,15 +591,50 @@ void frame(void)
 		}
 	}
 
-	// Jolt Physics Update
-	if (is_key_pressed(SAPP_KEYCODE_P))
+	// Space Bar Starts/Stops simulation 
+	static bool is_simulating = false;
 	{
+		static bool was_space_pressed = false;
+		const bool is_space_pressed = is_key_pressed(SAPP_KEYCODE_SPACE);
+		if (is_space_pressed && !was_space_pressed)
+		{
+			is_simulating = !is_simulating;
+		}
+		was_space_pressed = is_space_pressed;
+	}
+
+	// Reset Objects to default state when we press 'R'
+	{
+		static bool was_reset_pressed = false;
+		const bool is_reset_pressed = is_key_pressed(SAPP_KEYCODE_R);
+		if (is_reset_pressed && !was_reset_pressed)
+		{
+			// Pause Simulation
+			is_simulating = false;
+
+			// Reset object transforms and recreate physics state
+			for (auto& [unique_id, object] : state.objects)
+			{
+				object.current_transform = object.initial_transform;
+
+				if (object.has_rigid_body)
+				{
+					object_reset_jolt_body(object);
+				}
+			}
+		}
+		was_reset_pressed = is_reset_pressed;
+	}
+
+	if (is_simulating)
+	{
+		// Jolt Physics Update
 		jolt_update(delta_time);
 
-		//FCS TODO: Update Rigid Body Object Positions Before Rendering
+		//FCS TODO: Game logic update here
 	}
 	
-	// Camera Control
+	// Debug Camera Control
 	{
 		Camera& camera = state.camera;	
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
@@ -650,7 +685,7 @@ void frame(void)
 			.swapchain = sglue_swapchain()
 		});
 
-		// Run initially, and then only if our updates encounter a light
+		// Run initially, and then only if our updates from blender encounter a light
 		if (state.needs_light_data_update)
 		{
 			state.needs_light_data_update = false;
@@ -702,7 +737,8 @@ void frame(void)
 							}
 
 							PointLight_t new_point_light = {};
-							memcpy(new_point_light.location, &object.location, sizeof(float) * 4);
+							const Transform& transform = object.current_transform;
+							memcpy(new_point_light.location, &transform.location, sizeof(float) * 4);
 							memcpy(new_point_light.color, &object.light.color, sizeof(float) * 3);
 							new_point_light.color[3] = 1.0;
 							new_point_light.power = object.light.point.power;
@@ -718,11 +754,12 @@ void frame(void)
 							}
 
 							SpotLight_t new_spot_light = {};
-							memcpy(new_spot_light.location, &object.location, sizeof(float) * 4);
+							const Transform& transform = object.current_transform;
+							memcpy(new_spot_light.location, &transform.location, sizeof(float) * 4);
 							memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
 							new_spot_light.color[3] = 1.0;
 
-							HMM_Vec3 spot_light_dir = HMM_RotateV3Q(HMM_V3(0,0,-1), object.rotation);
+							HMM_Vec3 spot_light_dir = HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation);
 							memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
 
 							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
@@ -822,8 +859,10 @@ void frame(void)
 						JPH::Quat body_rotation;
 						body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
 
-						object.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-						object.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+						// Update Transform location and rotation and mark storage buffer for update
+						Transform& transform = object.current_transform;
+						transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+						transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
 						object.storage_buffer_needs_update = true;
 					}
 				}
