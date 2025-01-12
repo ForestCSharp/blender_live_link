@@ -272,6 +272,7 @@ void object_update_storage_buffer(Object& in_object)
 
 	ObjectData_t object_data = {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
+		.rotation_matrix = rotation_matrix,
 	};
 
 	in_object.storage_buffer.update_gpu_buffer(

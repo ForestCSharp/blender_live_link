@@ -9,6 +9,7 @@ layout(binding=0) uniform vs_params {
 struct ObjectData
 {
 	mat4 model_matrix;
+	mat4 rotation_matrix;
 };
 
 layout(binding=0) readonly buffer ObjectDataBuffer {
@@ -24,7 +25,7 @@ out vec4 color;
 
 void main() {
 	world_position = object_data_array[0].model_matrix * position;
-	world_normal = object_data_array[0].model_matrix * normal;
+	world_normal = object_data_array[0].rotation_matrix * normal;
     gl_Position = vp * world_position;
     color = vec4(1,1,1,1);
 }
@@ -41,6 +42,7 @@ void main() {
 struct PointLight {
 	vec4 location;
 	vec4 color;
+
 	float power;
 	PADDING(3);
 };
@@ -48,13 +50,14 @@ struct PointLight {
 struct SpotLight {
 	vec4 location;
 	vec4 color;
-	float power;
-	PADDING(3);
 
-	vec3 direction;
+	float power;
 	float spot_angle_radians;
 	float edge_blend;
-	PADDING(2);
+	PADDING(1);
+
+	vec3 direction;
+	PADDING(1);
 };
 
 layout(binding=1) uniform fs_params {
@@ -92,39 +95,62 @@ float cosine_angle(vec3 a, vec3 b)
 	return dot(normalize(a), normalize(b));
 }
 
+float positive_cosine_angle(vec3 a, vec3 b)
+{
+	return max(0.0, cosine_angle(a,b));
+}
+
+float mix_clamped(float a, float b, float alpha)
+{
+	return mix(a, b, clamp(alpha, 0.0, 1.0));
+}
+
 float remap(float value, float old_min, float old_max, float new_min, float new_max)
 {
   return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min);
 }
 
-vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_normal, vec4 in_color)
+float remap_clamped(float value, float old_min, float old_max, float new_min, float new_max)
 {
-	float numerator = in_point_light.power * cosine_angle(in_world_position, in_normal);
-	float denominator = 4 * M_PI * dist_squared(in_point_light.location.xyz, in_world_position);
-	float lighting_factor = numerator / denominator;
+	float clamped_value = clamp(value, old_min, old_max);
+	return remap(clamped_value, old_min, old_max, new_min, new_max);
+}
+
+vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color)
+{
+	vec3 light_location = in_point_light.location.xyz;
+	vec3 world_pos_to_light = normalize(light_location - in_world_position);
+
+	const float surface_angle = positive_cosine_angle(world_pos_to_light, in_world_normal);
+	const float numerator = in_point_light.power * surface_angle;
+	const float denominator = 4 * M_PI * dist_squared(in_point_light.location.xyz, in_world_position);
+	const float lighting_factor = numerator / denominator;
 	return in_color * in_point_light.color * lighting_factor;
 }
 
-vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_normal, vec4 in_color)
+vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color)
 {
 	vec3 spot_light_location = in_spot_light.location.xyz;
 	vec3 light_to_world_pos = normalize(in_world_position - spot_light_location);
 
 	float surface_cosine_angle = cosine_angle(light_to_world_pos, in_spot_light.direction);
 	float outer_cone_cosine_angle = cos(in_spot_light.spot_angle_radians);
+
+	// Check if we're inside spotlight's outer cone
 	if (surface_cosine_angle > outer_cone_cosine_angle)
 	{
-		// Attenuate based on inner and outer cone
-		float inner_cone_cosine_angle = mix(0.0, cos(in_spot_light.spot_angle_radians), 1.0 - in_spot_light.edge_blend);
-		float epsilon = outer_cone_cosine_angle - inner_cone_cosine_angle;
-		float spot_attenuation = clamp((surface_cosine_angle - outer_cone_cosine_angle) / epsilon, 0.0, 1.0);
-		
+		const float outer_cone_angle 	= in_spot_light.spot_angle_radians;
+		const float inner_cone_angle 	= mix_clamped(0.0, outer_cone_angle, 1.0 - in_spot_light.edge_blend);
+		const float spot_attenuation 	= in_spot_light.edge_blend > 0.0 
+										? 1.0 - remap_clamped(acos(surface_cosine_angle), inner_cone_angle, outer_cone_angle, 0.0, 1.0) 
+										: 1.0;
+
 		// Create a point light based on spot-lights location, color, power and sample that
 		PointLight point_light;
 		point_light.location = in_spot_light.location;
 		point_light.color = in_spot_light.color;
 		point_light.power = in_spot_light.power;
-		return sample_point_light(point_light, in_world_position, in_normal, in_color) * spot_attenuation;
+		return sample_point_light(point_light, in_world_position, in_world_normal, in_color) * spot_attenuation;		
 	}
 
 	// Outside spotlight cone, return black

@@ -759,11 +759,10 @@ void frame(void)
 							memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
 							new_spot_light.color[3] = 1.0;
 
-							HMM_Vec3 spot_light_dir = HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation);
+							HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
 							memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
 
-							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
-							
+							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
 							new_spot_light.power = object.light.spot.power;
 							new_spot_light.edge_blend = object.light.spot.edge_blend;
 							state.spot_lights.add(new_spot_light);
