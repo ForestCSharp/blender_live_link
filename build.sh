@@ -44,7 +44,7 @@ rm $SCRIPT_DIR.zip
 
 if [[ $OS = Windows ]]; then
 	#TODO: exclude directories
-	7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/.
+	7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/. 
 else
 	zip -r $SCRIPT_DIR.zip $BASE_DIR \
 		-x "$BASE_DIR/flatbuffers/*" \

@@ -1,4 +1,11 @@
 
+// Flatbuffers generated file
+#include "blender_live_link_generated.h"
+
+// Jolt Physics
+#include "Jolt/jolt_single_file.cpp"
+#include "physics_system.h"
+
 // Basic Types
 #include "types.h"
 
@@ -66,9 +73,6 @@ protected:
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
 
-// Flatbuffers generated file
-#include "blender_live_link_generated.h"
-
 // Generated Shader File
 #include "basic_draw.compiled.h"
 
@@ -77,10 +81,6 @@ protected:
 
 // Thread-Safe Channel
 #include "network/channel.h"
-
-// Jolt Physics
-#include "Jolt/jolt_single_file.cpp"
-#include "physics_system.h"
 
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers

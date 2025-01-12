@@ -1,7 +1,3 @@
-//#if defined(_WIN32)
-//#pragma comment(lib, "advapi32")
-//#endif
-
 #include "RegisterTypes.cpp"
 #include "AABBTree/AABBTreeBuilder.cpp"
 #include "Core/Color.cpp"
