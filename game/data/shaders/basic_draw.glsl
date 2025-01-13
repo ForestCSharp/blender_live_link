@@ -139,7 +139,7 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 	// Check if we're inside spotlight's outer cone
 	if (surface_cosine_angle > outer_cone_cosine_angle)
 	{
-		const float outer_cone_angle 	= in_spot_light.spot_angle_radians;
+		const float outer_cone_angle	= in_spot_light.spot_angle_radians;
 		const float inner_cone_angle 	= mix_clamped(0.0, outer_cone_angle, 1.0 - in_spot_light.edge_blend);
 		const float spot_attenuation 	= in_spot_light.edge_blend > 0.0 
 										? 1.0 - remap_clamped(acos(surface_cosine_angle), inner_cone_angle, outer_cone_angle, 0.0, 1.0) 
