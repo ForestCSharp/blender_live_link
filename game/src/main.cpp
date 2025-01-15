@@ -3,7 +3,7 @@
 #include "blender_live_link_generated.h"
 
 // Jolt Physics
-#include "Jolt/jolt_single_file.cpp"
+//#include "Jolt/jolt_single_file.cpp"
 #include "physics_system.h"
 
 // Basic Types
