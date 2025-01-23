@@ -1,4 +1,4 @@
-### Blender Live Link ###
+# Blender Live Link #
 
 An experiment in using Blender as the primary tooling for a 3D game, inspired by Santa Monica Studio's 2024 REAC Presentation [Maya as Editor: The game development approach of Santa Monica Studio](https://www.youtube.com/watch?v=ZwPogOhbNWw)
 
