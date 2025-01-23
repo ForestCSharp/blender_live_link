@@ -6,7 +6,7 @@ This repository contains two key components.
 1. A blender extension that sends relevant state across the net
 2. A 'game' that listens for state updates from that add-on
 
-Building
+## Building ##
 Blender Live Link has been tested on Mac and Windows. Building is done by calling build.sh in the root directory, so you'll need a way of running shell scripts on Windows (I use git bash).
 My primary development machine is currently a Mac, but I try to test on Windows occasionally to ensure feature-parity.
 
