@@ -61,7 +61,6 @@ elif [[ $OS_ARG = Mac ]]; then
 			-D SOKOL_METAL \
 			-o bin/libsokol.a
 
-
 	# Compile jolt as library, but only if it doesn't exist 
 	if [ ! -f ./bin/libjolt.a ]; then
 		echo "libjolt.a not found, building"

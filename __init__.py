@@ -283,7 +283,7 @@ class LiveLinkConnection():
 
 live_link_connection = []
 
-# Callback when depsgraph has finished updated
+# Callback when depsgraph has finished updating
 def depsgraph_update_post_callback(scene, depsgraph):
     if not depsgraph_update_post_callback.enabled:
         return
