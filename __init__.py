@@ -11,6 +11,7 @@ import bpy
 import bmesh
 import sys
 import socket
+import traceback
 
 from os.path import dirname, realpath, basename, isfile, join
 import glob
@@ -36,32 +37,54 @@ from .compiled_schemas.python.Blender.LiveLink import Vertex
 # Class to manage our live link connection
 class LiveLinkConnection():
     def __init__(self):
-        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+        self.create_socket()
+        
     def __del__(self):
-        self.my_socket.shutdown(socket.SHUT_RDWR)
+        try:
+            self.my_socket.shutdown(socket.SHUT_RDWR)
+        except:
+            pass  # Socket might already be closed
         self.my_socket.close()
+
+    def create_socket(self):
+        # Create a new socket object
+        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.my_socket.settimeout(5)
 
     def is_connected(self):
         try:
-            self.my_socket.send(b'')
+            self.my_socket.getpeername()
             return True
-        except OSError:
+        except Exception as e:
             return False
 
     def connect(self):
-        #FCS TODO: Store magic IP and Port numbers in some shared file
-        HOST = '127.0.0.1'
-        PORT = 65432
-        self.my_socket.connect((HOST,PORT))
+        try:
+            # Create a new socket if attempting to reconnect
+            self.create_socket()
+            
+            # FCS TODO: Store magic IP and Port numbers in some shared file
+            HOST = '127.0.0.1'
+            PORT = 65432
+            self.my_socket.connect((HOST, PORT))
+            return True
+        except Exception as e:
+            print("Failed to Connect to Running Game")
+            return False
 
     def send(self, data):
-        if not self.is_connected():
-            self.connect()
+        is_connected = self.is_connected()
+        if not is_connected:
+            print("Attempt to reconnect")
+            is_connected = self.connect()
+
+        if not is_connected:
+            return;
 
         try:
             self.my_socket.send(data)
-        except:
+        except Exception as e:
+            print(traceback.format_exc())
             print("Error: LiveLinkConnection::send")
 
     def get_mesh(self, obj, dependency_graph):
@@ -276,8 +299,8 @@ class LiveLinkConnection():
 
         builder.FinishSizePrefixed(live_link_scene)
         
-        return builder.Output()
- 
+        return builder.Output() 
+
     def send_object_list(self, updated_objects, deleted_object_uids):
         self.send(self.make_update(updated_objects, deleted_object_uids))
 
@@ -355,9 +378,6 @@ class BlenderLiveLinkInit(bpy.types.Operator):
     bl_idname = "live_link.send_full_update"    # Unique identifier for buttons and menu items to reference.
     bl_label = "Live Link: Send Full Update"    # Display name in the interface.
     bl_options = {'REGISTER'} 
-
-    # Socket used for sending data
-    my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     # Called when operator is run
     def execute(self, context):
