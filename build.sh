@@ -52,6 +52,15 @@ else
 		-x "$BASE_DIR/game/*"
 fi
 
+if [[ $OS = Windows ]]; then
+	print TODO: Open Blender on Windows
+elif [[ $OS = Mac ]]; then
+	#install add-on and wait for completion
+	open -W -n /Applications/Blender.app --args --command extension install-file ~/Desktop/blender_live_link.zip --repo user_default --enable 
+	# open blender without waiting for completion
+	open /Applications/Blender.app
+fi
+
 # Compile game, passing in OS as first arg
 cd $SCRIPT_DIR/game
 ./build.sh $OS

@@ -211,8 +211,6 @@ class LiveLinkConnection():
 
             Light.AddUseShadow(builder, light_data.use_shadow);
 
-            # Light Power
-
             light = Light.End(builder)
         
         # Begin New Object 
