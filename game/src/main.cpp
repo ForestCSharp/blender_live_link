@@ -154,6 +154,7 @@ struct {
 	// These channels are how we pass our data from our live-link thread to the main thread
 	Channel<Object> updated_objects;
 	Channel<i32> deleted_objects;
+	Channel<bool> reset;
 
 	// Fragment shader params
 	fs_params_t fs_params;
@@ -457,6 +458,11 @@ void live_link_thread_function()
 					state.deleted_objects.send(deleted_object_uid);
 				}
 			}	
+
+			if (update->reset())
+			{
+				state.reset.send(true);
+			}
 		}
 	}
 
@@ -589,6 +595,24 @@ void frame(void)
 			object_cleanup_gpu_resources(object_to_delete);
 			state.objects.erase(deleted_object_uid);
 		}
+	}
+
+	// Receive any Reset Messages
+	while(optional<bool> received_reset = state.reset.receive())
+	{
+		state.needs_light_data_update = true;
+
+		for (auto& [unique_id, object] : state.objects)
+		{
+			if (object.has_rigid_body)
+			{
+				object_remove_jolt_body(object);
+			}
+
+			object_cleanup_gpu_resources(object);
+		}
+
+		state.objects.clear();
 	}
 
 	// Space Bar Starts/Stops simulation 

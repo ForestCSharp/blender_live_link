@@ -1,20 +1,13 @@
 
 TODO
+	- crash caused by subdivision modifier? 
 
 Next:
-	- SpotLights:
-		- proper formula for spot lights in GLSL
-
-	- Play/Reset in game: (resets to state loaded from Blender...)
+	- Lights:
+		- Proper falloff that matches blender eevee rendering
 
 Tasks:
-	- send light data
-		- actually use lights to light scene
-		- draw light icon 
-		- add to some light_data buffer we'll pass to mesh drawing
-
 	- send skeletal mesh data (and animations)
-	- option to enable physics
 	- don't build up vertex format until you get to c++, the big vtx/idx loops in python are likely very slow and we should just memcpy those if possible
 
 Bugs:

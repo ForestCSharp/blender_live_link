@@ -40,16 +40,19 @@ class LiveLinkConnection():
         self.create_socket()
         
     def __del__(self):
+       self.close_socket() 
+
+    def create_socket(self):
+        # Create a new socket object 
+        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.my_socket.settimeout(5)
+
+    def close_socket(self):
         try:
             self.my_socket.shutdown(socket.SHUT_RDWR)
         except:
             pass  # Socket might already be closed
         self.my_socket.close()
-
-    def create_socket(self):
-        # Create a new socket object
-        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.my_socket.settimeout(5)
 
     def is_connected(self):
         try:
@@ -60,6 +63,9 @@ class LiveLinkConnection():
 
     def connect(self):
         try:
+            # Close old socket
+            self.close_socket()
+
             # Create a new socket if attempting to reconnect
             self.create_socket()
             
@@ -261,7 +267,7 @@ class LiveLinkConnection():
         return live_link_object
 
     # Creates an update for objects in in_object_list
-    def make_update(self, in_object_list, in_deleted_object_uids):
+    def make_update(self, in_object_list, in_deleted_object_uids, reset=False):
         # Evaluate Depsgraph
         dependency_graph = bpy.context.evaluated_depsgraph_get()
 
@@ -291,6 +297,7 @@ class LiveLinkConnection():
         # Add objects vector to scene
         Update.AddObjects(builder, update_objects)
         Update.AddDeletedObjectUids(builder, update_deleted_object_uids)
+        Update.AddReset(builder, reset)
 
         # finalize scene flatbuffer
         live_link_scene = Update.End(builder)
@@ -301,6 +308,9 @@ class LiveLinkConnection():
 
     def send_object_list(self, updated_objects, deleted_object_uids):
         self.send(self.make_update(updated_objects, deleted_object_uids))
+
+    def send_reset(self):
+        self.send(self.make_update([], [], True))
 
 live_link_connection = []
 
@@ -350,11 +360,11 @@ def depsgraph_update_post_callback(scene, depsgraph):
 depsgraph_update_post_callback.enabled = True
 
 # Per-Object Live Link Settings
-class LiveLinkSettings(bpy.types.PropertyGroup):
+class LiveLinkObjectSettings(bpy.types.PropertyGroup):
     enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
 
-# Settings Panel for LiveLinkSettings, shows up under object properties
-class LiveLinkSettingsPanel(bpy.types.Panel):
+# Settings Panel for LiveLinkObjectSettings, shows up under object properties
+class LiveLinkObjectSettingsPanel(bpy.types.Panel):
     bl_label = "Live Link Settings"
     bl_idname = "OBJECT_PT_tester"
     bl_space_type = 'PROPERTIES'
@@ -366,15 +376,15 @@ class LiveLinkSettingsPanel(bpy.types.Panel):
         return (context.object is not None)
 
     def draw(self, context):
-        for property in LiveLinkSettings.bl_rna.properties:
+        for property in LiveLinkObjectSettings.bl_rna.properties:
             if property.is_runtime: 
                 prop = self.layout.prop(context.object.live_link_settings, property.identifier)
 
-# Begin BlenderLiveLinkInit
-class BlenderLiveLinkInit(bpy.types.Operator):
-    """Live Link: Send Full Update """          # Sends live-link updates to our running game.
-    bl_idname = "live_link.send_full_update"    # Unique identifier for buttons and menu items to reference.
-    bl_label = "Live Link: Send Full Update"    # Display name in the interface.
+# Begin OpLiveLinkSendFullUpdate
+class OpLiveLinkSendFullUpdate(bpy.types.Operator):
+    """Live Link: Send Full Update """
+    bl_idname = "live_link.send_full_update"
+    bl_label = "Live Link: Send Full Update"
     bl_options = {'REGISTER'} 
 
     # Called when operator is run
@@ -384,21 +394,73 @@ class BlenderLiveLinkInit(bpy.types.Operator):
             deleted_object_uids = []
         ) 
         return {'FINISHED'}
-# End BlenderLiveLinkInit 
+# End OpLiveLinkSendFullUpdate 
+
+# Begin OpLiveLinkSendReset
+class OpLiveLinkSendReset(bpy.types.Operator):
+    """Live Link: Send Reset """
+    bl_idname = "live_link.send_reset"
+    bl_label = "Live Link: Send Reset"
+    bl_options = {'REGISTER'} 
+
+    # Called when operator is run
+    def execute(self, context):
+        live_link_connection.send_reset()
+        return {'FINISHED'}
+# End OpLiveLinkSendReset
+
+# Begin OpLiveLinkResetConnection
+class OpLiveLinkResetConnection(bpy.types.Operator):
+    """Live Link: Reset Connection """
+    bl_idname = "live_link.reset_connection"
+    bl_label = "Live Link: Reset Connection"
+    bl_options = {'REGISTER'} 
+
+    # Called when operator is run
+    def execute(self, context): 
+        #global live_link_connection  
+        live_link_connection = LiveLinkConnection()
+        return {'FINISHED'}
+# End OpLiveLinkResetConnection
+
+# Begin LiveLinkView3DPanel
+class LiveLinkView3DPanel(bpy.types.Panel):
+    bl_label = "Blender Live Link"
+    bl_idname = "LiveLink_View3D_Panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'BlenderLiveLink'
+    
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.operator("live_link.send_full_update", text="Full Update")  
+        layout.operator("live_link.send_reset", text="Send Reset")  
+        layout.operator("live_link.reset_connection", text="Reset Connnection")
+# End LiveLinkView3DPanel
 
 def menu_func(self, context):
-    self.layout.operator(BlenderLiveLinkInit.bl_idname)
+    self.layout.operator(OpLiveLinkSendFullUpdate.bl_idname)
+    self.layout.operator(OpLiveLinkSendReset.bl_idname)
+    self.layout.operator(OpLiveLinkResetConnection.bl_idname)
+
 
 def register():
     global live_link_connection  
     live_link_connection = LiveLinkConnection()
 
-    bpy.utils.register_class(BlenderLiveLinkInit)
+    # Register Operators
+    bpy.utils.register_class(OpLiveLinkSendFullUpdate)
+    bpy.utils.register_class(OpLiveLinkSendReset)
+    bpy.utils.register_class(OpLiveLinkResetConnection)
+
+    # Set up View3D Panel
+    bpy.utils.register_class(LiveLinkView3DPanel)
 
     # Set up settings on objects
-    bpy.utils.register_class(LiveLinkSettings)
-    bpy.utils.register_class(LiveLinkSettingsPanel)
-    bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkSettings)
+    bpy.utils.register_class(LiveLinkObjectSettings)
+    bpy.utils.register_class(LiveLinkObjectSettingsPanel)
+    bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
 
     # Register depsgraph update post callback
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
@@ -407,15 +469,20 @@ def register():
     bpy.types.VIEW3D_MT_object.append(menu_func)
 
 def unregister():
-    print("UNREGISTERING LIVE LINK")
     global live_link_connection
     del live_link_connection
 
-    bpy.utils.unregister_class(BlenderLiveLinkInit)
+    # Unregister Operators
+    bpy.utils.unregister_class(OpLiveLinkSendFullUpdate)
+    bpy.utils.unregister_class(OpLiveLinkSendReset)
+    bpy.utils.unregister_class(OpLiveLinkResetConnection)
+
+    # Clean up View3D Panel
+    bpy.utils.unregister_class(LiveLinkView3DPanel)
 
     # Clean up settings on objects
-    bpy.utils.unregister_class(LiveLinkSettings)
-    bpy.utils.unregister_class(LiveLinkSettingsPanel)
+    bpy.utils.unregister_class(LiveLinkObjectSettings)
+    bpy.utils.unregister_class(LiveLinkObjectSettingsPanel)
     del bpy.types.Object.live_link_settings
 
     # Remove depsgraph update post callback

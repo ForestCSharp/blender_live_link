@@ -76,8 +76,15 @@ class Update(object):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
         return o == 0
 
+    # Update
+    def Reset(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        if o != 0:
+            return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
+        return False
+
 def UpdateStart(builder):
-    builder.StartObject(2)
+    builder.StartObject(3)
 
 def Start(builder):
     UpdateStart(builder)
@@ -105,6 +112,12 @@ def UpdateStartDeletedObjectUidsVector(builder, numElems):
 
 def StartDeletedObjectUidsVector(builder, numElems):
     return UpdateStartDeletedObjectUidsVector(builder, numElems)
+
+def UpdateAddReset(builder, reset):
+    builder.PrependBoolSlot(2, reset, 0)
+
+def AddReset(builder, reset):
+    UpdateAddReset(builder, reset)
 
 def UpdateEnd(builder):
     return builder.EndObject()

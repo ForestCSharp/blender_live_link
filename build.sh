@@ -55,10 +55,14 @@ fi
 if [[ $OS = Windows ]]; then
 	print TODO: Open Blender on Windows
 elif [[ $OS = Mac ]]; then
-	#install add-on and wait for completion
+	# install add-on and wait for completion
 	open -W -n /Applications/Blender.app --args --command extension install-file ~/Desktop/blender_live_link.zip --repo user_default --enable 
+
+	sleep 0.5
+
 	# open blender without waiting for completion
-	open /Applications/Blender.app
+	open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
+	#open /Applications/Blender.app 
 fi
 
 # Compile game, passing in OS as first arg

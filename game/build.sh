@@ -18,6 +18,7 @@ if [[ $OS_ARG = Windows ]]; then
 
 	# Compile Sokol Library
 	clang -c src/sokol/sokol_single_file.c \
+			-g -O0 \
 			-I src/sokol/ \
 			-D SOKOL_D3D11 \
 			-o bin/sokol.lib
@@ -27,6 +28,7 @@ if [[ $OS_ARG = Windows ]]; then
 	if [ ! -f ./bin/jolt.lib ]; then
 		echo "jolt.lib not found, building now"
 		clang 	-c src/Jolt/jolt_single_file.cpp \
+				-g -O0 \
 				-o ./bin/jolt.lib \
 				--std=c++20 \
 				-I src 
@@ -37,7 +39,7 @@ if [[ $OS_ARG = Windows ]]; then
 
 	# Main Windows Build
 	clang src/main.cpp \
-		-g -gcodeview -O0 \
+		-g -O0 \
 		-o bin/game.exe \
 		-I src \
 		-I bin/shaders \
