@@ -8,6 +8,9 @@
 #}
 
 import bpy
+from bpy.props import (StringProperty, FloatProperty, FloatVectorProperty, PointerProperty, CollectionProperty, EnumProperty)
+from bpy.types import (Panel, Operator, PropertyGroup)
+
 import bmesh
 import sys
 import socket
@@ -360,25 +363,25 @@ def depsgraph_update_post_callback(scene, depsgraph):
 depsgraph_update_post_callback.enabled = True
 
 # Per-Object Live Link Settings
-class LiveLinkObjectSettings(bpy.types.PropertyGroup):
-    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+#class LiveLinkObjectSettings(bpy.types.PropertyGroup):
+#    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
 
 # Settings Panel for LiveLinkObjectSettings, shows up under object properties
-class LiveLinkObjectSettingsPanel(bpy.types.Panel):
-    bl_label = "Live Link Settings"
-    bl_idname = "OBJECT_PT_tester"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = 'object'
-
-    @classmethod
-    def poll(cls, context):
-        return (context.object is not None)
-
-    def draw(self, context):
-        for property in LiveLinkObjectSettings.bl_rna.properties:
-            if property.is_runtime: 
-                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
+#class LiveLinkObjectSettingsPanel(bpy.types.Panel):
+#    bl_label = "Live Link Settings"
+#    bl_idname = "OBJECT_PT_tester"
+#    bl_space_type = 'PROPERTIES'
+#    bl_region_type = 'WINDOW'
+#    bl_context = 'object'
+#
+#    @classmethod
+#    def poll(cls, context):
+#        return (context.object is not None)
+#
+#    def draw(self, context):
+#        for property in LiveLinkObjectSettings.bl_rna.properties:
+#            if property.is_runtime: 
+#                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
 
 # Begin OpLiveLinkSendFullUpdate
 class OpLiveLinkSendFullUpdate(bpy.types.Operator):
@@ -445,22 +448,171 @@ def menu_func(self, context):
     self.layout.operator(OpLiveLinkResetConnection.bl_idname)
 
 
+# TODO BEGIN TESTING
+
+# ------------------------------
+# Define individual property groups
+# ------------------------------
+
+class MyTransformGroup(PropertyGroup):
+    location: FloatVectorProperty(name="Location", size=3)
+    rotation: FloatVectorProperty(name="Rotation", size=3)
+
+class MyColorGroup(PropertyGroup):
+    color: FloatVectorProperty(name="Color", subtype='COLOR', size=4, min=0.0, max=1.0)
+
+class MyNoiseGroup(PropertyGroup):
+    intensity: FloatProperty(name="Intensity", default=1.0)
+    scale: FloatProperty(name="Scale", default=1.0)
+
+# ------------------------------
+# Container for polymorphic data
+# ------------------------------
+
+class MyCustomItem(PropertyGroup):
+    type: StringProperty()
+    transform: PointerProperty(type=MyTransformGroup)
+    color: PointerProperty(type=MyColorGroup)
+    noise: PointerProperty(type=MyNoiseGroup)
+
+class LiveLinkObjectSettings(bpy.types.PropertyGroup):
+    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+
+    def available_types(self, context):
+        return [
+            ('TRANSFORM', 'Transform', ''),
+            ('COLOR', 'Color', ''),
+            ('NOISE', 'Noise', '')
+        ]
+
+    add_type: EnumProperty(
+        name="Add Type",
+        description="Type of property to add",
+        items=available_types
+    )
+
+    items: CollectionProperty(type=MyCustomItem)
+
+# ------------------------------
+# Operator to add/remove selected type
+# ------------------------------
+
+class OBJECT_OT_add_custom_item(Operator):
+    bl_idname = "object.add_custom_item"
+    bl_label = "Add Custom Property Group"
+
+    def execute(self, context):
+        obj = context.object
+        settings = obj.live_link_settings
+
+        new_item = settings.items.add()
+        new_item.type = settings.add_type
+
+        # Initialize based on type
+        if new_item.type == 'TRANSFORM':
+            new_item.transform.location = (0.0, 0.0, 0.0)
+        elif new_item.type == 'COLOR':
+            new_item.color.color = (1.0, 1.0, 1.0, 1.0)
+        elif new_item.type == 'NOISE':
+            new_item.noise.intensity = 1.0
+            new_item.noise.scale = 1.0
+
+        return {'FINISHED'}
+
+class OBJECT_OT_remove_custom_item(Operator):
+    bl_idname = "object.remove_custom_item"
+    bl_label = "Remove Custom Property Group"
+
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        obj = context.object
+        settings = obj.live_link_settings
+
+        if 0 <= self.index < len(settings.items):
+            settings.items.remove(self.index)
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "Invalid index")
+            return {'CANCELLED'}
+
+# ------------------------------
+# Utility function to auto-draw groups
+# ------------------------------
+
+def draw_property_group(layout, group):
+    for prop in group.bl_rna.properties:
+        if prop.identifier != "rna_type":
+            layout.prop(group, prop.identifier)
+
+# ------------------------------
+# Panel UI
+# ------------------------------
+
+class OBJECT_PT_custom_object_panel(Panel):
+    bl_label = "Live Link Properties"
+    bl_idname = "OBJECT_PT_custom_object_panel"
+    bl_space_type = 'PROPERTIES'  # ← This is key
+    bl_region_type = 'WINDOW'
+    bl_context = "object"         # ← This puts it in the Object tab
+    bl_options = {'DEFAULT_CLOSED'}  # Optional: collapsed by default
+    bl_icon = 'MODIFIER'          # ← Custom icon (Blender built-in icons)
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.object
+
+        if not obj:
+            layout.label(text="No active object", icon='ERROR')
+            return
+
+        settings = obj.live_link_settings
+
+        layout.prop(settings, "add_type")
+        layout.operator("object.add_custom_item", text="Add Property Group")
+
+        TYPE_TO_GROUP = {
+            'TRANSFORM': 'transform',
+            'COLOR': 'color',
+            'NOISE': 'noise'
+        }
+
+        for i, item in enumerate(settings.items):
+            box = layout.box()
+            row = box.row()
+            row.label(text=f"Item {i+1} ({item.type})", icon='DOT')
+            row.operator("object.remove_custom_item", text="", icon="X").index = i
+
+            group_name = TYPE_TO_GROUP.get(item.type)
+            if group_name:
+                group = getattr(item, group_name, None)
+                if group:
+                    draw_property_group(box, group)
+# TODO END TESTING
+
+classes = (
+    # Main Live Link Operators
+    OpLiveLinkSendFullUpdate,
+    OpLiveLinkSendReset,
+    OpLiveLinkResetConnection,
+
+    # View 3D Panel
+    LiveLinkView3DPanel,
+
+    # Custom Property Group System
+    MyTransformGroup,
+    MyColorGroup,
+    MyNoiseGroup,
+    MyCustomItem,
+    LiveLinkObjectSettings,
+    OBJECT_OT_add_custom_item,
+    OBJECT_OT_remove_custom_item,
+    OBJECT_PT_custom_object_panel,
+)
+
 def register():
     global live_link_connection  
     live_link_connection = LiveLinkConnection()
-
-    # Register Operators
-    bpy.utils.register_class(OpLiveLinkSendFullUpdate)
-    bpy.utils.register_class(OpLiveLinkSendReset)
-    bpy.utils.register_class(OpLiveLinkResetConnection)
-
-    # Set up View3D Panel
-    bpy.utils.register_class(LiveLinkView3DPanel)
-
-    # Set up settings on objects
-    bpy.utils.register_class(LiveLinkObjectSettings)
-    bpy.utils.register_class(LiveLinkObjectSettingsPanel)
-    bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
 
     # Register depsgraph update post callback
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
@@ -468,28 +620,27 @@ def register():
     # add to menu
     bpy.types.VIEW3D_MT_object.append(menu_func)
 
+    # TODO BEGIN TESTING
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
+    # TODO END TESTING
+
 def unregister():
     global live_link_connection
     del live_link_connection
-
-    # Unregister Operators
-    bpy.utils.unregister_class(OpLiveLinkSendFullUpdate)
-    bpy.utils.unregister_class(OpLiveLinkSendReset)
-    bpy.utils.unregister_class(OpLiveLinkResetConnection)
-
-    # Clean up View3D Panel
-    bpy.utils.unregister_class(LiveLinkView3DPanel)
-
-    # Clean up settings on objects
-    bpy.utils.unregister_class(LiveLinkObjectSettings)
-    bpy.utils.unregister_class(LiveLinkObjectSettingsPanel)
-    del bpy.types.Object.live_link_settings
 
     # Remove depsgraph update post callback
     bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_post_callback)
 
     # remove from menu
     bpy.types.VIEW3D_MT_object.remove(menu_func)
+
+    # TODO BEGIN TESTING
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    del bpy.types.Object.live_link_settings
+    # TODO END TESTING
 
 # This allows you to run the script directly from Blender's Text editor
 # to test the add-on without having to install it.

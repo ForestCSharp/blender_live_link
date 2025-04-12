@@ -94,6 +94,7 @@ table Object
 	unique_id	: int;
 	visibility	: bool;
 
+	// transform information
 	location	: Vec3;
 	scale		: Vec3;
 	rotation	: Quat;

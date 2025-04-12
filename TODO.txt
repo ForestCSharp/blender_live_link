@@ -1,6 +1,6 @@
 
 TODO
-	- crash caused by subdivision modifier? 
+	- live-updates don't work after loading test_file (or any file?)
 
 Next:
 	- Lights:

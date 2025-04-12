@@ -43,8 +43,11 @@ cd $SCRIPT_DIR/..
 rm $SCRIPT_DIR.zip
 
 if [[ $OS = Windows ]]; then
-	#TODO: exclude directories
+	#TODO: exclude irrelevant directories directories
 	7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/. 
+
+	#TODO: Test this
+	#7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/. -xr!"$SCRIPT_DIR/subfolder_to_exclude1"
 else
 	zip -r $SCRIPT_DIR.zip $BASE_DIR \
 		-x "$BASE_DIR/flatbuffers/*" \
@@ -61,8 +64,8 @@ elif [[ $OS = Mac ]]; then
 	sleep 0.5
 
 	# open blender without waiting for completion
-	open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
-	#open /Applications/Blender.app 
+	#open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
+	open /Applications/Blender.app 
 fi
 
 # Compile game, passing in OS as first arg
