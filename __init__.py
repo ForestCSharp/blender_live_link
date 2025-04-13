@@ -362,27 +362,6 @@ def depsgraph_update_post_callback(scene, depsgraph):
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
 
-# Per-Object Live Link Settings
-#class LiveLinkObjectSettings(bpy.types.PropertyGroup):
-#    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
-
-# Settings Panel for LiveLinkObjectSettings, shows up under object properties
-#class LiveLinkObjectSettingsPanel(bpy.types.Panel):
-#    bl_label = "Live Link Settings"
-#    bl_idname = "OBJECT_PT_tester"
-#    bl_space_type = 'PROPERTIES'
-#    bl_region_type = 'WINDOW'
-#    bl_context = 'object'
-#
-#    @classmethod
-#    def poll(cls, context):
-#        return (context.object is not None)
-#
-#    def draw(self, context):
-#        for property in LiveLinkObjectSettings.bl_rna.properties:
-#            if property.is_runtime: 
-#                prop = self.layout.prop(context.object.live_link_settings, property.identifier)
-
 # Begin OpLiveLinkSendFullUpdate
 class OpLiveLinkSendFullUpdate(bpy.types.Operator):
     """Live Link: Send Full Update """
@@ -448,8 +427,6 @@ def menu_func(self, context):
     self.layout.operator(OpLiveLinkResetConnection.bl_idname)
 
 
-# TODO BEGIN TESTING
-
 # ------------------------------
 # Define individual property groups
 # ------------------------------
@@ -471,6 +448,8 @@ class MyNoiseGroup(PropertyGroup):
 
 class MyCustomItem(PropertyGroup):
     type: StringProperty()
+
+    # Only one of these should be set, based on type
     transform: PointerProperty(type=MyTransformGroup)
     color: PointerProperty(type=MyColorGroup)
     noise: PointerProperty(type=MyNoiseGroup)
@@ -562,12 +541,8 @@ class OBJECT_PT_custom_object_panel(Panel):
         layout = self.layout
         obj = context.object
 
-        if not obj:
-            layout.label(text="No active object", icon='ERROR')
-            return
-
         settings = obj.live_link_settings
-
+        layout.prop(settings, "enable_live_link")
         layout.prop(settings, "add_type")
         layout.operator("object.add_custom_item", text="Add Property Group")
 
@@ -588,9 +563,8 @@ class OBJECT_PT_custom_object_panel(Panel):
                 group = getattr(item, group_name, None)
                 if group:
                     draw_property_group(box, group)
-# TODO END TESTING
 
-classes = (
+classes_to_register = [ 
     # Main Live Link Operators
     OpLiveLinkSendFullUpdate,
     OpLiveLinkSendReset,
@@ -608,42 +582,45 @@ classes = (
     OBJECT_OT_add_custom_item,
     OBJECT_OT_remove_custom_item,
     OBJECT_PT_custom_object_panel,
-)
+]
 
 def register():
+    # init live link connection
     global live_link_connection  
     live_link_connection = LiveLinkConnection()
+
+    # Register classes
+    for cls in classes_to_register:
+        bpy.utils.register_class(cls)
 
     # Register depsgraph update post callback
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
 
-    # add to menu
+    # add to searchable menu
     bpy.types.VIEW3D_MT_object.append(menu_func)
 
-    # TODO BEGIN TESTING
-    for cls in classes:
-        bpy.utils.register_class(cls)
+    # Setup live link settings on type Object
     bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
-    # TODO END TESTING
 
 def unregister():
+    # clean up live link connection
     global live_link_connection
     del live_link_connection
+
+    # Unregister classes
+    for cls in reversed(classes_to_register):
+        bpy.utils.unregister_class(cls)
 
     # Remove depsgraph update post callback
     bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_post_callback)
 
-    # remove from menu
+    # remove from searchable menu
     bpy.types.VIEW3D_MT_object.remove(menu_func)
 
-    # TODO BEGIN TESTING
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+    # Delete Live Link Settings
     del bpy.types.Object.live_link_settings
-    # TODO END TESTING
 
 # This allows you to run the script directly from Blender's Text editor
-# to test the add-on without having to install it.
 if __name__ == "__main__":
     register()
 
