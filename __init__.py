@@ -427,54 +427,74 @@ def menu_func(self, context):
     self.layout.operator(OpLiveLinkResetConnection.bl_idname)
 
 
-# ------------------------------
-# Define individual property groups
-# ------------------------------
+# ------------------------------------------------------------
+# Define Gameplay Components 
+# ------------------------------------------------------------
 
-class MyTransformGroup(PropertyGroup):
-    location: FloatVectorProperty(name="Location", size=3)
-    rotation: FloatVectorProperty(name="Rotation", size=3)
+class GameplayComponent(PropertyGroup):
+    # Blender UI Info
+    type_name = 'INVALID'
+    label = 'INVALID'
 
-class MyColorGroup(PropertyGroup):
-    color: FloatVectorProperty(name="Color", subtype='COLOR', size=4, min=0.0, max=1.0)
+    @classmethod
+    def enum_info(cls):
+        return (cls.type_name, cls.label, '')
 
-class MyNoiseGroup(PropertyGroup):
-    intensity: FloatProperty(name="Intensity", default=1.0)
-    scale: FloatProperty(name="Scale", default=1.0)
+class GameplayComponent_Player(GameplayComponent):
+    # Blender UI Info
+    type_name = 'PLAYER'
+    label = 'Player'
 
-# ------------------------------
+    # Properties
+    move_speed: FloatProperty(name="Move Speed", default=1.0)
+
+class GameplayComponent_CameraControl(GameplayComponent):
+    # Blender UI Info
+    type_name = 'CAMERA_CONTROL'
+    label = 'Camera Control'
+
+    # Properties
+    follow_distance: FloatProperty(name="Follow Distance", default=1.0)
+
+gameplay_component_enum = [
+    GameplayComponent_Player.enum_info(),
+    GameplayComponent_CameraControl.enum_info(),
+]
+
+TYPE_TO_GROUP = {
+    GameplayComponent_Player.type_name: 'player',
+    GameplayComponent_CameraControl.type_name: 'camera_control'
+}
+
+# ------------------------------------------------------------
 # Container for polymorphic data
-# ------------------------------
+# ------------------------------------------------------------
 
-class MyCustomItem(PropertyGroup):
+class GameplayComponentContainer(PropertyGroup):
     type: StringProperty()
 
     # Only one of these should be set, based on type
-    transform: PointerProperty(type=MyTransformGroup)
-    color: PointerProperty(type=MyColorGroup)
-    noise: PointerProperty(type=MyNoiseGroup)
+    player:         PointerProperty(type=GameplayComponent_Player)
+    camera_control: PointerProperty(type=GameplayComponent_CameraControl)
+
+# ------------------------------------------------------------
+# Property Group for Live-Link Specific Data 
+# ------------------------------------------------------------
 
 class LiveLinkObjectSettings(bpy.types.PropertyGroup):
     enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
 
-    def available_types(self, context):
-        return [
-            ('TRANSFORM', 'Transform', ''),
-            ('COLOR', 'Color', ''),
-            ('NOISE', 'Noise', '')
-        ]
-
     add_type: EnumProperty(
         name="Add Type",
         description="Type of property to add",
-        items=available_types
+        items=gameplay_component_enum
     )
 
-    items: CollectionProperty(type=MyCustomItem)
+    items: CollectionProperty(type=GameplayComponentContainer)
 
-# ------------------------------
-# Operator to add/remove selected type
-# ------------------------------
+# ------------------------------------------------------------
+# Operators to add/remove selected type
+# ------------------------------------------------------------
 
 class OBJECT_OT_add_custom_item(Operator):
     bl_idname = "object.add_custom_item"
@@ -488,13 +508,10 @@ class OBJECT_OT_add_custom_item(Operator):
         new_item.type = settings.add_type
 
         # Initialize based on type
-        if new_item.type == 'TRANSFORM':
-            new_item.transform.location = (0.0, 0.0, 0.0)
-        elif new_item.type == 'COLOR':
-            new_item.color.color = (1.0, 1.0, 1.0, 1.0)
-        elif new_item.type == 'NOISE':
-            new_item.noise.intensity = 1.0
-            new_item.noise.scale = 1.0
+        if new_item.type == GameplayComponent_Player.type_name:
+            new_item.player.move_speed = 20.0
+        elif new_item.type == GameplayComponent_CameraControl.type_name:
+            new_item.camera_control.follow_distance = 100.0
 
         return {'FINISHED'}
 
@@ -515,18 +532,18 @@ class OBJECT_OT_remove_custom_item(Operator):
             self.report({'WARNING'}, "Invalid index")
             return {'CANCELLED'}
 
-# ------------------------------
+# ------------------------------------------------------------
 # Utility function to auto-draw groups
-# ------------------------------
+# ------------------------------------------------------------
 
 def draw_property_group(layout, group):
     for prop in group.bl_rna.properties:
         if prop.identifier != "rna_type":
             layout.prop(group, prop.identifier)
 
-# ------------------------------
+# ------------------------------------------------------------
 # Panel UI
-# ------------------------------
+# ------------------------------------------------------------
 
 class OBJECT_PT_custom_object_panel(Panel):
     bl_label = "Live Link Properties"
@@ -546,12 +563,6 @@ class OBJECT_PT_custom_object_panel(Panel):
         layout.prop(settings, "add_type")
         layout.operator("object.add_custom_item", text="Add Property Group")
 
-        TYPE_TO_GROUP = {
-            'TRANSFORM': 'transform',
-            'COLOR': 'color',
-            'NOISE': 'noise'
-        }
-
         for i, item in enumerate(settings.items):
             box = layout.box()
             row = box.row()
@@ -564,6 +575,11 @@ class OBJECT_PT_custom_object_panel(Panel):
                 if group:
                     draw_property_group(box, group)
 
+
+# ------------------------------------------------------------
+#  Classes we register with blender
+# ------------------------------------------------------------
+
 classes_to_register = [ 
     # Main Live Link Operators
     OpLiveLinkSendFullUpdate,
@@ -574,15 +590,18 @@ classes_to_register = [
     LiveLinkView3DPanel,
 
     # Custom Property Group System
-    MyTransformGroup,
-    MyColorGroup,
-    MyNoiseGroup,
-    MyCustomItem,
+    GameplayComponent_Player,
+    GameplayComponent_CameraControl,
+    GameplayComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,
     OBJECT_OT_remove_custom_item,
     OBJECT_PT_custom_object_panel,
 ]
+
+# ------------------------------------------------------------
+# Blender Extension Register/Unregister functions
+# ------------------------------------------------------------
 
 def register():
     # init live link connection

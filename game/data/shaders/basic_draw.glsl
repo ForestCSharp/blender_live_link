@@ -84,10 +84,15 @@ float vec2_length_squared(vec2 v)
 	return dot(v,v);
 }
 
-float dist_squared( vec3 a, vec3 b)
+float dist_squared(vec3 a, vec3 b)
 {
     vec3 c = a - b;
     return dot(c,c);
+}
+
+float dist(vec3 a, vec3 b)
+{
+	return sqrt(dist_squared(a,b));
 }
 
 float cosine_angle(vec3 a, vec3 b)
@@ -123,7 +128,7 @@ vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 
 
 	const float surface_angle = positive_cosine_angle(world_pos_to_light, in_world_normal);
 	const float numerator = in_point_light.power * surface_angle;
-	const float denominator = 4 * M_PI * dist_squared(in_point_light.location.xyz, in_world_position);
+	const float denominator = 4 * M_PI * dist_squared(light_location, in_world_position);
 	const float lighting_factor = numerator / denominator;
 	return in_color * in_point_light.color * lighting_factor;
 }
@@ -157,6 +162,35 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 	return vec4(0,0,0,1);
 }
 
+vec3 tonemap_filmic(vec3 x)
+{
+    x = max(vec3(0.0), x - 0.004);
+    return (x * (6.2 * x + 0.5)) / (x * (6.2 * x + 1.7) + 0.06);
+}
+
+vec3 tonemap_reinhard(vec3 x)
+{
+    return x / (x + vec3(1.0));
+}
+
+vec3 tonemap_uncharted_2_helper(vec3 x)
+{
+    const float A = 0.15; const float B = 0.50; const float C = 0.10;
+	const float D = 0.20; const float E = 0.02; const float F = 0.30;
+    // Apply the tone mapping curve
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
+vec3 tonemap_uncharted_2(vec3 color) {
+    const float W = 11.2; // white point — tweak to taste or keep as 11.2
+    return tonemap_uncharted_2_helper(color) / tonemap_uncharted_2_helper(vec3(W));
+}
+
+vec3 gamma_correct(vec3 color)
+{
+    return pow(color, vec3(1.0 / 2.2));
+}
+
 void main() {
 	vec4 final_color = vec4(0);
 	for (int i = 0; i < num_point_lights; ++i)
@@ -168,6 +202,9 @@ void main() {
 	{
 		final_color += sample_spot_light(spot_lights[i], world_position.xyz, world_normal.xyz, color);
 	}
+
+	// Tonemapping
+	final_color.xyz = tonemap_reinhard(final_color.xyz);
 
 	frag_color = final_color;
 }

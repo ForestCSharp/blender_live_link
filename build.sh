@@ -64,8 +64,8 @@ elif [[ $OS = Mac ]]; then
 	sleep 0.5
 
 	# open blender without waiting for completion
-	#open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
-	open /Applications/Blender.app 
+	open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
+	#open /Applications/Blender.app 
 fi
 
 # Compile game, passing in OS as first arg
