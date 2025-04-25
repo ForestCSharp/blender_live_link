@@ -10,6 +10,7 @@
 import bpy
 from bpy.props import (StringProperty, FloatProperty, FloatVectorProperty, PointerProperty, CollectionProperty, EnumProperty)
 from bpy.types import (Panel, Operator, PropertyGroup)
+from bpy.app.handlers import persistent
 
 import bmesh
 import sys
@@ -318,6 +319,7 @@ class LiveLinkConnection():
 live_link_connection = []
 
 # Callback when depsgraph has finished updating
+@persistent
 def depsgraph_update_post_callback(scene, depsgraph):
     if not depsgraph_update_post_callback.enabled:
         return
