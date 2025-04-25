@@ -1,12 +1,7 @@
 
 TODO
-	- live-updates don't work after loading test_file (or any file?)
 	- Clean up dynamic gameplay component system. Make sure all the per-type stuff stays together
 		- maybe an init class method?
-
-Next:
-	- Lights:
-		- Proper falloff that matches blender eevee rendering
 
 Tasks:
 	- send skeletal mesh data (and animations)
