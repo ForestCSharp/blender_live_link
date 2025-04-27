@@ -210,4 +210,4 @@ void main() {
 }
 @end
 
-@program cube vs fs
+@program lighting vs fs

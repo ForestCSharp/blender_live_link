@@ -2,33 +2,47 @@
 
 @vs vs
 
-out vec4 color;
+out vec2 uv;
+
+struct Vertex
+{
+	vec2 position;
+	vec2 uv;
+};
 
 void main()
 {
-	vec2 quad_positions[4] = vec2[]
-	(
-		vec2(0,0),
-		vec2(0,1),
-		vec2(1,0),
-		vec2(1,1)
+	Vertex vertices[4] = Vertex[4](
+		Vertex(vec2(-1.0, -1.0), vec2(0.0, 1.0)),
+		Vertex(vec2(1.0, -1.0), vec2(1.0, 1.0)),
+		Vertex(vec2(-1.0, 1.0), vec2(0.0, 0.0)),
+		Vertex(vec2(1.0, 1.0), vec2(1.0, 0.0))
 	);
 
-	gl_Position = vec4(quad_positions[gl_VertexIndex], 0, 1);
+	int indices[6] = {0,1,2,1,2,3};
+
+	Vertex vertex = vertices[indices[gl_VertexIndex]];
+
+	uv = vertex.uv;
+	gl_Position = vec4(vertex.position, 0, 1);
 }
 @end
 
 @fs fs
 
-//in vec4 world_position;
-//in vec4 world_normal;
-in vec4 color;
+layout(binding=0) uniform texture2D tex;
+layout(binding=0) uniform sampler smp;
+
+in vec2 uv;
 
 out vec4 frag_color;
 
 void main()
 {
-	gl_FragColor = frag_color;
+ 	vec4 sampled_color = texture(sampler2D(tex, smp), uv);
+    frag_color = sampled_color;
 }
 
 @end
+
+@program ssao vs fs

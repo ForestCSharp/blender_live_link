@@ -73,8 +73,9 @@ protected:
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
 
-// Generated Shader File
-#include "basic_draw.compiled.h"
+// Generated Shader Files
+#include "lighting.compiled.h"
+#include "ssao.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -144,7 +145,19 @@ struct Camera {
 };
 
 struct {
-    sg_pipeline pipeline;
+	int width;
+	int height;
+
+	// Offscreen Rendering
+	sg_image color_image;
+	sg_image depth_image;
+	sg_sampler sampler;
+	sg_attachments offscreen_attachments;
+
+	int sample_count = 1;
+
+    sg_pipeline lighting_pipeline;
+	sg_pipeline ssao_pipeline;
 
 	atomic<bool> game_running = true;
 	atomic<bool> blender_data_loaded = false;
@@ -156,17 +169,17 @@ struct {
 	Channel<i32> deleted_objects;
 	Channel<bool> reset;
 
-	// Fragment shader params
-	fs_params_t fs_params;
+	// Lighting fragment shader params
+	lighting_fs_params_t fs_params;
 
 	// Contains Lights Data packed up for gpu usage
 	bool needs_light_data_update = true;	
 
-	StretchyBuffer<PointLight_t> point_lights;
-	GpuBuffer<PointLight_t> point_lights_buffer;
+	StretchyBuffer<lighting_PointLight_t> point_lights;
+	GpuBuffer<lighting_PointLight_t> point_lights_buffer;
 
-	StretchyBuffer<SpotLight_t> spot_lights;
-	GpuBuffer<SpotLight_t> spot_lights_buffer;
+	StretchyBuffer<lighting_SpotLight_t> spot_lights;
+	GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
 	
 	std::thread live_link_thread;
 
@@ -474,6 +487,63 @@ void live_link_thread_function()
 	socket_lib_quit();
 }
 
+void handle_resize()
+{
+	int new_width = sapp_width();
+    int new_height = sapp_height();
+
+	if (new_width != state.width || new_height != state.height)
+	{
+		state.width = new_width;
+		state.height = new_height;
+
+		sg_swapchain swapchain = sglue_swapchain();
+	
+		sg_image_desc color_image_desc = {
+	        .render_target = true,
+	        .width = state.width,
+	        .height = state.height,
+	        .pixel_format = swapchain.color_format,
+	        .sample_count = state.sample_count,
+	        .label = "color-image"
+	    };
+
+		if (state.color_image.id != SG_INVALID_ID)
+		{
+			sg_destroy_image(state.color_image);
+		}
+	
+		state.color_image = sg_make_image(&color_image_desc);
+	
+		sg_image_desc depth_image_desc = {
+	        .render_target = true,
+	        .width = state.width,
+	        .height = state.height,
+	        .pixel_format = swapchain.depth_format,
+	        .sample_count = state.sample_count,
+	        .label = "depth-image"
+	    };
+
+		if (state.depth_image.id != SG_INVALID_ID)
+		{
+			sg_destroy_image(state.depth_image);
+		}
+	
+		state.depth_image = sg_make_image(&depth_image_desc);
+
+		if (state.offscreen_attachments.id != SG_INVALID_ID)
+		{
+			sg_destroy_attachments(state.offscreen_attachments);
+		}
+
+		state.offscreen_attachments = sg_make_attachments((sg_attachments_desc){
+			.colors[0].image = state.color_image,
+			.depth_stencil.image = state.depth_image,
+			.label = "offscreen-attachments",
+		});
+	}
+}
+
 void init(void)
 {
 	jolt_init();
@@ -493,27 +563,33 @@ void init(void)
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
 	state.live_link_thread = std::thread(live_link_thread_function);
 	
-    /* create shader */
-    sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
-
     /* create pipeline object */
-    state.pipeline = sg_make_pipeline((sg_pipeline_desc){
+    state.lighting_pipeline = sg_make_pipeline((sg_pipeline_desc){
         .layout = {
             /* test to provide buffer stride, but no attr offsets */
             .buffers[0].stride = 32,
             .attrs = {
-                [ATTR_cube_position].format = SG_VERTEXFORMAT_FLOAT4,
-                [ATTR_cube_normal].format   = SG_VERTEXFORMAT_FLOAT4
+                [ATTR_lighting_position].format = SG_VERTEXFORMAT_FLOAT4,
+                [ATTR_lighting_normal].format   = SG_VERTEXFORMAT_FLOAT4
             }
         },
-        .shader = shd,
+        .shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
         .index_type = SG_INDEXTYPE_UINT32,
         .cull_mode = SG_CULLMODE_NONE,
         .depth = {
             .write_enabled = true,
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
         },
-        .label = "cube-pipeline"
+        .label = "lighting-pipeline"
+    });
+
+    state.ssao_pipeline = sg_make_pipeline((sg_pipeline_desc){
+        .shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
+        .cull_mode = SG_CULLMODE_NONE,
+        .depth = {
+            .write_enabled = false,
+        },
+        .label = "ssao-pipeline"
     });
 
 	// setup sokol-debugtext
@@ -528,6 +604,15 @@ void init(void)
         },
         .logger.func = slog_func,
     });
+
+	state.sampler = sg_make_sampler((sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_REPEAT,
+        .wrap_v = SG_WRAP_REPEAT,
+    });
+
+	handle_resize();
 }
 
 bool keycodes[SAPP_MAX_KEYCODES];
@@ -697,229 +782,257 @@ void frame(void)
 
 	// Rendering
 	{
-		// Begin Render Pass
-		sg_begin_pass((sg_pass)
-			{
-			.action = {
-				.colors[0] = {
-					.load_action = SG_LOADACTION_CLEAR,
-					.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
+		{	// Lighting Pass	
+			sg_begin_pass((sg_pass)
+				{
+				.attachments = state.offscreen_attachments,
+				.action = {
+					.colors[0] = {
+						.load_action = SG_LOADACTION_CLEAR,
+						.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
+					},
 				},
-			},
-			.swapchain = sglue_swapchain()
-		});
+				//.swapchain = sglue_swapchain()
+			});
 
-		// Run initially, and then only if our updates from blender encounter a light
-		if (state.needs_light_data_update)
-		{
-			state.needs_light_data_update = false;
-
-			const i32 MAX_LIGHTS_PER_TYPE = 1024;
-
-			// Init point_lights_buffer if we haven't already
-			if (!state.point_lights_buffer.is_gpu_buffer_valid())
+			// Run initially, and then only if our updates from blender encounter a light
+			if (state.needs_light_data_update)
 			{
-				state.point_lights_buffer = GpuBuffer((GpuBufferDesc<PointLight_t>){
-					.data = nullptr,
-					.data_size = 0,
-					.max_size = sizeof(PointLight_t) * MAX_LIGHTS_PER_TYPE,
-					.type = SG_BUFFERTYPE_STORAGEBUFFER,
-					.is_dynamic = true,
-					.label = "point_lights",
-				});
-			}
+				state.needs_light_data_update = false;
 
-			// Init spot_lights_buffer if we haven't already
-			if (!state.spot_lights_buffer.is_gpu_buffer_valid())
-			{
-				state.spot_lights_buffer = GpuBuffer((GpuBufferDesc<SpotLight_t>){
-					.data = nullptr,
-					.data_size = 0,
-					.max_size = sizeof(SpotLight_t) * MAX_LIGHTS_PER_TYPE,
-					.type = SG_BUFFERTYPE_STORAGEBUFFER,
-					.is_dynamic = true,
-					.label = "spot_lights",
-				});
-			}
+				const i32 MAX_LIGHTS_PER_TYPE = 1024;
 
-			state.point_lights.reset();
-			state.spot_lights.reset();
-
-			for (auto const& [unique_id, object] : state.objects)
-			{
-				if (object.has_light)
+				// Init point_lights_buffer if we haven't already
+				if (!state.point_lights_buffer.is_gpu_buffer_valid())
 				{
-					const Light& light = object.light;
-					switch(light.type)
+					state.point_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_PointLight_t>){
+						.data = nullptr,
+						.data_size = 0,
+						.max_size = sizeof(lighting_PointLight_t) * MAX_LIGHTS_PER_TYPE,
+						.type = SG_BUFFERTYPE_STORAGEBUFFER,
+						.is_dynamic = true,
+						.label = "point_lights",
+					});
+				}
+
+				// Init spot_lights_buffer if we haven't already
+				if (!state.spot_lights_buffer.is_gpu_buffer_valid())
+				{
+					state.spot_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SpotLight_t>){
+						.data = nullptr,
+						.data_size = 0,
+						.max_size = sizeof(lighting_SpotLight_t) * MAX_LIGHTS_PER_TYPE,
+						.type = SG_BUFFERTYPE_STORAGEBUFFER,
+						.is_dynamic = true,
+						.label = "spot_lights",
+					});
+				}
+
+				state.point_lights.reset();
+				state.spot_lights.reset();
+
+				for (auto const& [unique_id, object] : state.objects)
+				{
+					if (object.has_light)
 					{
-						case LightType::Point:
+						const Light& light = object.light;
+						switch(light.type)
 						{
-							if (state.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
+							case LightType::Point:
 							{
-								printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
-								continue;
-							}
+								if (state.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								{
+									printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+									continue;
+								}
 
-							PointLight_t new_point_light = {};
-							const Transform& transform = object.current_transform;
-							memcpy(new_point_light.location, &transform.location, sizeof(float) * 4);
-							memcpy(new_point_light.color, &object.light.color, sizeof(float) * 3);
-							new_point_light.color[3] = 1.0;
-							new_point_light.power = object.light.point.power;
-							state.point_lights.add(new_point_light);
-							break;
-						}
-						case LightType::Spot:
-						{
-							if (state.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								lighting_PointLight_t new_point_light = {};
+								const Transform& transform = object.current_transform;
+								memcpy(new_point_light.location, &transform.location, sizeof(float) * 4);
+								memcpy(new_point_light.color, &object.light.color, sizeof(float) * 3);
+								new_point_light.color[3] = 1.0;
+								new_point_light.power = object.light.point.power;
+								state.point_lights.add(new_point_light);
+								break;
+							}
+							case LightType::Spot:
 							{
-								printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
-								continue;
+								if (state.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								{
+									printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+									continue;
+								}
+
+								lighting_SpotLight_t new_spot_light = {};
+								const Transform& transform = object.current_transform;
+								memcpy(new_spot_light.location, &transform.location, sizeof(float) * 4);
+								memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
+								new_spot_light.color[3] = 1.0;
+
+								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+								memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
+
+								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
+								new_spot_light.power = object.light.spot.power;
+								new_spot_light.edge_blend = object.light.spot.edge_blend;
+								state.spot_lights.add(new_spot_light);
+								break;
 							}
-
-							SpotLight_t new_spot_light = {};
-							const Transform& transform = object.current_transform;
-							memcpy(new_spot_light.location, &transform.location, sizeof(float) * 4);
-							memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
-							new_spot_light.color[3] = 1.0;
-
-							HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-							memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
-
-							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
-							new_spot_light.power = object.light.spot.power;
-							new_spot_light.edge_blend = object.light.spot.edge_blend;
-							state.spot_lights.add(new_spot_light);
-							break;
+							case LightType::Sun:
+							{
+								//FCS TODO:	
+								break;
+							}
+							case LightType::Area:
+							{
+								//FCS TODO: 
+								break;
+							}
+							default: break;
 						}
-						case LightType::Sun:
-						{
-							//FCS TODO:	
-							break;
-						}
-						case LightType::Area:
-						{
-							//FCS TODO: 
-							break;
-						}
-						default: break;
 					}
+				}
+
+				state.fs_params.num_point_lights = state.point_lights.length();
+				printf("Num Point Lights: %i\n", state.fs_params.num_point_lights);
+				if (state.fs_params.num_point_lights > 0)
+				{
+					state.point_lights_buffer.update_gpu_buffer(
+						(sg_range){
+							.ptr = state.point_lights.data(),
+							.size = sizeof(lighting_PointLight_t) * state.fs_params.num_point_lights,
+						}
+					);
+				}
+
+				state.fs_params.num_spot_lights = state.spot_lights.length();	
+				printf("Num Spot Lights: %i\n", state.fs_params.num_spot_lights);
+				if (state.fs_params.num_spot_lights > 0)
+				{
+					state.spot_lights_buffer.update_gpu_buffer(
+						(sg_range){
+							.ptr = state.spot_lights.data(),
+							.size = sizeof(lighting_SpotLight_t) * state.fs_params.num_spot_lights,
+						}
+					);
 				}
 			}
 
-			state.fs_params.num_point_lights = state.point_lights.length();
-			printf("Num Point Lights: %i\n", state.fs_params.num_point_lights);
-			if (state.fs_params.num_point_lights > 0)
-			{
-				state.point_lights_buffer.update_gpu_buffer(
-					(sg_range){
-						.ptr = state.point_lights.data(),
-						.size = sizeof(PointLight_t) * state.fs_params.num_point_lights,
-					}
-				);
+			if (!state.blender_data_loaded)
+			{	
+				sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
+				sdtx_origin(1.0f, 2.0f);
+				sdtx_home();
+				draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
+				sdtx_draw();
 			}
-
-			state.fs_params.num_spot_lights = state.spot_lights.length();	
-			printf("Num Spot Lights: %i\n", state.fs_params.num_spot_lights);
-			if (state.fs_params.num_spot_lights > 0)
+			else
 			{
-				state.spot_lights_buffer.update_gpu_buffer(
-					(sg_range){
-						.ptr = state.spot_lights.data(),
-						.size = sizeof(SpotLight_t) * state.fs_params.num_spot_lights,
-					}
-				);
-			}
-		}
+				lighting_vs_params_t vs_params;
+				const float w = sapp_widthf();
+				const float h = sapp_heightf();
+				const float t = (float)(sapp_frame_duration() * 60.0);
+				HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
 
-		if (!state.blender_data_loaded)
-		{	
-			sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
-			sdtx_origin(1.0f, 2.0f);
-			sdtx_home();
-			draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
-			sdtx_draw();
-		}
-		else
-		{
-			/* NOTE: struct vs_params_t has been generated by the shader-code-gen */
-			vs_params_t vs_params;
-			const float w = sapp_widthf();
-			const float h = sapp_heightf();
-			const float t = (float)(sapp_frame_duration() * 60.0);
-			HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
+				Camera& camera = state.camera;
+				HMM_Vec3 target = camera.position + camera.forward * 10;
+				HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
+				HMM_Mat4 view_proj = HMM_MulM4(proj, view);
+				vs_params.vp = view_proj;
 
-			Camera& camera = state.camera;
-			HMM_Vec3 target = camera.position + camera.forward * 10;
-			HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
-			HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-			vs_params.vp = view_proj;
+				sg_apply_pipeline(state.lighting_pipeline);
 
-			sg_apply_pipeline(state.pipeline);
+				// Apply Vertex Uniforms
+				sg_apply_uniforms(0, SG_RANGE(vs_params));
 
-			// Apply Vertex Uniforms
-			sg_apply_uniforms(0, SG_RANGE(vs_params));
+				// Apply Fragment Uniforms
+				sg_apply_uniforms(1, SG_RANGE(state.fs_params));
 
-			// Apply Fragment Uniforms
-			sg_apply_uniforms(1, SG_RANGE(state.fs_params));
+				// Get our jolt body interface
+				BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-			// Get our jolt body interface
-			BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
-
-			for (auto& [unique_id, object] : state.objects)
-			{
-				if (!object.visibility)
+				for (auto& [unique_id, object] : state.objects)
 				{
-					continue;
-				}
-
-				if (object.has_rigid_body)
-				{
-					if (object.rigid_body.jolt_body)
+					if (!object.visibility)
 					{
-						const BodyID body_id = object.rigid_body.jolt_body->GetID();
-						JPH::RVec3 body_position;
-						JPH::Quat body_rotation;
-						body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+						continue;
+					}
 
-						// Update Transform location and rotation and mark storage buffer for update
-						Transform& transform = object.current_transform;
-						transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-						transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-						object.storage_buffer_needs_update = true;
+					if (object.has_rigid_body)
+					{
+						if (object.rigid_body.jolt_body)
+						{
+							const BodyID body_id = object.rigid_body.jolt_body->GetID();
+							JPH::RVec3 body_position;
+							JPH::Quat body_rotation;
+							body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+							// Update Transform location and rotation and mark storage buffer for update
+							Transform& transform = object.current_transform;
+							transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+							transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+							object.storage_buffer_needs_update = true;
+						}
+					}
+
+					if (object.storage_buffer_needs_update)
+					{
+						object.storage_buffer_needs_update = false;
+						object_update_storage_buffer(object);
+					}
+
+					if (object.has_mesh)
+					{
+						Mesh& mesh = object.mesh;
+						sg_bindings bindings = {
+							.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
+							.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+							.storage_buffers = {
+								[0] = object.storage_buffer.get_gpu_buffer(),
+								[1] = state.point_lights_buffer.get_gpu_buffer(),
+								[2] = state.spot_lights_buffer.get_gpu_buffer(),
+							},
+						};
+						sg_apply_bindings(&bindings);
+						sg_draw(0, mesh.index_count, 1);
+					}
+
+					if (object.has_light)
+					{
+						//FCS TODO: Draw Light Icon
 					}
 				}
-
-				if (object.storage_buffer_needs_update)
-				{
-					object.storage_buffer_needs_update = false;
-					object_update_storage_buffer(object);
-				}
-
-				if (object.has_mesh)
-				{
-					Mesh& mesh = object.mesh;
-					sg_bindings bindings = {
-						.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-						.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-						.storage_buffers = {
-							[0] = object.storage_buffer.get_gpu_buffer(),
-							[1] = state.point_lights_buffer.get_gpu_buffer(),
-							[2] = state.spot_lights_buffer.get_gpu_buffer(),
-						},
-					};
-					sg_apply_bindings(&bindings);
-					sg_draw(0, mesh.index_count, 1);
-				}
-
-				if (object.has_light)
-				{
-					//FCS TODO: Draw Light Icon
-				}
 			}
+
+			sg_end_pass();
 		}
 
-		sg_end_pass();
+		{	//SSAO Pass
+			sg_begin_pass((sg_pass)
+				{
+				.action = {
+					.colors[0] = {
+						.load_action = SG_LOADACTION_CLEAR,
+						.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
+					},
+				},
+				.swapchain = sglue_swapchain()
+			});
+
+			sg_apply_pipeline(state.ssao_pipeline);
+
+			sg_bindings bindings = (sg_bindings){
+				.images[0] = state.color_image,
+				.samplers[0] = state.sampler,
+			};
+
+			sg_apply_bindings(&bindings);
+
+			sg_draw(0,6,1);
+
+			sg_end_pass();
+		}
+
 		sg_commit();
 	}
 }
@@ -956,6 +1069,11 @@ void event(const sapp_event* event)
 			keycodes[event->key_code] = false;
 			break;
 		}
+		case SAPP_EVENTTYPE_RESIZED:
+		{
+			handle_resize();
+			break;
+		}
 		default: break;
 	}
 }
@@ -970,7 +1088,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		.event_cb = event,
         .width = 800,
         .height = 600,
-        .sample_count = 4,
+        .sample_count = state.sample_count,
         .window_title = "Blender Game",
         .icon.sokol_default = true,
         .logger.func = slog_func,

@@ -6,7 +6,7 @@
 #include "handmade_math/HandmadeMath.h"
 
 // Generated Shader File
-#include "basic_draw.compiled.h"
+#include "lighting.compiled.h"
 
 // Physics System so we can add/remove bodies
 #include "physics_system.h"
@@ -117,7 +117,7 @@ struct Object
 	Transform initial_transform;
 	Transform current_transform;
 
-	GpuBuffer<ObjectData_t> storage_buffer; 
+	GpuBuffer<lighting_ObjectData_t> storage_buffer; 
 	bool storage_buffer_needs_update = false;
 
 	// Mesh Data, stored inline
@@ -270,7 +270,7 @@ void object_update_storage_buffer(Object& in_object)
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
 
-	ObjectData_t object_data = {
+	lighting_ObjectData_t object_data = {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
 		.rotation_matrix = rotation_matrix,
 	};
@@ -278,7 +278,7 @@ void object_update_storage_buffer(Object& in_object)
 	in_object.storage_buffer.update_gpu_buffer(
 		(sg_range){
 			.ptr = &object_data,
-			.size = sizeof(ObjectData_t),
+			.size = sizeof(lighting_ObjectData_t),
 		}
 	);
 }
@@ -305,10 +305,10 @@ Object object_create(
 		.current_transform = transform,
 
 		// Create our dynamic storage buffer and mark it for update later on the game thread
-		.storage_buffer = GpuBuffer((GpuBufferDesc<ObjectData_t>){
+		.storage_buffer = GpuBuffer((GpuBufferDesc<lighting_ObjectData_t>){
 			.data = nullptr,
 			.data_size = 0, 
-			.max_size = sizeof(ObjectData_t),
+			.max_size = sizeof(lighting_ObjectData_t),
 			.type = SG_BUFFERTYPE_STORAGEBUFFER,
 			.is_dynamic = true,
 			.label = "Object::storage_buffer",
