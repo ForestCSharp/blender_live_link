@@ -11,6 +11,8 @@ mkdir bin/shaders
 
 OS_ARG=$1
 
+./compile_shaders.sh $OS_ARG
+
 echo OS in game/build.sh is $OS_ARG
 
 if [[ $OS_ARG = Windows ]]; then
@@ -33,9 +35,6 @@ if [[ $OS_ARG = Windows ]]; then
 				--std=c++20 \
 				-I src 
 	fi
-
-	# Sokol shader compile (Windows)
-	./tools/sokol-tools/bin/win32/sokol-shdc.exe -i data/shaders/basic_draw.glsl -o bin/shaders/basic_draw.compiled.h --slang hlsl5
 
 	# Main Windows Build
 	clang src/main.cpp \
@@ -71,9 +70,6 @@ elif [[ $OS_ARG = Mac ]]; then
 				--std=c++20 \
 				-I src 
 	fi
-
-	# Sokol shader compile (Mac)
-	./tools/sokol-tools/bin/osx_arm64/sokol-shdc -i data/shaders/basic_draw.glsl -o bin/shaders/basic_draw.compiled.h --slang metal_macos
 
 	# Main Mac Build
 	clang src/main.cpp \
