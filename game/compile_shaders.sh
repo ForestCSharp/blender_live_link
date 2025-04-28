@@ -21,9 +21,16 @@ else
 fi
 
 for file in *.glsl; do
+	preprocessed=$SCRIPT_DIR/bin/shaders/${file%.glsl}.preprocessed.glsl
 	output="$SCRIPT_DIR/bin/shaders/${file%.glsl}.compiled.h" 
+
 	echo "compiling $file to $output"
-	$SOKOL_SHDC -i $file -o $output --slang $SOKOL_SLANG --module ${file%.glsl}
+
+	# preprocess file
+	clang -E -P -x c "$file" -o $preprocessed
+	
+	# run sokol_shdc on preprocessed file
+	$SOKOL_SHDC -i $preprocessed -o $output --slang $SOKOL_SLANG --module ${file%.glsl}
 done
 
 popd

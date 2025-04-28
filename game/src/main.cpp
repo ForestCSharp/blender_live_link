@@ -28,6 +28,9 @@ using std::optional;
 #include <atomic>
 using std::atomic;
 
+// For C++ std::function
+#include <functional>
+
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
 using ankerl::unordered_dense::map;
@@ -75,7 +78,7 @@ protected:
 
 // Generated Shader Files
 #include "lighting.compiled.h"
-#include "ssao.compiled.h"
+#include "tonemapping.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -144,20 +147,52 @@ struct Camera {
 	HMM_Vec3 up;
 };
 
+struct FullscreenPassDesc {
+	sg_shader shader;
+	const char* label;
+};
+
+struct FullscreenPass {
+	sg_pipeline pipeline;	
+
+	void init(const FullscreenPassDesc& in_pass_desc)
+	{	
+		pipeline = sg_make_pipeline((sg_pipeline_desc){
+			.shader = in_pass_desc.shader,
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+				.write_enabled = false,
+			},
+			.label = in_pass_desc.label,
+		});
+	}
+
+	void execute(sg_pass in_pass, std::function<void()> in_callback)
+	{
+		sg_begin_pass(in_pass);
+		sg_apply_pipeline(pipeline);
+
+		in_callback();
+
+		sg_end_pass();
+	}
+};
+
 struct {
 	int width;
 	int height;
 
 	// Offscreen Rendering
+	sg_attachments offscreen_attachments;
 	sg_image color_image;
 	sg_image depth_image;
 	sg_sampler sampler;
-	sg_attachments offscreen_attachments;
 
 	int sample_count = 1;
 
     sg_pipeline lighting_pipeline;
-	sg_pipeline ssao_pipeline;
+
+	FullscreenPass tonemapping_pass;
 
 	atomic<bool> game_running = true;
 	atomic<bool> blender_data_loaded = false;
@@ -531,6 +566,12 @@ void handle_resize()
 	
 		state.depth_image = sg_make_image(&depth_image_desc);
 
+		FullscreenPassDesc tonemapping_pass_desc = {
+			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
+			.label = "tonemapping"
+		};
+		state.tonemapping_pass.init(tonemapping_pass_desc);
+
 		if (state.offscreen_attachments.id != SG_INVALID_ID)
 		{
 			sg_destroy_attachments(state.offscreen_attachments);
@@ -581,15 +622,6 @@ void init(void)
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
         },
         .label = "lighting-pipeline"
-    });
-
-    state.ssao_pipeline = sg_make_pipeline((sg_pipeline_desc){
-        .shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
-        .cull_mode = SG_CULLMODE_NONE,
-        .depth = {
-            .write_enabled = false,
-        },
-        .label = "ssao-pipeline"
     });
 
 	// setup sokol-debugtext
@@ -685,6 +717,7 @@ void frame(void)
 	// Receive any Reset Messages
 	while(optional<bool> received_reset = state.reset.receive())
 	{
+		state.blender_data_loaded = false;
 		state.needs_light_data_update = true;
 
 		for (auto& [unique_id, object] : state.objects)
@@ -782,19 +815,7 @@ void frame(void)
 
 	// Rendering
 	{
-		{	// Lighting Pass	
-			sg_begin_pass((sg_pass)
-				{
-				.attachments = state.offscreen_attachments,
-				.action = {
-					.colors[0] = {
-						.load_action = SG_LOADACTION_CLEAR,
-						.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
-					},
-				},
-				//.swapchain = sglue_swapchain()
-			});
-
+		{
 			// Run initially, and then only if our updates from blender encounter a light
 			if (state.needs_light_data_update)
 			{
@@ -918,117 +939,141 @@ void frame(void)
 				}
 			}
 
-			if (!state.blender_data_loaded)
-			{	
-				sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
-				sdtx_origin(1.0f, 2.0f);
-				sdtx_home();
-				draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
-				sdtx_draw();
-			}
-			else
-			{
-				lighting_vs_params_t vs_params;
-				const float w = sapp_widthf();
-				const float h = sapp_heightf();
-				const float t = (float)(sapp_frame_duration() * 60.0);
-				HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
-
-				Camera& camera = state.camera;
-				HMM_Vec3 target = camera.position + camera.forward * 10;
-				HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
-				HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-				vs_params.vp = view_proj;
-
-				sg_apply_pipeline(state.lighting_pipeline);
-
-				// Apply Vertex Uniforms
-				sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-				// Apply Fragment Uniforms
-				sg_apply_uniforms(1, SG_RANGE(state.fs_params));
-
-				// Get our jolt body interface
-				BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
-
-				for (auto& [unique_id, object] : state.objects)
-				{
-					if (!object.visibility)
-					{
-						continue;
-					}
-
-					if (object.has_rigid_body)
-					{
-						if (object.rigid_body.jolt_body)
-						{
-							const BodyID body_id = object.rigid_body.jolt_body->GetID();
-							JPH::RVec3 body_position;
-							JPH::Quat body_rotation;
-							body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
-
-							// Update Transform location and rotation and mark storage buffer for update
-							Transform& transform = object.current_transform;
-							transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-							transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-							object.storage_buffer_needs_update = true;
-						}
-					}
-
-					if (object.storage_buffer_needs_update)
-					{
-						object.storage_buffer_needs_update = false;
-						object_update_storage_buffer(object);
-					}
-
-					if (object.has_mesh)
-					{
-						Mesh& mesh = object.mesh;
-						sg_bindings bindings = {
-							.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-							.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-							.storage_buffers = {
-								[0] = object.storage_buffer.get_gpu_buffer(),
-								[1] = state.point_lights_buffer.get_gpu_buffer(),
-								[2] = state.spot_lights_buffer.get_gpu_buffer(),
-							},
-						};
-						sg_apply_bindings(&bindings);
-						sg_draw(0, mesh.index_count, 1);
-					}
-
-					if (object.has_light)
-					{
-						//FCS TODO: Draw Light Icon
-					}
-				}
-			}
-
-			sg_end_pass();
-		}
-
-		{	//SSAO Pass
+			//Lighting Pass 
 			sg_begin_pass((sg_pass)
-				{
+			{
+				.attachments = state.offscreen_attachments,
 				.action = {
 					.colors[0] = {
 						.load_action = SG_LOADACTION_CLEAR,
 						.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
 					},
 				},
+			});
+
+			lighting_vs_params_t vs_params;
+			const float w = sapp_widthf();
+			const float h = sapp_heightf();
+			const float t = (float)(sapp_frame_duration() * 60.0);
+			HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
+
+			Camera& camera = state.camera;
+			HMM_Vec3 target = camera.position + camera.forward * 10;
+			HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
+			HMM_Mat4 view_proj = HMM_MulM4(proj, view);
+			vs_params.vp = view_proj;
+
+			sg_apply_pipeline(state.lighting_pipeline);
+
+			// Apply Vertex Uniforms
+			sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+			// Apply Fragment Uniforms
+			sg_apply_uniforms(1, SG_RANGE(state.fs_params));
+
+			// Get our jolt body interface
+			BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
+			for (auto& [unique_id, object] : state.objects)
+			{
+				if (!object.visibility)
+				{
+					continue;
+				}
+
+				if (object.has_rigid_body)
+				{
+					if (object.rigid_body.jolt_body)
+					{
+						const BodyID body_id = object.rigid_body.jolt_body->GetID();
+						JPH::RVec3 body_position;
+						JPH::Quat body_rotation;
+						body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+						// Update Transform location and rotation and mark storage buffer for update
+						Transform& transform = object.current_transform;
+						transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+						transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+						object.storage_buffer_needs_update = true;
+					}
+				}
+
+				if (object.storage_buffer_needs_update)
+				{
+					object.storage_buffer_needs_update = false;
+					object_update_storage_buffer(object);
+				}
+
+				if (object.has_mesh)
+				{
+					Mesh& mesh = object.mesh;
+					sg_bindings bindings = {
+						.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
+						.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+						.storage_buffers = {
+							[0] = object.storage_buffer.get_gpu_buffer(),
+							[1] = state.point_lights_buffer.get_gpu_buffer(),
+							[2] = state.spot_lights_buffer.get_gpu_buffer(),
+						},
+					};
+					sg_apply_bindings(&bindings);
+					sg_draw(0, mesh.index_count, 1);
+				}
+
+				if (object.has_light)
+				{
+					//FCS TODO: Draw Light Icon
+				}
+			}	
+
+			sg_end_pass();
+		}
+
+		//TODO: SSAO Pass Here
+
+		{ // Tonemapping Pass
+			state.tonemapping_pass.execute(
+				// Pass Def
+				(sg_pass)
+				{
+					// Render to swapchain
+					.swapchain = sglue_swapchain()
+				},
+				// Code to Execute Within Pass
+				[&]()
+				{	
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = state.color_image,
+						.samplers[0] = state.sampler,
+					};
+
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		{ // Debug Text
+			sg_begin_pass((sg_pass)
+			{
+				.action = {
+					.colors[0] = {
+						.load_action = SG_LOADACTION_LOAD,
+					},
+				},
+				// Render to swapchain
 				.swapchain = sglue_swapchain()
 			});
 
-			sg_apply_pipeline(state.ssao_pipeline);
-
-			sg_bindings bindings = (sg_bindings){
-				.images[0] = state.color_image,
-				.samplers[0] = state.sampler,
-			};
-
-			sg_apply_bindings(&bindings);
-
-			sg_draw(0,6,1);
+			if (!state.blender_data_loaded)
+			{
+				sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
+				sdtx_origin(1.0f, 2.0f);
+				sdtx_home();
+				draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
+				sdtx_draw();
+			}
 
 			sg_end_pass();
 		}
