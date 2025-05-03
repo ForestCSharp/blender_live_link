@@ -1,5 +1,8 @@
 
 TODO
+
+	- Add another RenderPass type for non-fullscreen passes
+
 	- Clean up dynamic gameplay component system. Make sure all the per-type stuff stays together
 		- maybe an init class method?
 	- Proper rendering pass setup

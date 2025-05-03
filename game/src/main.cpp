@@ -28,6 +28,8 @@ using std::optional;
 #include <atomic>
 using std::atomic;
 
+#include <string>
+
 // For C++ std::function
 #include <functional>
 
@@ -79,12 +81,16 @@ protected:
 // Generated Shader Files
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
+#include "blur.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
 
 // Thread-Safe Channel
 #include "network/channel.h"
+
+// Rendering Sample Count
+#define SAMPLE_COUNT 1
 
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
@@ -147,30 +153,127 @@ struct Camera {
 	HMM_Vec3 up;
 };
 
-struct FullscreenPassDesc {
-	sg_shader shader;
-	const char* label;
+struct RenderPassOutputDesc {
+	sg_pixel_format pixel_format	= _SG_PIXELFORMAT_DEFAULT;
+	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
+	sg_store_action store_action	= SG_STOREACTION_STORE;
+	sg_color clear_value			= {0.0f, 0.0f, 0.0f, 1.0f };
 };
 
-struct FullscreenPass {
-	sg_pipeline pipeline;	
+struct RenderPassDesc {
+	sg_pipeline_desc pipeline_desc;
+	int num_outputs = 0;
+	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
+	bool render_to_swapchain = false;
+};
 
-	void init(const FullscreenPassDesc& in_pass_desc)
+struct RenderPass {
+public: // Variables
+	sg_pipeline pipeline;
+
+	sg_image color_outputs[SG_MAX_COLOR_ATTACHMENTS];
+
+	//FCS TODO: Make Optional
+	sg_image depth_image;
+
+	sg_attachments attachments;
+
+	RenderPassDesc desc;
+
+public: // Functions
+	void init(const RenderPassDesc& in_desc)
 	{	
-		pipeline = sg_make_pipeline((sg_pipeline_desc){
-			.shader = in_pass_desc.shader,
-			.cull_mode = SG_CULLMODE_NONE,
-			.depth = {
-				.write_enabled = false,
-			},
-			.label = in_pass_desc.label,
-		});
+		assert(in_desc.num_outputs > 0 || in_desc.render_to_swapchain);
+
+		desc = in_desc;
+		pipeline = sg_make_pipeline(in_desc.pipeline_desc);
+		handle_resize();
 	}
 
-	void execute(sg_pass in_pass, std::function<void()> in_callback)
+	void handle_resize()
 	{
-		sg_begin_pass(in_pass);
-		sg_apply_pipeline(pipeline);
+		int width = sapp_width();
+		int height = sapp_height();
+		sg_swapchain swapchain = sglue_swapchain();
+
+		// Create render target if we aren't rendering directly to swapchain
+		if (!desc.render_to_swapchain)
+		{
+			sg_attachments_desc attachments_desc = {};
+
+			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			{
+				const RenderPassOutputDesc& output_desc = desc.outputs[output_idx];
+				sg_image& color_image = color_outputs[output_idx];	
+				if (color_image.id != SG_INVALID_ID)
+				{
+					sg_destroy_image(color_image);
+				}
+
+				sg_image_desc color_image_desc = {
+					.render_target = true,
+					.width = width,
+					.height = height,
+					.pixel_format = output_desc.pixel_format,
+					.sample_count = SAMPLE_COUNT,
+					.label = "color_image"
+				};
+			
+				color_image = sg_make_image(&color_image_desc);
+
+				attachments_desc.colors[output_idx].image = color_image;
+			}
+
+			if (depth_image.id != SG_INVALID_ID)
+			{
+				sg_destroy_image(depth_image);
+			}
+
+			sg_image_desc depth_image_desc = {
+				.render_target = true,
+				.width = width,
+				.height = height,
+				.pixel_format = swapchain.depth_format,
+				.sample_count = SAMPLE_COUNT,
+				.label = "depth-image"
+			};
+
+			depth_image = sg_make_image(&depth_image_desc);
+			attachments_desc.depth_stencil.image = depth_image;
+		
+			if (attachments.id != SG_INVALID_ID)
+			{
+				sg_destroy_attachments(attachments);
+			}
+
+			attachments = sg_make_attachments(attachments_desc);
+		}
+	}
+
+	void execute(std::function<void()> in_callback)
+	{
+		sg_pass pass = {
+			.attachments = !desc.render_to_swapchain	? attachments		: (sg_attachments){},
+			.swapchain = desc.render_to_swapchain	? sglue_swapchain()	: (sg_swapchain){},
+		};
+
+		for (int i = 0; i < SG_MAX_COLOR_ATTACHMENTS; ++i)
+		{
+			const RenderPassOutputDesc& output_desc = desc.outputs[i];
+
+			pass.action.colors[i] = {
+				.load_action = output_desc.load_action,
+				.store_action = output_desc.store_action,
+				.clear_value = output_desc.clear_value,
+			};	
+		}
+
+		sg_begin_pass(pass);
+
+		if (pipeline.id != SG_INVALID_ID)
+		{
+			sg_apply_pipeline(pipeline);
+		}
 
 		in_callback();
 
@@ -182,17 +285,13 @@ struct {
 	int width;
 	int height;
 
-	// Offscreen Rendering
-	sg_attachments offscreen_attachments;
-	sg_image color_image;
-	sg_image depth_image;
+	// Render Passes
+	RenderPass lighting_pass;
+	RenderPass blur_pass;
+	RenderPass tonemapping_pass;
+
+	// Texture Sampler
 	sg_sampler sampler;
-
-	int sample_count = 1;
-
-    sg_pipeline lighting_pipeline;
-
-	FullscreenPass tonemapping_pass;
 
 	atomic<bool> game_running = true;
 	atomic<bool> blender_data_loaded = false;
@@ -534,54 +633,11 @@ void handle_resize()
 
 		sg_swapchain swapchain = sglue_swapchain();
 	
-		sg_image_desc color_image_desc = {
-	        .render_target = true,
-	        .width = state.width,
-	        .height = state.height,
-	        .pixel_format = swapchain.color_format,
-	        .sample_count = state.sample_count,
-	        .label = "color-image"
-	    };
-
-		if (state.color_image.id != SG_INVALID_ID)
-		{
-			sg_destroy_image(state.color_image);
-		}
-	
-		state.color_image = sg_make_image(&color_image_desc);
-	
-		sg_image_desc depth_image_desc = {
-	        .render_target = true,
-	        .width = state.width,
-	        .height = state.height,
-	        .pixel_format = swapchain.depth_format,
-	        .sample_count = state.sample_count,
-	        .label = "depth-image"
-	    };
-
-		if (state.depth_image.id != SG_INVALID_ID)
-		{
-			sg_destroy_image(state.depth_image);
-		}
-	
-		state.depth_image = sg_make_image(&depth_image_desc);
-
-		FullscreenPassDesc tonemapping_pass_desc = {
-			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
-			.label = "tonemapping"
-		};
-		state.tonemapping_pass.init(tonemapping_pass_desc);
-
-		if (state.offscreen_attachments.id != SG_INVALID_ID)
-		{
-			sg_destroy_attachments(state.offscreen_attachments);
-		}
-
-		state.offscreen_attachments = sg_make_attachments((sg_attachments_desc){
-			.colors[0].image = state.color_image,
-			.depth_stencil.image = state.depth_image,
-			.label = "offscreen-attachments",
-		});
+		//FCS TODO: Keep these in an array and just iterate here.
+		//FCS TODO: Encode execute function on init so we can just iterate over array?
+		state.lighting_pass.handle_resize();
+		state.blur_pass.handle_resize();
+		state.tonemapping_pass.handle_resize();
 	}
 }
 
@@ -604,26 +660,6 @@ void init(void)
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
 	state.live_link_thread = std::thread(live_link_thread_function);
 	
-    /* create pipeline object */
-    state.lighting_pipeline = sg_make_pipeline((sg_pipeline_desc){
-        .layout = {
-            /* test to provide buffer stride, but no attr offsets */
-            .buffers[0].stride = 32,
-            .attrs = {
-                [ATTR_lighting_position].format = SG_VERTEXFORMAT_FLOAT4,
-                [ATTR_lighting_normal].format   = SG_VERTEXFORMAT_FLOAT4
-            }
-        },
-        .shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
-        .index_type = SG_INDEXTYPE_UINT32,
-        .cull_mode = SG_CULLMODE_NONE,
-        .depth = {
-            .write_enabled = true,
-            .compare = SG_COMPAREFUNC_LESS_EQUAL,
-        },
-        .label = "lighting-pipeline"
-    });
-
 	// setup sokol-debugtext
     sdtx_setup((sdtx_desc_t){
         .fonts = {
@@ -640,9 +676,76 @@ void init(void)
 	state.sampler = sg_make_sampler((sg_sampler_desc){
         .min_filter = SG_FILTER_LINEAR,
         .mag_filter = SG_FILTER_LINEAR,
-        .wrap_u = SG_WRAP_REPEAT,
-        .wrap_v = SG_WRAP_REPEAT,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
     });
+
+	sg_swapchain swapchain = sglue_swapchain();
+
+	RenderPassDesc lighting_pass_desc = {
+		.pipeline_desc = {
+			.layout = {
+				/* test to provide buffer stride, but no attr offsets */
+				.buffers[0].stride = 32,
+				.attrs = {
+				   [ATTR_lighting_position].format = SG_VERTEXFORMAT_FLOAT4,
+				   [ATTR_lighting_normal].format   = SG_VERTEXFORMAT_FLOAT4
+			   }
+			},
+			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
+			.index_type = SG_INDEXTYPE_UINT32,
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+							  .write_enabled = true,
+							  .compare = SG_COMPAREFUNC_LESS_EQUAL,
+						  },
+			.label = "lighting-pipeline"
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.25, 0.25, 0.25, 1.0},
+		},
+	};
+	state.lighting_pass.init(lighting_pass_desc);
+
+	RenderPassDesc blur_pass_desc = {
+		.pipeline_desc = {
+			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+						.write_enabled = false,
+					},
+			.label = "blur-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
+	};
+	state.blur_pass.init(blur_pass_desc);
+
+
+	RenderPassDesc tonemapping_pass_desc = {
+		.pipeline_desc = {
+			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+						.write_enabled = false,
+					},
+			.label = "tonemapping-pipeline",
+		},
+		.render_to_swapchain = true,
+	};
+	state.tonemapping_pass.init(tonemapping_pass_desc);
 
 	handle_resize();
 }
@@ -938,112 +1041,97 @@ void frame(void)
 					);
 				}
 			}
-
-			//Lighting Pass 
-			sg_begin_pass((sg_pass)
-			{
-				.attachments = state.offscreen_attachments,
-				.action = {
-					.colors[0] = {
-						.load_action = SG_LOADACTION_CLEAR,
-						.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f }
-					},
-				},
-			});
-
-			lighting_vs_params_t vs_params;
-			const float w = sapp_widthf();
-			const float h = sapp_heightf();
-			const float t = (float)(sapp_frame_duration() * 60.0);
-			HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
-
-			Camera& camera = state.camera;
-			HMM_Vec3 target = camera.position + camera.forward * 10;
-			HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
-			HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-			vs_params.vp = view_proj;
-
-			sg_apply_pipeline(state.lighting_pipeline);
-
-			// Apply Vertex Uniforms
-			sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-			// Apply Fragment Uniforms
-			sg_apply_uniforms(1, SG_RANGE(state.fs_params));
-
-			// Get our jolt body interface
-			BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
-
-			for (auto& [unique_id, object] : state.objects)
-			{
-				if (!object.visibility)
-				{
-					continue;
-				}
-
-				if (object.has_rigid_body)
-				{
-					if (object.rigid_body.jolt_body)
-					{
-						const BodyID body_id = object.rigid_body.jolt_body->GetID();
-						JPH::RVec3 body_position;
-						JPH::Quat body_rotation;
-						body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
-
-						// Update Transform location and rotation and mark storage buffer for update
-						Transform& transform = object.current_transform;
-						transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-						transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-						object.storage_buffer_needs_update = true;
-					}
-				}
-
-				if (object.storage_buffer_needs_update)
-				{
-					object.storage_buffer_needs_update = false;
-					object_update_storage_buffer(object);
-				}
-
-				if (object.has_mesh)
-				{
-					Mesh& mesh = object.mesh;
-					sg_bindings bindings = {
-						.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-						.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-						.storage_buffers = {
-							[0] = object.storage_buffer.get_gpu_buffer(),
-							[1] = state.point_lights_buffer.get_gpu_buffer(),
-							[2] = state.spot_lights_buffer.get_gpu_buffer(),
-						},
-					};
-					sg_apply_bindings(&bindings);
-					sg_draw(0, mesh.index_count, 1);
-				}
-
-				if (object.has_light)
-				{
-					//FCS TODO: Draw Light Icon
-				}
-			}	
-
-			sg_end_pass();
 		}
 
-		//TODO: SSAO Pass Here
-
-		{ // Tonemapping Pass
-			state.tonemapping_pass.execute(
-				// Pass Def
-				(sg_pass)
+		{ // Lighting
+			state.lighting_pass.execute(
+				[&]()
 				{
-					// Render to swapchain
-					.swapchain = sglue_swapchain()
-				},
-				// Code to Execute Within Pass
+					lighting_vs_params_t vs_params;
+					const float w = sapp_widthf();
+					const float h = sapp_heightf();
+					const float t = (float)(sapp_frame_duration() * 60.0);
+					HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
+
+					Camera& camera = state.camera;
+					HMM_Vec3 target = camera.position + camera.forward * 10;
+					HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
+					HMM_Mat4 view_proj = HMM_MulM4(proj, view);
+					vs_params.vp = view_proj;
+
+					// Apply Vertex Uniforms
+					sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+					// Apply Fragment Uniforms
+					sg_apply_uniforms(1, SG_RANGE(state.fs_params));
+
+					// Get our jolt body interface
+					BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
+					for (auto& [unique_id, object] : state.objects)
+					{
+						if (!object.visibility)
+						{
+							continue;
+						}
+
+						if (object.has_rigid_body)
+						{
+							if (object.rigid_body.jolt_body)
+							{
+								const BodyID body_id = object.rigid_body.jolt_body->GetID();
+								JPH::RVec3 body_position;
+								JPH::Quat body_rotation;
+								body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+								// Update Transform location and rotation and mark storage buffer for update
+								Transform& transform = object.current_transform;
+								transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+								transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+								object.storage_buffer_needs_update = true;
+							}
+						}
+
+						if (object.storage_buffer_needs_update)
+						{
+							object.storage_buffer_needs_update = false;
+							object_update_storage_buffer(object);
+						}
+
+						if (object.has_mesh)
+						{
+							Mesh& mesh = object.mesh;
+							sg_bindings bindings = {
+								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
+								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+								.storage_buffers = {
+									[0] = object.storage_buffer.get_gpu_buffer(),
+									[1] = state.point_lights_buffer.get_gpu_buffer(),
+									[2] = state.spot_lights_buffer.get_gpu_buffer(),
+								},
+							};
+							sg_apply_bindings(&bindings);
+							sg_draw(0, mesh.index_count, 1);
+						}
+
+						if (object.has_light)
+						{
+							//FCS TODO: Draw Light Icon
+						}
+					}	
+				}
+			);
+		}
+
+		//FCS TODO: SSAO Pass Here. Need to output more targets from lighting pass
+
+		//FCS TODO: Blur SSAO result, then we'll need to combine that blurred result with lighting result before tonemapping
+		{ // Blur
+			state.blur_pass.execute(
 				[&]()
 				{	
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.color_image,
+						.images[0] = state.lighting_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
@@ -1054,6 +1142,23 @@ void frame(void)
 			);
 		}
 
+		{ // Tonemapping Pass
+			state.tonemapping_pass.execute(
+				[&]()
+				{	
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = state.lighting_pass.color_outputs[0],
+						.samplers[0] = state.sampler,
+					};
+
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		//FCS TODO: This is the second render to the swapchain. Fix this
 		{ // Debug Text
 			sg_begin_pass((sg_pass)
 			{
@@ -1133,7 +1238,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		.event_cb = event,
         .width = 800,
         .height = 600,
-        .sample_count = state.sample_count,
+        .sample_count = SAMPLE_COUNT,
         .window_title = "Blender Game",
         .icon.sokol_default = true,
         .logger.func = slog_func,

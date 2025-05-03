@@ -17,6 +17,7 @@ echo OS in game/build.sh is $OS_ARG
 
 if [[ $OS_ARG = Windows ]]; then
 	# Sokol Windows Build
+	rm -rf bin/game.exe
 
 	# Compile Sokol Library
 	clang -c src/sokol/sokol_single_file.c \
@@ -24,7 +25,6 @@ if [[ $OS_ARG = Windows ]]; then
 			-I src/sokol/ \
 			-D SOKOL_D3D11 \
 			-o bin/sokol.lib
-
 
 	# Compile jolt as library, but only if it doesn't exist 
 	if [ ! -f ./bin/jolt.lib ]; then
@@ -54,6 +54,7 @@ if [[ $OS_ARG = Windows ]]; then
 
 elif [[ $OS_ARG = Mac ]]; then
 	# Sokol Mac Build
+	rm -rf bin/game
 
 	# Compile Sokol library
 	clang -c src/sokol/sokol_single_file.c \
