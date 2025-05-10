@@ -1,35 +1,8 @@
+
 @ctype mat4 HMM_Mat4
 
-@vs vs
-
-layout(binding=0) uniform vs_params {
-    mat4 vp;
-};
-
-struct ObjectData
-{
-	mat4 model_matrix;
-	mat4 rotation_matrix;
-};
-
-layout(binding=0) readonly buffer ObjectDataBuffer {
-	ObjectData object_data_array[];
-};
-
-in vec4 position;
-in vec4 normal;
-
-out vec4 world_position;
-out vec4 world_normal;
-out vec4 color;
-
-void main() {
-	world_position = object_data_array[0].model_matrix * position;
-	world_normal = object_data_array[0].rotation_matrix * normal;
-    gl_Position = vp * world_position;
-    color = vec4(1,1,1,1);
-}
-@end
+// Fullscreen Vertex Shader
+#include "fullscreen_vs.glslh"
 
 @fs fs
 
@@ -60,24 +33,24 @@ struct SpotLight {
 	PADDING(1);
 };
 
-layout(binding=1) uniform fs_params {
+layout(binding=0) uniform texture2D color_tex;
+layout(binding=1) uniform texture2D position_tex;
+layout(binding=2) uniform texture2D normal_tex;
+
+layout(binding=0) uniform sampler tex_sampler;
+
+layout(binding=0) uniform fs_params {
     int num_point_lights;
 	int num_spot_lights;
 };
 
-layout(binding=1) readonly buffer PointLightsBuffer {
+layout(binding=0) readonly buffer PointLightsBuffer {
 	PointLight point_lights[];
 };
 
-layout(binding=2) readonly buffer SpotLightsBuffer {
+layout(binding=1) readonly buffer SpotLightsBuffer {
 	SpotLight spot_lights[];
 };
-
-in vec4 world_position;
-in vec4 world_normal;
-in vec4 color;
-
-out vec4 frag_color;
 
 float vec2_length_squared(vec2 v)
 {
@@ -162,20 +135,32 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 	return vec4(0,0,0,1);
 }
 
-void main() {
+in vec2 uv;
+
+out vec4 frag_color;
+
+void main()
+{
+	vec4 sampled_color		= texture(sampler2D(color_tex, tex_sampler), uv);
+	vec4 sampled_normal		= texture(sampler2D(normal_tex, tex_sampler), uv);
+	vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
+
 	vec4 final_color = vec4(0);
 	for (int i = 0; i < num_point_lights; ++i)
 	{
-		final_color += sample_point_light(point_lights[i], world_position.xyz, world_normal.xyz, color);
+		final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
 	}
 
 	for (int i = 0; i < num_spot_lights; ++i)
 	{
-		final_color += sample_spot_light(spot_lights[i], world_position.xyz, world_normal.xyz, color);
+		final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
 	}
+
+	//TODO: apply ssao
 
 	frag_color = final_color;
 }
+
 @end
 
 @program lighting vs fs

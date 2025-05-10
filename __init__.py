@@ -420,7 +420,7 @@ class LiveLinkView3DPanel(bpy.types.Panel):
         scene = context.scene
         layout.operator("live_link.send_full_update", text="Full Update")  
         layout.operator("live_link.send_reset", text="Send Reset")  
-        layout.operator("live_link.reset_connection", text="Reset Connnection")
+        layout.operator("live_link.reset_connection", text="Reset Connection")
 # End LiveLinkView3DPanel
 
 def menu_func(self, context):

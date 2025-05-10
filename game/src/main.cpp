@@ -79,9 +79,10 @@ protected:
 #define FONT_ORIC  (5)
 
 // Generated Shader Files
+#include "geometry.compiled.h"
+#include "blur.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
-#include "blur.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -157,7 +158,7 @@ struct RenderPassOutputDesc {
 	sg_pixel_format pixel_format	= _SG_PIXELFORMAT_DEFAULT;
 	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
 	sg_store_action store_action	= SG_STOREACTION_STORE;
-	sg_color clear_value			= {0.0f, 0.0f, 0.0f, 1.0f };
+	sg_color clear_value			= {0.0f, 0.0f, 0.0f, 0.0f };
 };
 
 struct RenderPassDesc {
@@ -286,8 +287,10 @@ struct {
 	int height;
 
 	// Render Passes
-	RenderPass lighting_pass;
+	RenderPass geometry_pass;
+	//RenderPass ssao_pass;
 	RenderPass blur_pass;
+	RenderPass lighting_pass;
 	RenderPass tonemapping_pass;
 
 	// Texture Sampler
@@ -634,9 +637,9 @@ void handle_resize()
 		sg_swapchain swapchain = sglue_swapchain();
 	
 		//FCS TODO: Keep these in an array and just iterate here.
-		//FCS TODO: Encode execute function on init so we can just iterate over array?
-		state.lighting_pass.handle_resize();
+		state.geometry_pass.handle_resize();
 		state.blur_pass.handle_resize();
+		state.lighting_pass.handle_resize();
 		state.tonemapping_pass.handle_resize();
 	}
 }
@@ -682,34 +685,58 @@ void init(void)
 
 	sg_swapchain swapchain = sglue_swapchain();
 
-	RenderPassDesc lighting_pass_desc = {
+	//FCS TODO: shared info in pipeline desc and render pass desc re: outputs 
+	const i32 num_geometry_pass_outputs = 3;
+	RenderPassDesc geometry_pass_desc = {
 		.pipeline_desc = {
 			.layout = {
 				/* test to provide buffer stride, but no attr offsets */
 				.buffers[0].stride = 32,
 				.attrs = {
-				   [ATTR_lighting_position].format = SG_VERTEXFORMAT_FLOAT4,
-				   [ATTR_lighting_normal].format   = SG_VERTEXFORMAT_FLOAT4
+				   [ATTR_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
+				   [ATTR_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4
 			   }
 			},
-			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
+			.shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend())),
 			.index_type = SG_INDEXTYPE_UINT32,
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-							  .write_enabled = true,
-							  .compare = SG_COMPAREFUNC_LESS_EQUAL,
-						  },
-			.label = "lighting-pipeline"
+				.write_enabled = true,
+				.compare = SG_COMPAREFUNC_LESS_EQUAL,
+			},
+			.color_count = num_geometry_pass_outputs,
+			.colors[0] = {
+				.pixel_format = swapchain.color_format,
+			},
+			.colors[1] = {
+				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+			},
+			.colors[2] = {
+				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+			},
+			.label = "geometry-pipeline"
 		},
-		.num_outputs = 1,
+		.num_outputs = num_geometry_pass_outputs,
 		.outputs[0] = {
 			.pixel_format = swapchain.color_format,
 			.load_action = SG_LOADACTION_CLEAR,
 			.store_action = SG_STOREACTION_STORE,
 			.clear_value = {0.25, 0.25, 0.25, 1.0},
 		},
+		.outputs[1] = {
+			.pixel_format = SG_PIXELFORMAT_RGBA32F,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		},
+		.outputs[2] = {
+			.pixel_format = SG_PIXELFORMAT_RGBA32F,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		}
 	};
-	state.lighting_pass.init(lighting_pass_desc);
+	state.geometry_pass.init(geometry_pass_desc);
 
 	RenderPassDesc blur_pass_desc = {
 		.pipeline_desc = {
@@ -718,7 +745,7 @@ void init(void)
 			.depth = {
 					.pixel_format = swapchain.depth_format,
 					.compare = SG_COMPAREFUNC_ALWAYS,
-						.write_enabled = false,
+					.write_enabled = false,
 					},
 			.label = "blur-pipeline",
 		},
@@ -731,6 +758,25 @@ void init(void)
 	};
 	state.blur_pass.init(blur_pass_desc);
 
+	RenderPassDesc lighting_pass_desc = {
+		.pipeline_desc = {
+			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+				.pixel_format = swapchain.depth_format,
+				.compare = SG_COMPAREFUNC_ALWAYS,
+				.write_enabled = false,
+			},
+			.label = "lighting-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
+	};
+	state.lighting_pass.init(lighting_pass_desc);
 
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = {
@@ -1044,10 +1090,10 @@ void frame(void)
 		}
 
 		{ // Lighting
-			state.lighting_pass.execute(
+			state.geometry_pass.execute(
 				[&]()
 				{
-					lighting_vs_params_t vs_params;
+				    geometry_vs_params_t vs_params;
 					const float w = sapp_widthf();
 					const float h = sapp_heightf();
 					const float t = (float)(sapp_frame_duration() * 60.0);
@@ -1062,9 +1108,6 @@ void frame(void)
 					// Apply Vertex Uniforms
 					sg_apply_uniforms(0, SG_RANGE(vs_params));
 
-					// Apply Fragment Uniforms
-					sg_apply_uniforms(1, SG_RANGE(state.fs_params));
-
 					// Get our jolt body interface
 					BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
@@ -1075,21 +1118,18 @@ void frame(void)
 							continue;
 						}
 
-						if (object.has_rigid_body)
+						if (object.has_rigid_body && object.rigid_body.jolt_body)
 						{
-							if (object.rigid_body.jolt_body)
-							{
-								const BodyID body_id = object.rigid_body.jolt_body->GetID();
-								JPH::RVec3 body_position;
-								JPH::Quat body_rotation;
-								body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+							const BodyID body_id = object.rigid_body.jolt_body->GetID();
+							JPH::RVec3 body_position;
+							JPH::Quat body_rotation;
+							body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
 
-								// Update Transform location and rotation and mark storage buffer for update
-								Transform& transform = object.current_transform;
-								transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-								transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-								object.storage_buffer_needs_update = true;
-							}
+							// Update Transform location and rotation and mark storage buffer for update
+							Transform& transform = object.current_transform;
+							transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+							transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+							object.storage_buffer_needs_update = true;
 						}
 
 						if (object.storage_buffer_needs_update)
@@ -1131,7 +1171,7 @@ void frame(void)
 				[&]()
 				{	
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.lighting_pass.color_outputs[0],
+						.images[0] = state.geometry_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
@@ -1141,6 +1181,35 @@ void frame(void)
 				}
 			);
 		}
+
+		//FCS TODO: new lighting pass here
+
+		{ // Lighting Pass
+			state.lighting_pass.execute(
+				[&]()
+				{	
+					// Apply Fragment Uniforms
+					sg_apply_uniforms(0, SG_RANGE(state.fs_params));
+
+					sg_bindings bindings = {
+						.images = {
+							[0] = state.geometry_pass.color_outputs[0],
+							[1] = state.geometry_pass.color_outputs[1],
+							[2] = state.geometry_pass.color_outputs[2],
+							//FCS TODO: SSAO output
+						},
+						.samplers[0] = state.sampler,
+						.storage_buffers = {
+							[0] = state.point_lights_buffer.get_gpu_buffer(),
+							[1] = state.spot_lights_buffer.get_gpu_buffer(),
+						},
+					};
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}	
 
 		{ // Tonemapping Pass
 			state.tonemapping_pass.execute(
@@ -1156,7 +1225,7 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
-		}
+		}	
 
 		//FCS TODO: This is the second render to the swapchain. Fix this
 		{ // Debug Text
