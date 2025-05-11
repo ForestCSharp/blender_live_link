@@ -22,6 +22,9 @@
 #include <optional>
 using std::optional;
 
+// C++ std lib Random
+#include <random>
+
 // C++ std lib threading
 #include <thread>
 
@@ -80,6 +83,8 @@ protected:
 
 // Generated Shader Files
 #include "geometry.compiled.h"
+#include "../data/shaders/ssao_constants.h"
+#include "ssao.compiled.h"
 #include "blur.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
@@ -288,10 +293,14 @@ struct {
 
 	// Render Passes
 	RenderPass geometry_pass;
-	//RenderPass ssao_pass;
-	RenderPass blur_pass;
+	RenderPass ssao_pass;
+	RenderPass ssao_blur_pass;
 	RenderPass lighting_pass;
 	RenderPass tonemapping_pass;
+
+	// SSAO Noise Kernel texture
+	sg_image ssao_noise_texture;
+	ssao_fs_params_t ssao_fs_params;
 
 	// Texture Sampler
 	sg_sampler sampler;
@@ -307,7 +316,7 @@ struct {
 	Channel<bool> reset;
 
 	// Lighting fragment shader params
-	lighting_fs_params_t fs_params;
+	lighting_fs_params_t lighting_fs_params;
 
 	// Contains Lights Data packed up for gpu usage
 	bool needs_light_data_update = true;	
@@ -638,7 +647,8 @@ void handle_resize()
 	
 		//FCS TODO: Keep these in an array and just iterate here.
 		state.geometry_pass.handle_resize();
-		state.blur_pass.handle_resize();
+		state.ssao_pass.handle_resize();
+		state.ssao_blur_pass.handle_resize();
 		state.lighting_pass.handle_resize();
 		state.tonemapping_pass.handle_resize();
 	}
@@ -738,7 +748,80 @@ void init(void)
 	};
 	state.geometry_pass.init(geometry_pass_desc);
 
-	RenderPassDesc blur_pass_desc = {
+	RenderPassDesc ssao_pass_desc = {
+		.pipeline_desc = {
+			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+				.pixel_format = swapchain.depth_format,
+				.compare = SG_COMPAREFUNC_ALWAYS,
+				.write_enabled = false,
+			},
+			.label = "ssao-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		},
+	};
+	state.ssao_pass.init(ssao_pass_desc);
+
+	{	//SSAO Noise Texture
+		std::uniform_real_distribution<float> randomFloats(0.0, 1.0); // random floats between [0.0, 1.0]
+		std::default_random_engine generator;
+		HMM_Vec4 ssao_noise[SSAO_TEXTURE_SIZE];
+		for (u32 i = 0; i < SSAO_TEXTURE_SIZE; ++i)
+		{
+			ssao_noise[i] = HMM_V4(
+				randomFloats(generator) * 2.0f - 1.0f,
+				randomFloats(generator) * 2.0f - 1.0f, 
+				0.0f,
+				0.0f
+			);
+		}
+
+		sg_image_desc ssao_noise_desc = {
+			.width = SSAO_TEXTURE_WIDTH,
+			.height = SSAO_TEXTURE_WIDTH,
+			.pixel_format = SG_PIXELFORMAT_RGBA32F,
+			.usage = SG_USAGE_IMMUTABLE,
+			.sample_count = SAMPLE_COUNT,
+			.data.subimage[0][0].ptr = &ssao_noise,
+			.data.subimage[0][0].size = SSAO_TEXTURE_SIZE * sizeof(HMM_Vec4),
+			.label = "ssao_noise_texture"
+		};
+
+		state.ssao_noise_texture = sg_make_image(ssao_noise_desc);
+
+		// Init ssao_fs_params
+		state.ssao_fs_params = {
+			.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),	
+		};
+
+		//SSAO Kernel
+		for (u32 i = 0; i < SSAO_KERNEL_SIZE; ++i)
+		{
+			HMM_Vec3 sample = HMM_V3(
+				randomFloats(generator) * 2.0f - 1.0f,
+				randomFloats(generator) * 2.0f - 1.0f,
+				randomFloats(generator)
+			);
+			sample = HMM_NormV3(sample);
+			sample *= randomFloats(generator);
+
+			// scale samples s.t. they're more aligned to center of kernel
+			float scale = float(i) / (float) SSAO_KERNEL_SIZE;
+			scale = HMM_Lerp(0.1f, scale * scale, 1.0f);
+			sample *= scale;
+
+			state.ssao_fs_params.kernel_samples[i] = HMM_V4(sample.X, sample.Y, sample.Z, 0.0);
+		}
+	}
+
+	RenderPassDesc ssao_blur_pass_desc = {
 		.pipeline_desc = {
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
@@ -756,7 +839,7 @@ void init(void)
 			.store_action = SG_STOREACTION_STORE,
 		},
 	};
-	state.blur_pass.init(blur_pass_desc);
+	state.ssao_blur_pass.init(ssao_blur_pass_desc);
 
 	RenderPassDesc lighting_pass_desc = {
 		.pipeline_desc = {
@@ -1018,8 +1101,8 @@ void frame(void)
 
 								lighting_PointLight_t new_point_light = {};
 								const Transform& transform = object.current_transform;
-								memcpy(new_point_light.location, &transform.location, sizeof(float) * 4);
-								memcpy(new_point_light.color, &object.light.color, sizeof(float) * 3);
+								memcpy(&new_point_light.location, &transform.location, sizeof(float) * 4);
+								memcpy(&new_point_light.color, &object.light.color, sizeof(float) * 3);
 								new_point_light.color[3] = 1.0;
 								new_point_light.power = object.light.point.power;
 								state.point_lights.add(new_point_light);
@@ -1035,12 +1118,12 @@ void frame(void)
 
 								lighting_SpotLight_t new_spot_light = {};
 								const Transform& transform = object.current_transform;
-								memcpy(new_spot_light.location, &transform.location, sizeof(float) * 4);
-								memcpy(new_spot_light.color, &object.light.color, sizeof(float) * 3);
+								memcpy(&new_spot_light.location, &transform.location, sizeof(float) * 4);
+								memcpy(&new_spot_light.color, &object.light.color, sizeof(float) * 3);
 								new_spot_light.color[3] = 1.0;
 
 								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
+								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
 
 								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
 								new_spot_light.power = object.light.spot.power;
@@ -1063,47 +1146,52 @@ void frame(void)
 					}
 				}
 
-				state.fs_params.num_point_lights = state.point_lights.length();
-				printf("Num Point Lights: %i\n", state.fs_params.num_point_lights);
-				if (state.fs_params.num_point_lights > 0)
+				state.lighting_fs_params.num_point_lights = state.point_lights.length();
+				printf("Num Point Lights: %i\n", state.lighting_fs_params.num_point_lights);
+				if (state.lighting_fs_params.num_point_lights > 0)
 				{
 					state.point_lights_buffer.update_gpu_buffer(
 						(sg_range){
 							.ptr = state.point_lights.data(),
-							.size = sizeof(lighting_PointLight_t) * state.fs_params.num_point_lights,
+							.size = sizeof(lighting_PointLight_t) * state.lighting_fs_params.num_point_lights,
 						}
 					);
 				}
 
-				state.fs_params.num_spot_lights = state.spot_lights.length();	
-				printf("Num Spot Lights: %i\n", state.fs_params.num_spot_lights);
-				if (state.fs_params.num_spot_lights > 0)
+				state.lighting_fs_params.num_spot_lights = state.spot_lights.length();	
+				printf("Num Spot Lights: %i\n", state.lighting_fs_params.num_spot_lights);
+				if (state.lighting_fs_params.num_spot_lights > 0)
 				{
 					state.spot_lights_buffer.update_gpu_buffer(
 						(sg_range){
 							.ptr = state.spot_lights.data(),
-							.size = sizeof(lighting_SpotLight_t) * state.fs_params.num_spot_lights,
+							.size = sizeof(lighting_SpotLight_t) * state.lighting_fs_params.num_spot_lights,
 						}
 					);
 				}
 			}
 		}
 
+		// View + Projection matrix setup
+		const float w = sapp_widthf();
+		const float h = sapp_heightf();
+		const float t = (float)(sapp_frame_duration() * 60.0);
+		const float projection_near = 0.01f;
+		const float projection_far = 10000.0f;
+		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
+
+		Camera& camera = state.camera;
+		HMM_Vec3 target = camera.position + camera.forward * 10;
+		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
+		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+
 		{ // Lighting
 			state.geometry_pass.execute(
 				[&]()
 				{
 				    geometry_vs_params_t vs_params;
-					const float w = sapp_widthf();
-					const float h = sapp_heightf();
-					const float t = (float)(sapp_frame_duration() * 60.0);
-					HMM_Mat4 proj = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, 0.01f, 10000.0f);
-
-					Camera& camera = state.camera;
-					HMM_Vec3 target = camera.position + camera.forward * 10;
-					HMM_Mat4 view = HMM_LookAt_RH(camera.position, target, camera.up);
-					HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-					vs_params.vp = view_proj;
+					vs_params.view = view_matrix;
+					vs_params.projection = projection_matrix;
 
 					// Apply Vertex Uniforms
 					sg_apply_uniforms(0, SG_RANGE(vs_params));
@@ -1163,15 +1251,42 @@ void frame(void)
 			);
 		}
 
-		//FCS TODO: SSAO Pass Here. Need to output more targets from lighting pass
-
-		//FCS TODO: Blur SSAO result, then we'll need to combine that blurred result with lighting result before tonemapping
-		{ // Blur
-			state.blur_pass.execute(
+		{ // SSAO
+			state.ssao_pass.execute(
 				[&]()
 				{	
+					state.ssao_fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
+					state.ssao_fs_params.view = view_matrix;
+					state.ssao_fs_params.projection = projection_matrix;
+					sg_apply_uniforms(0, SG_RANGE(state.ssao_fs_params));
+
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.geometry_pass.color_outputs[0],
+						.images = {
+							[0] = state.geometry_pass.color_outputs[1],	// geometry pass position
+							[1] = state.geometry_pass.color_outputs[2],	// geometry pass normal
+							[2] = state.ssao_noise_texture,				// ssao noise texture
+						},
+						.samplers[0] = state.sampler,
+					};
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		{ // Blur
+			state.ssao_blur_pass.execute(
+				[&]()
+				{	
+					const blur_fs_params_t blur_fs_params = {
+						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+						.blur_size = 4,
+					};
+					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
+
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = state.ssao_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
@@ -1189,14 +1304,14 @@ void frame(void)
 				[&]()
 				{	
 					// Apply Fragment Uniforms
-					sg_apply_uniforms(0, SG_RANGE(state.fs_params));
+					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
 
 					sg_bindings bindings = {
 						.images = {
 							[0] = state.geometry_pass.color_outputs[0],
 							[1] = state.geometry_pass.color_outputs[1],
 							[2] = state.geometry_pass.color_outputs[2],
-							//FCS TODO: SSAO output
+							[3] = state.ssao_blur_pass.color_outputs[0],
 						},
 						.samplers[0] = state.sampler,
 						.storage_buffers = {
@@ -1216,7 +1331,7 @@ void frame(void)
 				[&]()
 				{	
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.lighting_pass.color_outputs[0],
+						.images[0] = state.lighting_pass.color_outputs[0], 
 						.samplers[0] = state.sampler,
 					};
 

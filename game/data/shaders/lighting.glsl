@@ -1,16 +1,11 @@
 
-@ctype mat4 HMM_Mat4
+// Common Shader Code
+#include "shader_common.h"
 
 // Fullscreen Vertex Shader
 #include "fullscreen_vs.glslh"
 
 @fs fs
-
-#define M_PI 3.1415926535897932384626433832795
-
-#define TOKEN_PASTE(x, y) x##y
-#define COMBINE(a,b) TOKEN_PASTE(a,b)
-#define PADDING(count) float COMBINE(padding_line_, __LINE__)[count]
 
 struct PointLight {
 	vec4 location;
@@ -36,6 +31,7 @@ struct SpotLight {
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=1) uniform texture2D position_tex;
 layout(binding=2) uniform texture2D normal_tex;
+layout(binding=3) uniform texture2D ssao_tex;
 
 layout(binding=0) uniform sampler tex_sampler;
 
@@ -141,22 +137,36 @@ out vec4 frag_color;
 
 void main()
 {
+	vec4 final_color = vec4(0);
+
 	vec4 sampled_color		= texture(sampler2D(color_tex, tex_sampler), uv);
 	vec4 sampled_normal		= texture(sampler2D(normal_tex, tex_sampler), uv);
-	vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
 
-	vec4 final_color = vec4(0);
-	for (int i = 0; i < num_point_lights; ++i)
+	if (sampled_normal == vec4(0))
 	{
-		final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+		final_color = sampled_color;
 	}
-
-	for (int i = 0; i < num_spot_lights; ++i)
+	else
 	{
-		final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
-	}
+		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
+		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;
 
-	//TODO: apply ssao
+		for (int i = 0; i < num_point_lights; ++i)
+		{
+			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+		}
+
+		for (int i = 0; i < num_spot_lights; ++i)
+		{
+			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+		}
+
+		const vec4 ambient = vec4(1,1,1,0) * 0.15;
+		final_color += ambient;
+
+		// Apply ambient occlusion
+		final_color *= ambient_occlusion;
+	}
 
 	frag_color = final_color;
 }

@@ -1,4 +1,6 @@
-@ctype mat4 HMM_Mat4
+
+// Common Shader Code
+#include "shader_common.h"
 
 // Fullscreen Vertex Shader
 #include "fullscreen_vs.glslh"
@@ -8,9 +10,10 @@
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=0) uniform sampler tex_sampler;
 
-//layout(binding=0) uniform fs_params {
-//    int blur_size;
-//};
+layout(binding=0) uniform fs_params {
+	vec2 screen_size;
+	int blur_size;
+};
 
 in vec2 uv;
 
@@ -18,13 +21,7 @@ out vec4 frag_color;
 
 void main()
 {
-	//TODO: Pass as uniform
-	int blur_size = 4;
-
-	//TODO: Pass as uniform
-	vec2 resolution = vec2(800,600);
-
-    vec2 texelSize = 1.0 / resolution;
+    vec2 texelSize = 1.0 / screen_size;
 	vec4 result = vec4(0.0);
 	vec2 hlim = vec2(float(-blur_size) * 0.5 + 0.5);
 	for (int i = 0; i < blur_size; ++i)
@@ -32,7 +29,6 @@ void main()
 		for (int j = 0; j < blur_size; ++j)
 		{
 	    	vec2 offset = (hlim + vec2(float(i), float(j))) * texelSize;
-	    	//result += texture(uTexInput, vTexcoord + offset).r;
 			result += texture(sampler2D(color_tex, tex_sampler), uv + offset);
 		}
 	}	
