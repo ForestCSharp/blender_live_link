@@ -28,6 +28,18 @@ struct SpotLight {
 	PADDING(1);
 };
 
+struct SunLight {
+	vec4 location;
+	vec4 color;
+
+	float power;
+	int cast_shadows;
+	PADDING(2);
+
+	vec3 direction;
+	PADDING(1);
+};
+
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=1) uniform texture2D position_tex;
 layout(binding=2) uniform texture2D normal_tex;
@@ -38,6 +50,7 @@ layout(binding=0) uniform sampler tex_sampler;
 layout(binding=0) uniform fs_params {
     int num_point_lights;
 	int num_spot_lights;
+	int num_sun_lights;
 };
 
 layout(binding=0) readonly buffer PointLightsBuffer {
@@ -46,6 +59,10 @@ layout(binding=0) readonly buffer PointLightsBuffer {
 
 layout(binding=1) readonly buffer SpotLightsBuffer {
 	SpotLight spot_lights[];
+};
+
+layout(binding=2) readonly buffer SunLightsBuffer {
+	SunLight sun_lights[];
 };
 
 float vec2_length_squared(vec2 v)
@@ -131,6 +148,14 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 	return vec4(0,0,0,1);
 }
 
+vec4 sample_sun_light(SunLight in_sun_light, vec3 in_world_normal, vec4 in_color)
+{	
+	const vec3 light_direction = -normalize(in_sun_light.direction);
+	const float surface_angle = positive_cosine_angle(light_direction, in_world_normal);
+	const float numerator = in_sun_light.power * surface_angle;
+	return in_color * numerator;
+}
+
 in vec2 uv;
 
 out vec4 frag_color;
@@ -139,8 +164,8 @@ void main()
 {
 	vec4 final_color = vec4(0);
 
-	vec4 sampled_color		= texture(sampler2D(color_tex, tex_sampler), uv);
-	vec4 sampled_normal		= texture(sampler2D(normal_tex, tex_sampler), uv);
+	vec4 sampled_color	= texture(sampler2D(color_tex, tex_sampler), uv);
+	vec4 sampled_normal	= texture(sampler2D(normal_tex, tex_sampler), uv);
 
 	if (sampled_normal == vec4(0))
 	{
@@ -159,6 +184,11 @@ void main()
 		for (int i = 0; i < num_spot_lights; ++i)
 		{
 			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+		}
+
+		for (int i = 0; i < num_sun_lights; ++i)
+		{
+			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color);
 		}
 
 		const vec4 ambient = vec4(1,1,1,0) * 0.15;

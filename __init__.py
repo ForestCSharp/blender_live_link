@@ -32,6 +32,7 @@ from .compiled_schemas.python.Blender.LiveLink import LightType
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import PointLight
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
+from .compiled_schemas.python.Blender.LiveLink import SunLight
 from .compiled_schemas.python.Blender.LiveLink import RigidBody 
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
@@ -211,10 +212,13 @@ class LiveLinkConnection():
                         edgeBlend = light_data.spot_blend
                     )
                     Light.AddSpotLight(builder, spot_light)
-                    pass
                 case light_type_enum.Sun:
-                    #TODO:
-                    pass
+                    sun_light = SunLight.CreateSunLight(
+                        builder,
+                        power = light_data.energy,
+                        castShadows = light_data.use_shadow
+                    )
+                    Light.AddSunLight(builder, sun_light)
                 case light_type_enum.Area:
                     #TODO:
                     pass

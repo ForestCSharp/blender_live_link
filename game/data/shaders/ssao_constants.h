@@ -5,4 +5,4 @@
 
 #define SSAO_KERNEL_SIZE 128
 #define SSAO_RADIUS 0.5
-#define SSAO_BIAS 0.025
+#define SSAO_BIAS 0.05

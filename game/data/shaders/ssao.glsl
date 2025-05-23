@@ -20,6 +20,7 @@ layout(binding=0) uniform fs_params {
 	mat4 view;
 	mat4 projection;
 	vec4 kernel_samples[SSAO_KERNEL_SIZE];
+	int ssao_enable;
 };
 
 in vec2 uv;
@@ -28,6 +29,13 @@ out vec4 frag_color;
 
 void main()
 {
+	// Early-Out if disabled
+	if (ssao_enable == 0)
+	{
+		frag_color = vec4(1);
+		return;
+	}
+
 	const vec2 noiseScale = screen_size / 4.0;
 
 	vec3 position = (view * texture(sampler2D(ssao_position_tex, tex_sampler), uv)).xyz;
@@ -45,7 +53,7 @@ void main()
         // get sample position
         vec3 samplePos = TBN * kernel_samples[i].xyz; // from tangent to view-space
         samplePos = position + samplePos * SSAO_RADIUS; 
-        
+ 
         // project sample position (to sample texture) (to get position on screen/texture)
         vec4 offset = vec4(samplePos, 1.0);
         offset = projection * offset; // from view to clip-space

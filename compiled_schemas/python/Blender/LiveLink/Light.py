@@ -71,8 +71,19 @@ class Light(object):
             return obj
         return None
 
+    # Light
+    def SunLight(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(14))
+        if o != 0:
+            x = o + self._tab.Pos
+            from Blender.LiveLink.SunLight import SunLight
+            obj = SunLight()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
 def LightStart(builder):
-    builder.StartObject(5)
+    builder.StartObject(6)
 
 def Start(builder):
     LightStart(builder)
@@ -106,6 +117,12 @@ def LightAddSpotLight(builder, spotLight):
 
 def AddSpotLight(builder, spotLight):
     LightAddSpotLight(builder, spotLight)
+
+def LightAddSunLight(builder, sunLight):
+    builder.PrependStructSlot(5, flatbuffers.number_types.UOffsetTFlags.py_type(sunLight), 0)
+
+def AddSunLight(builder, sunLight):
+    LightAddSunLight(builder, sunLight)
 
 def LightEnd(builder):
     return builder.EndObject()

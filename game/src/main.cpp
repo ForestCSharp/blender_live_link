@@ -298,7 +298,8 @@ struct {
 	RenderPass lighting_pass;
 	RenderPass tonemapping_pass;
 
-	// SSAO Noise Kernel texture
+	// SSAO Data 
+	bool ssao_enable = true;
 	sg_image ssao_noise_texture;
 	ssao_fs_params_t ssao_fs_params;
 
@@ -326,6 +327,9 @@ struct {
 
 	StretchyBuffer<lighting_SpotLight_t> spot_lights;
 	GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
+
+	StretchyBuffer<lighting_SunLight_t> sun_lights;
+	GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
 	
 	std::thread live_link_thread;
 
@@ -579,7 +583,12 @@ void live_link_thread_function()
 							}
 							case LightType::Sun:
 							{
-								//FCS TODO:
+								auto sun_light = object_light->sun_light();
+								assert(sun_light);
+								game_object.light.sun = (SunLight) {
+									.power = sun_light->power(),
+									.cast_shadows = sun_light->cast_shadows(),
+								};
 								break;
 							}
 							case LightType::Area:
@@ -977,6 +986,17 @@ void frame(void)
 		was_space_pressed = is_space_pressed;
 	}
 
+	// SSAO enable/disable
+	{	
+		static bool was_p_pressed = false;
+		const bool is_p_pressed = is_key_pressed(SAPP_KEYCODE_P);
+		if (is_p_pressed && !was_p_pressed)
+		{
+			state.ssao_enable = !state.ssao_enable;
+		}
+		was_p_pressed = is_p_pressed;
+	}
+
 	// Reset Objects to default state when we press 'R'
 	{
 		static bool was_reset_pressed = false;
@@ -1081,8 +1101,22 @@ void frame(void)
 					});
 				}
 
+				// Init sun_lights_buffer if we haven't already
+				if (!state.sun_lights_buffer.is_gpu_buffer_valid())
+				{
+					state.sun_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SunLight_t>){
+						.data = nullptr,
+						.data_size = 0,
+						.max_size = sizeof(lighting_SunLight_t) * MAX_LIGHTS_PER_TYPE,
+						.type = SG_BUFFERTYPE_STORAGEBUFFER,
+						.is_dynamic = true,
+						.label = "sun_lights",
+					});
+				}
+
 				state.point_lights.reset();
 				state.spot_lights.reset();
+				state.sun_lights.reset();
 
 				for (auto const& [unique_id, object] : state.objects)
 				{
@@ -1103,7 +1137,7 @@ void frame(void)
 								const Transform& transform = object.current_transform;
 								memcpy(&new_point_light.location, &transform.location, sizeof(float) * 4);
 								memcpy(&new_point_light.color, &object.light.color, sizeof(float) * 3);
-								new_point_light.color[3] = 1.0;
+								new_point_light.color[3] = 1.0; // Force alpha to 1.0
 								new_point_light.power = object.light.point.power;
 								state.point_lights.add(new_point_light);
 								break;
@@ -1120,7 +1154,7 @@ void frame(void)
 								const Transform& transform = object.current_transform;
 								memcpy(&new_spot_light.location, &transform.location, sizeof(float) * 4);
 								memcpy(&new_spot_light.color, &object.light.color, sizeof(float) * 3);
-								new_spot_light.color[3] = 1.0;
+								new_spot_light.color[3] = 1.0; // Force alpha to 1.0
 
 								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
 								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
@@ -1133,7 +1167,24 @@ void frame(void)
 							}
 							case LightType::Sun:
 							{
-								//FCS TODO:	
+								if (state.sun_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								{
+									printf("Exceeded Max Number of Sun Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+									continue;
+								}
+
+								lighting_SunLight_t new_sun_light = {};
+								const Transform& transform = object.current_transform;
+								memcpy(&new_sun_light.location, &transform.location, sizeof(float) * 4);
+								memcpy(&new_sun_light.color, &object.light.color, sizeof(float) * 3);
+								new_sun_light.color[3] = 1.0; // Force alpha to 1.0
+
+								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+								memcpy(&new_sun_light.direction, &spot_light_dir, sizeof(float) * 3);
+
+								new_sun_light.power = object.light.sun.power;
+								new_sun_light.cast_shadows = object.light.sun.cast_shadows;
+								state.sun_lights.add(new_sun_light);
 								break;
 							}
 							case LightType::Area:
@@ -1166,6 +1217,18 @@ void frame(void)
 						(sg_range){
 							.ptr = state.spot_lights.data(),
 							.size = sizeof(lighting_SpotLight_t) * state.lighting_fs_params.num_spot_lights,
+						}
+					);
+				}
+
+				state.lighting_fs_params.num_sun_lights = state.sun_lights.length();
+				printf("Num Sun Lights: %i\n", state.lighting_fs_params.num_sun_lights);
+				if (state.lighting_fs_params.num_sun_lights > 0)
+				{
+					state.sun_lights_buffer.update_gpu_buffer(
+						(sg_range){
+							.ptr = state.sun_lights.data(),
+							.size = sizeof(lighting_SunLight_t) * state.lighting_fs_params.num_sun_lights,
 						}
 					);
 				}
@@ -1258,6 +1321,7 @@ void frame(void)
 					state.ssao_fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
 					state.ssao_fs_params.view = view_matrix;
 					state.ssao_fs_params.projection = projection_matrix;
+					state.ssao_fs_params.ssao_enable = state.ssao_enable;
 					sg_apply_uniforms(0, SG_RANGE(state.ssao_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
@@ -1317,6 +1381,7 @@ void frame(void)
 						.storage_buffers = {
 							[0] = state.point_lights_buffer.get_gpu_buffer(),
 							[1] = state.spot_lights_buffer.get_gpu_buffer(),
+							[2] = state.sun_lights_buffer.get_gpu_buffer(),
 						},
 					};
 					sg_apply_bindings(&bindings);

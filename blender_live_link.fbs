@@ -75,7 +75,15 @@ struct SpotLight
 	edge_blend	: float;
 }
 
-//TODO: SunLight
+struct SunLight
+{
+	// power in watts
+	power			: float;
+
+	// does this sunlight cast shadows?
+	cast_shadows	: bool;
+}
+
 //TODO: AreaLight
 
 table Light 
@@ -86,6 +94,7 @@ table Light
 
 	point_light	: PointLight;
 	spot_light  : SpotLight;
+	sun_light 	: SunLight;
 }
 
 table Object 

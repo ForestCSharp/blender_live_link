@@ -33,6 +33,8 @@ struct PointLight;
 
 struct SpotLight;
 
+struct SunLight;
+
 struct Light;
 struct LightBuilder;
 
@@ -278,6 +280,38 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) SpotLight FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(SpotLight, 12);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) SunLight FLATBUFFERS_FINAL_CLASS {
+ private:
+  float power_;
+  uint8_t cast_shadows_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  SunLight()
+      : power_(0),
+        cast_shadows_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  SunLight(float _power, bool _cast_shadows)
+      : power_(::flatbuffers::EndianScalar(_power)),
+        cast_shadows_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_cast_shadows))),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  float power() const {
+    return ::flatbuffers::EndianScalar(power_);
+  }
+  bool cast_shadows() const {
+    return ::flatbuffers::EndianScalar(cast_shadows_) != 0;
+  }
+};
+FLATBUFFERS_STRUCT_END(SunLight, 8);
+
 struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef MeshBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -350,7 +384,8 @@ struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_COLOR = 6,
     VT_USE_SHADOW = 8,
     VT_POINT_LIGHT = 10,
-    VT_SPOT_LIGHT = 12
+    VT_SPOT_LIGHT = 12,
+    VT_SUN_LIGHT = 14
   };
   Blender::LiveLink::LightType type() const {
     return static_cast<Blender::LiveLink::LightType>(GetField<int8_t>(VT_TYPE, 0));
@@ -367,6 +402,9 @@ struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::SpotLight *spot_light() const {
     return GetStruct<const Blender::LiveLink::SpotLight *>(VT_SPOT_LIGHT);
   }
+  const Blender::LiveLink::SunLight *sun_light() const {
+    return GetStruct<const Blender::LiveLink::SunLight *>(VT_SUN_LIGHT);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<int8_t>(verifier, VT_TYPE, 1) &&
@@ -374,6 +412,7 @@ struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<uint8_t>(verifier, VT_USE_SHADOW, 1) &&
            VerifyField<Blender::LiveLink::PointLight>(verifier, VT_POINT_LIGHT, 4) &&
            VerifyField<Blender::LiveLink::SpotLight>(verifier, VT_SPOT_LIGHT, 4) &&
+           VerifyField<Blender::LiveLink::SunLight>(verifier, VT_SUN_LIGHT, 4) &&
            verifier.EndTable();
   }
 };
@@ -397,6 +436,9 @@ struct LightBuilder {
   void add_spot_light(const Blender::LiveLink::SpotLight *spot_light) {
     fbb_.AddStruct(Light::VT_SPOT_LIGHT, spot_light);
   }
+  void add_sun_light(const Blender::LiveLink::SunLight *sun_light) {
+    fbb_.AddStruct(Light::VT_SUN_LIGHT, sun_light);
+  }
   explicit LightBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -414,8 +456,10 @@ inline ::flatbuffers::Offset<Light> CreateLight(
     const Blender::LiveLink::Vec3 *color = nullptr,
     bool use_shadow = false,
     const Blender::LiveLink::PointLight *point_light = nullptr,
-    const Blender::LiveLink::SpotLight *spot_light = nullptr) {
+    const Blender::LiveLink::SpotLight *spot_light = nullptr,
+    const Blender::LiveLink::SunLight *sun_light = nullptr) {
   LightBuilder builder_(_fbb);
+  builder_.add_sun_light(sun_light);
   builder_.add_spot_light(spot_light);
   builder_.add_point_light(point_light);
   builder_.add_color(color);

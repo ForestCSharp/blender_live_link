@@ -82,14 +82,20 @@ struct SpotLight {
 	float edge_blend;
 };
 
+struct SunLight {
+	float power;
+	bool cast_shadows;
+};
+
 struct Light 
 {
 	LightType type;
 	HMM_Vec3 color;	
 	union
 	{
-		PointLight point;
-		SpotLight spot;
+		PointLight	point;
+		SpotLight	spot;
+		SunLight	sun;
 	};
 };
 
