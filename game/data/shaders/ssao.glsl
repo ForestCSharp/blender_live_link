@@ -29,10 +29,9 @@ out vec4 frag_color;
 
 void main()
 {
-	// Early-Out if disabled
 	if (ssao_enable == 0)
 	{
-		frag_color = vec4(1);
+		frag_color = vec4(1,1,1,1);
 		return;
 	}
 

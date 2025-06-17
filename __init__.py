@@ -198,7 +198,6 @@ class LiveLinkConnection():
 
             match light_type:
                 case light_type_enum.Point:
-                    print("Adding Point Light Data")
                     point_light = PointLight.CreatePointLight(
                         builder, 
                         power = light_data.energy
@@ -237,20 +236,24 @@ class LiveLinkConnection():
         session_uid = obj.session_uid
         Object.AddUniqueId(builder, session_uid)
 
+        # Check object visibility flag
         is_visible = obj.visible_get()
         Object.AddVisibility(builder, is_visible)
 
+        # Get world-space location, rotation, and scale
+        obj_matrix_world = obj.matrix_world;
+        obj_location, obj_rotation, obj_scale = obj_matrix_world.decompose()
+
         # Object Location
-        location_vec3 = Vec3.CreateVec3(builder, obj.location.x, obj.location.y, obj.location.z)
+        location_vec3 = Vec3.CreateVec3(builder, obj_location.x, obj_location.y, obj_location.z)
         Object.AddLocation(builder, location_vec3)
 
         # Object Scale
-        scale_vec3 = Vec3.CreateVec3(builder, obj.scale.x, obj.scale.y, obj.scale.z)
+        scale_vec3 = Vec3.CreateVec3(builder, obj_scale.x, obj_scale.y, obj_scale.z)
         Object.AddScale(builder, scale_vec3)
 
         # Object Rotation
-        rot = obj.rotation_euler.to_quaternion()
-        rotation_quat = Quat.CreateQuat(builder, rot.x, rot.y, rot.z, rot.w)
+        rotation_quat = Quat.CreateQuat(builder, obj_rotation.x, obj_rotation.y, obj_rotation.z, obj_rotation.w)
         Object.AddRotation(builder, rotation_quat)
 
         # Add Object Mesh Data if it exists
