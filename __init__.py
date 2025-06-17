@@ -13,9 +13,12 @@ from bpy.types import (Panel, Operator, PropertyGroup)
 from bpy.app.handlers import persistent
 
 import bmesh
-import sys
+import builtins
 import socket
+import sys
 import traceback
+
+from io import StringIO
 
 from os.path import dirname, realpath, basename, isfile, join
 import glob
@@ -38,6 +41,33 @@ from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
 from .compiled_schemas.python.Blender.LiveLink import Vertex
+
+# Overridden print that prints to blender console windows
+def print(*args, **kwargs):
+    # Standard print to stdout
+    builtins.print(*args, **kwargs)
+    
+    # Get the formatted string from print
+    output = ' '.join(str(arg) for arg in args)
+    if 'sep' in kwargs:
+        output = kwargs['sep'].join(str(arg) for arg in args)
+    
+    # Find all CONSOLE windows and print to them
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'CONSOLE':
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        # Access the console and execute print command
+                        with bpy.context.temp_override(
+                            window=window,
+                            area=area,
+                            region=region
+                        ):
+                            bpy.ops.console.scrollback_append(
+                                text=output,
+                                type='OUTPUT'
+                            )
 
 # Class to manage our live link connection
 class LiveLinkConnection():
@@ -135,6 +165,19 @@ class LiveLinkConnection():
         if obj.type == 'MESH': 
             mesh = self.get_mesh(obj, dependency_graph)
 
+            # Check for armature associated with the mesh
+            armature = None
+            # Check for Armature modifier
+            for modifier in obj.modifiers:
+                if modifier.type == 'ARMATURE' and modifier.object:
+                    armature = modifier.object
+                    break
+            # Alternatively, check if the mesh is parented to an armature
+            if not armature and obj.parent and obj.parent.type == 'ARMATURE':
+                armature = obj.parent
+            if armature:
+                print("Found Armature!")
+
             # Export Vertices
             blender_vertices = mesh.vertices
             
@@ -171,9 +214,6 @@ class LiveLinkConnection():
         light = None
         if obj.type == 'LIGHT':
             light_data = obj.data
-
-            print(f"Light Type: {light_data.type}")
-            print(f"Light Color: {light_data.color}")
 
             Light.Start(builder)
 
