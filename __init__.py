@@ -14,6 +14,7 @@ from bpy.app.handlers import persistent
 
 import bmesh
 import builtins
+import os
 import socket
 import sys
 import traceback
@@ -360,6 +361,11 @@ class LiveLinkConnection():
     def send_object_list(self, updated_objects, deleted_object_uids):
         self.send(self.make_update(updated_objects, deleted_object_uids))
 
+    def save_to_file(self, in_objects, in_filename):
+        update = self.make_update(in_objects, [])
+        with open(in_filename, 'wb') as f:
+            f.write(update)
+
     def send_reset(self):
         self.send(self.make_update([], [], True))
 
@@ -454,6 +460,25 @@ class OpLiveLinkResetConnection(bpy.types.Operator):
         return {'FINISHED'}
 # End OpLiveLinkResetConnection
 
+# Begin OpLiveLinkSaveToFile
+class OpLiveLinkSaveToFile(bpy.types.Operator):
+    bl_idname = "live_link.save_to_file"
+    bl_label = "Live Link: Save To File"
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+
+    def execute(self, context):
+        print("Selected file path:", self.filepath)
+        live_link_connection.save_to_file(
+            list(bpy.context.scene.objects),
+            self.filepath
+        )
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
 # Begin LiveLinkView3DPanel
 class LiveLinkView3DPanel(bpy.types.Panel):
     bl_label = "Blender Live Link"
@@ -468,13 +493,13 @@ class LiveLinkView3DPanel(bpy.types.Panel):
         layout.operator("live_link.send_full_update", text="Full Update")  
         layout.operator("live_link.send_reset", text="Send Reset")  
         layout.operator("live_link.reset_connection", text="Reset Connection")
+        layout.operator("live_link.save_to_file", text="Save To File")
 # End LiveLinkView3DPanel
 
 def menu_func(self, context):
     self.layout.operator(OpLiveLinkSendFullUpdate.bl_idname)
     self.layout.operator(OpLiveLinkSendReset.bl_idname)
     self.layout.operator(OpLiveLinkResetConnection.bl_idname)
-
 
 # ------------------------------------------------------------
 # Define Gameplay Components 
@@ -634,6 +659,7 @@ classes_to_register = [
     OpLiveLinkSendFullUpdate,
     OpLiveLinkSendReset,
     OpLiveLinkResetConnection,
+    OpLiveLinkSaveToFile,
 
     # View 3D Panel
     LiveLinkView3DPanel,

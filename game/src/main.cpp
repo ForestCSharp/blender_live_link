@@ -15,8 +15,9 @@
 // Gpu Buffer Wrapper
 #include "gpu_buffer.h"
 
-// C std lib I/O
+// C std lib I/O and stdlib
 #include <cstdio>
+#include <cstdlib>
 
 // C++ std lib Optional
 #include <optional>
@@ -28,10 +29,15 @@ using std::optional;
 // C++ std lib threading
 #include <thread>
 
+// C++ std lib atomic
 #include <atomic>
 using std::atomic;
 
+// C++ std lib string
 #include <string>
+
+// cxxopts
+#include "cxxopts/cxxopts.hpp"
 
 // For C++ std::function
 #include <functional>
@@ -56,9 +62,11 @@ struct StretchyBuffer
 public:
 	StretchyBuffer() { _data = nullptr; }
 	~StretchyBuffer() { reset(); }
+	StretchyBuffer( const StretchyBuffer& ) = delete; // non construction-copyable
+    StretchyBuffer& operator=( const StretchyBuffer& ) = delete; // non copyable
 	void add(const T& value) { arrput(_data, value); }
 	void add_unitialized(const size_t num) { arraddn(_data, num); }
-	void reset() { arrfree(_data); _data = nullptr; }
+	void reset() { if (_data) { arrfree(_data); _data = nullptr; } }
 	size_t length() { return arrlen(_data); }
 	T* data() { return _data; }
 	T& operator[](i32 idx) { return _data[idx]; }
@@ -288,6 +296,8 @@ public: // Functions
 };
 
 struct {
+	optional<std::string> init_file;
+
 	int width;
 	int height;
 
@@ -342,6 +352,194 @@ struct {
 		.up = HMM_V3(0.0f, 0.0f, 1.0f),
 	};
 } state;
+
+void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
+{
+	if (flatbuffer_data.length() > 0)
+	{
+		// Interpret Flatbuffer data
+		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
+		assert(update);
+		if (auto objects = update->objects())
+		{
+			for (i32 idx = 0; idx < objects->size(); ++idx)
+			{
+				auto object = objects->Get(idx);
+				if (auto object_name = object->name())
+				{
+					printf("\tObject Name: %s\n", object_name->c_str());
+				}
+
+				int unique_id = object->unique_id();
+				bool visibility = object->visibility();
+
+				auto object_location = object->location();
+				if (!object_location)
+				{
+					continue;
+				}
+
+				auto object_scale = object->scale();
+				if (!object_scale)
+				{
+					continue;
+				}
+
+				auto object_rotation = object->rotation();
+				if (!object_rotation)
+				{
+					continue;
+				}
+
+				HMM_Vec4 location 	= flatbuffer_helpers::to_hmm_vec4(object_location, 1.0f);
+				HMM_Vec3 scale 		= flatbuffer_helpers::to_hmm_vec3(object_scale);
+				HMM_Quat rotation 	= flatbuffer_helpers::to_hmm_quat(object_rotation);
+
+				Object game_object = object_create(
+					unique_id, 
+					visibility, 
+					location, 
+					rotation,
+					scale
+				);
+
+				if (auto object_mesh = object->mesh())
+				{
+					u32 num_vertices = 0;
+					Vertex* vertices = nullptr;
+					if (auto flatbuffer_vertices = object_mesh->vertices())
+					{
+						num_vertices = flatbuffer_vertices->size();
+						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
+
+						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
+						{
+							auto vertex = flatbuffer_vertices->Get(vertex_idx);
+							auto vertex_position = vertex->position();
+							auto vertex_normal = vertex->normal();
+
+							vertices[vertex_idx] = {
+								.position = {
+									.X = vertex_position.x(),
+									.Y = vertex_position.y(),
+									.Z = vertex_position.z(),
+									.W = vertex_position.w(),
+								},
+								.normal = {
+									.X = vertex_normal.x(),
+									.Y = vertex_normal.y(),
+									.Z = vertex_normal.z(),
+									.W = vertex_normal.w(),
+								},
+							};
+						}
+					}
+
+					u32 num_indices = 0;
+					u32* indices = nullptr;
+					if (auto flatbuffer_indices = object_mesh->indices())
+					{
+						num_indices = flatbuffer_indices->size();
+						indices = (u32*) malloc(sizeof(u32) * num_indices);
+
+						for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
+						{
+							indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+						}
+					}
+
+					// Set Mesh Data on Game Object
+					if (num_vertices > 0 && num_indices > 0)
+					{
+						game_object.has_mesh = true;
+						game_object.mesh = make_mesh(vertices, num_vertices, indices, num_indices);
+					}
+				}
+
+				if (auto object_light = object->light())
+				{
+					LightType light_type = (LightType) object_light->type();
+
+					game_object.has_light = true;
+					game_object.light = (Light){
+						.type = light_type,
+						.color = flatbuffer_helpers::to_hmm_vec3(object_light->color()),
+					};
+
+					switch (game_object.light.type)
+					{
+						case LightType::Point:
+						{
+							auto point_light = object_light->point_light();
+							assert(point_light);
+							game_object.light.point = (PointLight) {
+							.power = point_light->power(),
+							};
+							break;
+						}
+						case LightType::Spot:
+						{
+							auto spot_light = object_light->spot_light();
+							assert(spot_light);
+							game_object.light.spot = (SpotLight) {
+								.power = spot_light->power(),
+								.beam_angle = spot_light->beam_angle(),
+								.edge_blend = spot_light->edge_blend(),
+							};
+							break;
+						}
+						case LightType::Sun:
+						{
+							auto sun_light = object_light->sun_light();
+							assert(sun_light);
+							game_object.light.sun = (SunLight) {
+								.power = sun_light->power(),
+								.cast_shadows = sun_light->cast_shadows(),
+							};
+							break;
+						}
+						case LightType::Area:
+						{
+							//FCS TODO:
+							break;
+						}
+						default:
+							printf("Unsupported Light Type\n");
+							exit(0);
+					}
+				}
+
+				if (auto object_rigid_body = object->rigid_body())
+				{
+					game_object.has_rigid_body = true;
+					game_object.rigid_body = (RigidBody){
+						.is_dynamic = object_rigid_body->is_dynamic(),
+						.mass = object_rigid_body->mass(),
+						.jolt_body = nullptr,
+					};
+				}
+
+				// Send updated object data to main thread
+				state.updated_objects.send(game_object);
+			}
+
+			state.blender_data_loaded = true;
+		}
+
+		if (auto deleted_object_uids = update->deleted_object_uids())
+		{
+			for (i32 deleted_object_uid : *deleted_object_uids)
+			{
+				state.deleted_objects.send(deleted_object_uid);
+			}
+		}	
+
+		if (update->reset())
+		{
+			state.reset.send(true);
+		}
+	}
+}
 
 // Live Link Function. Runs on its own thread
 void live_link_thread_function()
@@ -445,193 +643,10 @@ void live_link_thread_function()
 			}
 		}
 		while (state.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
+	
+		printf("We've got some data! Data Length: %td Packets Read: %i\n", flatbuffer_data.length(), packets_read);
 
-		if (flatbuffer_data.length() > 0)
-		{
-			printf("We've got some data! Data Length: %td Packets Read: %i\n", flatbuffer_data.length(), packets_read);
-
-			// Interpret Flatbuffer data
-			auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
-			assert(update);
-			if (auto objects = update->objects())
-			{
-				for (i32 idx = 0; idx < objects->size(); ++idx)
-				{
-					auto object = objects->Get(idx);
-					if (auto object_name = object->name())
-					{
-						printf("\tObject Name: %s\n", object_name->c_str());
-					}
-
-					int unique_id = object->unique_id();
-					bool visibility = object->visibility();
-
-					auto object_location = object->location();
-					if (!object_location)
-					{
-						continue;
-					}
-
-					auto object_scale = object->scale();
-					if (!object_scale)
-					{
-						continue;
-					}
-
-					auto object_rotation = object->rotation();
-					if (!object_rotation)
-					{
-						continue;
-					}
-
-					HMM_Vec4 location 	= flatbuffer_helpers::to_hmm_vec4(object_location, 1.0f);
-					HMM_Vec3 scale 		= flatbuffer_helpers::to_hmm_vec3(object_scale);
-					HMM_Quat rotation 	= flatbuffer_helpers::to_hmm_quat(object_rotation);
-
-					Object game_object = object_create(
-						unique_id, 
-						visibility, 
-						location, 
-						rotation,
-						scale
-					);
-
-					if (auto object_mesh = object->mesh())
-					{
-						u32 num_vertices = 0;
-		 				Vertex* vertices = nullptr;
-						if (auto flatbuffer_vertices = object_mesh->vertices())
-						{
-							num_vertices = flatbuffer_vertices->size();
-							vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
-
-							for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
-							{
-								auto vertex = flatbuffer_vertices->Get(vertex_idx);
-								auto vertex_position = vertex->position();
-								auto vertex_normal = vertex->normal();
-
-								vertices[vertex_idx] = {
-									.position = {
-										.X = vertex_position.x(),
-										.Y = vertex_position.y(),
-										.Z = vertex_position.z(),
-										.W = vertex_position.w(),
-									},
-									.normal = {
-										.X = vertex_normal.x(),
-										.Y = vertex_normal.y(),
-										.Z = vertex_normal.z(),
-										.W = vertex_normal.w(),
-									},
-								};
-							}
-						}
-
-						u32 num_indices = 0;
-		 				u32* indices = nullptr;
-						if (auto flatbuffer_indices = object_mesh->indices())
-						{
-							num_indices = flatbuffer_indices->size();
-							indices = (u32*) malloc(sizeof(u32) * num_indices);
-
-							for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
-							{
-								indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
-							}
-						}
-
-						// Set Mesh Data on Game Object
-						if (num_vertices > 0 && num_indices > 0)
-						{
-							game_object.has_mesh = true;
-							game_object.mesh = make_mesh(vertices, num_vertices, indices, num_indices);
-						}
-					}
-
-					if (auto object_light = object->light())
-					{
-						LightType light_type = (LightType) object_light->type();
-
-						game_object.has_light = true;
-						game_object.light = (Light){
-							.type = light_type,
-							.color = flatbuffer_helpers::to_hmm_vec3(object_light->color()),
-						};
-
-						switch (game_object.light.type)
-						{
-							case LightType::Point:
-		 					{
-								auto point_light = object_light->point_light();
-								assert(point_light);
-								game_object.light.point = (PointLight) {
-								.power = point_light->power(),
-								};
-		 						break;
-		 					}
-							case LightType::Spot:
-							{
-								auto spot_light = object_light->spot_light();
-								assert(spot_light);
-								game_object.light.spot = (SpotLight) {
-									.power = spot_light->power(),
-									.beam_angle = spot_light->beam_angle(),
-									.edge_blend = spot_light->edge_blend(),
-								};
-								break;
-							}
-							case LightType::Sun:
-							{
-								auto sun_light = object_light->sun_light();
-								assert(sun_light);
-								game_object.light.sun = (SunLight) {
-									.power = sun_light->power(),
-									.cast_shadows = sun_light->cast_shadows(),
-								};
-								break;
-							}
-							case LightType::Area:
-							{
-								//FCS TODO:
-								break;
-							}
-							default:
-								printf("Unsupported Light Type\n");
-								exit(0);
-						}
-					}
-
-					if (auto object_rigid_body = object->rigid_body())
-					{
-						game_object.has_rigid_body = true;
-						game_object.rigid_body = (RigidBody){
-							.is_dynamic = object_rigid_body->is_dynamic(),
-							.mass = object_rigid_body->mass(),
-							.jolt_body = nullptr,
-						};
-					}
-
-					// Send updated object data to main thread
-					state.updated_objects.send(game_object);
-				}
-
-				state.blender_data_loaded = true;
-			}
-
-			if (auto deleted_object_uids = update->deleted_object_uids())
-			{
-				for (i32 deleted_object_uid : *deleted_object_uids)
-				{
-					state.deleted_objects.send(deleted_object_uid);
-				}
-			}	
-
-			if (update->reset())
-			{
-				state.reset.send(true);
-			}
-		}
+		parse_flatbuffer_data(flatbuffer_data);
 	}
 
 	printf("Shutting down sockets\n");
@@ -886,6 +901,25 @@ void init(void)
 	state.tonemapping_pass.init(tonemapping_pass_desc);
 
 	handle_resize();
+
+	if (state.init_file)
+	{
+		if (FILE* file = fopen(state.init_file->c_str(), "rb"))
+		{
+			fseek(file, 0, SEEK_END);
+    		long file_size = ftell(file);
+			rewind(file);
+
+			assert(file_size > 0);
+
+			StretchyBuffer<u8> flatbuffer_data;
+			flatbuffer_data.add_unitialized(file_size);
+
+			size_t bytes_read = fread(flatbuffer_data.data(), 1, file_size, file);
+			assert(bytes_read == (size_t) file_size);
+			parse_flatbuffer_data(flatbuffer_data);			
+		}
+	}
 }
 
 bool keycodes[SAPP_MAX_KEYCODES];
@@ -1478,8 +1512,20 @@ void event(const sapp_event* event)
 }
 
 sapp_desc sokol_main(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
+	
+	cxxopts::Options options("Game", "Game that uses blender as its tooling");
+	
+	options.add_options()
+	  ("f,file", "File name", cxxopts::value<std::string>())
+  	;
+
+	auto result = options.parse(argc, argv);
+
+	if (result.count("file") > 0)
+	{
+		state.init_file = result["f"].as<std::string>();
+	}
+
     return (sapp_desc) {
         .init_cb = init,
         .frame_cb = frame,
