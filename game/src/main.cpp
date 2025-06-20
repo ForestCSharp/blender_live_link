@@ -153,6 +153,15 @@ namespace flatbuffer_helpers
 	}
 }
 
+HMM_Vec3 rotate_vector(HMM_Vec3 in_vector_to_rotate, HMM_Vec3 in_axis, float in_magnitude)
+{
+    in_axis = HMM_NormV3(in_axis);
+    HMM_Quat quat = HMM_QFromAxisAngle_RH(in_axis, in_magnitude);
+    HMM_Mat4 rotation_matrix = HMM_QToM4(quat);
+	HMM_Vec4 rotated = rotation_matrix * HMM_V4(in_vector_to_rotate.X, in_vector_to_rotate.Y, in_vector_to_rotate.Z, 0.f);
+    return HMM_V3(rotated.X, rotated.Y, rotated.Z);
+}
+
 static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_t g, uint8_t b)
 {
     sdtx_font(font_index);
@@ -922,11 +931,48 @@ void init(void)
 	}
 }
 
-bool keycodes[SAPP_MAX_KEYCODES];
+struct AppState {
+	bool keycodes[SAPP_MAX_KEYCODES];
+
+	static const i32 num_mouse_buttons = 3;
+	bool mouse_buttons[num_mouse_buttons];
+
+	HMM_Vec2 mouse_delta;
+
+	bool is_mouse_locked = false;
+} app_state;
+
 bool is_key_pressed(sapp_keycode keycode)
 {
 	assert((i32)keycode < SAPP_MAX_KEYCODES);
-	return keycodes[keycode];
+	return app_state.keycodes[keycode];
+}
+
+bool is_mouse_down(sapp_mousebutton in_mouse_button)
+{
+	assert(in_mouse_button < app_state.num_mouse_buttons);
+	return app_state.mouse_buttons[in_mouse_button];
+}
+
+HMM_Vec2 get_mouse_delta()
+{
+	return app_state.mouse_delta;
+}
+
+void reset_mouse_delta()
+{
+	app_state.mouse_delta = HMM_V2(0.f,0.f);
+}
+
+bool is_mouse_locked()
+{
+	return app_state.is_mouse_locked;
+}
+
+void set_mouse_locked(bool in_locked)
+{
+	app_state.is_mouse_locked = in_locked;
+	sapp_lock_mouse(app_state.is_mouse_locked);
 }
 
 void frame(void)
@@ -1097,6 +1143,19 @@ void frame(void)
 		{
 			camera.position -= camera.up * move_speed;	
 		}
+
+		if (is_mouse_locked())
+		{
+			const float look_speed = 1.0f * delta_time;
+			const HMM_Vec2 mouse_delta = get_mouse_delta();
+			
+			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+
+			//camera.up = rotate_vector(camera.up, camera_right, -mouse_delta.Y * look_speed);
+		}
+
 	}
 
 	// Rendering
@@ -1468,6 +1527,8 @@ void frame(void)
 
 		sg_commit();
 	}
+
+	reset_mouse_delta();
 }
 
 void cleanup(void)
@@ -1491,15 +1552,48 @@ void event(const sapp_event* event)
 			// stop execution on escape key 
 			if (event->key_code == SAPP_KEYCODE_ESCAPE)
 			{
-				sapp_quit();
+			 	if (event->modifiers & SAPP_MODIFIER_SHIFT)
+				{
+					set_mouse_locked(false);
+				}
+				else
+				{
+					sapp_quit();
+				}
 			}
 
-			keycodes[event->key_code] = true;
+			app_state.keycodes[event->key_code] = true;
 			break;
 		}
 		case SAPP_EVENTTYPE_KEY_UP:
 		{
-			keycodes[event->key_code] = false;
+			app_state.keycodes[event->key_code] = false;
+			break;
+		}
+		case SAPP_EVENTTYPE_MOUSE_DOWN:
+		{
+			app_state.mouse_buttons[event->mouse_button] = true;
+
+			// Lock Mouse on left click
+			if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT)
+			{
+				if (!is_mouse_locked())
+				{
+					set_mouse_locked(true);
+				}
+            }
+
+			break;
+		}
+		case SAPP_EVENTTYPE_MOUSE_UP:
+		{
+			app_state.mouse_buttons[event->mouse_button] = false;
+			break;
+		}
+		case SAPP_EVENTTYPE_MOUSE_MOVE:
+		{
+			app_state.mouse_delta.X = event->mouse_dx;
+			app_state.mouse_delta.Y = event->mouse_dy;
 			break;
 		}
 		case SAPP_EVENTTYPE_RESIZED:
