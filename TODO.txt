@@ -1,12 +1,12 @@
 
 TODO
-
-	- Add another RenderPass type for non-fullscreen passes
+	- make sure children are handled in post depsgraph update (deletion)
+	- skinned animations
+	- texturing + pbr
+	- reflection captures
 
 	- Clean up dynamic gameplay component system. Make sure all the per-type stuff stays together
 		- maybe an init class method?
-	- Proper rendering pass setup
-		- V1: Current Lighting Pass > SSAO Pass > Tonemapping Pass
 
 Tasks:
 	- send skeletal mesh data (and animations)

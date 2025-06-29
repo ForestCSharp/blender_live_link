@@ -1615,6 +1615,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 
 	auto result = options.parse(argc, argv);
 
+	// If we passed an init file, load it on startup
 	if (result.count("file") > 0)
 	{
 		state.init_file = result["f"].as<std::string>();

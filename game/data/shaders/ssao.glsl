@@ -37,35 +37,35 @@ void main()
 
 	const vec2 noiseScale = screen_size / 4.0;
 
-	vec3 position = (view * texture(sampler2D(ssao_position_tex, tex_sampler), uv)).xyz;
-    vec3 normal = normalize((view * texture(sampler2D(ssao_normal_tex, tex_sampler), uv)).rgb);
+	vec3 pixel_position = (view * texture(sampler2D(ssao_position_tex, tex_sampler), uv)).xyz;
+    vec3 pixel_normal = normalize((view * texture(sampler2D(ssao_normal_tex, tex_sampler), uv)).xyz);
     vec3 noise = normalize(texture(sampler2D(ssao_noise_tex, tex_sampler), uv * noiseScale).xyz);
 
     // create TBN change-of-basis matrix: from tangent-space to view-space
-    vec3 tangent = normalize(noise - normal * dot(noise, normal));
-    vec3 bitangent = cross(normal, tangent);
-    mat3 TBN = mat3(tangent, bitangent, normal);
+    vec3 tangent = normalize(noise - pixel_normal * dot(noise, pixel_normal));
+    vec3 bitangent = cross(pixel_normal, tangent);
+    mat3 TBN = mat3(tangent, bitangent, pixel_normal);
     // iterate over the sample kernel and calculate occlusion factor
     float occlusion = 0.0;
     for(int i = 0; i < SSAO_KERNEL_SIZE; ++i)
     {
         // get sample position
-        vec3 samplePos = TBN * kernel_samples[i].xyz; // from tangent to view-space
-        samplePos = position + samplePos * SSAO_RADIUS; 
+        vec3 sample_pos = TBN * kernel_samples[i].xyz; // from tangent to view-space
+        sample_pos = pixel_position + sample_pos * SSAO_RADIUS; 
  
         // project sample position (to sample texture) (to get position on screen/texture)
-        vec4 offset = vec4(samplePos, 1.0);
+        vec4 offset = vec4(sample_pos, 1.0);
         offset = projection * offset; // from view to clip-space
         offset.xyz /= offset.w; // perspective divide
         offset.xyz = offset.xyz * 0.5 + 0.5; // transform to range 0.0 - 1.0
 		offset.y = 1.0 - offset.y;
         
         // get sample depth
-        float sampleDepth = (view * texture(sampler2D(ssao_position_tex, tex_sampler), offset.xy)).z; 
+        float sample_depth = (view * texture(sampler2D(ssao_position_tex, tex_sampler), offset.xy)).z; 
         
         // range check & accumulate
-        float rangeCheck = smoothstep(0.0, 1.0, SSAO_RADIUS / abs(position.z - sampleDepth));
-        occlusion += (sampleDepth >= samplePos.z + SSAO_BIAS ? 1.0 : 0.0) * rangeCheck;           
+        float rangeCheck = smoothstep(0.0, 1.0, SSAO_RADIUS / abs(pixel_position.z - sample_depth));
+        occlusion += (sample_depth >= sample_pos.z + SSAO_BIAS ? 1.0 : 0.0) * rangeCheck;           
     }
     occlusion = 1.0 - (occlusion / SSAO_KERNEL_SIZE);
 	frag_color = vec4(vec3(occlusion), 1.0);

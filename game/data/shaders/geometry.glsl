@@ -47,7 +47,7 @@ void main()
 {
 	out_color = world_color;
 	out_position = world_position; 
-	out_normal = world_normal;
+	out_normal = normalize(world_normal);
 }
 @end
 

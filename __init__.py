@@ -402,7 +402,7 @@ def depsgraph_update_post_callback(scene, depsgraph):
                 updated_object = scene.objects[update_id.name]
                 updated_objects.append(updated_object)
 
-    if len(updated_objects) > 0: 
+    if len(updated_objects) > 0 or len(deleted_object_uids) > 0: 
         # Temporarily disable depsgraph_update_post_callback to prevent infinite recursion
         depsgraph_update_post_callback.enabled = False 
 
