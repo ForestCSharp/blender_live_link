@@ -64,12 +64,10 @@ if [[ $OS = Windows ]]; then
 	start "" blender.exe $run_args
 elif [[ $OS = Mac ]]; then
 	# install add-on and wait for completion
-	open -W -n /Applications/Blender.app --args $install_args 
+	/Applications/Blender.app/Contents/MacOS/Blender $install_args 
 	sleep 0.5
-
 	# open blender without waiting for completion
 	open  /Applications/Blender.app --args $run_args
-	#open /Applications/Blender.app 
 fi
 
 # Compile game, passing in OS as first arg
