@@ -43,11 +43,10 @@ cd $SCRIPT_DIR/..
 rm $SCRIPT_DIR.zip
 
 if [[ $OS = Windows ]]; then
-	#TODO: exclude irrelevant directories directories
-	7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/. 
-
-	#TODO: Test this
-	#7z a -tzip $SCRIPT_DIR.zip -w $BASE_DIR/. -xr!"$SCRIPT_DIR/subfolder_to_exclude1"
+	7z a -tzip $SCRIPT_DIR.zip $BASE_DIR -w $BASE_DIR/ -r \
+		-x!"$BASE_DIR/flatbuffers/*" \
+		-x!"$BASE_DIR/.git/*" \
+		-x!"$BASE_DIR/game/*"
 else
 	zip -r $SCRIPT_DIR.zip $BASE_DIR \
 		-x "$BASE_DIR/flatbuffers/*" \
@@ -55,16 +54,21 @@ else
 		-x "$BASE_DIR/game/*"
 fi
 
+install_args="--command extension install-file blender_live_link.zip --repo user_default --enable"
+run_args="$SCRIPT_DIR/blend_files/test_file.blend"
+
 if [[ $OS = Windows ]]; then
-	print TODO: Open Blender on Windows
+	# Note: blender.exe should be on system path
+	blender.exe $install_args
+	sleep 0.5
+	start "" blender.exe $run_args
 elif [[ $OS = Mac ]]; then
 	# install add-on and wait for completion
-	open -W -n /Applications/Blender.app --args --command extension install-file ~/Desktop/blender_live_link.zip --repo user_default --enable 
-
+	open -W -n /Applications/Blender.app --args $install_args 
 	sleep 0.5
 
 	# open blender without waiting for completion
-	open  /Applications/Blender.app --args $SCRIPT_DIR/blend_files/test_file.blend	
+	open  /Applications/Blender.app --args $run_args
 	#open /Applications/Blender.app 
 fi
 
