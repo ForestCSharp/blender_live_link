@@ -16,6 +16,8 @@ static_assert(FLATBUFFERS_VERSION_MAJOR == 24 &&
 namespace Blender {
 namespace LiveLink {
 
+struct Vec2;
+
 struct Vec3;
 
 struct Vec4;
@@ -79,6 +81,29 @@ inline const char *EnumNameLightType(LightType e) {
   const size_t index = static_cast<size_t>(e);
   return EnumNamesLightType()[index];
 }
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec2 FLATBUFFERS_FINAL_CLASS {
+ private:
+  float x_;
+  float y_;
+
+ public:
+  Vec2()
+      : x_(0),
+        y_(0) {
+  }
+  Vec2(float _x, float _y)
+      : x_(::flatbuffers::EndianScalar(_x)),
+        y_(::flatbuffers::EndianScalar(_y)) {
+  }
+  float x() const {
+    return ::flatbuffers::EndianScalar(x_);
+  }
+  float y() const {
+    return ::flatbuffers::EndianScalar(y_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Vec2, 8);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec3 FLATBUFFERS_FINAL_CLASS {
  private:

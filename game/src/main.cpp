@@ -328,6 +328,7 @@ struct {
 	atomic<bool> game_running = true;
 	atomic<bool> blender_data_loaded = false;
 
+	// Active game objects
 	map<i32, Object> objects;
 
 	// These channels are how we pass our data from our live-link thread to the main thread
@@ -350,6 +351,7 @@ struct {
 	StretchyBuffer<lighting_SunLight_t> sun_lights;
 	GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
 	
+	// Thread that listens for updates from Blender
 	std::thread live_link_thread;
 
 	SOCKET blender_socket;
@@ -733,11 +735,10 @@ void init(void)
 	RenderPassDesc geometry_pass_desc = {
 		.pipeline_desc = {
 			.layout = {
-				/* test to provide buffer stride, but no attr offsets */
-				.buffers[0].stride = 32,
+				.buffers[0].stride = sizeof(Vertex),
 				.attrs = {
-				   [ATTR_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
-				   [ATTR_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4
+					[ATTR_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
+					[ATTR_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
 			   }
 			},
 			.shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend())),

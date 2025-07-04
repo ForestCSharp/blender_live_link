@@ -121,10 +121,10 @@ class LiveLinkConnection():
             is_connected = self.connect()
 
         if not is_connected:
-            return;
+            return
 
         try:
-            self.my_socket.send(data)
+            self.my_socket.sendall(data)
         except Exception as e:
             print(traceback.format_exc())
             print("Error: LiveLinkConnection::send")
@@ -157,6 +157,23 @@ class LiveLinkConnection():
             bm.to_mesh(mesh)
             return mesh
 
+    def get_mesh_armature(self, in_object):
+        if not in_object or in_object.type != 'MESH':
+            # Not a mesh, return None
+            return None
+        
+        # Check if the mesh is parented to an armature
+        if in_object.parent and in_object.parent.type == 'ARMATURE':
+            return in_object.parent
+        
+        # Check for an Armature Modifier
+        for modifier in in_object.modifiers:
+            if modifier.type == 'ARMATURE' and modifier.object:
+                return modifier.object
+    
+        # No armature found, return None
+        return None
+ 
     def make_flatbuffer_object(self, builder, obj, dependency_graph):
         # Allocate string for object name
         object_name = builder.CreateString(obj.name)
@@ -166,24 +183,11 @@ class LiveLinkConnection():
         if obj.type == 'MESH': 
             mesh = self.get_mesh(obj, dependency_graph)
 
-            # Check for armature associated with the mesh
-            armature = None
-            # Check for Armature modifier
-            for modifier in obj.modifiers:
-                if modifier.type == 'ARMATURE' and modifier.object:
-                    armature = modifier.object
-                    break
-            # Alternatively, check if the mesh is parented to an armature
-            if not armature and obj.parent and obj.parent.type == 'ARMATURE':
-                armature = obj.parent
-            if armature:
-                print("Found Armature!")
-
             # Export Vertices
             blender_vertices = mesh.vertices
             
             Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
-            for blender_vertex in reversed(blender_vertices):
+            for vert_idx, blender_vertex in enumerate(reversed(blender_vertices)):
                 position = blender_vertex.co.to_4d()
                 normal = blender_vertex.normal.to_4d()
                 Vertex.CreateVertex(
@@ -205,6 +209,12 @@ class LiveLinkConnection():
             for index in reversed(indices):
                 builder.PrependUint32(index)
             mesh_indices = builder.EndVector()
+
+            # TODO: if we find an armature build up skinned vertex info in new field
+            # Check for armature
+            mesh_armature = self.get_mesh_armature(obj)
+            if mesh_armature != None:
+                print("Mesh is skinned!")
 
             Mesh.Start(builder)
             Mesh.AddVertices(builder, mesh_vertices)
@@ -263,9 +273,34 @@ class LiveLinkConnection():
                     #TODO:
                     pass
 
-            Light.AddUseShadow(builder, light_data.use_shadow);
+            Light.AddUseShadow(builder, light_data.use_shadow)
 
             light = Light.End(builder)
+
+        # Armature Data
+        armature = None
+        if obj.type == 'ARMATURE':
+            print("Found Armature!")
+
+            # Dictionary to store inverse bind matrices
+            inverse_bind_matrices = {}
+
+            # Iterate through all bones in the armature
+            for bone in obj.data.bones:
+                break
+                # Get the bone's world-space matrix in the bind pose
+                # bone.matrix_local is the bone's transformation in armature space
+                bone_matrix = obj.matrix_world @ bone.matrix_local
+                
+                # Compute the inverse bind matrix
+                inverse_bind_matrix = bone_matrix.inverted()
+                
+                # Store the matrix (convert to list for easier export if needed)
+                inverse_bind_matrices[bone.name] = inverse_bind_matrix
+                
+                # Print for verification
+                print(f"Bone: {bone.name}")
+                print(f"Inverse Bind Matrix:\n{inverse_bind_matrix}")
         
         # Begin New Object 
         Object.Start(builder)
@@ -282,7 +317,7 @@ class LiveLinkConnection():
         Object.AddVisibility(builder, is_visible)
 
         # Get world-space location, rotation, and scale
-        obj_matrix_world = obj.matrix_world;
+        obj_matrix_world = obj.matrix_world
         obj_location, obj_rotation, obj_scale = obj_matrix_world.decompose()
 
         # Object Location
@@ -481,8 +516,8 @@ class OpLiveLinkSaveToFile(bpy.types.Operator):
 
 # Begin LiveLinkView3DPanel
 class LiveLinkView3DPanel(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_LiveLink_View3D_Panel"
     bl_label = "Blender Live Link"
-    bl_idname = "LiveLink_View3D_Panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'BlenderLiveLink'

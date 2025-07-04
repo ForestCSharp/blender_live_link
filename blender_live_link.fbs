@@ -2,7 +2,13 @@
 // Flatbuffers IDL file for blender live link
  
 namespace Blender.LiveLink;
-  
+
+struct Vec2
+{
+	x : float;
+	y : float;
+}
+
 struct Vec3 
 {
   x	: float;
@@ -28,8 +34,8 @@ struct Quat
 
 struct Vertex 
 {
-	position	: Vec4;
-	normal		: Vec4;
+	position		: Vec4;
+	normal			: Vec4;
 }
 
 table Mesh
