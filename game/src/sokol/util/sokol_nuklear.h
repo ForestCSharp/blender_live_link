@@ -116,6 +116,12 @@
                 font. In this case you need to initialize the font
                 yourself after snk_setup() is called.
 
+            bool enable_set_mouse_cursor
+                If true, sokol_nuklear.h will control the mouse cursor type
+                by calling sapp_set_mouse_cursor(). If using this, you should
+                probably also call nk_style_hide_cursor() to hide Nuklear's
+                custom cursor.
+
     --- At the start of a frame, call:
 
         struct nk_context *snk_new_frame()
@@ -427,6 +433,7 @@ typedef struct snk_desc_t {
     int sample_count;
     float dpi_scale;
     bool no_default_font;
+    bool enable_set_mouse_cursor;
     snk_allocator_t allocator;          // optional memory allocation overrides (default: malloc/free)
     snk_logger_t logger;                // optional log function override
 } snk_desc_t;
@@ -2208,7 +2215,7 @@ EM_JS(int, snk_js_is_osx, (void), {
     } else {
         return 0;
     }
-});
+})
 #endif
 
 static bool _snk_is_osx(void) {
@@ -2254,7 +2261,7 @@ static void _snk_log(snk_log_item_t log_item, uint32_t log_level, const char* ms
                 msg = _snk_log_messages[log_item];
             }
         #endif
-        _snuklear.desc.logger.func("snk", log_level, log_item, msg, line_nr, filename, _snuklear.desc.logger.user_data);
+        _snuklear.desc.logger.func("snk", log_level, (uint32_t)log_item, msg, line_nr, filename, _snuklear.desc.logger.user_data);
     } else {
         // for log level PANIC it would be 'undefined behaviour' to continue
         if (log_level == 0) {
@@ -2540,7 +2547,10 @@ SOKOL_API_IMPL void snk_setup(const snk_desc_t* desc) {
     // vertex buffer
     _snuklear.vertex_buffer_size = (size_t)_snuklear.desc.max_vertices * sizeof(_snk_vertex_t);
     _snuklear.vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .usage = SG_USAGE_STREAM,
+        .usage = {
+            .vertex_buffer = true,
+            .stream_update = true,
+        },
         .size = _snuklear.vertex_buffer_size,
         .label = "sokol-nuklear-vertices"
     });
@@ -2548,8 +2558,10 @@ SOKOL_API_IMPL void snk_setup(const snk_desc_t* desc) {
     // index buffer
     _snuklear.index_buffer_size = (size_t)_snuklear.desc.max_vertices * 3 * sizeof(uint16_t);
     _snuklear.ibuf = sg_make_buffer(&(sg_buffer_desc){
-        .type = SG_BUFFERTYPE_INDEXBUFFER,
-        .usage = SG_USAGE_STREAM,
+        .usage = {
+            .index_buffer = true,
+            .stream_update = true,
+        },
         .size = _snuklear.index_buffer_size,
         .label = "sokol-nuklear-indices"
     });
@@ -2860,6 +2872,28 @@ static void _snk_bind_image_sampler(sg_bindings* bindings, nk_handle h) {
 
 SOKOL_API_IMPL void snk_render(int width, int height) {
     SOKOL_ASSERT(_SNK_INIT_COOKIE == _snuklear.init_cookie);
+
+    #if !defined(SOKOL_NUKLEAR_NO_SOKOL_APP)
+    if (_snuklear.desc.enable_set_mouse_cursor) {
+        for (enum nk_style_cursor c = 0; c < NK_CURSOR_COUNT; ++c) {
+            if (_snuklear.ctx.style.cursor_active == _snuklear.ctx.style.cursors[c]) {
+                sapp_mouse_cursor sapp_cur = SAPP_MOUSECURSOR_ARROW;
+                switch (c) {
+                    case NK_CURSOR_TEXT: sapp_cur = SAPP_MOUSECURSOR_IBEAM; break;
+                    case NK_CURSOR_MOVE: sapp_cur = SAPP_MOUSECURSOR_RESIZE_ALL; break;
+                    case NK_CURSOR_RESIZE_VERTICAL: sapp_cur = SAPP_MOUSECURSOR_RESIZE_NS; break;
+                    case NK_CURSOR_RESIZE_HORIZONTAL: sapp_cur = SAPP_MOUSECURSOR_RESIZE_EW; break;
+                    case NK_CURSOR_RESIZE_TOP_LEFT_DOWN_RIGHT: sapp_cur = SAPP_MOUSECURSOR_RESIZE_NESW; break;
+                    case NK_CURSOR_RESIZE_TOP_RIGHT_DOWN_LEFT: sapp_cur = SAPP_MOUSECURSOR_RESIZE_NWSE; break;
+                    default: break;
+                }
+                sapp_set_mouse_cursor(sapp_cur);
+                break;
+            }
+        }
+    }
+    #endif
+
     static const struct nk_draw_vertex_layout_element vertex_layout[] = {
         {NK_VERTEX_POSITION, NK_FORMAT_FLOAT, NK_OFFSETOF(struct _snk_vertex_t, pos)},
         {NK_VERTEX_TEXCOORD, NK_FORMAT_FLOAT, NK_OFFSETOF(struct _snk_vertex_t, uv)},

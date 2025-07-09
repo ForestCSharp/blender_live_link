@@ -1,16 +1,21 @@
 
 TODO
+	- Skinned Animations
+	- Texturing and PBR
+	- Reflection Captures
+	- Shadows
+		- Cascaded Shadow Map on Sunlight
+		- Screen Space Shadows
+	- Temporal Anti Aliasing
+
+	- Sokol Compute Shaders
+		- [DONE] updated sokol to latest version
+		- [TODO] first use-case
+
 	- make sure children are handled in post depsgraph update (deletion)
-	- skinned animations
-	- texturing + pbr
-	- reflection captures
 
 	- Clean up dynamic gameplay component system. Make sure all the per-type stuff stays together
 		- maybe an init class method?
-
-Tasks:
-	- send skeletal mesh data (and animations)
-	- don't build up vertex format until you get to c++, the big vtx/idx loops in python are likely very slow and we should just memcpy those if possible
 
 Bugs:
 	- last 'mesh' object can't be deleted for some reason

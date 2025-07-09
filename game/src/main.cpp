@@ -90,12 +90,13 @@ protected:
 #define FONT_ORIC  (5)
 
 // Generated Shader Files
-#include "geometry.compiled.h"
 #include "../data/shaders/ssao_constants.h"
+#include "geometry.compiled.h"
 #include "ssao.compiled.h"
 #include "blur.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
+#include "overlay_texture.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -184,7 +185,7 @@ struct RenderPassOutputDesc {
 };
 
 struct RenderPassDesc {
-	sg_pipeline_desc pipeline_desc;
+	optional<sg_pipeline_desc> pipeline_desc;
 	int num_outputs = 0;
 	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
 	bool render_to_swapchain = false;
@@ -209,7 +210,10 @@ public: // Functions
 		assert(in_desc.num_outputs > 0 || in_desc.render_to_swapchain);
 
 		desc = in_desc;
-		pipeline = sg_make_pipeline(in_desc.pipeline_desc);
+		if (desc.pipeline_desc)
+		{
+			pipeline = sg_make_pipeline(*desc.pipeline_desc);
+		}
 		handle_resize();
 	}
 
@@ -234,12 +238,14 @@ public: // Functions
 				}
 
 				sg_image_desc color_image_desc = {
-					.render_target = true,
+					.usage = {
+						.render_attachment = true,
+					},
 					.width = width,
 					.height = height,
 					.pixel_format = output_desc.pixel_format,
 					.sample_count = SAMPLE_COUNT,
-					.label = "color_image"
+					.label = "color_image",
 				};
 			
 				color_image = sg_make_image(&color_image_desc);
@@ -253,7 +259,9 @@ public: // Functions
 			}
 
 			sg_image_desc depth_image_desc = {
-				.render_target = true,
+				.usage = {
+					.render_attachment = true,
+				},
 				.width = width,
 				.height = height,
 				.pixel_format = swapchain.depth_format,
@@ -276,8 +284,8 @@ public: // Functions
 	void execute(std::function<void()> in_callback)
 	{
 		sg_pass pass = {
-			.attachments = !desc.render_to_swapchain	? attachments		: (sg_attachments){},
-			.swapchain = desc.render_to_swapchain	? sglue_swapchain()	: (sg_swapchain){},
+			.attachments = !desc.render_to_swapchain ? attachments : (sg_attachments){},
+			.swapchain = desc.render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
 		};
 
 		for (int i = 0; i < SG_MAX_COLOR_ATTACHMENTS; ++i)
@@ -316,6 +324,8 @@ struct {
 	RenderPass ssao_blur_pass;
 	RenderPass lighting_pass;
 	RenderPass tonemapping_pass;
+	RenderPass debug_text_pass;
+	RenderPass copy_to_swapchain_pass;
 
 	// SSAO Data 
 	bool ssao_enable = true;
@@ -686,6 +696,8 @@ void handle_resize()
 		state.ssao_blur_pass.handle_resize();
 		state.lighting_pass.handle_resize();
 		state.tonemapping_pass.handle_resize();
+		state.debug_text_pass.handle_resize();
+		state.copy_to_swapchain_pass.handle_resize();
 	}
 }
 
@@ -699,9 +711,9 @@ void init(void)
     });
 
 	// Check for Storage Buffer Support
-	if (!sg_query_features().storage_buffer)
+	if (!sg_query_features().compute)
 	{
-		printf("Sokol Gfx Error: Storage Buffers are Required\n");
+		printf("Sokol Gfx Error: Compute/Storage Buffers are Required\n");
 		exit(0);
 	}
 
@@ -733,12 +745,12 @@ void init(void)
 	//FCS TODO: shared info in pipeline desc and render pass desc re: outputs 
 	const i32 num_geometry_pass_outputs = 3;
 	RenderPassDesc geometry_pass_desc = {
-		.pipeline_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
 			.layout = {
 				.buffers[0].stride = sizeof(Vertex),
 				.attrs = {
-					[ATTR_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
-					[ATTR_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
+					[ATTR_geometry_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
+					[ATTR_geometry_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
 			   }
 			},
 			.shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend())),
@@ -783,7 +795,7 @@ void init(void)
 	state.geometry_pass.init(geometry_pass_desc);
 
 	RenderPassDesc ssao_pass_desc = {
-		.pipeline_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
@@ -821,7 +833,6 @@ void init(void)
 			.width = SSAO_TEXTURE_WIDTH,
 			.height = SSAO_TEXTURE_WIDTH,
 			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.usage = SG_USAGE_IMMUTABLE,
 			.sample_count = SAMPLE_COUNT,
 			.data.subimage[0][0].ptr = &ssao_noise,
 			.data.subimage[0][0].size = SSAO_TEXTURE_SIZE * sizeof(HMM_Vec4),
@@ -856,7 +867,7 @@ void init(void)
 	}
 
 	RenderPassDesc ssao_blur_pass_desc = {
-		.pipeline_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
@@ -876,7 +887,7 @@ void init(void)
 	state.ssao_blur_pass.init(ssao_blur_pass_desc);
 
 	RenderPassDesc lighting_pass_desc = {
-		.pipeline_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
@@ -896,7 +907,7 @@ void init(void)
 	state.lighting_pass.init(lighting_pass_desc);
 
 	RenderPassDesc tonemapping_pass_desc = {
-		.pipeline_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
@@ -906,9 +917,41 @@ void init(void)
 					},
 			.label = "tonemapping-pipeline",
 		},
-		.render_to_swapchain = true,
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
 	};
 	state.tonemapping_pass.init(tonemapping_pass_desc);
+
+	RenderPassDesc debug_text_pass_desc = {
+		// Don't set optional pipeline_desc
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		}
+	};
+	state.debug_text_pass.init(debug_text_pass_desc);
+
+	RenderPassDesc copy_to_swapchain_pass_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(overlay_texture_overlay_texture_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+						.write_enabled = false,
+					},
+			.label = "copy-to-swapchain-pipeline",
+		},
+		.render_to_swapchain = true,
+	};
+	state.copy_to_swapchain_pass.init(copy_to_swapchain_pass_desc);
 
 	handle_resize();
 
@@ -1174,10 +1217,11 @@ void frame(void)
 				{
 					state.point_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_PointLight_t>){
 						.data = nullptr,
-						.data_size = 0,
-						.max_size = sizeof(lighting_PointLight_t) * MAX_LIGHTS_PER_TYPE,
-						.type = SG_BUFFERTYPE_STORAGEBUFFER,
-						.is_dynamic = true,
+						.size = sizeof(lighting_PointLight_t) * MAX_LIGHTS_PER_TYPE,
+						.usage = {
+							.storage_buffer = true,
+							.stream_update = true,
+						},
 						.label = "point_lights",
 					});
 				}
@@ -1187,10 +1231,11 @@ void frame(void)
 				{
 					state.spot_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SpotLight_t>){
 						.data = nullptr,
-						.data_size = 0,
-						.max_size = sizeof(lighting_SpotLight_t) * MAX_LIGHTS_PER_TYPE,
-						.type = SG_BUFFERTYPE_STORAGEBUFFER,
-						.is_dynamic = true,
+						.size = sizeof(lighting_SpotLight_t) * MAX_LIGHTS_PER_TYPE,
+						.usage = {
+							.storage_buffer = true,
+							.stream_update = true,
+						},
 						.label = "spot_lights",
 					});
 				}
@@ -1200,10 +1245,11 @@ void frame(void)
 				{
 					state.sun_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SunLight_t>){
 						.data = nullptr,
-						.data_size = 0,
-						.max_size = sizeof(lighting_SunLight_t) * MAX_LIGHTS_PER_TYPE,
-						.type = SG_BUFFERTYPE_STORAGEBUFFER,
-						.is_dynamic = true,
+						.size = sizeof(lighting_SunLight_t) * MAX_LIGHTS_PER_TYPE,
+						.usage = {
+							.storage_buffer = true,
+							.stream_update = true,
+						},
 						.label = "sun_lights",
 					});
 				}
@@ -1342,7 +1388,7 @@ void frame(void)
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
-		{ // Lighting
+		{ // Geometry Pass 
 			state.geometry_pass.execute(
 				[&]()
 				{
@@ -1455,8 +1501,6 @@ void frame(void)
 			);
 		}
 
-		//FCS TODO: new lighting pass here
-
 		{ // Lighting Pass
 			state.lighting_pass.execute(
 				[&]()
@@ -1483,7 +1527,7 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
-		}	
+		}
 
 		{ // Tonemapping Pass
 			state.tonemapping_pass.execute(
@@ -1499,31 +1543,39 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
-		}	
+		}
 
-		//FCS TODO: This is the second render to the swapchain. Fix this
 		{ // Debug Text
-			sg_begin_pass((sg_pass)
-			{
-				.action = {
-					.colors[0] = {
-						.load_action = SG_LOADACTION_LOAD,
-					},
-				},
-				// Render to swapchain
-				.swapchain = sglue_swapchain()
-			});
+			state.debug_text_pass.execute(
+				[&]()
+				{
+					if (!state.blender_data_loaded)
+					{
+						sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
+						sdtx_origin(1.0f, 2.0f);
+						sdtx_home();
+						draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
+						sdtx_draw();
+					}
+				}
+			);
+		}
 
-			if (!state.blender_data_loaded)
-			{
-				sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
-				sdtx_origin(1.0f, 2.0f);
-				sdtx_home();
-				draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
-				sdtx_draw();
-			}
+		{ // Copy To Swapchain Pass	
+			state.copy_to_swapchain_pass.execute(
+				[&]()
+				{	
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = state.tonemapping_pass.color_outputs[0], 
+						.images[1] = state.debug_text_pass.color_outputs[0],
+						.samplers[0] = state.sampler,
+					};
 
-			sg_end_pass();
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
 		}
 
 		sg_commit();

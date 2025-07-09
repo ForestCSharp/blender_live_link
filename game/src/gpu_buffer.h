@@ -15,21 +15,20 @@ struct GpuBufferDesc
 	/* Data to initialize the GpuBuffer with */
 	T* data;
 	
-	/* Size of data */
-	u64 data_size;
+	/* 
+	 *	The size of the buffer to be created.
+	 *	For static buffers this represents the size of T* data used to initialize this buffer
+	 *	For dynamic buffers with no initial data: this represents the max possible size of the buffer
+	*/
+	u64 size;
 
-	/* max size of this buffer. Only meaningful if is_dynamic is true */
-	u64 max_size;
+	/* buffer usage info */
+	sg_buffer_usage usage;
 	
-	/* type of the GpuBuffer */
-	sg_buffer_type type;
-
-	/* can the GpuBuffer be updated after creation? */
-	bool is_dynamic = false;
-
 	/* Debug Label */
 	const char* label;
 };
+
 
 template<typename T>
 struct GpuBuffer
@@ -39,17 +38,9 @@ public:
 
 	GpuBuffer(GpuBufferDesc<T> in_desc)
 	: data(in_desc.data)
-	, data_size(in_desc.data_size)
-	, max_size(in_desc.max_size)
-	, gpu_buffer_type(in_desc.type)
-	, is_dynamic(in_desc.is_dynamic)
+	, size(in_desc.size)
+	, usage(in_desc.usage)
 	{
-		//Static Buffers max_size and data_size should be identical
-		if (!is_dynamic && max_size != data_size)
-		{
-			max_size = data_size;
-		}
-
 		set_label(in_desc.label);
 	}
 
@@ -58,35 +49,39 @@ public:
 		return gpu_buffer.has_value();
 	}
 
+	bool is_dynamic() const
+	{
+		return usage.dynamic_update || usage.stream_update;
+	}
+
 	sg_buffer get_gpu_buffer()
 	{
 		if (!gpu_buffer.has_value())
 		{
-			sg_usage usage = is_dynamic ? SG_USAGE_DYNAMIC : SG_USAGE_IMMUTABLE;
-
 			sg_buffer_desc buffer_desc = {
-				.type = gpu_buffer_type,
+				.size = size,
 				.usage = usage,
-				.data = {	
-					/* 
-					 * Static Buffers Set up their data in sg_make_buffer
-					 * Dynamic Buffers only need to init to their max size
-					 */
-					.ptr = is_dynamic ? nullptr : data,
-					.size = is_dynamic ? max_size : data_size,
-				},
 				.label = label ? label->c_str() : "",
 			};
+
+			// Non-Dynamic Buffers pass their initial data to sg_make_buffer
+			if (!is_dynamic())
+			{
+				buffer_desc.data = {
+					.ptr = data,
+					.size = size,
+				};
+			}
 
 			gpu_buffer = sg_make_buffer(buffer_desc);
 
 			// Dynamic Buffer Update can happen now
-			if (is_dynamic && data != nullptr && data_size > 0)
+			if (is_dynamic() && data != nullptr && size > 0)
 			{
 				// If Dynamic Buffer has data, send via sg_update_buffer now
 				const sg_range update_range = {
 					.ptr = data,
-					.size = data_size,
+					.size = size,
 				};
 
 				sg_update_buffer(
@@ -101,7 +96,7 @@ public:
 
 	void update_gpu_buffer(const sg_range& in_range)
 	{
-		assert(is_dynamic);
+		assert(is_dynamic());
 		sg_update_buffer(get_gpu_buffer(), &in_range);
 	}
 
@@ -120,20 +115,14 @@ public:
 	}
 
 protected:
-	// Underlying Buffer Data
+	/* Underlying Buffer Data */
 	T* data;
 
-	// Data Size
-	u64 data_size;
+	/* Data Size */ 
+	u64 size;
 
-	// Max Possible Size
-	u64 max_size;
-
-	// Gpu Buffer Type
-	sg_buffer_type gpu_buffer_type;
-
-	// is this Gpu Buffer dynamic
-	bool is_dynamic = false;
+	/* buffer usage info */
+	sg_buffer_usage usage;
 
 	// Buffer used for gpu operations
 	std::optional<sg_buffer> gpu_buffer;

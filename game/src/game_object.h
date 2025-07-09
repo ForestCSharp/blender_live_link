@@ -45,20 +45,20 @@ Mesh make_mesh(
 		.indices = indices,
 		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
 			.data = indices,
-			.data_size = indices_size,
-			.max_size = indices_size,
-			.type = SG_BUFFERTYPE_INDEXBUFFER,
-			.is_dynamic = false,
+			.size = indices_size,
+			.usage = {
+				.index_buffer = true,
+			},
 			.label = "Mesh::index_buffer",
 		}),
 		.vertex_count = vertices_len,
 		.vertices = vertices,
 		.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>){
 			.data = vertices,
-			.data_size = vertices_size,
-			.max_size = vertices_size,
-			.type = SG_BUFFERTYPE_VERTEXBUFFER,
-			.is_dynamic = false,
+			.size = vertices_size,
+			.usage = {
+				.vertex_buffer = true,
+			},
 			.label = "Mesh::vertex_buffer",
 		}),	
 	};
@@ -313,10 +313,11 @@ Object object_create(
 		// Create our dynamic storage buffer and mark it for update later on the game thread
 		.storage_buffer = GpuBuffer((GpuBufferDesc<geometry_ObjectData_t>){
 			.data = nullptr,
-			.data_size = 0, 
-			.max_size = sizeof(geometry_ObjectData_t),
-			.type = SG_BUFFERTYPE_STORAGEBUFFER,
-			.is_dynamic = true,
+			.size = sizeof(geometry_ObjectData_t),
+			.usage = {
+				.storage_buffer = true,
+				.stream_update = true,
+			},
 			.label = "Object::storage_buffer",
 		}),
 		.storage_buffer_needs_update = true,
