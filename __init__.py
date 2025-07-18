@@ -195,8 +195,9 @@ class LiveLinkConnection():
             mesh_positions = builder.CreateNumpyVector(positions) 
             mesh_normals = builder.CreateNumpyVector(normals)
 
-            num_triangles = len(mesh.polygons)
-            indices = np.zeros(num_triangles * 3, dtype=np.int32)
+            # Extract Index data from triangulated polygons
+            num_indices = len(mesh.polygons) * 3
+            indices = np.zeros(num_indices, dtype=np.int32)
             for i, poly in enumerate(mesh.polygons):
                 indices[i * 3:i * 3 + 3] = poly.vertices
             mesh_indices = builder.CreateNumpyVector(indices);
