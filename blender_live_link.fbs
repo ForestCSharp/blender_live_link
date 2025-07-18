@@ -32,15 +32,10 @@ struct Quat
   w	: float;
 }
 
-struct Vertex 
-{
-	position		: Vec4;
-	normal			: Vec4;
-}
-
 table Mesh
 {
-	vertices	: [Vertex];
+	positions	: [float];
+	normals		: [float];
 	indices		: [uint];
 }
 

@@ -14,6 +14,7 @@ from bpy.app.handlers import persistent
 
 import bmesh
 import builtins
+import numpy as np
 import os
 import socket
 import sys
@@ -41,7 +42,6 @@ from .compiled_schemas.python.Blender.LiveLink import RigidBody
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Quat
-from .compiled_schemas.python.Blender.LiveLink import Vertex
 
 # Overridden print that prints to blender console windows
 def print(*args, **kwargs):
@@ -184,31 +184,22 @@ class LiveLinkConnection():
             mesh = self.get_mesh(obj, dependency_graph)
 
             # Export Vertices
-            blender_vertices = mesh.vertices
-            
-            Mesh.MeshStartVerticesVector(builder, len(blender_vertices))
-            for vert_idx, blender_vertex in enumerate(reversed(blender_vertices)):
-                position = blender_vertex.co.to_4d()
-                normal = blender_vertex.normal.to_4d()
-                Vertex.CreateVertex(
-                    builder,
-                    position.x, position.y, position.z, position.w,
-                    normal.x, normal.y, normal.z, normal.w
-                )
-            mesh_vertices = builder.EndVector()
+            blender_vertices = mesh.vertices 
+            vertex_count = len(blender_vertices)
 
-            # Export Indices
-            indices = []
-            for blender_polygon in mesh.polygons:
-                # Should be able to assume triangles here because of triangulate call above
-                indices.append(blender_polygon.vertices[0])
-                indices.append(blender_polygon.vertices[1])
-                indices.append(blender_polygon.vertices[2])
+            # Extract positions and normals using foreach_get
+            positions = np.zeros(vertex_count * 3, dtype=np.float32)
+            normals = np.zeros(vertex_count * 3, dtype=np.float32)
+            blender_vertices.foreach_get("co", positions)
+            blender_vertices.foreach_get("normal", normals)
+            mesh_positions = builder.CreateNumpyVector(positions) 
+            mesh_normals = builder.CreateNumpyVector(normals)
 
-            Mesh.MeshStartIndicesVector(builder, len(indices))
-            for index in reversed(indices):
-                builder.PrependUint32(index)
-            mesh_indices = builder.EndVector()
+            num_triangles = len(mesh.polygons)
+            indices = np.zeros(num_triangles * 3, dtype=np.int32)
+            for i, poly in enumerate(mesh.polygons):
+                indices[i * 3:i * 3 + 3] = poly.vertices
+            mesh_indices = builder.CreateNumpyVector(indices);
 
             # TODO: if we find an armature build up skinned vertex info in new field
             # Check for armature
@@ -217,7 +208,8 @@ class LiveLinkConnection():
                 print("Mesh is skinned!")
 
             Mesh.Start(builder)
-            Mesh.AddVertices(builder, mesh_vertices)
+            Mesh.AddPositions(builder, mesh_positions)
+            Mesh.AddNormals(builder, mesh_normals)
             Mesh.AddIndices(builder, mesh_indices)
             mesh = Mesh.End(builder)
 

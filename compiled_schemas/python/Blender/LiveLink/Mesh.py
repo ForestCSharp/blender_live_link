@@ -25,32 +25,62 @@ class Mesh(object):
         self._tab = flatbuffers.table.Table(buf, pos)
 
     # Mesh
-    def Vertices(self, j):
+    def Positions(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(4))
         if o != 0:
-            x = self._tab.Vector(o)
-            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 32
-            from Blender.LiveLink.Vertex import Vertex
-            obj = Vertex()
-            obj.Init(self._tab.Bytes, x)
-            return obj
-        return None
+            a = self._tab.Vector(o)
+            return self._tab.Get(flatbuffers.number_types.Float32Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 4))
+        return 0
 
     # Mesh
-    def VerticesLength(self):
+    def PositionsAsNumpy(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(4))
+        if o != 0:
+            return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Float32Flags, o)
+        return 0
+
+    # Mesh
+    def PositionsLength(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(4))
         if o != 0:
             return self._tab.VectorLen(o)
         return 0
 
     # Mesh
-    def VerticesIsNone(self):
+    def PositionsIsNone(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(4))
         return o == 0
 
     # Mesh
-    def Indices(self, j):
+    def Normals(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            a = self._tab.Vector(o)
+            return self._tab.Get(flatbuffers.number_types.Float32Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 4))
+        return 0
+
+    # Mesh
+    def NormalsAsNumpy(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Float32Flags, o)
+        return 0
+
+    # Mesh
+    def NormalsLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Mesh
+    def NormalsIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        return o == 0
+
+    # Mesh
+    def Indices(self, j):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
         if o != 0:
             a = self._tab.Vector(o)
             return self._tab.Get(flatbuffers.number_types.Uint32Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 4))
@@ -58,43 +88,55 @@ class Mesh(object):
 
     # Mesh
     def IndicesAsNumpy(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
         if o != 0:
             return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Uint32Flags, o)
         return 0
 
     # Mesh
     def IndicesLength(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
         if o != 0:
             return self._tab.VectorLen(o)
         return 0
 
     # Mesh
     def IndicesIsNone(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
         return o == 0
 
 def MeshStart(builder):
-    builder.StartObject(2)
+    builder.StartObject(3)
 
 def Start(builder):
     MeshStart(builder)
 
-def MeshAddVertices(builder, vertices):
-    builder.PrependUOffsetTRelativeSlot(0, flatbuffers.number_types.UOffsetTFlags.py_type(vertices), 0)
+def MeshAddPositions(builder, positions):
+    builder.PrependUOffsetTRelativeSlot(0, flatbuffers.number_types.UOffsetTFlags.py_type(positions), 0)
 
-def AddVertices(builder, vertices):
-    MeshAddVertices(builder, vertices)
+def AddPositions(builder, positions):
+    MeshAddPositions(builder, positions)
 
-def MeshStartVerticesVector(builder, numElems):
-    return builder.StartVector(32, numElems, 4)
+def MeshStartPositionsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
 
-def StartVerticesVector(builder, numElems):
-    return MeshStartVerticesVector(builder, numElems)
+def StartPositionsVector(builder, numElems):
+    return MeshStartPositionsVector(builder, numElems)
+
+def MeshAddNormals(builder, normals):
+    builder.PrependUOffsetTRelativeSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(normals), 0)
+
+def AddNormals(builder, normals):
+    MeshAddNormals(builder, normals)
+
+def MeshStartNormalsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartNormalsVector(builder, numElems):
+    return MeshStartNormalsVector(builder, numElems)
 
 def MeshAddIndices(builder, indices):
-    builder.PrependUOffsetTRelativeSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(indices), 0)
+    builder.PrependUOffsetTRelativeSlot(2, flatbuffers.number_types.UOffsetTFlags.py_type(indices), 0)
 
 def AddIndices(builder, indices):
     MeshAddIndices(builder, indices)

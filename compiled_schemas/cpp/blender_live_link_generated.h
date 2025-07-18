@@ -24,8 +24,6 @@ struct Vec4;
 
 struct Quat;
 
-struct Vertex;
-
 struct Mesh;
 struct MeshBuilder;
 
@@ -204,29 +202,6 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Quat FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Quat, 16);
 
-FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vertex FLATBUFFERS_FINAL_CLASS {
- private:
-  Blender::LiveLink::Vec4 position_;
-  Blender::LiveLink::Vec4 normal_;
-
- public:
-  Vertex()
-      : position_(),
-        normal_() {
-  }
-  Vertex(const Blender::LiveLink::Vec4 &_position, const Blender::LiveLink::Vec4 &_normal)
-      : position_(_position),
-        normal_(_normal) {
-  }
-  const Blender::LiveLink::Vec4 &position() const {
-    return position_;
-  }
-  const Blender::LiveLink::Vec4 &normal() const {
-    return normal_;
-  }
-};
-FLATBUFFERS_STRUCT_END(Vertex, 32);
-
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) RigidBody FLATBUFFERS_FINAL_CLASS {
  private:
   uint8_t is_dynamic_;
@@ -340,19 +315,25 @@ FLATBUFFERS_STRUCT_END(SunLight, 8);
 struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef MeshBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-    VT_VERTICES = 4,
-    VT_INDICES = 6
+    VT_POSITIONS = 4,
+    VT_NORMALS = 6,
+    VT_INDICES = 8
   };
-  const ::flatbuffers::Vector<const Blender::LiveLink::Vertex *> *vertices() const {
-    return GetPointer<const ::flatbuffers::Vector<const Blender::LiveLink::Vertex *> *>(VT_VERTICES);
+  const ::flatbuffers::Vector<float> *positions() const {
+    return GetPointer<const ::flatbuffers::Vector<float> *>(VT_POSITIONS);
+  }
+  const ::flatbuffers::Vector<float> *normals() const {
+    return GetPointer<const ::flatbuffers::Vector<float> *>(VT_NORMALS);
   }
   const ::flatbuffers::Vector<uint32_t> *indices() const {
     return GetPointer<const ::flatbuffers::Vector<uint32_t> *>(VT_INDICES);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
-           VerifyOffset(verifier, VT_VERTICES) &&
-           verifier.VerifyVector(vertices()) &&
+           VerifyOffset(verifier, VT_POSITIONS) &&
+           verifier.VerifyVector(positions()) &&
+           VerifyOffset(verifier, VT_NORMALS) &&
+           verifier.VerifyVector(normals()) &&
            VerifyOffset(verifier, VT_INDICES) &&
            verifier.VerifyVector(indices()) &&
            verifier.EndTable();
@@ -363,8 +344,11 @@ struct MeshBuilder {
   typedef Mesh Table;
   ::flatbuffers::FlatBufferBuilder &fbb_;
   ::flatbuffers::uoffset_t start_;
-  void add_vertices(::flatbuffers::Offset<::flatbuffers::Vector<const Blender::LiveLink::Vertex *>> vertices) {
-    fbb_.AddOffset(Mesh::VT_VERTICES, vertices);
+  void add_positions(::flatbuffers::Offset<::flatbuffers::Vector<float>> positions) {
+    fbb_.AddOffset(Mesh::VT_POSITIONS, positions);
+  }
+  void add_normals(::flatbuffers::Offset<::flatbuffers::Vector<float>> normals) {
+    fbb_.AddOffset(Mesh::VT_NORMALS, normals);
   }
   void add_indices(::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices) {
     fbb_.AddOffset(Mesh::VT_INDICES, indices);
@@ -382,23 +366,28 @@ struct MeshBuilder {
 
 inline ::flatbuffers::Offset<Mesh> CreateMesh(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    ::flatbuffers::Offset<::flatbuffers::Vector<const Blender::LiveLink::Vertex *>> vertices = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<float>> positions = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<float>> normals = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices = 0) {
   MeshBuilder builder_(_fbb);
   builder_.add_indices(indices);
-  builder_.add_vertices(vertices);
+  builder_.add_normals(normals);
+  builder_.add_positions(positions);
   return builder_.Finish();
 }
 
 inline ::flatbuffers::Offset<Mesh> CreateMeshDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    const std::vector<Blender::LiveLink::Vertex> *vertices = nullptr,
+    const std::vector<float> *positions = nullptr,
+    const std::vector<float> *normals = nullptr,
     const std::vector<uint32_t> *indices = nullptr) {
-  auto vertices__ = vertices ? _fbb.CreateVectorOfStructs<Blender::LiveLink::Vertex>(*vertices) : 0;
+  auto positions__ = positions ? _fbb.CreateVector<float>(*positions) : 0;
+  auto normals__ = normals ? _fbb.CreateVector<float>(*normals) : 0;
   auto indices__ = indices ? _fbb.CreateVector<uint32_t>(*indices) : 0;
   return Blender::LiveLink::CreateMesh(
       _fbb,
-      vertices__,
+      positions__,
+      normals__,
       indices__);
 }
 

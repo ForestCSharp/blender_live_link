@@ -48,7 +48,6 @@ using ankerl::unordered_dense::map;
 
 // Handmade Math
 #define HANDMADE_MATH_IMPLEMENTATION
-//#define HANDMADE_MATH_NO_SSE
 #include "handmade_math/HandmadeMath.h"
 
 // STB Dynamic Array
@@ -428,33 +427,33 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				{
 					u32 num_vertices = 0;
 					Vertex* vertices = nullptr;
-					if (auto flatbuffer_vertices = object_mesh->vertices())
+
+					auto flatbuffer_positions = object_mesh->positions();
+					auto flatbuffer_normals = object_mesh->normals();
+					if (flatbuffer_positions && flatbuffer_normals)
 					{
-						num_vertices = flatbuffer_vertices->size();
+						num_vertices = flatbuffer_positions->size() / 3;
 						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
 
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 						{
-							auto vertex = flatbuffer_vertices->Get(vertex_idx);
-							auto vertex_position = vertex->position();
-							auto vertex_normal = vertex->normal();
-
 							vertices[vertex_idx] = {
 								.position = {
-									.X = vertex_position.x(),
-									.Y = vertex_position.y(),
-									.Z = vertex_position.z(),
-									.W = vertex_position.w(),
+									.X = flatbuffer_positions->Get(vertex_idx * 3),
+									.Y = flatbuffer_positions->Get(vertex_idx * 3 + 1),
+									.Z = flatbuffer_positions->Get(vertex_idx * 3 + 2),
+									.W = 1.0,
 								},
 								.normal = {
-									.X = vertex_normal.x(),
-									.Y = vertex_normal.y(),
-									.Z = vertex_normal.z(),
-									.W = vertex_normal.w(),
+									.X = flatbuffer_normals->Get(vertex_idx * 3),
+									.Y = flatbuffer_normals->Get(vertex_idx * 3 + 1),
+									.Z = flatbuffer_normals->Get(vertex_idx * 3 + 2),
+									.W = 0.0,
 								},
 							};
 						}
 					}
+
 
 					u32 num_indices = 0;
 					u32* indices = nullptr;

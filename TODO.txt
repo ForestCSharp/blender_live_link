@@ -1,5 +1,7 @@
 
 TODO
+	- Further speed up vertex build-up in __init__.py
+		- look into bulk array setup in flatbuffers
 	- Skinned Animations
 	- Texturing and PBR
 	- Reflection Captures
