@@ -1665,6 +1665,9 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 	  ("f,file", "File name", cxxopts::value<std::string>())
   	;
 
+	// First positional arg can be file to load
+	options.parse_positional({"file"});
+
 	auto result = options.parse(argc, argv);
 
 	// If we passed an init file, load it on startup
