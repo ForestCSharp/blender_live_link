@@ -111,8 +111,33 @@ class Object(object):
             return obj
         return None
 
+    # Object
+    def Components(self, j):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
+        if o != 0:
+            x = self._tab.Vector(o)
+            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 4
+            x = self._tab.Indirect(x)
+            from Blender.LiveLink.GameplayComponentContainer import GameplayComponentContainer
+            obj = GameplayComponentContainer()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Object
+    def ComponentsLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Object
+    def ComponentsIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
+        return o == 0
+
 def ObjectStart(builder):
-    builder.StartObject(9)
+    builder.StartObject(10)
 
 def Start(builder):
     ObjectStart(builder)
@@ -170,6 +195,18 @@ def ObjectAddLight(builder, light):
 
 def AddLight(builder, light):
     ObjectAddLight(builder, light)
+
+def ObjectAddComponents(builder, components):
+    builder.PrependUOffsetTRelativeSlot(9, flatbuffers.number_types.UOffsetTFlags.py_type(components), 0)
+
+def AddComponents(builder, components):
+    ObjectAddComponents(builder, components)
+
+def ObjectStartComponentsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartComponentsVector(builder, numElems):
+    return ObjectStartComponentsVector(builder, numElems)
 
 def ObjectEnd(builder):
     return builder.EndObject()

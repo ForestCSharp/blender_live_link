@@ -38,6 +38,15 @@ struct SunLight;
 struct Light;
 struct LightBuilder;
 
+struct GameplayComponentCharacter;
+struct GameplayComponentCharacterBuilder;
+
+struct GameplayComponentCameraControl;
+struct GameplayComponentCameraControlBuilder;
+
+struct GameplayComponentContainer;
+struct GameplayComponentContainerBuilder;
+
 struct Object;
 struct ObjectBuilder;
 
@@ -79,6 +88,54 @@ inline const char *EnumNameLightType(LightType e) {
   const size_t index = static_cast<size_t>(e);
   return EnumNamesLightType()[index];
 }
+
+enum GameplayComponent : uint8_t {
+  GameplayComponent_NONE = 0,
+  GameplayComponent_GameplayComponentCharacter = 1,
+  GameplayComponent_GameplayComponentCameraControl = 2,
+  GameplayComponent_MIN = GameplayComponent_NONE,
+  GameplayComponent_MAX = GameplayComponent_GameplayComponentCameraControl
+};
+
+inline const GameplayComponent (&EnumValuesGameplayComponent())[3] {
+  static const GameplayComponent values[] = {
+    GameplayComponent_NONE,
+    GameplayComponent_GameplayComponentCharacter,
+    GameplayComponent_GameplayComponentCameraControl
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesGameplayComponent() {
+  static const char * const names[4] = {
+    "NONE",
+    "GameplayComponentCharacter",
+    "GameplayComponentCameraControl",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameGameplayComponent(GameplayComponent e) {
+  if (::flatbuffers::IsOutRange(e, GameplayComponent_NONE, GameplayComponent_GameplayComponentCameraControl)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesGameplayComponent()[index];
+}
+
+template<typename T> struct GameplayComponentTraits {
+  static const GameplayComponent enum_value = GameplayComponent_NONE;
+};
+
+template<> struct GameplayComponentTraits<Blender::LiveLink::GameplayComponentCharacter> {
+  static const GameplayComponent enum_value = GameplayComponent_GameplayComponentCharacter;
+};
+
+template<> struct GameplayComponentTraits<Blender::LiveLink::GameplayComponentCameraControl> {
+  static const GameplayComponent enum_value = GameplayComponent_GameplayComponentCameraControl;
+};
+
+bool VerifyGameplayComponent(::flatbuffers::Verifier &verifier, const void *obj, GameplayComponent type);
+bool VerifyGameplayComponentVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Vec2 FLATBUFFERS_FINAL_CLASS {
  private:
@@ -482,6 +539,165 @@ inline ::flatbuffers::Offset<Light> CreateLight(
   return builder_.Finish();
 }
 
+struct GameplayComponentCharacter FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef GameplayComponentCharacterBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_PLAYER_CONTROLLED = 4,
+    VT_MOVE_SPEED = 6
+  };
+  bool player_controlled() const {
+    return GetField<uint8_t>(VT_PLAYER_CONTROLLED, 0) != 0;
+  }
+  float move_speed() const {
+    return GetField<float>(VT_MOVE_SPEED, 0.0f);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint8_t>(verifier, VT_PLAYER_CONTROLLED, 1) &&
+           VerifyField<float>(verifier, VT_MOVE_SPEED, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct GameplayComponentCharacterBuilder {
+  typedef GameplayComponentCharacter Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_player_controlled(bool player_controlled) {
+    fbb_.AddElement<uint8_t>(GameplayComponentCharacter::VT_PLAYER_CONTROLLED, static_cast<uint8_t>(player_controlled), 0);
+  }
+  void add_move_speed(float move_speed) {
+    fbb_.AddElement<float>(GameplayComponentCharacter::VT_MOVE_SPEED, move_speed, 0.0f);
+  }
+  explicit GameplayComponentCharacterBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<GameplayComponentCharacter> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<GameplayComponentCharacter>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<GameplayComponentCharacter> CreateGameplayComponentCharacter(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    bool player_controlled = false,
+    float move_speed = 0.0f) {
+  GameplayComponentCharacterBuilder builder_(_fbb);
+  builder_.add_move_speed(move_speed);
+  builder_.add_player_controlled(player_controlled);
+  return builder_.Finish();
+}
+
+struct GameplayComponentCameraControl FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef GameplayComponentCameraControlBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_FOLLOW_DISTANCE = 4
+  };
+  float follow_distance() const {
+    return GetField<float>(VT_FOLLOW_DISTANCE, 0.0f);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<float>(verifier, VT_FOLLOW_DISTANCE, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct GameplayComponentCameraControlBuilder {
+  typedef GameplayComponentCameraControl Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_follow_distance(float follow_distance) {
+    fbb_.AddElement<float>(GameplayComponentCameraControl::VT_FOLLOW_DISTANCE, follow_distance, 0.0f);
+  }
+  explicit GameplayComponentCameraControlBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<GameplayComponentCameraControl> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<GameplayComponentCameraControl>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<GameplayComponentCameraControl> CreateGameplayComponentCameraControl(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    float follow_distance = 0.0f) {
+  GameplayComponentCameraControlBuilder builder_(_fbb);
+  builder_.add_follow_distance(follow_distance);
+  return builder_.Finish();
+}
+
+struct GameplayComponentContainer FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef GameplayComponentContainerBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_VALUE_TYPE = 4,
+    VT_VALUE = 6
+  };
+  Blender::LiveLink::GameplayComponent value_type() const {
+    return static_cast<Blender::LiveLink::GameplayComponent>(GetField<uint8_t>(VT_VALUE_TYPE, 0));
+  }
+  const void *value() const {
+    return GetPointer<const void *>(VT_VALUE);
+  }
+  template<typename T> const T *value_as() const;
+  const Blender::LiveLink::GameplayComponentCharacter *value_as_GameplayComponentCharacter() const {
+    return value_type() == Blender::LiveLink::GameplayComponent_GameplayComponentCharacter ? static_cast<const Blender::LiveLink::GameplayComponentCharacter *>(value()) : nullptr;
+  }
+  const Blender::LiveLink::GameplayComponentCameraControl *value_as_GameplayComponentCameraControl() const {
+    return value_type() == Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl ? static_cast<const Blender::LiveLink::GameplayComponentCameraControl *>(value()) : nullptr;
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint8_t>(verifier, VT_VALUE_TYPE, 1) &&
+           VerifyOffset(verifier, VT_VALUE) &&
+           VerifyGameplayComponent(verifier, value(), value_type()) &&
+           verifier.EndTable();
+  }
+};
+
+template<> inline const Blender::LiveLink::GameplayComponentCharacter *GameplayComponentContainer::value_as<Blender::LiveLink::GameplayComponentCharacter>() const {
+  return value_as_GameplayComponentCharacter();
+}
+
+template<> inline const Blender::LiveLink::GameplayComponentCameraControl *GameplayComponentContainer::value_as<Blender::LiveLink::GameplayComponentCameraControl>() const {
+  return value_as_GameplayComponentCameraControl();
+}
+
+struct GameplayComponentContainerBuilder {
+  typedef GameplayComponentContainer Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_value_type(Blender::LiveLink::GameplayComponent value_type) {
+    fbb_.AddElement<uint8_t>(GameplayComponentContainer::VT_VALUE_TYPE, static_cast<uint8_t>(value_type), 0);
+  }
+  void add_value(::flatbuffers::Offset<void> value) {
+    fbb_.AddOffset(GameplayComponentContainer::VT_VALUE, value);
+  }
+  explicit GameplayComponentContainerBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<GameplayComponentContainer> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<GameplayComponentContainer>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<GameplayComponentContainer> CreateGameplayComponentContainer(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    Blender::LiveLink::GameplayComponent value_type = Blender::LiveLink::GameplayComponent_NONE,
+    ::flatbuffers::Offset<void> value = 0) {
+  GameplayComponentContainerBuilder builder_(_fbb);
+  builder_.add_value(value);
+  builder_.add_value_type(value_type);
+  return builder_.Finish();
+}
+
 struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ObjectBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -493,7 +709,8 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_ROTATION = 14,
     VT_MESH = 16,
     VT_RIGID_BODY = 18,
-    VT_LIGHT = 20
+    VT_LIGHT = 20,
+    VT_COMPONENTS = 22
   };
   const ::flatbuffers::String *name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_NAME);
@@ -522,6 +739,9 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const Blender::LiveLink::Light *light() const {
     return GetPointer<const Blender::LiveLink::Light *>(VT_LIGHT);
   }
+  const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>> *components() const {
+    return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>> *>(VT_COMPONENTS);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_NAME) &&
@@ -536,6 +756,9 @@ struct Object FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<Blender::LiveLink::RigidBody>(verifier, VT_RIGID_BODY, 4) &&
            VerifyOffset(verifier, VT_LIGHT) &&
            verifier.VerifyTable(light()) &&
+           VerifyOffset(verifier, VT_COMPONENTS) &&
+           verifier.VerifyVector(components()) &&
+           verifier.VerifyVectorOfTables(components()) &&
            verifier.EndTable();
   }
 };
@@ -571,6 +794,9 @@ struct ObjectBuilder {
   void add_light(::flatbuffers::Offset<Blender::LiveLink::Light> light) {
     fbb_.AddOffset(Object::VT_LIGHT, light);
   }
+  void add_components(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>>> components) {
+    fbb_.AddOffset(Object::VT_COMPONENTS, components);
+  }
   explicit ObjectBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -592,8 +818,10 @@ inline ::flatbuffers::Offset<Object> CreateObject(
     const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
     const Blender::LiveLink::RigidBody *rigid_body = nullptr,
-    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
+    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>>> components = 0) {
   ObjectBuilder builder_(_fbb);
+  builder_.add_components(components);
   builder_.add_light(light);
   builder_.add_rigid_body(rigid_body);
   builder_.add_mesh(mesh);
@@ -616,8 +844,10 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
     const Blender::LiveLink::Quat *rotation = nullptr,
     ::flatbuffers::Offset<Blender::LiveLink::Mesh> mesh = 0,
     const Blender::LiveLink::RigidBody *rigid_body = nullptr,
-    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0) {
+    ::flatbuffers::Offset<Blender::LiveLink::Light> light = 0,
+    const std::vector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>> *components = nullptr) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
+  auto components__ = components ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::GameplayComponentContainer>>(*components) : 0;
   return Blender::LiveLink::CreateObject(
       _fbb,
       name__,
@@ -628,7 +858,8 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
       rotation,
       mesh,
       rigid_body,
-      light);
+      light,
+      components__);
 }
 
 struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
@@ -707,6 +938,35 @@ inline ::flatbuffers::Offset<Update> CreateUpdateDirect(
       objects__,
       deleted_object_uids__,
       reset);
+}
+
+inline bool VerifyGameplayComponent(::flatbuffers::Verifier &verifier, const void *obj, GameplayComponent type) {
+  switch (type) {
+    case GameplayComponent_NONE: {
+      return true;
+    }
+    case GameplayComponent_GameplayComponentCharacter: {
+      auto ptr = reinterpret_cast<const Blender::LiveLink::GameplayComponentCharacter *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case GameplayComponent_GameplayComponentCameraControl: {
+      auto ptr = reinterpret_cast<const Blender::LiveLink::GameplayComponentCameraControl *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    default: return true;
+  }
+}
+
+inline bool VerifyGameplayComponentVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types) {
+  if (!values || !types) return !values && !types;
+  if (values->size() != types->size()) return false;
+  for (::flatbuffers::uoffset_t i = 0; i < values->size(); ++i) {
+    if (!VerifyGameplayComponent(
+        verifier,  values->Get(i), types->GetEnum<GameplayComponent>(i))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 inline const Blender::LiveLink::Update *GetUpdate(const void *buf) {

@@ -8,7 +8,7 @@
 #}
 
 import bpy
-from bpy.props import (StringProperty, FloatProperty, FloatVectorProperty, PointerProperty, CollectionProperty, EnumProperty)
+from bpy.props import (BoolProperty, StringProperty, FloatProperty, FloatVectorProperty, PointerProperty, CollectionProperty, EnumProperty)
 from bpy.types import (Panel, Operator, PropertyGroup)
 from bpy.app.handlers import persistent
 
@@ -30,18 +30,22 @@ if path_to_append not in sys.path:
     sys.path.append(path_to_append)
 
 from .compiled_schemas.python import flatbuffers
-from .compiled_schemas.python.Blender.LiveLink import Update
-from .compiled_schemas.python.Blender.LiveLink import Object
-from .compiled_schemas.python.Blender.LiveLink import Mesh
-from .compiled_schemas.python.Blender.LiveLink import LightType
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import Light
+from .compiled_schemas.python.Blender.LiveLink import LightType
+from .compiled_schemas.python.Blender.LiveLink import Mesh
+from .compiled_schemas.python.Blender.LiveLink import Object
 from .compiled_schemas.python.Blender.LiveLink import PointLight
+from .compiled_schemas.python.Blender.LiveLink import Quat
+from .compiled_schemas.python.Blender.LiveLink import RigidBody 
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
 from .compiled_schemas.python.Blender.LiveLink import SunLight
-from .compiled_schemas.python.Blender.LiveLink import RigidBody 
-from .compiled_schemas.python.Blender.LiveLink import Vec4
+from .compiled_schemas.python.Blender.LiveLink import Update
 from .compiled_schemas.python.Blender.LiveLink import Vec3
-from .compiled_schemas.python.Blender.LiveLink import Quat
+from .compiled_schemas.python.Blender.LiveLink import Vec4
 
 # Overridden print that prints to blender console windows
 def print(*args, **kwargs):
@@ -293,7 +297,10 @@ class LiveLinkConnection():
                 
                 # Print for verification
                 print(f"Bone: {bone.name}")
-                print(f"Inverse Bind Matrix:\n{inverse_bind_matrix}")
+                print(f"Inverse Bind Matrix:\n{inverse_bind_matrix}") 
+
+        # Add Object Gameplay Components
+        gameplay_components = builder_create_gameplay_components(builder, obj.live_link_settings)
         
         # Begin New Object 
         Object.Start(builder)
@@ -341,6 +348,10 @@ class LiveLinkConnection():
                 mass = obj.rigid_body.mass
             ))
 
+        # Add Gameplay Components data if it exists
+        if gameplay_components != None:
+            Object.AddComponents(builder, gameplay_components)
+            
         # End New Object add add to array
         live_link_object = Object.End(builder)
 
@@ -533,7 +544,7 @@ def menu_func(self, context):
 # Define Gameplay Components 
 # ------------------------------------------------------------
 
-class GameplayComponent(PropertyGroup):
+class Component(PropertyGroup):
     # Blender UI Info
     type_name = 'INVALID'
     label = 'INVALID'
@@ -542,15 +553,45 @@ class GameplayComponent(PropertyGroup):
     def enum_info(cls):
         return (cls.type_name, cls.label, '')
 
-class GameplayComponent_Player(GameplayComponent):
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_object(self, builder):
+        # Functions to generate value_type and value (implemneted by child classes) 
+        value_type = self.get_flatbuffers_value_type()
+        value = self.create_flatbuffers_value(builder)
+
+        # Create the container that contains our union and return that
+        GameplayComponentContainer.Start(builder)
+        if value != None:
+            GameplayComponentContainer.AddValueType(builder, value_type)
+            GameplayComponentContainer.AddValue(builder, value)
+        return GameplayComponentContainer.End(builder)
+
+    def create_flatbuffers_value(self, builder):
+        return None
+
+    def get_flatbuffers_value_type(self):
+        return None
+
+class Component_Character(Component):
     # Blender UI Info
-    type_name = 'PLAYER'
-    label = 'Player'
+    type_name = 'CHARACTER'
+    label = 'Character'
 
     # Properties
+    player_controlled: BoolProperty(name="Player Controlled", default=False)
     move_speed: FloatProperty(name="Move Speed", default=1.0)
 
-class GameplayComponent_CameraControl(GameplayComponent):
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_value(self, builder):
+        GameplayComponentCharacter.Start(builder)
+        GameplayComponentCharacter.AddPlayerControlled(builder, self.player_controlled)
+        GameplayComponentCharacter.AddMoveSpeed(builder, self.move_speed)
+        return GameplayComponentCharacter.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentCharacter
+
+class Component_CameraControl(Component):
     # Blender UI Info
     type_name = 'CAMERA_CONTROL'
     label = 'Camera Control'
@@ -558,26 +599,42 @@ class GameplayComponent_CameraControl(GameplayComponent):
     # Properties
     follow_distance: FloatProperty(name="Follow Distance", default=1.0)
 
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_value(self, builder):
+        GameplayComponentCameraControl.Start(builder)
+        GameplayComponentCameraControl.AddFollowDistance(builder, self.follow_distance)
+        return GameplayComponentCameraControl.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentCameraControl
+
 gameplay_component_enum = [
-    GameplayComponent_Player.enum_info(),
-    GameplayComponent_CameraControl.enum_info(),
+    Component_Character.enum_info(),
+    Component_CameraControl.enum_info(),
 ]
 
 TYPE_TO_GROUP = {
-    GameplayComponent_Player.type_name: 'player',
-    GameplayComponent_CameraControl.type_name: 'camera_control'
+    Component_Character.type_name: 'player',
+    Component_CameraControl.type_name: 'camera_control'
 }
+
+#GROUP_TO_TYPE = {v: k for k, v in TYPE_TO_GROUP.items()}
 
 # ------------------------------------------------------------
 # Container for polymorphic data
 # ------------------------------------------------------------
 
-class GameplayComponentContainer(PropertyGroup):
+class ComponentContainer(PropertyGroup):
     type: StringProperty()
 
     # Only one of these should be set, based on type
-    player:         PointerProperty(type=GameplayComponent_Player)
-    camera_control: PointerProperty(type=GameplayComponent_CameraControl)
+    player:         PointerProperty(type=Component_Character)
+    camera_control: PointerProperty(type=Component_CameraControl)
+
+    # Simply forwards to relevant component data to create flatbuffer object
+    def create_flatbuffers_object(self, builder):
+       component_data = getattr(self, TYPE_TO_GROUP[self.type])
+       return component_data.create_flatbuffers_object(builder)
 
 # ------------------------------------------------------------
 # Property Group for Live-Link Specific Data 
@@ -592,7 +649,23 @@ class LiveLinkObjectSettings(bpy.types.PropertyGroup):
         items=gameplay_component_enum
     )
 
-    items: CollectionProperty(type=GameplayComponentContainer)
+    components: CollectionProperty(type=ComponentContainer)
+
+#  Creates the flatbuffer array for the components under an object's live_link_settings
+def builder_create_gameplay_components(builder, live_link_settings):
+    out_flatbuffers_object = None
+
+    if len(live_link_settings.components) > 0:
+        flatbuffer_components = [];
+        for component in live_link_settings.components:
+            flatbuffer_components.append(component.create_flatbuffers_object(builder))
+
+        Object.ObjectStartComponentsVector(builder, len(flatbuffer_components))
+        for flatbuffer_component in reversed(flatbuffer_components): 
+            builder.PrependUOffsetTRelative(flatbuffer_component)
+        out_flatbuffers_object = builder.EndVector()
+    
+    return out_flatbuffers_object
 
 # ------------------------------------------------------------
 # Operators to add/remove selected type
@@ -606,14 +679,14 @@ class OBJECT_OT_add_custom_item(Operator):
         obj = context.object
         settings = obj.live_link_settings
 
-        new_item = settings.items.add()
-        new_item.type = settings.add_type
+        new_component = settings.components.add()
+        new_component.type = settings.add_type
 
         # Initialize based on type
-        if new_item.type == GameplayComponent_Player.type_name:
-            new_item.player.move_speed = 20.0
-        elif new_item.type == GameplayComponent_CameraControl.type_name:
-            new_item.camera_control.follow_distance = 100.0
+        if new_component.type == Component_Character.type_name:
+            new_component.player.move_speed = 20.0
+        elif new_component.type == Component_CameraControl.type_name:
+            new_component.camera_control.follow_distance = 100.0
 
         return {'FINISHED'}
 
@@ -627,8 +700,8 @@ class OBJECT_OT_remove_custom_item(Operator):
         obj = context.object
         settings = obj.live_link_settings
 
-        if 0 <= self.index < len(settings.items):
-            settings.items.remove(self.index)
+        if 0 <= self.index < len(settings.components):
+            settings.components.remove(self.index)
             return {'FINISHED'}
         else:
             self.report({'WARNING'}, "Invalid index")
@@ -663,17 +736,17 @@ class OBJECT_PT_custom_object_panel(Panel):
         settings = obj.live_link_settings
         layout.prop(settings, "enable_live_link")
         layout.prop(settings, "add_type")
-        layout.operator("object.add_custom_item", text="Add Property Group")
+        layout.operator("object.add_custom_item", text="Add Component")
 
-        for i, item in enumerate(settings.items):
+        for i, component in enumerate(settings.components):
             box = layout.box()
             row = box.row()
-            row.label(text=f"Item {i+1} ({item.type})", icon='DOT')
+            row.label(text=f"Component {i+1} ({component.type})", icon='DOT')
             row.operator("object.remove_custom_item", text="", icon="X").index = i
 
-            group_name = TYPE_TO_GROUP.get(item.type)
+            group_name = TYPE_TO_GROUP.get(component.type)
             if group_name:
-                group = getattr(item, group_name, None)
+                group = getattr(component, group_name, None)
                 if group:
                     draw_property_group(box, group)
 
@@ -693,9 +766,9 @@ classes_to_register = [
     LiveLinkView3DPanel,
 
     # Custom Property Group System
-    GameplayComponent_Player,
-    GameplayComponent_CameraControl,
-    GameplayComponentContainer,
+    Component_Character,
+    Component_CameraControl,
+    ComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,
     OBJECT_OT_remove_custom_item,

@@ -11,6 +11,9 @@
 // Physics System so we can add/remove bodies
 #include "physics_system.h"
 
+// Character code
+#include "character.h"
+
 
 struct Vertex
 {
@@ -136,7 +139,11 @@ struct Object
 
 	// Rigid Body Data, stored inline
 	bool has_rigid_body;
-	RigidBody rigid_body;	
+	RigidBody rigid_body;
+
+	// Character Data, stored inline
+	bool has_character;
+	Character character;
 };
 
 void object_add_jolt_body(Object& in_object)
@@ -161,18 +168,18 @@ void object_add_jolt_body(Object& in_object)
 	}
 
 	// Get our body interface from the physics_system
-	BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 	//FCS TODO: Support various shape types from blender...
 
 	Mesh& mesh = in_object.mesh;	
 
-	Array<Vec3> convex_hull_points;
+	JPH::Array<JPH::Vec3> convex_hull_points;
 	for (i32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
 	{
 		Vertex& mesh_vertex = mesh.vertices[vertex_index];
 		HMM_Vec4 position = mesh_vertex.position;
-		convex_hull_points.emplace_back(Vec3(position.X, position.Y, position.Z));
+		convex_hull_points.emplace_back(JPH::Vec3(position.X, position.Y, position.Z));
 	}
 
 	// Create the settings object for a convex hull
@@ -202,22 +209,22 @@ void object_add_jolt_body(Object& in_object)
 	}
 
 	// Create the shape
-	ShapeSettings::ShapeResult shape_result = shape_settings.Create();
+	JPH::ShapeSettings::ShapeResult shape_result = shape_settings.Create();
 
 	const Transform& current_transform = in_object.current_transform;
 
 	JPH::Vec3 object_scale(current_transform.scale.X, current_transform.scale.Y, current_transform.scale.Z);
-	ShapeSettings::ShapeResult scaled_shape_result = shape_result.Get()->ScaleShape(object_scale);
+	JPH::ShapeSettings::ShapeResult scaled_shape_result = shape_result.Get()->ScaleShape(object_scale);
 
 	JPH::Vec3 object_location(current_transform.location.X, current_transform.location.Y, current_transform.location.Z);
 	JPH::Quat object_rotation(current_transform.rotation.X, current_transform.rotation.Y, current_transform.rotation.Z, current_transform.rotation.W);
 
 	// Create the settings for the body itself. Note that here you can also set other properties like the restitution / friction.
-	BodyCreationSettings body_creation_settings(
+	JPH::BodyCreationSettings body_creation_settings(
 		scaled_shape_result.Get(), 
 		object_location,
 		object_rotation, 
-		in_object.rigid_body.is_dynamic ? EMotionType::Dynamic : EMotionType::Static, 
+		in_object.rigid_body.is_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static, 
 		in_object.rigid_body.is_dynamic ? Layers::MOVING : Layers::NON_MOVING
 	);
 
@@ -234,7 +241,7 @@ void object_add_jolt_body(Object& in_object)
 	// Actually add the body to the simulation
 	body_interface.AddBody(
 		in_object.rigid_body.jolt_body->GetID(), 
-		in_object.rigid_body.is_dynamic ? EActivation::Activate : EActivation::DontActivate
+		in_object.rigid_body.is_dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate
 	);
 }
 
@@ -253,7 +260,7 @@ void object_remove_jolt_body(Object& in_object)
 		return;
 	}
 
-	BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 	body_interface.RemoveBody(in_object.rigid_body.jolt_body->GetID());
 	body_interface.DestroyBody(in_object.rigid_body.jolt_body->GetID());
 	in_object.rigid_body.jolt_body = nullptr;
@@ -263,6 +270,18 @@ void object_reset_jolt_body(Object& in_object)
 {
 	object_remove_jolt_body(in_object);
 	object_add_jolt_body(in_object);
+}
+
+void object_add_character(Object& in_object, const CharacterSettings& in_settings)
+{
+	in_object.character = character_create(jolt_state, in_settings);
+	in_object.has_character = true;
+}
+
+void object_remove_character(Object& in_object)
+{
+	character_destroy(in_object.character);
+	in_object.has_character = false;
 }
 
 void object_update_storage_buffer(Object& in_object)

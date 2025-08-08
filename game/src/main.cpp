@@ -524,7 +524,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							break;
 						}
 						default:
-							printf("Unsupported Light Type\n");
+							printf("\t\tUnsupported Light Type\n");
 							exit(0);
 					}
 				}
@@ -537,6 +537,43 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						.mass = object_rigid_body->mass(),
 						.jolt_body = nullptr,
 					};
+				}
+
+				// Custom gameplay components we've specified on our blender objects
+				if (auto object_components = object->components())
+				{
+					i32 num_components = object_components->size();
+					for (i32 component_idx = 0; component_idx < num_components; ++component_idx)
+					{
+						auto component_container = object_components->Get(component_idx);
+						if (!component_container)  { continue; }
+						auto component = component_container->value();
+						if (!component) { continue; }
+
+						auto component_type = component_container->value_type();
+						switch (component_type)
+						{
+							case Blender::LiveLink::GameplayComponent_GameplayComponentCharacter:
+							{
+								using Blender::LiveLink::GameplayComponentCharacter;
+								const GameplayComponentCharacter* character_component = reinterpret_cast<const GameplayComponentCharacter*>(component);
+								printf("\t\tCharacter Component\n");
+								printf("\t\t\t Player Controlled: %s\n", character_component->player_controlled() ? "true" : "false");
+								printf("\t\t\t Move Speed: %f\n", character_component->move_speed());
+								break;
+							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
+							{
+								using Blender::LiveLink::GameplayComponentCameraControl;
+								const GameplayComponentCameraControl* cam_control_component = reinterpret_cast<const GameplayComponentCameraControl*>(component);
+								printf("\t\tCamera Control Component\n");
+								printf("\t\t\t Follow Distance: %f\n", cam_control_component->follow_distance());
+								break;
+							}
+							default:
+								assert(false);
+						}
+					}
 				}
 
 				// Send updated object data to main thread
@@ -1399,7 +1436,7 @@ void frame(void)
 					sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 					// Get our jolt body interface
-					BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 					for (auto& [unique_id, object] : state.objects)
 					{
@@ -1410,7 +1447,7 @@ void frame(void)
 
 						if (object.has_rigid_body && object.rigid_body.jolt_body)
 						{
-							const BodyID body_id = object.rigid_body.jolt_body->GetID();
+							const JPH::BodyID body_id = object.rigid_body.jolt_body->GetID();
 							JPH::RVec3 body_position;
 							JPH::Quat body_rotation;
 							body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
@@ -1606,11 +1643,11 @@ void event(const sapp_event* event)
 			{
 			 	if (event->modifiers & SAPP_MODIFIER_SHIFT)
 				{
-					set_mouse_locked(false);
+					sapp_quit();
 				}
 				else
 				{
-					sapp_quit();
+					set_mouse_locked(false);
 				}
 			}
 
@@ -1657,8 +1694,8 @@ void event(const sapp_event* event)
 	}
 }
 
-sapp_desc sokol_main(int argc, char* argv[]) {
-	
+sapp_desc sokol_main(int argc, char* argv[])
+{	
 	cxxopts::Options options("Game", "Game that uses blender as its tooling");
 	
 	options.add_options()

@@ -47,7 +47,7 @@ struct RigidBody
 	// Mass in kg
 	mass		: float;
 
-	//TODO: Shape Enum
+	//TODO: Shape Enum or Shape Union
 }
 
 enum LightType : byte
@@ -98,6 +98,30 @@ table Light
 	sun_light 	: SunLight;
 }
 
+table GameplayComponentCharacter
+{
+	player_controlled	: bool;
+	move_speed			: float;
+}
+
+table GameplayComponentCameraControl
+{
+	follow_distance 	: float;
+}
+
+// TODO: Other Gameplay Components
+
+union GameplayComponent
+{
+	GameplayComponentCharacter,
+	GameplayComponentCameraControl
+}
+
+table GameplayComponentContainer
+{
+	value : GameplayComponent;
+}
+
 table Object 
 {
 	name		: string;
@@ -117,6 +141,9 @@ table Object
 
 	// optional light data
 	light 		: Light;
+
+	// array of gameplay components
+	components	: [GameplayComponentContainer];
 }
 
 table Update 
