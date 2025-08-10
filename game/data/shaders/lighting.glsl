@@ -107,7 +107,19 @@ float remap_clamped(float value, float old_min, float old_max, float new_min, fl
 	return remap(clamped_value, old_min, old_max, new_min, new_max);
 }
 
-vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color)
+/* Gradient noise from Jorge Jimenez's presentation: */
+/* http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare */
+float gradient_noise(in vec2 uv)
+{
+	return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
+}
+
+vec4 dither_noise()
+{
+	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
+}
+
+vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
 {
 	vec3 light_location = in_point_light.location.xyz;
 	vec3 world_pos_to_light = normalize(light_location - in_world_position);
@@ -116,10 +128,10 @@ vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 
 	const float numerator = in_point_light.power * surface_angle;
 	const float denominator = 4 * M_PI * dist_squared(light_location, in_world_position);
 	const float lighting_factor = numerator / denominator;
-	return in_color * in_point_light.color * lighting_factor;
+	return (in_color * in_point_light.color * lighting_factor) + in_noise;
 }
 
-vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color)
+vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
 {
 	vec3 spot_light_location = in_spot_light.location.xyz;
 	vec3 light_to_world_pos = normalize(in_world_position - spot_light_location);
@@ -141,19 +153,19 @@ vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_
 		point_light.location = in_spot_light.location;
 		point_light.color = in_spot_light.color;
 		point_light.power = in_spot_light.power;
-		return sample_point_light(point_light, in_world_position, in_world_normal, in_color) * spot_attenuation;		
+		return sample_point_light(point_light, in_world_position, in_world_normal, in_color, in_noise) * spot_attenuation;		
 	}
 
 	// Outside spotlight cone, return black
 	return vec4(0,0,0,1);
 }
 
-vec4 sample_sun_light(SunLight in_sun_light, vec3 in_world_normal, vec4 in_color)
+vec4 sample_sun_light(SunLight in_sun_light, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
 {	
 	const vec3 light_direction = -normalize(in_sun_light.direction);
 	const float surface_angle = positive_cosine_angle(light_direction, in_world_normal);
 	const float numerator = in_sun_light.power * surface_angle;
-	return in_color * numerator;
+	return (in_color * numerator) + in_noise;
 }
 
 in vec2 uv;
@@ -174,25 +186,24 @@ void main()
 	else
 	{
 		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
-		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;
+		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;	
+		vec4 dither_noise = dither_noise();
 
 		for (int i = 0; i < num_point_lights; ++i)
 		{
-			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, dither_noise);
 		}
 
 		for (int i = 0; i < num_spot_lights; ++i)
 		{
-			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color);
+			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, dither_noise);
 		}
 
 		for (int i = 0; i < num_sun_lights; ++i)
 		{
-			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color);
+			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color, dither_noise);
 		}
 
-		const vec4 ambient = vec4(1,1,1,0) * 0.15;
-		final_color += ambient;
 
 		// Apply ambient occlusion
 		final_color *= ambient_occlusion;
