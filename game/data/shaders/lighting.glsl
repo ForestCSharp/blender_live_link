@@ -187,21 +187,21 @@ void main()
 	{
 		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
 		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;	
-		vec4 dither_noise = dither_noise();
+		vec4 noise = dither_noise();
 
 		for (int i = 0; i < num_point_lights; ++i)
 		{
-			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, dither_noise);
+			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, noise);
 		}
 
 		for (int i = 0; i < num_spot_lights; ++i)
 		{
-			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, dither_noise);
+			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, noise);
 		}
 
 		for (int i = 0; i < num_sun_lights; ++i)
 		{
-			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color, dither_noise);
+			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color, noise);
 		}
 
 

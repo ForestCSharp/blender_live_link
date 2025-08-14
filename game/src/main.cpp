@@ -311,6 +311,19 @@ public: // Functions
 	}
 };
 
+enum class ERenderPass : int
+{
+	Geometry,
+	SSAO,
+	SSAO_Blur,
+	Lighting,
+	//DOF_Blur,
+	Tonemapping,
+	DebugText,
+	CopyToSwapchain,
+	COUNT,
+};
+
 struct {
 	optional<std::string> init_file;
 
@@ -318,13 +331,7 @@ struct {
 	int height;
 
 	// Render Passes
-	RenderPass geometry_pass;
-	RenderPass ssao_pass;
-	RenderPass ssao_blur_pass;
-	RenderPass lighting_pass;
-	RenderPass tonemapping_pass;
-	RenderPass debug_text_pass;
-	RenderPass copy_to_swapchain_pass;
+	RenderPass render_passes[(int)ERenderPass::COUNT];
 
 	// SSAO Data 
 	bool ssao_enable = true;
@@ -372,6 +379,11 @@ struct {
 		.up = HMM_V3(0.0f, 0.0f, 1.0f),
 	};
 } state;
+
+RenderPass& get_render_pass(const ERenderPass in_pass_id)
+{
+	return state.render_passes[static_cast<int>(in_pass_id)];
+}
 
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 {
@@ -726,14 +738,11 @@ void handle_resize()
 
 		sg_swapchain swapchain = sglue_swapchain();
 	
-		//FCS TODO: Keep these in an array and just iterate here.
-		state.geometry_pass.handle_resize();
-		state.ssao_pass.handle_resize();
-		state.ssao_blur_pass.handle_resize();
-		state.lighting_pass.handle_resize();
-		state.tonemapping_pass.handle_resize();
-		state.debug_text_pass.handle_resize();
-		state.copy_to_swapchain_pass.handle_resize();
+		const int render_pass_count = (int) ERenderPass::COUNT;
+		for (i32 pass_index = 0; pass_index < render_pass_count; ++pass_index)
+		{
+			state.render_passes[pass_index].handle_resize();
+		}
 	}
 }
 
@@ -828,7 +837,7 @@ void init(void)
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
 		}
 	};
-	state.geometry_pass.init(geometry_pass_desc);
+	get_render_pass(ERenderPass::Geometry).init(geometry_pass_desc);
 
 	RenderPassDesc ssao_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -849,7 +858,7 @@ void init(void)
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
 		},
 	};
-	state.ssao_pass.init(ssao_pass_desc);
+	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
 
 	{	//SSAO Noise Texture
 		std::uniform_real_distribution<float> randomFloats(0.0, 1.0); // random floats between [0.0, 1.0]
@@ -920,7 +929,7 @@ void init(void)
 			.store_action = SG_STOREACTION_STORE,
 		},
 	};
-	state.ssao_blur_pass.init(ssao_blur_pass_desc);
+	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
 	RenderPassDesc lighting_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -940,7 +949,7 @@ void init(void)
 			.store_action = SG_STOREACTION_STORE,
 		},
 	};
-	state.lighting_pass.init(lighting_pass_desc);
+	get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
 
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -960,7 +969,7 @@ void init(void)
 			.store_action = SG_STOREACTION_STORE,
 		},
 	};
-	state.tonemapping_pass.init(tonemapping_pass_desc);
+	get_render_pass(ERenderPass::Tonemapping).init(tonemapping_pass_desc);
 
 	RenderPassDesc debug_text_pass_desc = {
 		// Don't set optional pipeline_desc
@@ -972,7 +981,7 @@ void init(void)
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
 		}
 	};
-	state.debug_text_pass.init(debug_text_pass_desc);
+	get_render_pass(ERenderPass::DebugText).init(debug_text_pass_desc);
 
 	RenderPassDesc copy_to_swapchain_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -987,7 +996,7 @@ void init(void)
 		},
 		.render_to_swapchain = true,
 	};
-	state.copy_to_swapchain_pass.init(copy_to_swapchain_pass_desc);
+	get_render_pass(ERenderPass::CopyToSwapchain).init(copy_to_swapchain_pass_desc);
 
 	handle_resize();
 
@@ -1424,8 +1433,9 @@ void frame(void)
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
-		{ // Geometry Pass 
-			state.geometry_pass.execute(
+
+		{ // Geometry Pass 	
+			get_render_pass(ERenderPass::Geometry).execute(
 				[&]()
 				{
 				    geometry_vs_params_t vs_params;
@@ -1491,7 +1501,7 @@ void frame(void)
 		}
 
 		{ // SSAO
-			state.ssao_pass.execute(
+			get_render_pass(ERenderPass::SSAO).execute(
 				[&]()
 				{	
 					state.ssao_fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
@@ -1500,11 +1510,13 @@ void frame(void)
 					state.ssao_fs_params.ssao_enable = state.ssao_enable;
 					sg_apply_uniforms(0, SG_RANGE(state.ssao_fs_params));
 
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+
 					sg_bindings bindings = (sg_bindings){
 						.images = {
-							[0] = state.geometry_pass.color_outputs[1],	// geometry pass position
-							[1] = state.geometry_pass.color_outputs[2],	// geometry pass normal
-							[2] = state.ssao_noise_texture,				// ssao noise texture
+							[0] = geometry_pass.color_outputs[1],	// geometry pass position
+							[1] = geometry_pass.color_outputs[2],	// geometry pass normal
+							[2] = state.ssao_noise_texture,			// ssao noise texture
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1516,7 +1528,7 @@ void frame(void)
 		}
 
 		{ // Blur
-			state.ssao_blur_pass.execute(
+			get_render_pass(ERenderPass::SSAO_Blur).execute(
 				[&]()
 				{	
 					const blur_fs_params_t blur_fs_params = {
@@ -1526,7 +1538,7 @@ void frame(void)
 					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.ssao_pass.color_outputs[0],
+						.images[0] = get_render_pass(ERenderPass::SSAO).color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
@@ -1538,18 +1550,21 @@ void frame(void)
 		}
 
 		{ // Lighting Pass
-			state.lighting_pass.execute(
+			get_render_pass(ERenderPass::Lighting).execute(
 				[&]()
 				{	
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
 
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+					RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
+
 					sg_bindings bindings = {
 						.images = {
-							[0] = state.geometry_pass.color_outputs[0],
-							[1] = state.geometry_pass.color_outputs[1],
-							[2] = state.geometry_pass.color_outputs[2],
-							[3] = state.ssao_blur_pass.color_outputs[0],
+							[0] = geometry_pass.color_outputs[0],
+							[1] = geometry_pass.color_outputs[1],
+							[2] = geometry_pass.color_outputs[2],
+							[3] = ssao_blur_pass.color_outputs[0],
 						},
 						.samplers[0] = state.sampler,
 						.storage_buffers = {
@@ -1566,11 +1581,13 @@ void frame(void)
 		}
 
 		{ // Tonemapping Pass
-			state.tonemapping_pass.execute(
+			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&]()
 				{	
+					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.lighting_pass.color_outputs[0], 
+						.images[0] = lighting_pass.color_outputs[0], 
 						.samplers[0] = state.sampler,
 					};
 
@@ -1582,7 +1599,7 @@ void frame(void)
 		}
 
 		{ // Debug Text
-			state.debug_text_pass.execute(
+			get_render_pass(ERenderPass::DebugText).execute(
 				[&]()
 				{
 					if (!state.blender_data_loaded)
@@ -1598,12 +1615,15 @@ void frame(void)
 		}
 
 		{ // Copy To Swapchain Pass	
-			state.copy_to_swapchain_pass.execute(
+			get_render_pass(ERenderPass::CopyToSwapchain).execute(
 				[&]()
 				{	
+					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
+					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
+
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = state.tonemapping_pass.color_outputs[0], 
-						.images[1] = state.debug_text_pass.color_outputs[0],
+						.images[0] = tonemapping_pass.color_outputs[0], 
+						.images[1] = debug_text_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
