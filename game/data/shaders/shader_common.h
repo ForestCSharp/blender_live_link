@@ -8,5 +8,10 @@
 
 #define TOKEN_PASTE(x, y) x##y
 #define COMBINE(a,b) TOKEN_PASTE(a,b)
-#define PADDING(count) float COMBINE(padding_line_, __LINE__)[count]
+
+#define _PADDING1 float COMBINE(padding_line_, __LINE__)
+#define _PADDING2 vec2 COMBINE(padding_line_, __LINE__)
+#define _PADDING3 vec3 COMBINE(padding_line_, __LINE__)
+
+#define PADDING(count) _PADDING ## count
 

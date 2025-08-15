@@ -317,7 +317,7 @@ enum class ERenderPass : int
 	SSAO,
 	SSAO_Blur,
 	Lighting,
-	//DOF_Blur,
+	DOF_Blur,
 	Tonemapping,
 	DebugText,
 	CopyToSwapchain,
@@ -951,6 +951,26 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
 
+	RenderPassDesc dof_blur_pass_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+					.write_enabled = false,
+					},
+			.label = "blur-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
+	};
+	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
+
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
@@ -1527,7 +1547,7 @@ void frame(void)
 			);
 		}
 
-		{ // Blur
+		{ // SSAO Blur
 			get_render_pass(ERenderPass::SSAO_Blur).execute(
 				[&]()
 				{	
@@ -1559,12 +1579,17 @@ void frame(void)
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 					RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
 
+					sg_image color_texture = geometry_pass.color_outputs[0];
+					sg_image position_texture = geometry_pass.color_outputs[1];
+					sg_image normal_texture = geometry_pass.color_outputs[2];
+					sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
+
 					sg_bindings bindings = {
 						.images = {
-							[0] = geometry_pass.color_outputs[0],
-							[1] = geometry_pass.color_outputs[1],
-							[2] = geometry_pass.color_outputs[2],
-							[3] = ssao_blur_pass.color_outputs[0],
+							[0] = color_texture,
+							[1] = position_texture,
+							[2] = normal_texture,
+							[3] = blurred_ssao_texture,
 						},
 						.samplers[0] = state.sampler,
 						.storage_buffers = {
@@ -1580,14 +1605,49 @@ void frame(void)
 			);
 		}
 
+		{ // DOF Blur
+			get_render_pass(ERenderPass::DOF_Blur).execute(
+				[&]()
+				{	
+					const blur_fs_params_t blur_fs_params = {
+						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+						.blur_size = 8,
+					};
+					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
+
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = get_render_pass(ERenderPass::Lighting).color_outputs[0],
+						.samplers[0] = state.sampler,
+					};
+
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&]()
 				{	
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+
+					const tonemapping_fs_params_t tonemapping_fs_params = {
+						.cam_pos = camera.position,
+						.min_distance = 10.0f,
+						.max_distance = 20.0f,
+					};
+					sg_apply_uniforms(0, SG_RANGE(tonemapping_fs_params));
+
+					sg_image position_texture = geometry_pass.color_outputs[1];
 
 					sg_bindings bindings = (sg_bindings){
 						.images[0] = lighting_pass.color_outputs[0], 
+						.images[1] = dof_blur_pass.color_outputs[0],
+						.images[2] = position_texture,
 						.samplers[0] = state.sampler,
 					};
 
