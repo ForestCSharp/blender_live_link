@@ -93,6 +93,7 @@ protected:
 #include "geometry.compiled.h"
 #include "ssao.compiled.h"
 #include "blur.compiled.h"
+#include "dilate.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
@@ -318,6 +319,7 @@ enum class ERenderPass : int
 	SSAO_Blur,
 	Lighting,
 	DOF_Blur,
+	DOF_Dilate,
 	Tonemapping,
 	DebugText,
 	CopyToSwapchain,
@@ -960,7 +962,7 @@ void init(void)
 					.compare = SG_COMPAREFUNC_ALWAYS,
 					.write_enabled = false,
 					},
-			.label = "blur-pipeline",
+			.label = "dof-blur-pipeline",
 		},
 		.num_outputs = 1,
 		.outputs[0] = {
@@ -970,6 +972,26 @@ void init(void)
 		},
 	};
 	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
+
+	RenderPassDesc dof_dilate_pass_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(dilate_dilate_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+					.write_enabled = false,
+					},
+			.label = "dof-dilate-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
+	};
+	get_render_pass(ERenderPass::DOF_Dilate).init(dof_dilate_pass_desc);
 
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1605,7 +1627,7 @@ void frame(void)
 			);
 		}
 
-		{ // DOF Blur
+		{ // DOF Blur + Dilate
 			get_render_pass(ERenderPass::DOF_Blur).execute(
 				[&]()
 				{	
@@ -1625,6 +1647,27 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
+
+			get_render_pass(ERenderPass::DOF_Dilate).execute(
+				[&]()
+				{	
+					const dilate_fs_params_t dilate_fs_params = {
+						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+						.dilate_size = 4,
+						.dilate_separation = 2,	
+					};
+					sg_apply_uniforms(0, SG_RANGE(dilate_fs_params));
+
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = get_render_pass(ERenderPass::DOF_Blur).color_outputs[0],
+						.samplers[0] = state.sampler,
+					};
+
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
 		}
 
 		{ // Tonemapping Pass
@@ -1632,13 +1675,13 @@ void frame(void)
 				[&]()
 				{	
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
-					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
+					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Dilate);
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 					const tonemapping_fs_params_t tonemapping_fs_params = {
 						.cam_pos = camera.position,
-						.min_distance = 10.0f,
-						.max_distance = 20.0f,
+						.min_distance = 50.0f,
+						.max_distance = 100.0f,
 					};
 					sg_apply_uniforms(0, SG_RANGE(tonemapping_fs_params));
 
