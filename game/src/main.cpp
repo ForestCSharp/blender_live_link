@@ -154,6 +154,27 @@ namespace flatbuffer_helpers
 	}
 }
 
+namespace UnitVectors
+{
+	static const HMM_Vec3 Right		= HMM_NormV3(HMM_V3(1,0,0));
+	static const HMM_Vec3 Forward	= HMM_NormV3(HMM_V3(0,1,0));
+	static const HMM_Vec3 Up		= HMM_NormV3(HMM_V3(0,0,1));	
+}
+
+
+HMM_Vec3 quat_forward(HMM_Quat q) {
+    HMM_Vec3 v = UnitVectors::Forward; 
+    HMM_Vec3 u = HMM_V3(q.X, q.Y, q.Z);
+    float s = q.W;
+
+    HMM_Vec3 t = HMM_MulV3F(HMM_Cross(u, v), 2.0f);
+    HMM_Vec3 result = HMM_AddV3(v,
+                      HMM_AddV3(HMM_MulV3F(t, s),
+                      HMM_Cross(u, t)));
+
+    return result;
+}
+
 HMM_Vec3 rotate_vector(HMM_Vec3 in_vector_to_rotate, HMM_Vec3 in_axis, float in_magnitude)
 {
     in_axis = HMM_NormV3(in_axis);
@@ -343,6 +364,12 @@ struct {
 	// Active game objects
 	map<i32, Object> objects;
 
+	// ID of player character
+	optional<i32> player_character_id;
+
+	// ID of camera controller
+	optional<i32> camera_control_id;
+
 	// These channels are how we pass our data from our live-link thread to the main thread
 	Channel<Object> updated_objects;
 	Channel<i32> deleted_objects;
@@ -369,17 +396,29 @@ struct {
 	SOCKET blender_socket;
 	SOCKET connection_socket;
 
-	bool debug_camera_active = true;
+	bool debug_camera_active = false;
 	Camera debug_camera = {
-		.position = HMM_V3(0.0f, -9.0f, 0.0f),
-		.forward = HMM_V3(0.0f, 1.0f, 0.0f),
-		.up = HMM_V3(0.0f, 0.0f, 1.0f),
+		.position = HMM_V3(2.5f, -15.0f, 3.0f),
+		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
+		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
 } state;
 
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
 	return state.render_passes[static_cast<int>(in_pass_id)];
+}
+
+Camera& get_active_camera()
+{
+	if (state.camera_control_id && !state.debug_camera_active)
+	{	
+		Object& camera_control_target = state.objects[*state.camera_control_id];
+		assert(camera_control_target.has_camera_control);
+		return camera_control_target.camera_control.camera;
+	}
+
+	return state.debug_camera;
 }
 
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
@@ -572,11 +611,16 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								printf("\t\t\t Move Speed: %f\n", character_component->move_speed());
 
 								CharacterSettings character_settings = {
+									.initial_location = game_object.current_transform.location,
 									.player_controlled = character_component->player_controlled(),
 									.move_speed = character_component->move_speed(),
-									.initial_location = game_object.current_transform.location,
 								};
 								object_add_character(game_object, character_settings);
+
+								if (character_settings.player_controlled)
+								{
+									state.player_character_id = game_object.unique_id;	
+								}
 								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
@@ -584,13 +628,26 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								using Blender::LiveLink::GameplayComponentCameraControl;
 								const GameplayComponentCameraControl* cam_control_component = reinterpret_cast<const GameplayComponentCameraControl*>(component);
 
+								const float cam_control_follow_distance = cam_control_component->follow_distance();
+								const float cam_control_follow_speed = cam_control_component->follow_speed();
+
 								printf("\t\tCamera Control Component\n");
-								printf("\t\t\t Follow Distance: %f\n", cam_control_component->follow_distance());
+								printf("\t\t\t Follow Distance: %f\n", cam_control_follow_distance);
+								printf("\t\t\t Follow Speed: %f\n", cam_control_follow_speed);
+
+								HMM_Vec3 object_location = game_object.current_transform.location.XYZ;
+								HMM_Vec3 object_forward = quat_forward(game_object.current_transform.rotation);
+								HMM_Vec3 camera_location = object_location - object_forward * cam_control_follow_distance;
+								HMM_Vec3 camera_direction = HMM_NormV3(object_location - camera_location);
 
 								CameraControlSettings cam_control_settings = {
-									.follow_distance = cam_control_component->follow_distance(),
+									.initial_location = camera_location,
+									.initial_direction = camera_direction,
+									.follow_distance = cam_control_follow_distance,
 								};
 								object_add_camera_control(game_object, cam_control_settings);
+
+								state.camera_control_id = game_object.unique_id;
 								break;
 							}
 							default:
@@ -1197,6 +1254,20 @@ void frame(void)
 		was_space_pressed = is_space_pressed;
 	}
 
+	// LeftCtrl + D toggles debug cam
+	{
+		static bool was_toggle_debug_cam_pressed = false;
+		const bool is_toggle_debug_cam_pressed = 
+			is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL) 
+		&&	is_key_pressed(SAPP_KEYCODE_D);
+
+		if (is_toggle_debug_cam_pressed && !was_toggle_debug_cam_pressed)
+		{
+			state.debug_camera_active = !state.debug_camera_active;
+		}
+		was_toggle_debug_cam_pressed = is_toggle_debug_cam_pressed;
+	}
+
 	// SSAO enable/disable
 	{	
 		static bool was_p_pressed = false;
@@ -1284,10 +1355,22 @@ void frame(void)
 			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
-
-			//camera.up = rotate_vector(camera.up, camera_right, -mouse_delta.Y * look_speed);
 		}
+	}
 
+	// Player Character 
+	if (state.player_character_id)
+	{
+		Object& player_character_object = state.objects[*state.player_character_id];
+		//FCS TODO: inputs to move character
+	}
+
+	// Player Camera Control
+	if (state.camera_control_id && !state.debug_camera_active)
+	{	
+		Object& camera_control_target = state.objects[*state.camera_control_id];
+		//FCS TODO: inputs to manipulate camera rotation
+		//FCS TODO: update camera's distance from camera_control_target
 	}
 
 	// Rendering
@@ -1471,11 +1554,10 @@ void frame(void)
 		const float projection_far = 10000.0f;
 		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
 
-		Camera& camera = state.debug_camera;
+		Camera& camera = get_active_camera();
 		HMM_Vec3 target = camera.position + camera.forward * 10;
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
-
 
 		{ // Geometry Pass 	
 			get_render_pass(ERenderPass::Geometry).execute(
@@ -1713,14 +1795,21 @@ void frame(void)
 			get_render_pass(ERenderPass::DebugText).execute(
 				[&]()
 				{
+					sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
+					sdtx_origin(1.0f, 2.0f);
+					sdtx_home();
+
 					if (!state.blender_data_loaded)
 					{
-						sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
-						sdtx_origin(1.0f, 2.0f);
-						sdtx_home();
 						draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
-						sdtx_draw();
 					}
+
+					if (state.debug_camera_active)
+					{
+						draw_debug_text(FONT_C64, "Debug Camera Active\n", 255,255,255);
+					}
+
+					sdtx_draw();
 				}
 			);
 		}

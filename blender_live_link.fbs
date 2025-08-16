@@ -107,6 +107,7 @@ table GameplayComponentCharacter
 table GameplayComponentCameraControl
 {
 	follow_distance 	: float;
+	follow_speed		: float;
 }
 
 // TODO: Other Gameplay Components

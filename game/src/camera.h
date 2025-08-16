@@ -10,27 +10,31 @@ struct Camera {
 
 struct CameraControlSettings
 {
+	HMM_Vec3 initial_location;
+	HMM_Vec3 initial_direction;
 	float follow_distance;
+	float follow_speed;
 };
 
 struct CameraControl
 {
 	Camera camera;
 	float follow_distance;
+	float follow_speed;
 };
 
 CameraControl camera_control_create(const CameraControlSettings& in_settings)
 {
-	//FCS TODO: Init cam position to some value based on target object
 	Camera camera = {
-		.position = HMM_V3(0.0f, 0.0f, 0.0f),
-		.forward = HMM_V3(0.0f, 1.0f, 0.0f),
+		.position = in_settings.initial_location,
+		.forward = in_settings.initial_direction,
 		.up = HMM_V3(0.0f, 0.0f, 1.0f),
 	};
 
 	CameraControl out_camera_control = {
 		.camera = camera,
 		.follow_distance = in_settings.follow_distance,
+		.follow_speed = in_settings.follow_speed,
 	};
 
 	return out_camera_control;

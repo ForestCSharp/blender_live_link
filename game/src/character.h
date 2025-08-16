@@ -13,9 +13,9 @@
 
 struct CharacterSettings
 {
+	HMM_Vec4 initial_location;
 	bool player_controlled = false;
 	float move_speed = 20.0f;
-	HMM_Vec4 initial_location;
 };
 
 struct Character

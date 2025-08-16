@@ -598,11 +598,13 @@ class Component_CameraControl(Component):
 
     # Properties
     follow_distance: FloatProperty(name="Follow Distance", default=1.0)
+    follow_speed: FloatProperty(name="Follow Speed", default=1.0)
 
     # Adds component to flatbuffers component list
     def create_flatbuffers_value(self, builder):
         GameplayComponentCameraControl.Start(builder)
         GameplayComponentCameraControl.AddFollowDistance(builder, self.follow_distance)
+        GameplayComponentCameraControl.AddFollowSpeed(builder, self.follow_speed)
         return GameplayComponentCameraControl.End(builder)
 
     def get_flatbuffers_value_type(self):

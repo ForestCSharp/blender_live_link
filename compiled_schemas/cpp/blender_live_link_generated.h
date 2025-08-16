@@ -593,14 +593,19 @@ inline ::flatbuffers::Offset<GameplayComponentCharacter> CreateGameplayComponent
 struct GameplayComponentCameraControl FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef GameplayComponentCameraControlBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-    VT_FOLLOW_DISTANCE = 4
+    VT_FOLLOW_DISTANCE = 4,
+    VT_FOLLOW_SPEED = 6
   };
   float follow_distance() const {
     return GetField<float>(VT_FOLLOW_DISTANCE, 0.0f);
   }
+  float follow_speed() const {
+    return GetField<float>(VT_FOLLOW_SPEED, 0.0f);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<float>(verifier, VT_FOLLOW_DISTANCE, 4) &&
+           VerifyField<float>(verifier, VT_FOLLOW_SPEED, 4) &&
            verifier.EndTable();
   }
 };
@@ -611,6 +616,9 @@ struct GameplayComponentCameraControlBuilder {
   ::flatbuffers::uoffset_t start_;
   void add_follow_distance(float follow_distance) {
     fbb_.AddElement<float>(GameplayComponentCameraControl::VT_FOLLOW_DISTANCE, follow_distance, 0.0f);
+  }
+  void add_follow_speed(float follow_speed) {
+    fbb_.AddElement<float>(GameplayComponentCameraControl::VT_FOLLOW_SPEED, follow_speed, 0.0f);
   }
   explicit GameplayComponentCameraControlBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -625,8 +633,10 @@ struct GameplayComponentCameraControlBuilder {
 
 inline ::flatbuffers::Offset<GameplayComponentCameraControl> CreateGameplayComponentCameraControl(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    float follow_distance = 0.0f) {
+    float follow_distance = 0.0f,
+    float follow_speed = 0.0f) {
   GameplayComponentCameraControlBuilder builder_(_fbb);
+  builder_.add_follow_speed(follow_speed);
   builder_.add_follow_distance(follow_distance);
   return builder_.Finish();
 }
