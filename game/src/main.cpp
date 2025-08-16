@@ -171,12 +171,6 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_crlf();
 }
 
-struct Camera {
-	HMM_Vec3 position;
-	HMM_Vec3 forward;
-	HMM_Vec3 up;
-};
-
 struct RenderPassOutputDesc {
 	sg_pixel_format pixel_format	= _SG_PIXELFORMAT_DEFAULT;
 	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
@@ -375,7 +369,8 @@ struct {
 	SOCKET blender_socket;
 	SOCKET connection_socket;
 
-	Camera camera = {
+	bool debug_camera_active = true;
+	Camera debug_camera = {
 		.position = HMM_V3(0.0f, -9.0f, 0.0f),
 		.forward = HMM_V3(0.0f, 1.0f, 0.0f),
 		.up = HMM_V3(0.0f, 0.0f, 1.0f),
@@ -571,17 +566,31 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							{
 								using Blender::LiveLink::GameplayComponentCharacter;
 								const GameplayComponentCharacter* character_component = reinterpret_cast<const GameplayComponentCharacter*>(component);
+
 								printf("\t\tCharacter Component\n");
 								printf("\t\t\t Player Controlled: %s\n", character_component->player_controlled() ? "true" : "false");
 								printf("\t\t\t Move Speed: %f\n", character_component->move_speed());
+
+								CharacterSettings character_settings = {
+									.player_controlled = character_component->player_controlled(),
+									.move_speed = character_component->move_speed(),
+									.initial_location = game_object.current_transform.location,
+								};
+								object_add_character(game_object, character_settings);
 								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
 							{
 								using Blender::LiveLink::GameplayComponentCameraControl;
 								const GameplayComponentCameraControl* cam_control_component = reinterpret_cast<const GameplayComponentCameraControl*>(component);
+
 								printf("\t\tCamera Control Component\n");
 								printf("\t\t\t Follow Distance: %f\n", cam_control_component->follow_distance());
+
+								CameraControlSettings cam_control_settings = {
+									.follow_distance = cam_control_component->follow_distance(),
+								};
+								object_add_camera_control(game_object, cam_control_settings);
 								break;
 							}
 							default:
@@ -1118,15 +1127,11 @@ void frame(void)
 
 		printf("Updating Object. UID: %i\n", updated_object_uid);
 
+		// Cleanup old object
 		if (state.objects.contains(updated_object_uid))
 		{	
 			Object& existing_object = state.objects[updated_object_uid];
-			object_cleanup_gpu_resources(existing_object);
-
-			if (existing_object.has_rigid_body)
-			{
-				object_remove_jolt_body(existing_object);
-			}
+			object_cleanup(existing_object);
 		}
 
 		if (updated_object.has_light)
@@ -1150,18 +1155,13 @@ void frame(void)
 		{
 			printf("Removing object. UID: %i\n", deleted_object_uid);
 			Object& object_to_delete = state.objects[deleted_object_uid];
-			
+
 			if (object_to_delete.has_light)
 			{
 				state.needs_light_data_update = true;
 			}
-
-			if (object_to_delete.has_rigid_body)
-			{
-				object_remove_jolt_body(object_to_delete);
-			}
-
-			object_cleanup_gpu_resources(object_to_delete);
+			
+			object_cleanup(object_to_delete);
 			state.objects.erase(deleted_object_uid);
 		}
 	}
@@ -1240,8 +1240,9 @@ void frame(void)
 	}
 	
 	// Debug Camera Control
+	if (state.debug_camera_active)
 	{
-		Camera& camera = state.camera;	
+		Camera& camera = state.debug_camera;	
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 
 		float move_speed = 10.0f * delta_time;
@@ -1470,7 +1471,7 @@ void frame(void)
 		const float projection_far = 10000.0f;
 		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
 
-		Camera& camera = state.camera;
+		Camera& camera = state.debug_camera;
 		HMM_Vec3 target = camera.position + camera.forward * 10;
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
@@ -1508,6 +1509,13 @@ void frame(void)
 							Transform& transform = object.current_transform;
 							transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
 							transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+							object.storage_buffer_needs_update = true;
+						}
+
+						if (object.has_character)
+						{
+							//FCS TODO: Update position based on character data here
+
 							object.storage_buffer_needs_update = true;
 						}
 
@@ -1766,11 +1774,11 @@ void event(const sapp_event* event)
 			{
 			 	if (event->modifiers & SAPP_MODIFIER_SHIFT)
 				{
-					sapp_quit();
+					set_mouse_locked(false);
 				}
 				else
 				{
-					set_mouse_locked(false);
+					sapp_quit();
 				}
 			}
 

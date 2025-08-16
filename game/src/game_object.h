@@ -14,6 +14,9 @@
 // Character code
 #include "character.h"
 
+// Camera code
+#include "camera.h"
+
 
 struct Vertex
 {
@@ -130,20 +133,24 @@ struct Object
 	bool storage_buffer_needs_update = false;
 
 	// Mesh Data, stored inline
-	bool has_mesh;
+	bool has_mesh = false;
 	Mesh mesh;
 
 	// Light Data, stored inline
-	bool has_light;
+	bool has_light = false;
 	Light light;
 
 	// Rigid Body Data, stored inline
-	bool has_rigid_body;
+	bool has_rigid_body = false;
 	RigidBody rigid_body;
 
 	// Character Data, stored inline
-	bool has_character;
+	bool has_character = false;
 	Character character;
+
+	// Camera Control Data, stored inline
+	bool has_camera_control = false;
+	CameraControl camera_control;
 };
 
 void object_add_jolt_body(Object& in_object)
@@ -282,6 +289,19 @@ void object_remove_character(Object& in_object)
 {
 	character_destroy(in_object.character);
 	in_object.has_character = false;
+	in_object.character = {};
+}
+
+void object_add_camera_control(Object& in_object, const CameraControlSettings& in_settings)
+{
+	in_object.camera_control = camera_control_create(in_settings);
+	in_object.has_camera_control = true;
+}
+
+void object_remove_camera_control(Object& in_object)
+{
+	in_object.has_camera_control = false;
+	in_object.camera_control = {};
 }
 
 void object_update_storage_buffer(Object& in_object)
@@ -368,5 +388,25 @@ void object_cleanup_gpu_resources(Object& in_object)
 
 		free(in_object.mesh.vertices);
 		in_object.mesh.vertex_buffer.destroy_gpu_buffer();
+	}
+}
+
+void object_cleanup(Object& in_object)
+{
+	object_cleanup_gpu_resources(in_object);
+
+	if (in_object.has_rigid_body)
+	{
+		object_remove_jolt_body(in_object);
+	}
+
+	if (in_object.has_character)
+	{
+		object_remove_character(in_object);
+	}
+
+	if (in_object.has_camera_control)
+	{
+		object_remove_camera_control(in_object);
 	}
 }
