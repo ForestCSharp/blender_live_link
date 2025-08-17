@@ -114,13 +114,6 @@ struct RigidBody
 	JPH::Body* jolt_body = nullptr;
 };
 
-struct Transform
-{
-	HMM_Vec4 location;
-	HMM_Quat rotation;
-	HMM_Vec3 scale;
-};
-
 struct Object 
 {
 	i32 unique_id;

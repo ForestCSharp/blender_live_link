@@ -154,36 +154,6 @@ namespace flatbuffer_helpers
 	}
 }
 
-namespace UnitVectors
-{
-	static const HMM_Vec3 Right		= HMM_NormV3(HMM_V3(1,0,0));
-	static const HMM_Vec3 Forward	= HMM_NormV3(HMM_V3(0,1,0));
-	static const HMM_Vec3 Up		= HMM_NormV3(HMM_V3(0,0,1));	
-}
-
-
-HMM_Vec3 quat_forward(HMM_Quat q) {
-    HMM_Vec3 v = UnitVectors::Forward; 
-    HMM_Vec3 u = HMM_V3(q.X, q.Y, q.Z);
-    float s = q.W;
-
-    HMM_Vec3 t = HMM_MulV3F(HMM_Cross(u, v), 2.0f);
-    HMM_Vec3 result = HMM_AddV3(v,
-                      HMM_AddV3(HMM_MulV3F(t, s),
-                      HMM_Cross(u, t)));
-
-    return result;
-}
-
-HMM_Vec3 rotate_vector(HMM_Vec3 in_vector_to_rotate, HMM_Vec3 in_axis, float in_magnitude)
-{
-    in_axis = HMM_NormV3(in_axis);
-    HMM_Quat quat = HMM_QFromAxisAngle_RH(in_axis, in_magnitude);
-    HMM_Mat4 rotation_matrix = HMM_QToM4(quat);
-	HMM_Vec4 rotated = rotation_matrix * HMM_V4(in_vector_to_rotate.X, in_vector_to_rotate.Y, in_vector_to_rotate.Z, 0.f);
-    return HMM_V3(rotated.X, rotated.Y, rotated.Z);
-}
-
 static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_t g, uint8_t b)
 {
     sdtx_font(font_index);
@@ -398,7 +368,7 @@ struct {
 
 	bool debug_camera_active = false;
 	Camera debug_camera = {
-		.position = HMM_V3(2.5f, -15.0f, 3.0f),
+		.location = HMM_V3(2.5f, -15.0f, 3.0f),
 		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
 		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
@@ -635,15 +605,19 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								printf("\t\t\t Follow Distance: %f\n", cam_control_follow_distance);
 								printf("\t\t\t Follow Speed: %f\n", cam_control_follow_speed);
 
+								HMM_Vec3 initial_location = camera_control_get_desired_location(
+									game_object.current_transform.location.XYZ, 
+									quat_forward(game_object.current_transform.rotation),
+									cam_control_follow_distance
+								);
 								HMM_Vec3 object_location = game_object.current_transform.location.XYZ;
-								HMM_Vec3 object_forward = quat_forward(game_object.current_transform.rotation);
-								HMM_Vec3 camera_location = object_location - object_forward * cam_control_follow_distance;
-								HMM_Vec3 camera_direction = HMM_NormV3(object_location - camera_location);
+								HMM_Vec3 initial_direction = HMM_NormV3(object_location - initial_location);
 
 								CameraControlSettings cam_control_settings = {
-									.initial_location = camera_location,
-									.initial_direction = camera_direction,
+									.initial_location = initial_location,
+									.initial_direction = initial_direction,
 									.follow_distance = cam_control_follow_distance,
+									.follow_speed = cam_control_follow_speed,
 								};
 								object_add_camera_control(game_object, cam_control_settings);
 
@@ -1263,6 +1237,12 @@ void frame(void)
 
 		if (is_toggle_debug_cam_pressed && !was_toggle_debug_cam_pressed)
 		{
+			// When enabling debug cam, copy data from current active camera
+			if (!state.debug_camera_active)
+			{
+				state.debug_camera = get_active_camera();
+			}
+
 			state.debug_camera_active = !state.debug_camera_active;
 		}
 		was_toggle_debug_cam_pressed = is_toggle_debug_cam_pressed;
@@ -1311,7 +1291,7 @@ void frame(void)
 	}
 	
 	// Debug Camera Control
-	if (state.debug_camera_active)
+	if (state.debug_camera_active && !is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL))
 	{
 		Camera& camera = state.debug_camera;	
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
@@ -1324,27 +1304,27 @@ void frame(void)
 
 		if (is_key_pressed(SAPP_KEYCODE_W))
 		{
-			camera.position += camera.forward * move_speed;	
+			camera.location += camera.forward * move_speed;	
 		}
 		if (is_key_pressed(SAPP_KEYCODE_S))
 		{
-			camera.position -= camera.forward * move_speed;	
+			camera.location -= camera.forward * move_speed;	
 		}	
 		if (is_key_pressed(SAPP_KEYCODE_D))
 		{
-			camera.position += camera_right * move_speed;	
+			camera.location += camera_right * move_speed;	
 		}
 		if (is_key_pressed(SAPP_KEYCODE_A))
 		{
-			camera.position -= camera_right * move_speed;	
+			camera.location -= camera_right * move_speed;	
 		}
 		if (is_key_pressed(SAPP_KEYCODE_E))
 		{
-			camera.position += camera.up * move_speed;	
+			camera.location += camera.up * move_speed;	
 		}
 		if (is_key_pressed(SAPP_KEYCODE_Q))
 		{
-			camera.position -= camera.up * move_speed;	
+			camera.location -= camera.up * move_speed;	
 		}
 
 		if (is_mouse_locked())
@@ -1358,19 +1338,82 @@ void frame(void)
 		}
 	}
 
-	// Player Character 
-	if (state.player_character_id)
-	{
-		Object& player_character_object = state.objects[*state.player_character_id];
-		//FCS TODO: inputs to move character
-	}
-
 	// Player Camera Control
 	if (state.camera_control_id && !state.debug_camera_active)
 	{	
-		Object& camera_control_target = state.objects[*state.camera_control_id];
-		//FCS TODO: inputs to manipulate camera rotation
-		//FCS TODO: update camera's distance from camera_control_target
+		Object& camera_control_object = state.objects[*state.camera_control_id];
+		CameraControl& camera_control = camera_control_object.camera_control;
+		Camera& camera = camera_control.camera;
+
+		if (is_mouse_locked())
+		{
+			//FCS TODO: Add max angle property (angle above XY plane) that we can rotate camera
+			//FCS TODO: Add rotation speed property to camera control component
+			const float look_speed = 1.0f * delta_time;
+			const HMM_Vec2 mouse_delta = get_mouse_delta();
+
+			// Get current target at old forward vector
+			const HMM_Vec3 camera_old_target = camera.location + camera.forward * camera_control.follow_distance;
+			
+			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+
+			// Use old target and new forward vector to get our rotated desired location
+			camera_control.camera.location = camera_control_get_desired_location(
+				camera_old_target, 
+				camera.forward,
+				camera_control.follow_distance
+			);
+		}
+
+		HMM_Vec3 desired_location = camera_control_get_desired_location(
+			camera_control_object.current_transform.location.XYZ, 
+			camera.forward,
+			camera_control.follow_distance
+		);
+		camera_control.camera.location = HMM_LerpV3(
+			camera.location, 
+			camera_control.follow_speed * delta_time, 
+			desired_location
+		);
+	}
+
+	// Player Character 
+	if (state.player_character_id && !state.debug_camera_active)
+	{
+		const Camera& camera = get_active_camera();
+		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+
+		Object& player_character_object = state.objects[*state.player_character_id];
+		Character& player_character_state = player_character_object.character;
+		float character_move_speed = player_character_state.settings.move_speed * delta_time;
+
+		HMM_Vec3 projected_cam_forward = HMM_NormV3(project_onto_plane(camera.forward, UnitVectors::Up));
+		HMM_Vec3 projected_cam_right = HMM_NormV3(project_onto_plane(camera_right, UnitVectors::Up));
+
+		HMM_Vec3 move_vec = HMM_V3(0,0,0);
+		if (is_key_pressed(SAPP_KEYCODE_W))
+		{
+			move_vec += projected_cam_forward * character_move_speed;	
+		}
+		if (is_key_pressed(SAPP_KEYCODE_S))
+		{
+			move_vec -= projected_cam_forward * character_move_speed;	
+		}	
+		if (is_key_pressed(SAPP_KEYCODE_D))
+		{
+			move_vec += projected_cam_right * character_move_speed;	
+		}
+		if (is_key_pressed(SAPP_KEYCODE_A))
+		{
+			move_vec -= projected_cam_right * character_move_speed;	
+		}
+
+		player_character_object.current_transform.location.XYZ += move_vec;
+
+		//FCS TODO: Character movement should be projected on XY axis
+		//FCS TODO: !!! Need to move actual jolt character and update object's transform farther down
 	}
 
 	// Rendering
@@ -1555,8 +1598,8 @@ void frame(void)
 		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
 
 		Camera& camera = get_active_camera();
-		HMM_Vec3 target = camera.position + camera.forward * 10;
-		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.position, target, camera.up);
+		HMM_Vec3 target = camera.location + camera.forward * 10;
+		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
 		{ // Geometry Pass 	
@@ -1769,7 +1812,7 @@ void frame(void)
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 					const tonemapping_fs_params_t tonemapping_fs_params = {
-						.cam_pos = camera.position,
+						.cam_pos = camera.location,
 						.min_distance = 50.0f,
 						.max_distance = 100.0f,
 					};

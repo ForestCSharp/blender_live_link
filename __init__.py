@@ -579,7 +579,7 @@ class Component_Character(Component):
 
     # Properties
     player_controlled: BoolProperty(name="Player Controlled", default=False)
-    move_speed: FloatProperty(name="Move Speed", default=1.0)
+    move_speed: FloatProperty(name="Move Speed", default=20.0)
 
     # Adds component to flatbuffers component list
     def create_flatbuffers_value(self, builder):
@@ -597,8 +597,8 @@ class Component_CameraControl(Component):
     label = 'Camera Control'
 
     # Properties
-    follow_distance: FloatProperty(name="Follow Distance", default=1.0)
-    follow_speed: FloatProperty(name="Follow Speed", default=1.0)
+    follow_distance: FloatProperty(name="Follow Distance", default=5.0)
+    follow_speed: FloatProperty(name="Follow Speed", default=10.0)
 
     # Adds component to flatbuffers component list
     def create_flatbuffers_value(self, builder):

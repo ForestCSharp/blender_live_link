@@ -3,7 +3,7 @@
 #include "handmade_math/HandmadeMath.h"
 
 struct Camera {
-	HMM_Vec3 position;
+	HMM_Vec3 location;
 	HMM_Vec3 forward;
 	HMM_Vec3 up;
 };
@@ -26,7 +26,7 @@ struct CameraControl
 CameraControl camera_control_create(const CameraControlSettings& in_settings)
 {
 	Camera camera = {
-		.position = in_settings.initial_location,
+		.location = in_settings.initial_location,
 		.forward = in_settings.initial_direction,
 		.up = HMM_V3(0.0f, 0.0f, 1.0f),
 	};
@@ -39,3 +39,13 @@ CameraControl camera_control_create(const CameraControlSettings& in_settings)
 
 	return out_camera_control;
 }
+
+HMM_Vec3 camera_control_get_desired_location(
+	const HMM_Vec3& in_target_location, 
+	const HMM_Vec3& in_direction,
+	float in_follow_distance
+)
+{
+	return in_target_location - (in_direction * in_follow_distance);
+}
+

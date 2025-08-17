@@ -20,8 +20,11 @@ Improvements:
 		- ex: If you didn't change physics, don't recreate physics state
 	- Consider option to wait until a move operation is done to send a live link update
 	- Make sure rigid body and character don't exist on same object
+	- replace optional ids for character and camera control with map of tagged IDs
 
 Bugs:
 	- object deletion or undo/redo sends full update?
 	- deleting a child by deleting its parent in blender doesn't delete the child in game
+	- deleting object representing our player character or camera control is currently invalid
+		- need to clean up the id's representing those entities
 
