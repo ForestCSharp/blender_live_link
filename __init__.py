@@ -580,12 +580,14 @@ class Component_Character(Component):
     # Properties
     player_controlled: BoolProperty(name="Player Controlled", default=False)
     move_speed: FloatProperty(name="Move Speed", default=20.0)
+    jump_speed: FloatProperty(name="Jump Speed", default=10.0)
 
     # Adds component to flatbuffers component list
     def create_flatbuffers_value(self, builder):
         GameplayComponentCharacter.Start(builder)
         GameplayComponentCharacter.AddPlayerControlled(builder, self.player_controlled)
         GameplayComponentCharacter.AddMoveSpeed(builder, self.move_speed)
+        GameplayComponentCharacter.AddJumpSpeed(builder, self.jump_speed)
         return GameplayComponentCharacter.End(builder)
 
     def get_flatbuffers_value_type(self):

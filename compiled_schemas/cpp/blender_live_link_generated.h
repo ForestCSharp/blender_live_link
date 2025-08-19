@@ -543,7 +543,8 @@ struct GameplayComponentCharacter FLATBUFFERS_FINAL_CLASS : private ::flatbuffer
   typedef GameplayComponentCharacterBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_PLAYER_CONTROLLED = 4,
-    VT_MOVE_SPEED = 6
+    VT_MOVE_SPEED = 6,
+    VT_JUMP_SPEED = 8
   };
   bool player_controlled() const {
     return GetField<uint8_t>(VT_PLAYER_CONTROLLED, 0) != 0;
@@ -551,10 +552,14 @@ struct GameplayComponentCharacter FLATBUFFERS_FINAL_CLASS : private ::flatbuffer
   float move_speed() const {
     return GetField<float>(VT_MOVE_SPEED, 0.0f);
   }
+  float jump_speed() const {
+    return GetField<float>(VT_JUMP_SPEED, 0.0f);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint8_t>(verifier, VT_PLAYER_CONTROLLED, 1) &&
            VerifyField<float>(verifier, VT_MOVE_SPEED, 4) &&
+           VerifyField<float>(verifier, VT_JUMP_SPEED, 4) &&
            verifier.EndTable();
   }
 };
@@ -568,6 +573,9 @@ struct GameplayComponentCharacterBuilder {
   }
   void add_move_speed(float move_speed) {
     fbb_.AddElement<float>(GameplayComponentCharacter::VT_MOVE_SPEED, move_speed, 0.0f);
+  }
+  void add_jump_speed(float jump_speed) {
+    fbb_.AddElement<float>(GameplayComponentCharacter::VT_JUMP_SPEED, jump_speed, 0.0f);
   }
   explicit GameplayComponentCharacterBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -583,8 +591,10 @@ struct GameplayComponentCharacterBuilder {
 inline ::flatbuffers::Offset<GameplayComponentCharacter> CreateGameplayComponentCharacter(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     bool player_controlled = false,
-    float move_speed = 0.0f) {
+    float move_speed = 0.0f,
+    float jump_speed = 0.0f) {
   GameplayComponentCharacterBuilder builder_(_fbb);
+  builder_.add_jump_speed(jump_speed);
   builder_.add_move_speed(move_speed);
   builder_.add_player_controlled(player_controlled);
   return builder_.Finish();

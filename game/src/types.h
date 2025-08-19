@@ -50,8 +50,13 @@ HMM_Vec3 rotate_vector(HMM_Vec3 in_vector_to_rotate, HMM_Vec3 in_axis, float in_
     return HMM_V3(rotated.X, rotated.Y, rotated.Z);
 }
 
-HMM_Vec3 project_onto_plane(HMM_Vec3 in_vector, HMM_Vec3 in_plane_normal)
+HMM_Vec3 vec3_projection(const HMM_Vec3 v, const HMM_Vec3 dir)
 {
-	in_plane_normal = HMM_NormV3(in_plane_normal);
-	return in_vector - (HMM_DotV3(in_vector, in_plane_normal) * in_plane_normal);
+    float dir_length_squared = HMM_LenSqrV3(dir);
+	return dir * HMM_DotV3(v,dir) / dir_length_squared;
+}
+
+HMM_Vec3 vec3_plane_projection(const HMM_Vec3 v, const HMM_Vec3 plane_normal)
+{
+	return v - vec3_projection(v, plane_normal);
 }

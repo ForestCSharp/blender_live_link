@@ -403,3 +403,32 @@ void object_cleanup(Object& in_object)
 		object_remove_camera_control(in_object);
 	}
 }
+
+void object_copy_physics_transform(Object& in_object, JPH::BodyInterface& in_body_interface)
+{
+	if (in_object.has_rigid_body && in_object.rigid_body.jolt_body)
+	{
+		const JPH::BodyID body_id = in_object.rigid_body.jolt_body->GetID();
+		JPH::RVec3 body_position;
+		JPH::Quat body_rotation;
+		in_body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+		// Update Transform location and rotation and mark storage buffer for update
+		Transform& transform = in_object.current_transform;
+		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+		in_object.storage_buffer_needs_update = true;
+	}
+	else if (in_object.has_character && in_object.character.jph_character)
+	{
+		JPH::RVec3 body_position;
+		JPH::Quat body_rotation;
+		in_object.character.jph_character->GetPositionAndRotation(body_position, body_rotation);
+
+		// Update Transform location and rotation and mark storage buffer for update
+		Transform& transform = in_object.current_transform;
+		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+		in_object.storage_buffer_needs_update = true;
+	}
+}

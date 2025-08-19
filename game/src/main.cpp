@@ -582,8 +582,10 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 								CharacterSettings character_settings = {
 									.initial_location = game_object.current_transform.location,
+									.initial_rotation = game_object.current_transform.rotation,
 									.player_controlled = character_component->player_controlled(),
 									.move_speed = character_component->move_speed(),
+									.jump_speed = character_component->jump_speed(),
 								};
 								object_add_character(game_object, character_settings);
 
@@ -1217,15 +1219,17 @@ void frame(void)
 	}
 
 	// Space Bar Starts/Stops simulation 
-	static bool is_simulating = false;
+	static bool is_simulating = true;
 	{
-		static bool was_space_pressed = false;
-		const bool is_space_pressed = is_key_pressed(SAPP_KEYCODE_SPACE);
-		if (is_space_pressed && !was_space_pressed)
+		static bool was_simulate_key_pressed = false;
+		const bool is_simulate_key_pressed = 
+				is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL) 
+			&&	is_key_pressed(SAPP_KEYCODE_SPACE);
+		if (is_simulate_key_pressed && !was_simulate_key_pressed)
 		{
 			is_simulating = !is_simulating;
 		}
-		was_space_pressed = is_space_pressed;
+		was_simulate_key_pressed = is_simulate_key_pressed;
 	}
 
 	// LeftCtrl + D toggles debug cam
@@ -1284,10 +1288,10 @@ void frame(void)
 
 	if (is_simulating)
 	{
+		//FCS TODO: Game logic update here
+
 		// Jolt Physics Update
 		jolt_update(delta_time);
-
-		//FCS TODO: Game logic update here
 	}
 	
 	// Debug Camera Control
@@ -1379,7 +1383,7 @@ void frame(void)
 		);
 	}
 
-	// Player Character 
+	// Player Character Control
 	if (state.player_character_id && !state.debug_camera_active)
 	{
 		const Camera& camera = get_active_camera();
@@ -1389,8 +1393,8 @@ void frame(void)
 		Character& player_character_state = player_character_object.character;
 		float character_move_speed = player_character_state.settings.move_speed * delta_time;
 
-		HMM_Vec3 projected_cam_forward = HMM_NormV3(project_onto_plane(camera.forward, UnitVectors::Up));
-		HMM_Vec3 projected_cam_right = HMM_NormV3(project_onto_plane(camera_right, UnitVectors::Up));
+		HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
+		HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
 
 		HMM_Vec3 move_vec = HMM_V3(0,0,0);
 		if (is_key_pressed(SAPP_KEYCODE_W))
@@ -1410,10 +1414,12 @@ void frame(void)
 			move_vec -= projected_cam_right * character_move_speed;	
 		}
 
-		player_character_object.current_transform.location.XYZ += move_vec;
+		printf("\n");
+		printf("move_vec:\t\t%f, %f, %f\n", move_vec.X, move_vec.Y, move_vec.Z);
 
-		//FCS TODO: Character movement should be projected on XY axis
-		//FCS TODO: !!! Need to move actual jolt character and update object's transform farther down
+		bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
+
+		character_move(player_character_state, move_vec, jump);
 	}
 
 	// Rendering
@@ -1623,26 +1629,8 @@ void frame(void)
 							continue;
 						}
 
-						if (object.has_rigid_body && object.rigid_body.jolt_body)
-						{
-							const JPH::BodyID body_id = object.rigid_body.jolt_body->GetID();
-							JPH::RVec3 body_position;
-							JPH::Quat body_rotation;
-							body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
-
-							// Update Transform location and rotation and mark storage buffer for update
-							Transform& transform = object.current_transform;
-							transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-							transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-							object.storage_buffer_needs_update = true;
-						}
-
-						if (object.has_character)
-						{
-							//FCS TODO: Update position based on character data here
-
-							object.storage_buffer_needs_update = true;
-						}
+						// For objects that simulate physics, update their transforms
+						object_copy_physics_transform(object, body_interface);
 
 						if (object.storage_buffer_needs_update)
 						{

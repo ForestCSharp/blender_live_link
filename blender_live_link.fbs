@@ -102,6 +102,7 @@ table GameplayComponentCharacter
 {
 	player_controlled	: bool;
 	move_speed			: float;
+	jump_speed			: float;
 }
 
 table GameplayComponentCameraControl
