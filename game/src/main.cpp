@@ -1414,9 +1414,6 @@ void frame(void)
 			move_vec -= projected_cam_right * character_move_speed;	
 		}
 
-		printf("\n");
-		printf("move_vec:\t\t%f, %f, %f\n", move_vec.X, move_vec.Y, move_vec.Z);
-
 		bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
 
 		character_move(player_character_state, move_vec, jump);

@@ -136,9 +136,6 @@ void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump)
 		new_velocity += JPH::Vec3(0, 0, in_character.settings.jump_speed);
 	}
 
-	printf("Desired Velocity:\t%f, %f, %f\n", desired_velocity.GetX(), desired_velocity.GetY(), desired_velocity.GetZ());
-	printf("New Velocity:\t\t%f, %f, %f\n", new_velocity.GetX(), new_velocity.GetY(), new_velocity.GetZ());
-
 	// Update the velocity
 	mCharacter->SetLinearVelocity(new_velocity);
 }
