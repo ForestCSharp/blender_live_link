@@ -34,9 +34,10 @@ struct Quat
 
 table Mesh
 {
-	positions	: [float];
-	normals		: [float];
-	indices		: [uint];
+	positions		: [float];
+	normals			: [float];
+	indices			: [uint];
+	material_ids	: [int];
 }
 
 struct RigidBody
@@ -146,6 +147,14 @@ table Object
 
 	// array of gameplay components
 	components	: [GameplayComponentContainer];
+}
+
+table Material
+{
+	unique_id	: int;
+	base_color	: Vec4;
+	metallic	: float;
+	roughness	: float;
 }
 
 table Update 

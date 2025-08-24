@@ -178,7 +178,7 @@ class LiveLinkConnection():
         # No armature found, return None
         return None
  
-    def make_flatbuffer_object(self, builder, obj, dependency_graph):
+    def make_flatbuffer_object(self, builder, obj, dependency_graph, referenced_materials):
         # Allocate string for object name
         object_name = builder.CreateString(obj.name)
 
@@ -206,16 +206,37 @@ class LiveLinkConnection():
                 indices[i * 3:i * 3 + 3] = poly.vertices
             mesh_indices = builder.CreateNumpyVector(indices);
 
+            # Get Materials
+            material_ids = []
+            if obj.data.materials:
+                for material in obj.data.materials:
+                    material_id = material.session_uid
+                    # append to our material list
+                    material_ids.append(material_id)
+                    # Add to referenced material dict
+                    if referenced_materials.get(material_id) is None:
+                        referenced_materials[material_id] = material
+
+            # Create flatbuffers material list if we have valid material ids
+            flatbuffer_material_ids = None
+            if len(material_ids) > 0:
+                Mesh.MeshStartMaterialIdsVector(builder, len(material_ids))
+                for material_id in reversed(material_ids):
+                    builder.PrependUOffsetTRelative(material_id)
+                flatbuffer_material_ids = builder.EndVector()
+
             # TODO: if we find an armature build up skinned vertex info in new field
             # Check for armature
             mesh_armature = self.get_mesh_armature(obj)
-            if mesh_armature != None:
+            if mesh_armature is not None:
                 print("Mesh is skinned!")
 
             Mesh.Start(builder)
             Mesh.AddPositions(builder, mesh_positions)
             Mesh.AddNormals(builder, mesh_normals)
             Mesh.AddIndices(builder, mesh_indices)
+            if flatbuffer_material_ids is not None:
+                Mesh.AddMaterialIds(builder, flatbuffer_material_ids)
             mesh = Mesh.End(builder)
 
         # Light Info
@@ -333,11 +354,11 @@ class LiveLinkConnection():
         Object.AddRotation(builder, rotation_quat)
 
         # Add Object Mesh Data if it exists
-        if mesh != None:
+        if mesh is not None:
             Object.AddMesh(builder, mesh)
 
         # Add Object Light Data if it exists
-        if light != None:
+        if light is not None:
             Object.AddLight(builder, light)
 
         # Add Rigid Body Data if it exists
@@ -349,7 +370,7 @@ class LiveLinkConnection():
             ))
 
         # Add Gameplay Components data if it exists
-        if gameplay_components != None:
+        if gameplay_components is not None:
             Object.AddComponents(builder, gameplay_components)
             
         # End New Object add add to array
@@ -365,12 +386,15 @@ class LiveLinkConnection():
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
 
+        # referenced materials, keyed by session_uid
+        referenced_materials = {}
+
         # Build up objects to be added to scene objects vector
         live_link_objects = []
         for blender_object in in_object_list: 
             # Only add if enable_live_link is set
             if (blender_object.live_link_settings.enable_live_link):
-                live_link_objects.append(self.make_flatbuffer_object(builder, blender_object, dependency_graph))
+                live_link_objects.append(self.make_flatbuffer_object(builder, blender_object, dependency_graph, referenced_materials))
 
         # actually create the scene objects vector
         Update.UpdateStartObjectsVector(builder, len(live_link_objects))
@@ -378,10 +402,20 @@ class LiveLinkConnection():
             builder.PrependUOffsetTRelative(live_link_object)
         update_objects = builder.EndVector()
 
+        # create flatbuffers deleted objects
         Update.UpdateStartDeletedObjectUidsVector(builder, len(in_deleted_object_uids))
         for deleted_object_uid in in_deleted_object_uids:
             builder.PrependInt32(deleted_object_uid)
         update_deleted_object_uids = builder.EndVector()
+
+        # create flatbuffers materials
+        for material_id, material in referenced_materials.items():
+            material_info_str = "Material with id: " + str(material_id)
+            material_lib = material.library if material.library is not None else ""
+            material_name = material_lib + material.name_full
+            material_info_str += " name: " + material_name
+            print(material_info_str)
+            # TODO: HERE!!! Create flatbuffers material entry
 
         Update.Start(builder)
 
@@ -561,7 +595,7 @@ class Component(PropertyGroup):
 
         # Create the container that contains our union and return that
         GameplayComponentContainer.Start(builder)
-        if value != None:
+        if value is not None:
             GameplayComponentContainer.AddValueType(builder, value_type)
             GameplayComponentContainer.AddValue(builder, value)
         return GameplayComponentContainer.End(builder)

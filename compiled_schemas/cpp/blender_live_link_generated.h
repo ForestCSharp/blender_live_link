@@ -50,6 +50,9 @@ struct GameplayComponentContainerBuilder;
 struct Object;
 struct ObjectBuilder;
 
+struct Material;
+struct MaterialBuilder;
+
 struct Update;
 struct UpdateBuilder;
 
@@ -374,7 +377,8 @@ struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_POSITIONS = 4,
     VT_NORMALS = 6,
-    VT_INDICES = 8
+    VT_INDICES = 8,
+    VT_MATERIAL_IDS = 10
   };
   const ::flatbuffers::Vector<float> *positions() const {
     return GetPointer<const ::flatbuffers::Vector<float> *>(VT_POSITIONS);
@@ -385,6 +389,9 @@ struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const ::flatbuffers::Vector<uint32_t> *indices() const {
     return GetPointer<const ::flatbuffers::Vector<uint32_t> *>(VT_INDICES);
   }
+  const ::flatbuffers::Vector<int32_t> *material_ids() const {
+    return GetPointer<const ::flatbuffers::Vector<int32_t> *>(VT_MATERIAL_IDS);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_POSITIONS) &&
@@ -393,6 +400,8 @@ struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            verifier.VerifyVector(normals()) &&
            VerifyOffset(verifier, VT_INDICES) &&
            verifier.VerifyVector(indices()) &&
+           VerifyOffset(verifier, VT_MATERIAL_IDS) &&
+           verifier.VerifyVector(material_ids()) &&
            verifier.EndTable();
   }
 };
@@ -410,6 +419,9 @@ struct MeshBuilder {
   void add_indices(::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices) {
     fbb_.AddOffset(Mesh::VT_INDICES, indices);
   }
+  void add_material_ids(::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> material_ids) {
+    fbb_.AddOffset(Mesh::VT_MATERIAL_IDS, material_ids);
+  }
   explicit MeshBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -425,8 +437,10 @@ inline ::flatbuffers::Offset<Mesh> CreateMesh(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::Vector<float>> positions = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<float>> normals = 0,
-    ::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices = 0) {
+    ::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> material_ids = 0) {
   MeshBuilder builder_(_fbb);
+  builder_.add_material_ids(material_ids);
   builder_.add_indices(indices);
   builder_.add_normals(normals);
   builder_.add_positions(positions);
@@ -437,15 +451,18 @@ inline ::flatbuffers::Offset<Mesh> CreateMeshDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<float> *positions = nullptr,
     const std::vector<float> *normals = nullptr,
-    const std::vector<uint32_t> *indices = nullptr) {
+    const std::vector<uint32_t> *indices = nullptr,
+    const std::vector<int32_t> *material_ids = nullptr) {
   auto positions__ = positions ? _fbb.CreateVector<float>(*positions) : 0;
   auto normals__ = normals ? _fbb.CreateVector<float>(*normals) : 0;
   auto indices__ = indices ? _fbb.CreateVector<uint32_t>(*indices) : 0;
+  auto material_ids__ = material_ids ? _fbb.CreateVector<int32_t>(*material_ids) : 0;
   return Blender::LiveLink::CreateMesh(
       _fbb,
       positions__,
       normals__,
-      indices__);
+      indices__,
+      material_ids__);
 }
 
 struct Light FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
@@ -880,6 +897,77 @@ inline ::flatbuffers::Offset<Object> CreateObjectDirect(
       rigid_body,
       light,
       components__);
+}
+
+struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef MaterialBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_UNIQUE_ID = 4,
+    VT_BASE_COLOR = 6,
+    VT_METALLIC = 8,
+    VT_ROUGHNESS = 10
+  };
+  int32_t unique_id() const {
+    return GetField<int32_t>(VT_UNIQUE_ID, 0);
+  }
+  const Blender::LiveLink::Vec4 *base_color() const {
+    return GetStruct<const Blender::LiveLink::Vec4 *>(VT_BASE_COLOR);
+  }
+  float metallic() const {
+    return GetField<float>(VT_METALLIC, 0.0f);
+  }
+  float roughness() const {
+    return GetField<float>(VT_ROUGHNESS, 0.0f);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<int32_t>(verifier, VT_UNIQUE_ID, 4) &&
+           VerifyField<Blender::LiveLink::Vec4>(verifier, VT_BASE_COLOR, 4) &&
+           VerifyField<float>(verifier, VT_METALLIC, 4) &&
+           VerifyField<float>(verifier, VT_ROUGHNESS, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct MaterialBuilder {
+  typedef Material Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_unique_id(int32_t unique_id) {
+    fbb_.AddElement<int32_t>(Material::VT_UNIQUE_ID, unique_id, 0);
+  }
+  void add_base_color(const Blender::LiveLink::Vec4 *base_color) {
+    fbb_.AddStruct(Material::VT_BASE_COLOR, base_color);
+  }
+  void add_metallic(float metallic) {
+    fbb_.AddElement<float>(Material::VT_METALLIC, metallic, 0.0f);
+  }
+  void add_roughness(float roughness) {
+    fbb_.AddElement<float>(Material::VT_ROUGHNESS, roughness, 0.0f);
+  }
+  explicit MaterialBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<Material> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<Material>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<Material> CreateMaterial(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    int32_t unique_id = 0,
+    const Blender::LiveLink::Vec4 *base_color = nullptr,
+    float metallic = 0.0f,
+    float roughness = 0.0f) {
+  MaterialBuilder builder_(_fbb);
+  builder_.add_roughness(roughness);
+  builder_.add_metallic(metallic);
+  builder_.add_base_color(base_color);
+  builder_.add_unique_id(unique_id);
+  return builder_.Finish();
 }
 
 struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {

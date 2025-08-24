@@ -1194,6 +1194,8 @@ void frame(void)
 		}
 
 		state.objects.clear();
+		state.camera_control_id.reset();
+		state.player_character_id.reset();
 	}
 
 	// Space Bar Starts/Stops simulation 
