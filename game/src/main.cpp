@@ -106,6 +106,36 @@ protected:
 // Rendering Sample Count
 #define SAMPLE_COUNT 1
 
+// Macro to define an event and run code in __VA_ARGS__ when it triggers
+#define DEFINE_EVENT_TWO_KEYS(key_1, key_2, ...)\
+	{\
+		static bool was_key_pressed = false;\
+		const bool is_key_1_pressed = is_key_pressed(key_1);\
+		const bool is_key_2_pressed = (key_2 == SAPP_KEYCODE_INVALID) ? true : is_key_pressed(key_2);\
+		if (is_key_1_pressed && is_key_2_pressed && !was_key_pressed)\
+		{\
+			{__VA_ARGS__}\
+		}\
+		was_key_pressed = is_key_1_pressed && is_key_2_pressed;\
+	}
+
+
+// Same as above but no mod key
+#define DEFINE_EVENT_ONE_KEY(key, ...) DEFINE_EVENT_TWO_KEYS(key, SAPP_KEYCODE_INVALID, __VA_ARGS__)
+
+// Macro to handle toggleable inputs. uses event macro above but just sets variable instead of passing in __VA_ARGS__
+#define DEFINE_TOGGLE_TWO_KEYS(var_name, initial_state, key_1, key_2)\
+	static bool var_name = initial_state;\
+	DEFINE_EVENT_TWO_KEYS(key_1, key_2,\
+		var_name = !var_name;\
+	);
+
+// Same as above but no mod key
+#define DEFINE_TOGGLE_ONE_KEY(var_name, initial_state, key)\
+	DEFINE_TOGGLE_TWO_KEYS(var_name, initial_state, key, SAPP_KEYCODE_INVALID,\
+		var_name = !var_name;\
+	)
+
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
 {
@@ -1198,70 +1228,33 @@ void frame(void)
 		state.player_character_id.reset();
 	}
 
-	// Space Bar Starts/Stops simulation 
-	static bool is_simulating = true;
-	{
-		static bool was_simulate_key_pressed = false;
-		const bool is_simulate_key_pressed = 
-				is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL) 
-			&&	is_key_pressed(SAPP_KEYCODE_SPACE);
-		if (is_simulate_key_pressed && !was_simulate_key_pressed)
-		{
-			is_simulating = !is_simulating;
-		}
-		was_simulate_key_pressed = is_simulate_key_pressed;
-	}
+	// Space Bar + Left Control Starts/Stops simulation 
+	DEFINE_TOGGLE_TWO_KEYS(is_simulating, true, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
-	// LeftCtrl + D toggles debug cam
-	{
-		static bool was_toggle_debug_cam_pressed = false;
-		const bool is_toggle_debug_cam_pressed = 
-			is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL) 
-		&&	is_key_pressed(SAPP_KEYCODE_D);
-
-		if (is_toggle_debug_cam_pressed && !was_toggle_debug_cam_pressed)
-		{
-			// When enabling debug cam, copy data from current active camera
-			if (!state.debug_camera_active)
-			{
-				state.debug_camera = get_active_camera();
-			}
-
-			state.debug_camera_active = !state.debug_camera_active;
-		}
-		was_toggle_debug_cam_pressed = is_toggle_debug_cam_pressed;
-	}
+	// D + Left Control toggle debug camera
+	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_D, SAPP_KEYCODE_LEFT_CONTROL,
+		if (!state.debug_camera_active) state.debug_camera = get_active_camera();
+		state.debug_camera_active = !state.debug_camera_active;
+	);
 
 	// SSAO enable/disable
-	{	
-		static bool was_p_pressed = false;
-		const bool is_p_pressed = is_key_pressed(SAPP_KEYCODE_P);
-		if (is_p_pressed && !was_p_pressed)
-		{
-			state.ssao_enable = !state.ssao_enable;
-		}
-		was_p_pressed = is_p_pressed;
-	}
+	DEFINE_EVENT_ONE_KEY(SAPP_KEYCODE_P,
+		state.ssao_enable = !state.ssao_enable;
+	);
 
-	// Reset Objects to default state when we press 'R'
-	{
-		static bool was_reset_pressed = false;
-		const bool is_reset_pressed = is_key_pressed(SAPP_KEYCODE_R);
-		if (is_reset_pressed && !was_reset_pressed)
+	// Reset State
+	DEFINE_EVENT_ONE_KEY(SAPP_KEYCODE_R,
+		// Reset object transforms and recreate physics state
+		for (auto& [unique_id, object] : state.objects)
 		{
-			// Reset object transforms and recreate physics state
-			for (auto& [unique_id, object] : state.objects)
+			object.current_transform = object.initial_transform;
+
+			if (object.has_rigid_body)
 			{
-				object.current_transform = object.initial_transform;
-
-				if (object.has_rigid_body)
-				{
-					object_reset_jolt_body(object);
-				}
+				object_reset_jolt_body(object);
 			}
 		}
-		was_reset_pressed = is_reset_pressed;
-	}
+	)
 
 	if (is_simulating)
 	{
