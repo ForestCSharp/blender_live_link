@@ -93,7 +93,6 @@ protected:
 #include "geometry.compiled.h"
 #include "ssao.compiled.h"
 #include "blur.compiled.h"
-#include "dilate.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
@@ -304,7 +303,6 @@ enum class ERenderPass : int
 	SSAO_Blur,
 	Lighting,
 	DOF_Blur,
-	DOF_Dilate,
 	Tonemapping,
 	DebugText,
 	CopyToSwapchain,
@@ -1015,26 +1013,6 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
 
-	RenderPassDesc dof_dilate_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(dilate_dilate_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
-			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-					.write_enabled = false,
-					},
-			.label = "dof-dilate-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
-			.store_action = SG_STOREACTION_STORE,
-		},
-	};
-	get_render_pass(ERenderPass::DOF_Dilate).init(dof_dilate_pass_desc);
-
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
@@ -1269,9 +1247,6 @@ void frame(void)
 		const bool is_reset_pressed = is_key_pressed(SAPP_KEYCODE_R);
 		if (is_reset_pressed && !was_reset_pressed)
 		{
-			// Pause Simulation
-			is_simulating = false;
-
 			// Reset object transforms and recreate physics state
 			for (auto& [unique_id, object] : state.objects)
 			{
@@ -1770,27 +1745,6 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
-
-			get_render_pass(ERenderPass::DOF_Dilate).execute(
-				[&]()
-				{	
-					const dilate_fs_params_t dilate_fs_params = {
-						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
-						.dilate_size = 4,
-						.dilate_separation = 2.0f,	
-					};
-					sg_apply_uniforms(0, SG_RANGE(dilate_fs_params));
-
-					sg_bindings bindings = (sg_bindings){
-						.images[0] = get_render_pass(ERenderPass::DOF_Blur).color_outputs[0],
-						.samplers[0] = state.sampler,
-					};
-
-					sg_apply_bindings(&bindings);
-
-					sg_draw(0,6,1);
-				}
-			);
 		}
 
 		{ // Tonemapping Pass
@@ -1798,7 +1752,7 @@ void frame(void)
 				[&]()
 				{	
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
-					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Dilate);
+					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 					const tonemapping_fs_params_t tonemapping_fs_params = {
