@@ -46,20 +46,34 @@ void main()
 			//if (!(abs(i) <= dilate_size - abs(j))) { continue; }
 
 			// For a circular shape.
-			if (!(distance(vec2(i, j), vec2(0, 0)) <= dilate_size)) { continue; }
+			//if (!(distance(vec2(i, j), vec2(0, 0)) <= dilate_size)) { continue; }
+
+			// For a hexagonal shape.
+			{
+				float x = float(i);
+				float y = float(j);
+
+				float a = abs(x);
+				float b = abs(0.5*x + 0.8660254*y);   // cos(60)=0.5, sin(60)=√3/2
+				float c = abs(0.5*x - 0.8660254*y);
+
+				if (max(a, max(b, c)) > float(dilate_size)) {
+					continue;
+				}
+			}
 			
 			//FCS TODO: hexagonal shape 
 
 			vec2 offset = vec2(i, j) * dilate_separation * texel_size;
-			vec4 c = texture(sampler2D(color_tex, tex_sampler), uv + offset);
+			vec4 color = texture(sampler2D(color_tex, tex_sampler), uv + offset);
 
-			float mxt = dot(c.rgb, vec3(0.3, 0.59, 0.11));
+			float mxt = dot(color.rgb, vec3(0.3, 0.59, 0.11));
 
 			//FCS TODO: Compare world positions and only set if within some threshold?
 			if (mxt > mx)
 			{
 				mx = mxt;
-				cmx = c;
+				cmx = color;
 			}
 		}
 	}

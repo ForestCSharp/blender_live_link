@@ -33,25 +33,12 @@ struct Character
 Character character_create(JoltState& in_jolt_state, const CharacterSettings& in_settings)
 {
 	// Create Character's Jolt Shape
-	const float character_height = 3.0f;
+	const float character_height = 6.0f;
 	const float character_radius = 0.5f;
 
-	JPH::Vec3 initial_location(
-		in_settings.initial_location.X, 
-		in_settings.initial_location.Y, 
-		in_settings.initial_location.Z
-	);
-
-	JPH::Quat initial_rotation(
-		in_settings.initial_rotation.X, 
-		in_settings.initial_rotation.Y, 
-		in_settings.initial_rotation.Z, 
-		in_settings.initial_rotation.W
-	);
-
 	JPH::RefConst<JPH::Shape> character_shape = JPH::RotatedTranslatedShapeSettings(
-		initial_location, 
-		initial_rotation, 
+		JPH::Vec3::sZero(), 
+		JPH::Quat::sIdentity(), 
 		new JPH::CapsuleShape(0.5f * character_height, character_radius)
 	).Create().Get();
 
@@ -75,6 +62,25 @@ Character character_create(JoltState& in_jolt_state, const CharacterSettings& in
 
 	// Add Character to our Physics Simulation
 	jph_character->AddToPhysicsSystem(JPH::EActivation::Activate);
+
+
+	{	// Set Initial Position/Rotation
+
+		JPH::Vec3 initial_location(
+			in_settings.initial_location.X, 
+			in_settings.initial_location.Y, 
+			in_settings.initial_location.Z
+		);
+
+		JPH::Quat initial_rotation(
+			in_settings.initial_rotation.X, 
+			in_settings.initial_rotation.Y, 
+			in_settings.initial_rotation.Z, 
+			in_settings.initial_rotation.W
+		);
+
+		jph_character->SetPositionAndRotation(initial_location, initial_rotation);
+	}
 
 	// Return our Character struct
 	return (Character) {

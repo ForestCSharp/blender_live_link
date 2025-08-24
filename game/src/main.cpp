@@ -1396,6 +1396,11 @@ void frame(void)
 		HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
 		HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
 
+		if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
+		{
+			character_move_speed *= 3.0f;
+		}
+
 		HMM_Vec3 move_vec = HMM_V3(0,0,0);
 		if (is_key_pressed(SAPP_KEYCODE_W))
 		{
@@ -1772,7 +1777,7 @@ void frame(void)
 					const dilate_fs_params_t dilate_fs_params = {
 						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
 						.dilate_size = 4,
-						.dilate_separation = 2,	
+						.dilate_separation = 2.0f,	
 					};
 					sg_apply_uniforms(0, SG_RANGE(dilate_fs_params));
 
