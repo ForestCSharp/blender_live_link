@@ -63,6 +63,8 @@ if [[ $OS = Windows ]]; then
 	sleep 0.5
 	start "" blender.exe $run_args
 elif [[ $OS = Mac ]]; then
+	killall Blender
+	
 	# install add-on and wait for completion
 	/Applications/Blender.app/Contents/MacOS/Blender $install_args 
 	sleep 0.5

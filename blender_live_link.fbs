@@ -152,6 +152,7 @@ table Object
 table Material
 {
 	unique_id	: int;
+	name		: string;
 	base_color	: Vec4;
 	metallic	: float;
 	roughness	: float;
@@ -161,6 +162,7 @@ table Update
 {
 	objects				: [Object];
 	deleted_object_uids : [int];
+	materials			: [Material];
 	reset 				: bool = false;
 }
 

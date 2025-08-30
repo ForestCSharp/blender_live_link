@@ -21,6 +21,11 @@ struct Transform
 	HMM_Vec3 scale;
 };
 
+namespace Constants
+{
+	constexpr double Pi = 3.1415926535897932384626433832795;
+}
+
 namespace UnitVectors
 {
 	static const HMM_Vec3 Right		= HMM_NormV3(HMM_V3(1,0,0));

@@ -77,14 +77,39 @@ class Update(object):
         return o == 0
 
     # Update
-    def Reset(self):
+    def Materials(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        if o != 0:
+            x = self._tab.Vector(o)
+            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 4
+            x = self._tab.Indirect(x)
+            from Blender.LiveLink.Material import Material
+            obj = Material()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Update
+    def MaterialsLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Update
+    def MaterialsIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
+        return o == 0
+
+    # Update
+    def Reset(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
         if o != 0:
             return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
         return False
 
 def UpdateStart(builder):
-    builder.StartObject(3)
+    builder.StartObject(4)
 
 def Start(builder):
     UpdateStart(builder)
@@ -113,8 +138,20 @@ def UpdateStartDeletedObjectUidsVector(builder, numElems):
 def StartDeletedObjectUidsVector(builder, numElems):
     return UpdateStartDeletedObjectUidsVector(builder, numElems)
 
+def UpdateAddMaterials(builder, materials):
+    builder.PrependUOffsetTRelativeSlot(2, flatbuffers.number_types.UOffsetTFlags.py_type(materials), 0)
+
+def AddMaterials(builder, materials):
+    UpdateAddMaterials(builder, materials)
+
+def UpdateStartMaterialsVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartMaterialsVector(builder, numElems):
+    return UpdateStartMaterialsVector(builder, numElems)
+
 def UpdateAddReset(builder, reset):
-    builder.PrependBoolSlot(2, reset, 0)
+    builder.PrependBoolSlot(3, reset, 0)
 
 def AddReset(builder, reset):
     UpdateAddReset(builder, reset)

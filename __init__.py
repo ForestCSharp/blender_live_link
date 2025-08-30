@@ -36,6 +36,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import LightType
+from .compiled_schemas.python.Blender.LiveLink import Material
 from .compiled_schemas.python.Blender.LiveLink import Mesh
 from .compiled_schemas.python.Blender.LiveLink import Object
 from .compiled_schemas.python.Blender.LiveLink import PointLight
@@ -207,23 +208,19 @@ class LiveLinkConnection():
             mesh_indices = builder.CreateNumpyVector(indices);
 
             # Get Materials
-            material_ids = []
+            #material_ids = []
+            material_ids = np.empty(0, dtype=np.int32)
             if obj.data.materials:
                 for material in obj.data.materials:
                     material_id = material.session_uid
                     # append to our material list
-                    material_ids.append(material_id)
+                    material_ids = np.append(material_ids, material_id)
                     # Add to referenced material dict
                     if referenced_materials.get(material_id) is None:
                         referenced_materials[material_id] = material
 
             # Create flatbuffers material list if we have valid material ids
-            flatbuffer_material_ids = None
-            if len(material_ids) > 0:
-                Mesh.MeshStartMaterialIdsVector(builder, len(material_ids))
-                for material_id in reversed(material_ids):
-                    builder.PrependUOffsetTRelative(material_id)
-                flatbuffer_material_ids = builder.EndVector()
+            flatbuffer_material_ids = builder.CreateNumpyVector(material_ids)
 
             # TODO: if we find an armature build up skinned vertex info in new field
             # Check for armature
@@ -235,8 +232,7 @@ class LiveLinkConnection():
             Mesh.AddPositions(builder, mesh_positions)
             Mesh.AddNormals(builder, mesh_normals)
             Mesh.AddIndices(builder, mesh_indices)
-            if flatbuffer_material_ids is not None:
-                Mesh.AddMaterialIds(builder, flatbuffer_material_ids)
+            Mesh.AddMaterialIds(builder, flatbuffer_material_ids)
             mesh = Mesh.End(builder)
 
         # Light Info
@@ -386,7 +382,7 @@ class LiveLinkConnection():
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
 
-        # referenced materials, keyed by session_uid
+        # referenced materials, keyed by session_uid and updated in self.make_flatbuffer_object
         referenced_materials = {}
 
         # Build up objects to be added to scene objects vector
@@ -409,19 +405,59 @@ class LiveLinkConnection():
         update_deleted_object_uids = builder.EndVector()
 
         # create flatbuffers materials
+        flatbuffer_materials = []
         for material_id, material in referenced_materials.items():
-            material_info_str = "Material with id: " + str(material_id)
-            material_lib = material.library if material.library is not None else ""
-            material_name = material_lib + material.name_full
-            material_info_str += " name: " + material_name
-            print(material_info_str)
-            # TODO: HERE!!! Create flatbuffers material entry
+            # Material Name String
+            material_name = builder.CreateString(material.name_full)
+
+            # Begin new flatbuffers Material 
+            Material.Start(builder)
+
+            # Set material unique id
+            Material.AddUniqueId(builder, material_id)
+
+            # Set material name
+            Material.AddName(builder, material_name)
+
+            def setup_default_material_properties():
+                print("Setting Default Material Properties")
+                base_color_vec4 = Vec4.CreateVec4(builder, material.base_color.r, material.base_color.g, material.base_color.g, material.base_color.g)
+                Material.AddBaseColor(builder, base_color_vec4); 
+                Material.AddMetallic(builder, material.metallic);
+                Material.AddRoughness(builder, material.roughness);
+
+
+            # Add Material Properties (Constant)
+            if material.use_nodes:
+                bsdf = material.node_tree.nodes.get("Principled BSDF")
+                if bsdf:
+                    base_color = bsdf.inputs["Base Color"].default_value
+                    r,g,b,a = base_color
+                    base_color_vec4 = Vec4.CreateVec4(builder, r, g, b, a)
+                    Material.AddBaseColor(builder, base_color_vec4);
+                    Material.AddMetallic(builder, bsdf.inputs["Metallic"].default_value);
+                    Material.AddRoughness(builder, bsdf.inputs["Roughness"].default_value);
+                else:
+                    setup_default_material_properties()
+            else:
+                setup_default_material_properties()
+
+            # End current flatbuffers Material and add to list
+            flatbuffer_material = Material.End(builder)
+            flatbuffer_materials.append(flatbuffer_material)
+
+
+        Update.UpdateStartMaterialsVector(builder, len(flatbuffer_materials))   
+        for material in reversed(flatbuffer_materials):
+            builder.PrependUOffsetTRelative(material)
+        update_materials = builder.EndVector()
 
         Update.Start(builder)
 
         # Add objects vector to scene
         Update.AddObjects(builder, update_objects)
         Update.AddDeletedObjectUids(builder, update_deleted_object_uids)
+        Update.AddMaterials(builder, update_materials);
         Update.AddReset(builder, reset)
 
         # finalize scene flatbuffer

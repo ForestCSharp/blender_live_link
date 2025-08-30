@@ -1,6 +1,7 @@
 #pragma once
 
 #include "handmade_math/HandmadeMath.h"
+#include "types.h"
 
 #include "physics_system.h"
 #include <Jolt/Physics/Character/Character.h>
@@ -33,12 +34,14 @@ struct Character
 Character character_create(JoltState& in_jolt_state, const CharacterSettings& in_settings)
 {
 	// Create Character's Jolt Shape
-	const float character_height = 6.0f;
+
+	//FCS TODO: Add to character component 
+	const float character_height = 3.0f;
 	const float character_radius = 0.5f;
 
 	JPH::RefConst<JPH::Shape> character_shape = JPH::RotatedTranslatedShapeSettings(
 		JPH::Vec3::sZero(), 
-		JPH::Quat::sIdentity(), 
+		JPH::Quat::sRotation(JPH::Vec3::sAxisX(), Constants::Pi / 2.0), 
 		new JPH::CapsuleShape(0.5f * character_height, character_radius)
 	).Create().Get();
 
@@ -51,36 +54,30 @@ Character character_create(JoltState& in_jolt_state, const CharacterSettings& in
 	jph_character_settings->mUp = JPH::Vec3::sAxisZ();
 	jph_character_settings->mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -1.0e10f);
 
+	JPH::Vec3 initial_location(
+		in_settings.initial_location.X, 
+		in_settings.initial_location.Y, 
+		in_settings.initial_location.Z
+	);
+
+	JPH::Quat initial_rotation(
+		in_settings.initial_rotation.X, 
+		in_settings.initial_rotation.Y, 
+		in_settings.initial_rotation.Z, 
+		in_settings.initial_rotation.W
+	);
+
 	// Create Jolt Character
 	JPH::Character* jph_character = new JPH::Character(
 		jph_character_settings, 
-		JPH::RVec3::sZero(), 
-		JPH::Quat::sIdentity(), 
+		initial_location, 
+		initial_rotation, 
 		0, 
 		&in_jolt_state.physics_system
 	);
 
 	// Add Character to our Physics Simulation
 	jph_character->AddToPhysicsSystem(JPH::EActivation::Activate);
-
-
-	{	// Set Initial Position/Rotation
-
-		JPH::Vec3 initial_location(
-			in_settings.initial_location.X, 
-			in_settings.initial_location.Y, 
-			in_settings.initial_location.Z
-		);
-
-		JPH::Quat initial_rotation(
-			in_settings.initial_rotation.X, 
-			in_settings.initial_rotation.Y, 
-			in_settings.initial_rotation.Z, 
-			in_settings.initial_rotation.W
-		);
-
-		jph_character->SetPositionAndRotation(initial_location, initial_rotation);
-	}
 
 	// Return our Character struct
 	return (Character) {
@@ -137,7 +134,7 @@ void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump)
 	JPH::Vec3 new_velocity = 0.75f * current_velocity + 0.25f * desired_velocity;
 
 	// Jump
-	if (in_jump && ground_state == JPH::Character::EGroundState::OnGround)
+	if (in_jump)// && ground_state == JPH::Character::EGroundState::OnGround)
 	{
 		new_velocity += JPH::Vec3(0, 0, in_character.settings.jump_speed);
 	}

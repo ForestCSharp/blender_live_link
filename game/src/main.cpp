@@ -89,6 +89,7 @@ protected:
 #define FONT_ORIC  (5)
 
 // Generated Shader Files
+#include "../data/shaders/shader_common.h"
 #include "../data/shaders/ssao_constants.h"
 #include "geometry.compiled.h"
 #include "ssao.compiled.h"
@@ -124,8 +125,7 @@ protected:
 #define DEFINE_EVENT_ONE_KEY(key, ...) DEFINE_EVENT_TWO_KEYS(key, SAPP_KEYCODE_INVALID, __VA_ARGS__)
 
 // Macro to handle toggleable inputs. uses event macro above but just sets variable instead of passing in __VA_ARGS__
-#define DEFINE_TOGGLE_TWO_KEYS(var_name, initial_state, key_1, key_2)\
-	static bool var_name = initial_state;\
+#define DEFINE_TOGGLE_TWO_KEYS(var_name, key_1, key_2)\
 	DEFINE_EVENT_TWO_KEYS(key_1, key_2,\
 		var_name = !var_name;\
 	);
@@ -368,6 +368,9 @@ struct {
 	// ID of camera controller
 	optional<i32> camera_control_id;
 
+	// Are we currently simulating
+	bool is_simulating = true;
+
 	// These channels are how we pass our data from our live-link thread to the main thread
 	Channel<Object> updated_objects;
 	Channel<i32> deleted_objects;
@@ -379,14 +382,22 @@ struct {
 	// Contains Lights Data packed up for gpu usage
 	bool needs_light_data_update = true;	
 
+	// Point Lights
 	StretchyBuffer<lighting_PointLight_t> point_lights;
 	GpuBuffer<lighting_PointLight_t> point_lights_buffer;
 
+	// Spot Lights
 	StretchyBuffer<lighting_SpotLight_t> spot_lights;
 	GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
 
+	// Sun (Directional) Lights
 	StretchyBuffer<lighting_SunLight_t> sun_lights;
 	GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
+
+	// Materials
+	map<i32,i32> material_id_to_index;
+	StretchyBuffer<geometry_Material_t> materials;
+	GpuBuffer<geometry_Material_t> materials_buffer;
 	
 	// Thread that listens for updates from Blender
 	std::thread live_link_thread;
@@ -401,6 +412,86 @@ struct {
 		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
 } state;
+
+
+const i32 MAX_MATERIALS = 1024;
+void init_materials_buffer()
+{
+	if (!state.materials_buffer.is_gpu_buffer_valid())
+	{
+		state.materials_buffer = GpuBuffer((GpuBufferDesc<geometry_Material_t>){
+			.data = nullptr,
+			.size = sizeof(geometry_Material_t) * MAX_MATERIALS,
+			.usage = {
+				.storage_buffer = true,
+				.stream_update = true,
+			},
+			.label = "materials",
+		});
+	}
+}
+
+GpuBuffer<geometry_Material_t>& get_materials_buffer()
+{
+	init_materials_buffer();
+	return state.materials_buffer;
+}
+
+void update_materials_buffer()
+{
+	// Write update to materials buffer
+	get_materials_buffer().update_gpu_buffer(
+		(sg_range){
+			.ptr = state.materials.data(),
+			.size = sizeof(geometry_Material_t) * state.materials.length(),
+		}
+	);	
+}
+
+// Registers a material and adds it to our gpu buffer
+bool register_material(const Blender::LiveLink::Material& in_material)
+{
+	int material_id = in_material.unique_id();
+	printf("Registering material with ID: %i\n", material_id);
+
+	if (state.material_id_to_index.contains(material_id))
+	{
+		return false;
+	}
+
+	if (state.materials.length() >= MAX_MATERIALS)
+	{
+		printf("Error Material Limit Reached: %i\n", MAX_MATERIALS);
+		exit(0);
+		return false;
+	}
+
+	geometry_Material_t new_material = {
+		.base_color = flatbuffer_helpers::to_hmm_vec4(in_material.base_color()),
+		.metallic = in_material.metallic(),
+		.roughness = in_material.roughness(),
+	};
+
+	const i32 array_index = state.materials.length();
+	state.materials.add(new_material);
+	state.material_id_to_index[material_id] = array_index;
+
+	printf("Registered Material\n");
+	printf("\tUniqueID: %i\n", material_id);
+	printf("\tArrayIndex: %i\n", array_index);
+	printf("\tBaseColor: %f %f %f %f\n", new_material.base_color.X, new_material.base_color.Y, new_material.base_color.Z, new_material.base_color.W);
+	printf("\tMetallic: %f\n", new_material.metallic);
+	printf("\tRougness: %f\n", new_material.roughness);
+
+	return true;	
+}
+
+void reset_materials()
+{
+	state.material_id_to_index.clear();
+	state.materials.reset();
+	state.materials_buffer.destroy_gpu_buffer();
+}
 
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
@@ -426,6 +517,25 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 		assert(update);
+
+		// process materials from update
+		if (auto materials = update->materials())
+		{	
+			bool needs_buffer_update = false;
+			for (i32 idx = 0; idx < materials->size(); ++idx)
+			{
+				auto material = materials->Get(idx);
+				assert(material);
+				needs_buffer_update = register_material(*material);
+			}
+
+			if (needs_buffer_update)
+			{
+				update_materials_buffer();	
+			}
+		}
+
+		// process objects from update
 		if (auto objects = update->objects())
 		{
 			for (i32 idx = 0; idx < objects->size(); ++idx)
@@ -480,7 +590,6 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					{
 						num_vertices = flatbuffer_positions->size() / 3;
 						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
-
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 						{
 							vertices[vertex_idx] = {
@@ -500,17 +609,33 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						}
 					}
 
-
 					u32 num_indices = 0;
 					u32* indices = nullptr;
 					if (auto flatbuffer_indices = object_mesh->indices())
 					{
 						num_indices = flatbuffer_indices->size();
 						indices = (u32*) malloc(sizeof(u32) * num_indices);
-
 						for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
 						{
 							indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+						}
+					}
+
+					u32 num_material_indices = 0;
+					i32* material_indices = nullptr;
+					if (auto flatbuffer_material_ids = object_mesh->material_ids())
+					{
+						num_material_indices = flatbuffer_material_ids->size();
+						material_indices = (i32*) malloc(sizeof(i32) * num_material_indices);
+						for (i32 material_id_idx = 0; material_id_idx < num_material_indices; ++material_id_idx)
+						{
+		   					const int material_id = flatbuffer_material_ids->Get(material_id_idx);
+							if (!state.material_id_to_index.contains(material_id))
+							{
+								printf("Failed to find material with id: %i\n", material_id);
+								exit(0);
+							}
+							material_indices[material_id_idx] = state.material_id_to_index[material_id];
 						}
 					}
 
@@ -518,7 +643,11 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					if (num_vertices > 0 && num_indices > 0)
 					{
 						game_object.has_mesh = true;
-						game_object.mesh = make_mesh(vertices, num_vertices, indices, num_indices);
+						game_object.mesh = make_mesh(
+							vertices, num_vertices, 
+							indices, num_indices,
+							material_indices, num_material_indices
+						);
 					}
 				}
 
@@ -1226,10 +1355,12 @@ void frame(void)
 		state.objects.clear();
 		state.camera_control_id.reset();
 		state.player_character_id.reset();
+
+		reset_materials();
 	}
 
 	// Space Bar + Left Control Starts/Stops simulation 
-	DEFINE_TOGGLE_TWO_KEYS(is_simulating, true, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
+	DEFINE_TOGGLE_TWO_KEYS(state.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
 	// D + Left Control toggle debug camera
 	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_D, SAPP_KEYCODE_LEFT_CONTROL,
@@ -1256,7 +1387,7 @@ void frame(void)
 		}
 	)
 
-	if (is_simulating)
+	if (state.is_simulating)
 	{
 		//FCS TODO: Game logic update here
 
@@ -1618,8 +1749,7 @@ void frame(void)
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
 								.storage_buffers = {
 									[0] = object.storage_buffer.get_gpu_buffer(),
-									[1] = state.point_lights_buffer.get_gpu_buffer(),
-									[2] = state.spot_lights_buffer.get_gpu_buffer(),
+									[1] = get_materials_buffer().get_gpu_buffer(),
 								},
 							};
 							sg_apply_bindings(&bindings);
@@ -1777,7 +1907,9 @@ void frame(void)
 			get_render_pass(ERenderPass::DebugText).execute(
 				[&]()
 				{
-					sdtx_canvas(sapp_width() * 0.5f, sapp_height() * 0.5f);
+					// Larger numbers scales down text
+					const float text_scale = 0.5f;
+					sdtx_canvas(sapp_width() * text_scale, sapp_height() * text_scale);
 					sdtx_origin(1.0f, 2.0f);
 					sdtx_home();
 
@@ -1789,6 +1921,11 @@ void frame(void)
 					if (state.debug_camera_active)
 					{
 						draw_debug_text(FONT_C64, "Debug Camera Active\n", 255,255,255);
+					}
+
+					if (!state.is_simulating)
+					{
+						draw_debug_text(FONT_C64, "Simulation Paused\n", 255,255,255);
 					}
 
 					sdtx_draw();

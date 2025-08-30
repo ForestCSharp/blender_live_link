@@ -17,7 +17,6 @@
 // Camera code
 #include "camera.h"
 
-
 struct Vertex
 {
 	HMM_Vec4 position;
@@ -32,15 +31,17 @@ struct Mesh
 
 	u32 vertex_count;
 	Vertex* vertices;
-	GpuBuffer<Vertex> vertex_buffer; 
+	GpuBuffer<Vertex> vertex_buffer;
+
+	u32 material_indices_count;
+	i32* material_indices;
 };
 
 // Takes ownership of vertices and indices
 Mesh make_mesh(
-	Vertex* vertices, 
-	u32 vertices_len, 
-	u32* indices, 
-	u32 indices_len
+	Vertex* vertices, u32 vertices_len, 
+	u32* indices, u32 indices_len,
+	i32* material_indices, u32 num_material_indices
 )
 {
 	u64 indices_size = sizeof(u32) * indices_len;
@@ -67,6 +68,8 @@ Mesh make_mesh(
 			},
 			.label = "Mesh::vertex_buffer",
 		}),	
+		.material_indices_count = num_material_indices,
+		.material_indices = material_indices,
 	};
 }
 
@@ -308,9 +311,15 @@ void object_update_storage_buffer(Object& in_object)
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
 
+	// Just set to first material index for now
+	int material_index 	= (in_object.has_mesh && in_object.mesh.material_indices_count > 0)
+						? in_object.mesh.material_indices[0] 
+						: -1;
+
 	geometry_ObjectData_t object_data = {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
 		.rotation_matrix = rotation_matrix,
+		.material_index = material_index,
 	};
 
 	in_object.storage_buffer.update_gpu_buffer(

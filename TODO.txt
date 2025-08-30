@@ -3,13 +3,12 @@ NOTE
 
 TODO
 	- Materials + Textures
-		- key with session_uid and store that on meshes
-		- store materials in big array in top-level Update table 
-			- (only add referenced materials to this array on an update)
-		- in game that material array will be turned into a map keyed by material unique ids, similar to how objects are keyed
+		- TODO: Need to use some default material if no material assigned in blender
+
 		- V1: Just send base_color, metallic, roughness as values
 		- V2: Optional textures for those three as well
 			- textures will need a similar setup to key by their uid and stored at top-level Update table
+	- Fix IsGrounded for Character Jumping
 
 Tasks:
 	- Skinned Animations
