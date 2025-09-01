@@ -402,8 +402,8 @@ struct {
 	// Thread that listens for updates from Blender
 	std::thread live_link_thread;
 
-	SOCKET blender_socket;
-	SOCKET connection_socket;
+	SOCKET blender_socket = socket_invalid();
+	SOCKET connection_socket = socket_invalid();
 
 	bool debug_camera_active = false;
 	Camera debug_camera = {
@@ -841,11 +841,14 @@ void live_link_thread_function()
 	const i32 backlog = 1;
 	SOCKET_OP(listen(state.blender_socket, backlog));
 
-	// accept connection from blender
+	// accept connections from blender 
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size = sizeof their_addr;
-	state.connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
-
+	do
+	{
+		state.connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
+	}
+	while(!socket_is_valid(state.connection_socket) && state.game_running);
 
 	// set recv timeout
 	struct timeval recv_timeout = {

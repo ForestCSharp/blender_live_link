@@ -21,6 +21,7 @@
 	#include <sys/socket.h>
 	#include <arpa/inet.h>
 	#include <cerrno>
+	#include <fcntl.h>
 	#include <netdb.h>  /* Needed for getaddrinfo() and freeaddrinfo() */
 	#include <unistd.h> /* Needed for close() */
 	typedef int SOCKET;
@@ -58,7 +59,18 @@ int socket_lib_quit(void)
 
 SOCKET socket_open(int domain, int type, int protocol)
 {
-	return socket(domain, type, protocol);
+	SOCKET new_socket = socket(domain, type, protocol);
+
+	// Make accept non-blocking
+#if defined(SOCKET_PLATFORM_WINDOWS)
+	u_long mode = 1;
+	ioctlsocket(new_socket, FIONBIO, &mode);
+#else
+	int flags = fcntl(new_socket, F_GETFL, 0);
+	fcntl(new_socket, F_SETFL, flags | O_NONBLOCK);
+#endif
+
+	return new_socket;
 }
 
 int socket_close(SOCKET sock)
@@ -74,6 +86,24 @@ int socket_close(SOCKET sock)
 #endif
 
   return status;
+}
+
+SOCKET socket_invalid(void)
+{
+#if defined(SOCKET_PLATFORM_WINDOWS)
+	return INVALID_SOCKET;
+#else
+	return -1;
+#endif
+}
+
+bool socket_is_valid(SOCKET sock)
+{
+#if defined(SOCKET_PLATFORM_WINDOWS)
+	return sock != INVALID_SOCKET;
+#else
+	return sock != -1;
+#endif
 }
 
 size_t socket_recv(SOCKET in_socket, void* in_buffer, size_t in_len, int in_flags)

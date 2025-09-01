@@ -426,7 +426,6 @@ class LiveLinkConnection():
                 Material.AddMetallic(builder, material.metallic);
                 Material.AddRoughness(builder, material.roughness);
 
-
             # Add Material Properties (Constant)
             if material.use_nodes:
                 bsdf = material.node_tree.nodes.get("Principled BSDF")
