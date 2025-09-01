@@ -25,7 +25,7 @@
 	#include <netdb.h>  /* Needed for getaddrinfo() and freeaddrinfo() */
 	#include <unistd.h> /* Needed for close() */
 	typedef int SOCKET;
-
+	#define INVALID_SOCKET -1
 #endif
 
 #define SOCKET_OP(f) \
@@ -90,20 +90,12 @@ int socket_close(SOCKET sock)
 
 SOCKET socket_invalid(void)
 {
-#if defined(SOCKET_PLATFORM_WINDOWS)
-	return INVALID_SOCKET;
-#else
-	return -1;
-#endif
+	return INVALID_SOCKET;	
 }
 
 bool socket_is_valid(SOCKET sock)
 {
-#if defined(SOCKET_PLATFORM_WINDOWS)
 	return sock != INVALID_SOCKET;
-#else
-	return sock != -1;
-#endif
 }
 
 size_t socket_recv(SOCKET in_socket, void* in_buffer, size_t in_len, int in_flags)
