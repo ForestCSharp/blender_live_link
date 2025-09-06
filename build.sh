@@ -55,7 +55,8 @@ else
 fi
 
 install_args="--command extension install-file blender_live_link.zip --repo user_default --enable"
-run_args="$SCRIPT_DIR/blend_files/test_file.blend"
+#run_args="$SCRIPT_DIR/blend_files/test_file.blend"
+run_args="$SCRIPT_DIR/blend_files/sponza.blend"
 
 if [[ $OS = Windows ]]; then
 	# Note: blender.exe should be on system path

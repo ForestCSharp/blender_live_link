@@ -406,7 +406,7 @@ struct {
 	SOCKET blender_socket = socket_invalid();
 	SOCKET connection_socket = socket_invalid();
 
-	bool debug_camera_active = false;
+	bool debug_camera_active = true;
 	Camera debug_camera = {
 		.location = HMM_V3(2.5f, -15.0f, 3.0f),
 		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
@@ -634,6 +634,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							if (!state.material_id_to_index.contains(material_id))
 							{
 								printf("Failed to find material with id: %i\n", material_id);
+								continue;
 								exit(0);
 							}
 							material_indices[material_id_idx] = state.material_id_to_index[material_id];
@@ -956,6 +957,9 @@ void init(void)
 	jolt_init();
 
     sg_setup((sg_desc) {
+		.buffer_pool_size = 4096,
+		//.image_pool_size = 4096,
+		//.sampler_pool_size = 1024,
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
