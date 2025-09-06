@@ -2,10 +2,15 @@
 // Common Shader Code
 #include "shader_common.h"
 
+// BRDF
+#include "brdf.h"
+
 // Fullscreen Vertex Shader
 #include "fullscreen_vs.glslh"
 
 @fs fs
+
+@include_block brdf 
 
 struct PointLight {
 	vec4 location;
@@ -43,14 +48,18 @@ struct SunLight {
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=1) uniform texture2D position_tex;
 layout(binding=2) uniform texture2D normal_tex;
-layout(binding=3) uniform texture2D ssao_tex;
+layout(binding=3) uniform texture2D roughness_metallic_tex;
+layout(binding=4) uniform texture2D ssao_tex;
 
 layout(binding=0) uniform sampler tex_sampler;
 
 layout(binding=0) uniform fs_params {
+	vec3 view_position;
+	PADDING(1);	
     int num_point_lights;
 	int num_spot_lights;
 	int num_sun_lights;
+	PADDING(1);	
 };
 
 layout(binding=0) readonly buffer PointLightsBuffer {
@@ -119,53 +128,114 @@ vec4 dither_noise()
 	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
 }
 
-vec4 sample_point_light(PointLight in_point_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
+vec3 sample_point_light(
+	PointLight in_point_light, 
+	vec3 in_view_position,
+	vec3 in_surface_position, 
+	vec3 in_surface_normal, 
+	vec3 in_surface_albedo, 
+	float in_surface_roughness, 
+	float in_surface_metallic
+)
 {
+	// world location of light
 	vec3 light_location = in_point_light.location.xyz;
-	vec3 world_pos_to_light = normalize(light_location - in_world_position);
 
-	const float surface_angle = positive_cosine_angle(world_pos_to_light, in_world_normal);
-	const float numerator = in_point_light.power * surface_angle;
-	const float denominator = 4 * M_PI * dist_squared(light_location, in_world_position);
-	const float lighting_factor = numerator / denominator;
-	return (in_color * in_point_light.color * lighting_factor) + in_noise;
+	// surface normal
+	vec3 n = in_surface_normal;
+
+	// surface to light
+	vec3 l = normalize(light_location - in_surface_position);
+
+	//surface to eye
+	vec3 v = normalize(in_view_position - in_surface_position);
+
+	// point light radiance at surface
+	float light_attenuation = in_point_light.power / (4 * M_PI * dist_squared(light_location, in_surface_position));
+	vec3 light_radiance = in_point_light.color.xyz * light_attenuation; 
+
+	vec3 f0 = mix(vec3(0.04, 0.04, 0.04), in_surface_albedo, vec3(in_surface_metallic));
+	return cook_torrance_brdf(n,l,v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
-vec4 sample_spot_light(SpotLight in_spot_light, vec3 in_world_position, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
+vec3 sample_spot_light(
+	SpotLight in_spot_light, 
+	vec3 in_view_position,
+	vec3 in_surface_position, 
+	vec3 in_surface_normal, 
+	vec3 in_surface_albedo, 
+	float in_surface_roughness, 
+	float in_surface_metallic
+)
 {
-	vec3 spot_light_location = in_spot_light.location.xyz;
-	vec3 light_to_world_pos = normalize(in_world_position - spot_light_location);
+	// world location of light
+	vec3 light_location = in_spot_light.location.xyz;
 
+	//// surface normal
+	vec3 n = in_surface_normal;
+
+	// surface to light
+	vec3 l = normalize(light_location - in_surface_position);
+
+	//surface to eye
+	vec3 v = normalize(in_view_position - in_surface_position);
+
+
+	// Spot light cone check
+	vec3 light_to_world_pos = normalize(in_surface_position - light_location);
 	float surface_cosine_angle = cosine_angle(light_to_world_pos, in_spot_light.direction);
 	float outer_cone_cosine_angle = cos(in_spot_light.spot_angle_radians);
 
-	// Check if we're inside spotlight's outer cone
-	if (surface_cosine_angle > outer_cone_cosine_angle)
+	// Check if we're outside spotlight's outer cone
+	if (surface_cosine_angle <= outer_cone_cosine_angle)
 	{
-		const float outer_cone_angle	= in_spot_light.spot_angle_radians;
-		const float inner_cone_angle 	= mix_clamped(0.0, outer_cone_angle, 1.0 - in_spot_light.edge_blend);
-		const float spot_attenuation 	= in_spot_light.edge_blend > 0.0 
-										? 1.0 - remap_clamped(acos(surface_cosine_angle), inner_cone_angle, outer_cone_angle, 0.0, 1.0) 
-										: 1.0;
-
-		// Create a point light based on spot-lights location, color, power and sample that
-		PointLight point_light;
-		point_light.location = in_spot_light.location;
-		point_light.color = in_spot_light.color;
-		point_light.power = in_spot_light.power;
-		return sample_point_light(point_light, in_world_position, in_world_normal, in_color, in_noise) * spot_attenuation;		
+		return vec3(0,0,0);
 	}
 
-	// Outside spotlight cone, return black
-	return vec4(0,0,0,1);
+	PointLight point_light;
+	point_light.location = in_spot_light.location;
+	point_light.color = in_spot_light.color;
+	point_light.power = in_spot_light.power;
+	return sample_point_light(
+		point_light, 
+		in_view_position, 
+		in_surface_position,
+	 	in_surface_normal,
+		in_surface_albedo,
+	 	in_surface_roughness,
+		in_surface_metallic
+	);
 }
 
-vec4 sample_sun_light(SunLight in_sun_light, vec3 in_world_normal, vec4 in_color, vec4 in_noise)
-{	
-	const vec3 light_direction = -normalize(in_sun_light.direction);
-	const float surface_angle = positive_cosine_angle(light_direction, in_world_normal);
-	const float numerator = in_sun_light.power * surface_angle;
-	return (in_color * numerator) + in_noise;
+
+vec3 sample_sun_light(
+	SunLight in_sun_light, 
+	vec3 in_view_position,
+	vec3 in_surface_position, 
+	vec3 in_surface_normal, 
+	vec3 in_surface_albedo, 
+	float in_surface_roughness, 
+	float in_surface_metallic
+)
+{
+	// world location of light
+	vec3 light_location = in_sun_light.location.xyz;
+
+	//// surface normal
+	vec3 n = in_surface_normal;
+
+	// surface to light
+	vec3 l = -normalize(in_sun_light.direction);
+
+	//surface to eye
+	vec3 v = normalize(in_view_position - in_surface_position);
+
+	// Sun light radiance at surface
+	float light_attenuation = in_sun_light.power;
+	vec3 light_radiance = in_sun_light.color.xyz * light_attenuation;
+
+	vec3 f0 = mix(vec3(0.04, 0.04, 0.04), in_surface_albedo, vec3(in_surface_metallic));
+	return cook_torrance_brdf(n,l,v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
 in vec2 uv;
@@ -186,22 +256,47 @@ void main()
 	else
 	{
 		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
+		vec2 sampled_roughness_metallic = texture(sampler2D(roughness_metallic_tex, tex_sampler), uv).rg;
 		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;	
-		vec4 noise = dither_noise();
 
 		for (int i = 0; i < num_point_lights; ++i)
 		{
-			final_color += sample_point_light(point_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, noise);
+			final_color.xyz += sample_point_light(
+				point_lights[i], 
+				view_position,
+				sampled_position.xyz, 
+				sampled_normal.xyz, 
+				sampled_color.xyz, 
+				sampled_roughness_metallic.r, 
+				sampled_roughness_metallic.g
+			);
+
 		}
 
 		for (int i = 0; i < num_spot_lights; ++i)
 		{
-			final_color += sample_spot_light(spot_lights[i], sampled_position.xyz, sampled_normal.xyz, sampled_color, noise);
+			final_color.xyz += sample_spot_light(
+				spot_lights[i], 
+				view_position,
+				sampled_position.xyz, 
+				sampled_normal.xyz, 
+				sampled_color.xyz, 
+				sampled_roughness_metallic.r, 
+				sampled_roughness_metallic.g
+			);
 		}
 
 		for (int i = 0; i < num_sun_lights; ++i)
 		{
-			final_color += sample_sun_light(sun_lights[i], sampled_normal.xyz, sampled_color, noise);
+			final_color.xyz += sample_sun_light(
+				sun_lights[i], 
+				view_position,
+				sampled_position.xyz, 
+				sampled_normal.xyz, 
+				sampled_color.xyz, 
+				sampled_roughness_metallic.r, 
+				sampled_roughness_metallic.g
+			);
 		}
 
 

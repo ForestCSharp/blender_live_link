@@ -1,20 +1,3 @@
-
-// Flatbuffers generated file
-#include "blender_live_link_generated.h"
-
-// Jolt Physics
-//#include "Jolt/jolt_single_file.cpp"
-#include "physics_system.h"
-
-// Basic Types
-#include "types.h"
-
-// Game Objects we receive from Blender
-#include "game_object.h"
-
-// Gpu Buffer Wrapper
-#include "gpu_buffer.h"
-
 // C std lib I/O and stdlib
 #include <cstdio>
 #include <cstdlib>
@@ -36,11 +19,24 @@ using std::atomic;
 // C++ std lib string
 #include <string>
 
-// cxxopts
-#include "cxxopts/cxxopts.hpp"
-
 // For C++ std::function
 #include <functional>
+
+// Flatbuffers generated file
+#include "blender_live_link_generated.h"
+
+// Jolt Physics
+//#include "Jolt/jolt_single_file.cpp"
+#include "physics_system.h"
+
+// Basic Types
+#include "types.h"
+
+// Game Objects we receive from Blender
+#include "game_object.h"
+
+// Gpu Buffer Wrapper
+#include "gpu_buffer.h"
 
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
@@ -53,6 +49,9 @@ using ankerl::unordered_dense::map;
 // STB Dynamic Array
 #define STB_DS_IMPLEMENTATION
 #include "stb/stb_ds.h"
+
+// cxxopts
+#include "cxxopts/cxxopts.hpp"
 
 // Basic Template-wrapper around stb_ds array functionality
 template<typename T>
@@ -94,6 +93,7 @@ protected:
 #include "geometry.compiled.h"
 #include "ssao.compiled.h"
 #include "blur.compiled.h"
+#include "dof_combine.compiled.h"
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
@@ -333,6 +333,7 @@ enum class ERenderPass : int
 	SSAO_Blur,
 	Lighting,
 	DOF_Blur,
+	DOF_Combine,
 	Tonemapping,
 	DebugText,
 	CopyToSwapchain,
@@ -992,7 +993,7 @@ void init(void)
 	sg_swapchain swapchain = sglue_swapchain();
 
 	//FCS TODO: shared info in pipeline desc and render pass desc re: outputs 
-	const i32 num_geometry_pass_outputs = 3;
+	const i32 num_geometry_pass_outputs = 4;
 	RenderPassDesc geometry_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.layout = {
@@ -1019,6 +1020,9 @@ void init(void)
 			.colors[2] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
+			.colors[3] = {
+				.pixel_format = SG_PIXELFORMAT_RG32F,
+			},
 			.label = "geometry-pipeline"
 		},
 		.num_outputs = num_geometry_pass_outputs,
@@ -1039,7 +1043,13 @@ void init(void)
 			.load_action = SG_LOADACTION_CLEAR,
 			.store_action = SG_STOREACTION_STORE,
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		}
+		},
+		.outputs[3] = {
+			.pixel_format = SG_PIXELFORMAT_RG32F,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		},
 	};
 	get_render_pass(ERenderPass::Geometry).init(geometry_pass_desc);
 
@@ -1174,6 +1184,26 @@ void init(void)
 		},
 	};
 	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
+
+	RenderPassDesc dof_combine_pass_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(dof_combine_dof_combine_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+						.write_enabled = false,
+					},
+			.label = "dof-combine-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_LOAD,
+			.store_action = SG_STOREACTION_STORE,
+		},
+	};
+	get_render_pass(ERenderPass::DOF_Combine).init(dof_combine_pass_desc);
 
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1821,6 +1851,8 @@ void frame(void)
 			get_render_pass(ERenderPass::Lighting).execute(
 				[&]()
 				{	
+					state.lighting_fs_params.view_position = get_active_camera().location;
+
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
 
@@ -1830,6 +1862,7 @@ void frame(void)
 					sg_image color_texture = geometry_pass.color_outputs[0];
 					sg_image position_texture = geometry_pass.color_outputs[1];
 					sg_image normal_texture = geometry_pass.color_outputs[2];
+					sg_image roughness_metallic_texture = geometry_pass.color_outputs[3];
 					sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
 
 					sg_bindings bindings = {
@@ -1837,7 +1870,8 @@ void frame(void)
 							[0] = color_texture,
 							[1] = position_texture,
 							[2] = normal_texture,
-							[3] = blurred_ssao_texture,
+							[3] = roughness_metallic_texture,
+							[4] = blurred_ssao_texture,
 						},
 						.samplers[0] = state.sampler,
 						.storage_buffers = {
@@ -1853,7 +1887,9 @@ void frame(void)
 			);
 		}
 
-		{ // DOF Blur + Dilate
+		{ // DOF
+
+			// Blurred lighting texture
 			get_render_pass(ERenderPass::DOF_Blur).execute(
 				[&]()
 				{	
@@ -1873,22 +1909,21 @@ void frame(void)
 					sg_draw(0,6,1);
 				}
 			);
-		}
 
-		{ // Tonemapping Pass
-			get_render_pass(ERenderPass::Tonemapping).execute(
+			// Mix blurred and unblurred texture based on camera distance
+			get_render_pass(ERenderPass::DOF_Combine).execute(
 				[&]()
 				{	
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
-					const tonemapping_fs_params_t tonemapping_fs_params = {
+					const dof_combine_fs_params_t dof_combine_fs_params = {
 						.cam_pos = camera.location,
 						.min_distance = 50.0f,
 						.max_distance = 100.0f,
 					};
-					sg_apply_uniforms(0, SG_RANGE(tonemapping_fs_params));
+					sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
 					sg_image position_texture = geometry_pass.color_outputs[1];
 
@@ -1896,6 +1931,24 @@ void frame(void)
 						.images[0] = lighting_pass.color_outputs[0], 
 						.images[1] = dof_blur_pass.color_outputs[0],
 						.images[2] = position_texture,
+						.samplers[0] = state.sampler,
+					};
+
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);	
+		}
+
+		{ // Tonemapping Pass
+			get_render_pass(ERenderPass::Tonemapping).execute(
+				[&]()
+				{	
+					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
+
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = dof_combine_pass.color_outputs[0], 
 						.samplers[0] = state.sampler,
 					};
 

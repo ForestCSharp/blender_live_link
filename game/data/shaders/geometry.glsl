@@ -50,16 +50,22 @@ in flat int material_index;
 out vec4 out_color;
 out vec4 out_position;
 out vec4 out_normal;
+out vec2 out_roughness_metallic;
 
 void main()
 {
 	if (material_index >= 0)
 	{	
-		out_color = material_data_array[material_index].base_color;
+		Material material = material_data_array[material_index];
+		out_color = material.base_color;
+		out_roughness_metallic.r = material.roughness;
+		out_roughness_metallic.g = material.metallic;
 	}
 	else
 	{
 		out_color = vec4(1,0,1,1);
+		out_roughness_metallic.r = 1.0;
+		out_roughness_metallic.g = 0.0;
 	}
 	out_position = world_position; 
 	out_normal = normalize(world_normal);

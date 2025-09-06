@@ -61,11 +61,12 @@ SOCKET socket_open(int domain, int type, int protocol)
 {
 	SOCKET new_socket = socket(domain, type, protocol);
 
-	// Make accept non-blocking
 #if defined(SOCKET_PLATFORM_WINDOWS)
-	u_long mode = 1;
-	ioctlsocket(new_socket, FIONBIO, &mode);
+	// Change IO mode of socket to nonblocking (mode == 1)
+	const u_long mode_nonblocking = 1;
+	ioctlsocket(new_socket, FIONBIO, &mode_nonblocking);
 #else
+	// Add O_NONBLOCK flag to file descriptor
 	int flags = fcntl(new_socket, F_GETFL, 0);
 	fcntl(new_socket, F_SETFL, flags | O_NONBLOCK);
 #endif
