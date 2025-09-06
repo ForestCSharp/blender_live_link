@@ -46,12 +46,14 @@ if [[ $OS = Windows ]]; then
 	7z a -tzip $SCRIPT_DIR.zip $BASE_DIR -w $BASE_DIR/ -r \
 		-x!"$BASE_DIR/flatbuffers/*" \
 		-x!"$BASE_DIR/.git/*" \
-		-x!"$BASE_DIR/game/*"
+		-x!"$BASE_DIR/game/*" \
+		-x! "$BASE_DIR/blend_files/*"
 else
 	zip -r $SCRIPT_DIR.zip $BASE_DIR \
 		-x "$BASE_DIR/flatbuffers/*" \
 		-x "$BASE_DIR/.git/*" \
-		-x "$BASE_DIR/game/*"
+		-x "$BASE_DIR/game/*"\
+		-x "$BASE_DIR/blend_files/*"
 fi
 
 install_args="--command extension install-file blender_live_link.zip --repo user_default --enable"

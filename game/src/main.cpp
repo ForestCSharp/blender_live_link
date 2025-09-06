@@ -633,9 +633,9 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		   					const int material_id = flatbuffer_material_ids->Get(material_id_idx);
 							if (!state.material_id_to_index.contains(material_id))
 							{
-								printf("Failed to find material with id: %i\n", material_id);
+								printf("\tFailed to find material with id: %i\n", material_id);
 								continue;
-								exit(0);
+								//exit(0);
 							}
 							material_indices[material_id_idx] = state.material_id_to_index[material_id];
 						}
