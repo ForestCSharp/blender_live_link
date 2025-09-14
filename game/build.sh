@@ -44,6 +44,7 @@ if [[ $OS_ARG = Windows ]]; then
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
+		-D SOKOL_D3D11 \
 		--std=c++20 \
 		-L./bin \
 		-lsokol \
@@ -80,6 +81,7 @@ elif [[ $OS_ARG = Mac ]]; then
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
+		-D SOKOL_METAL \
 		--std=c++20 \
 		-L./bin \
 		-lc++ \

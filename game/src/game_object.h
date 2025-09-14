@@ -35,6 +35,8 @@ struct Mesh
 
 	u32 material_indices_count;
 	i32* material_indices;
+
+	BoundingBox bounding_box;
 };
 
 // Takes ownership of vertices and indices
@@ -44,6 +46,16 @@ Mesh make_mesh(
 	i32* material_indices, u32 num_material_indices
 )
 {
+	BoundingBox bounding_box = bounding_box_init();
+
+	for (i32 vtx_idx = 0; vtx_idx < vertices_len; ++vtx_idx)
+	{
+		Vertex v = vertices[vtx_idx];
+		HMM_Vec3 vtx_pos = v.position.XYZ;
+		bounding_box.min = HMM_MinV3(bounding_box.min, vtx_pos);
+		bounding_box.max = HMM_MaxV3(bounding_box.max, vtx_pos);
+	}
+
 	u64 indices_size = sizeof(u32) * indices_len;
 	u64 vertices_size = sizeof(Vertex) * vertices_len;
 
@@ -70,6 +82,7 @@ Mesh make_mesh(
 		}),	
 		.material_indices_count = num_material_indices,
 		.material_indices = material_indices,
+		.bounding_box = bounding_box,
 	};
 }
 
@@ -148,6 +161,13 @@ struct Object
 	bool has_camera_control = false;
 	CameraControl camera_control;
 };
+
+BoundingBox object_get_bounding_box(const Object& in_object)
+{
+	//FCS TODO: Eventually support other object bounding boxes (rigid_body, etc.)
+	assert(in_object.has_mesh);
+	return bounding_box_transform(in_object.mesh.bounding_box, in_object.current_transform);	
+}
 
 void object_add_jolt_body(Object& in_object)
 {

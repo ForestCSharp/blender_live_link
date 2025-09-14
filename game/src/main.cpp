@@ -72,7 +72,6 @@ protected:
 	T* _data = nullptr;
 };
 
-// Sokol Headers
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_log.h"
@@ -86,6 +85,12 @@ protected:
 #define FONT_CPC   (3)
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
+
+// Dear ImGui
+#define IMGUI_IMPLEMENTATION
+#define SOKOL_IMGUI_IMPL
+#include "imgui/misc/single_file/imgui_single_file.h"
+#include "sokol/util/sokol_imgui.h"
 
 // Generated Shader Files
 #include "../data/shaders/shader_common.h"
@@ -135,6 +140,15 @@ protected:
 	DEFINE_TOGGLE_TWO_KEYS(var_name, initial_state, key, SAPP_KEYCODE_INVALID,\
 		var_name = !var_name;\
 	)
+
+// All imgui debug ui should be wrapped in this.
+#define DEBUG_UI(...)\
+	{\
+		if (state.show_imgui)\
+		{\
+			__VA_ARGS__\
+		}\
+	}
 
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
@@ -189,6 +203,72 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_color3b(r, g, b);
     sdtx_puts(title);
     sdtx_crlf();
+}
+
+#define WITH_VERBOSE_CULL_RESULTS 1
+
+struct CullResult
+{
+	// Pointers to objects remaining after culling
+	map<i32, Object*> objects;
+
+	// Number of objects this cull result rejected
+	i32 cull_count = 0;
+
+	#if WITH_VERBOSE_CULL_RESULTS
+	i32 non_renderable_cull_count = 0;
+	i32 visibility_cull_count = 0;
+	i32 frustum_cull_count = 0;
+	#endif
+};
+
+/** Iterates over in_objects and only returns in_objects with a mesh within the view frustum */
+CullResult cull_meshes(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj)
+{
+	CullResult out_cull_result = {
+		.cull_count = 0,
+	};
+
+	Frustum frustum = frustum_create(in_view_proj);
+
+
+	for (auto& [unique_id, object] : in_objects)
+	{
+		// Cull non-renderable objects
+		if (!object.has_mesh)
+		{
+			out_cull_result.cull_count += 1;
+			#if WITH_VERBOSE_CULL_RESULTS
+			out_cull_result.non_renderable_cull_count += 1;
+	  		#endif
+			continue;
+		}
+
+		// Cull invisible objects
+		if (!object.visibility)
+		{
+			out_cull_result.cull_count += 1;
+			#if WITH_VERBOSE_CULL_RESULTS
+			out_cull_result.visibility_cull_count += 1;
+	  		#endif
+			continue;
+		}
+
+		// Frustum Cull
+		BoundingBox object_bounding_box = object_get_bounding_box(object);
+		if (frustum_cull(frustum, object_bounding_box))
+		{
+			out_cull_result.cull_count += 1;
+			#if WITH_VERBOSE_CULL_RESULTS
+			out_cull_result.frustum_cull_count += 1;
+	  		#endif
+			continue;
+		}
+
+		out_cull_result.objects[unique_id] = &object;
+	}
+
+	return out_cull_result;
 }
 
 struct RenderPassOutputDesc {
@@ -412,6 +492,8 @@ struct {
 		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
 		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
+
+	bool show_imgui = true;
 } state;
 
 
@@ -956,6 +1038,7 @@ void init(void)
 {
 	jolt_init();
 
+	// Init sokol graphics
     sg_setup((sg_desc) {
 		.buffer_pool_size = 4096,
 		//.image_pool_size = 4096,
@@ -963,6 +1046,11 @@ void init(void)
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
+
+	// Init sokol imgui integration
+	simgui_setup((simgui_desc_t) {
+
+	});
 
 	// Check for Storage Buffer Support
 	if (!sg_query_features().compute)
@@ -1326,6 +1414,13 @@ void frame(void)
 {
 	double delta_time = sapp_frame_duration();
 
+	simgui_new_frame((simgui_frame_desc_t){
+		.width = state.width,
+		.height = state.height, 
+		.delta_time = delta_time,
+		//.dpi_scale = ,
+	});
+
 	// Receive Any Updated Objects
 	while (optional<Object> received_updated_object = state.updated_objects.receive())
 	{
@@ -1399,6 +1494,9 @@ void frame(void)
 	// Space Bar + Left Control Starts/Stops simulation 
 	DEFINE_TOGGLE_TWO_KEYS(state.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
+	// Control + I toggles imgui debug window
+	DEFINE_TOGGLE_TWO_KEYS(state.show_imgui, SAPP_KEYCODE_I, SAPP_KEYCODE_LEFT_CONTROL);
+
 	// D + Left Control toggle debug camera
 	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_D, SAPP_KEYCODE_LEFT_CONTROL,
 		if (!state.debug_camera_active) state.debug_camera = get_active_camera();
@@ -1423,6 +1521,10 @@ void frame(void)
 			}
 		}
 	)
+
+	DEBUG_UI(
+		ImGui::Begin("DEBUG");
+	);
 
 	if (state.is_simulating)
 	{
@@ -1762,8 +1864,32 @@ void frame(void)
 					// Get our jolt body interface
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-					for (auto& [unique_id, object] : state.objects)
+					CullResult cull_result = cull_meshes(state.objects, view_projection_matrix);
+
+					DEBUG_UI(
+						if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+							ImGui::Text("Total Objects:%zu", state.objects.size());
+
+							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+							if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
+							{
+								#if WITH_VERBOSE_CULL_RESULTS
+								ImGui::Text("Non-Renderable Objects: %i", cull_result.non_renderable_cull_count);
+								ImGui::Text("Invisible Objects: %i", cull_result.visibility_cull_count);
+								ImGui::Text("Frustum Culled Objects: %i", cull_result.frustum_cull_count);
+								#else
+								ImGui::Text("Set WITH_VERBOSE_CULL_RESULTS to 1 for additional culling stats");
+								#endif
+								ImGui::TreePop();
+							}
+						}
+					);
+
+					for (auto& [unique_id, object_ptr] : cull_result.objects)
 					{
+						assert(object_ptr);
+						Object& object = *object_ptr;
+
 						if (!object.visibility)
 						{
 							continue;
@@ -1993,6 +2119,11 @@ void frame(void)
 			);
 		}
 
+
+		DEBUG_UI(
+			ImGui::End();
+		);
+
 		{ // Copy To Swapchain Pass	
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(
 				[&]()
@@ -2009,6 +2140,8 @@ void frame(void)
 					sg_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
+
+					simgui_render();
 				}
 			);
 		}
@@ -2021,18 +2154,20 @@ void frame(void)
 
 void cleanup(void)
 {
-	jolt_shutdown();
-
 	// Tell live_link_thread we're done running and wait for it to complete
 	state.game_running = false;
 	state.live_link_thread.join();
 
-	// shutdown game
+	jolt_shutdown();
+	simgui_shutdown();
     sg_shutdown();
 }
 
 void event(const sapp_event* event)
 {
+	// Pass events to sokol_imgui
+	const bool simgui_wants_keyboard_capture = simgui_handle_event(event);
+
 	switch(event->type)
 	{
 		case SAPP_EVENTTYPE_KEY_DOWN:
@@ -2062,8 +2197,8 @@ void event(const sapp_event* event)
 		{
 			app_state.mouse_buttons[event->mouse_button] = true;
 
-			// Lock Mouse on left click
-			if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT)
+			// Lock Mouse on left click into game space
+			if (!simgui_wants_keyboard_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT)
 			{
 				if (!is_mouse_locked())
 				{
@@ -2117,8 +2252,8 @@ sapp_desc sokol_main(int argc, char* argv[])
         .frame_cb = frame,
         .cleanup_cb = cleanup,
 		.event_cb = event,
-        .width = 800,
-        .height = 600,
+        .width = 1920,
+        .height = 1080,
         .sample_count = SAMPLE_COUNT,
         .window_title = "Blender Game",
         .icon.sokol_default = true,
