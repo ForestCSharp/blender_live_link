@@ -53,25 +53,7 @@ using ankerl::unordered_dense::map;
 // cxxopts
 #include "cxxopts/cxxopts.hpp"
 
-// Basic Template-wrapper around stb_ds array functionality
-template<typename T>
-struct StretchyBuffer
-{	
-public:
-	StretchyBuffer() { _data = nullptr; }
-	~StretchyBuffer() { reset(); }
-	StretchyBuffer( const StretchyBuffer& ) = delete; // non construction-copyable
-    StretchyBuffer& operator=( const StretchyBuffer& ) = delete; // non copyable
-	void add(const T& value) { arrput(_data, value); }
-	void add_unitialized(const size_t num) { arraddn(_data, num); }
-	void reset() { if (_data) { arrfree(_data); _data = nullptr; } }
-	size_t length() { return arrlen(_data); }
-	T* data() { return _data; }
-	T& operator[](i32 idx) { return _data[idx]; }
-protected:
-	T* _data = nullptr;
-};
-
+// Sokol
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_log.h"
@@ -153,10 +135,28 @@ bool g_show_imgui = true;
 		}\
 	}
 #else
-// when debug ui is commented out, this macro does nothing
+// when debug ui is disabled, this macro does nothing
 #define DEBUG_UI(...)
 #endif // WITH_DEBUG_UI
 
+// Basic Template-wrapper around stb_ds array functionality
+template<typename T>
+struct StretchyBuffer
+{	
+public:
+	StretchyBuffer() { _data = nullptr; }
+	~StretchyBuffer() { reset(); }
+	StretchyBuffer( const StretchyBuffer& ) = delete; // non construction-copyable
+    StretchyBuffer& operator=( const StretchyBuffer& ) = delete; // non copyable
+	void add(const T& value) { arrput(_data, value); }
+	void add_unitialized(const size_t num) { arraddn(_data, num); }
+	void reset() { if (_data) { arrfree(_data); _data = nullptr; } }
+	size_t length() { return arrlen(_data); }
+	T* data() { return _data; }
+	T& operator[](i32 idx) { return _data[idx]; }
+protected:
+	T* _data = nullptr;
+};
 
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
@@ -1055,6 +1055,7 @@ void init(void)
 	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
 	simgui_setup((simgui_desc_t) {
+		.ini_filename = "bin/imgui.ini",
 	});
 	#endif // WITH_DEBUG_UI
 
