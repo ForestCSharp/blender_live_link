@@ -141,14 +141,22 @@ protected:
 		var_name = !var_name;\
 	)
 
+#define WITH_DEBUG_UI 1
+#if WITH_DEBUG_UI
+bool g_show_imgui = true;
 // All imgui debug ui should be wrapped in this.
 #define DEBUG_UI(...)\
 	{\
-		if (state.show_imgui)\
+		if (g_show_imgui)\
 		{\
 			__VA_ARGS__\
 		}\
 	}
+#else
+// when debug ui is commented out, this macro does nothing
+#define DEBUG_UI(...)
+#endif // WITH_DEBUG_UI
+
 
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
@@ -222,8 +230,7 @@ struct CullResult
 	#endif
 };
 
-/** Iterates over in_objects and only returns in_objects with a mesh within the view frustum */
-CullResult cull_meshes(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj)
+CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj)
 {
 	CullResult out_cull_result = {
 		.cull_count = 0,
@@ -492,8 +499,6 @@ struct {
 		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
 		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
-
-	bool show_imgui = true;
 } state;
 
 
@@ -1047,10 +1052,11 @@ void init(void)
         .logger.func = slog_func,
     });
 
+	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
 	simgui_setup((simgui_desc_t) {
-
 	});
+	#endif // WITH_DEBUG_UI
 
 	// Check for Storage Buffer Support
 	if (!sg_query_features().compute)
@@ -1414,12 +1420,14 @@ void frame(void)
 {
 	double delta_time = sapp_frame_duration();
 
+	#if WITH_DEBUG_UI
 	simgui_new_frame((simgui_frame_desc_t){
 		.width = state.width,
 		.height = state.height, 
 		.delta_time = delta_time,
 		//.dpi_scale = ,
 	});
+	#endif // WITH_DEBUG_UI
 
 	// Receive Any Updated Objects
 	while (optional<Object> received_updated_object = state.updated_objects.receive())
@@ -1494,8 +1502,10 @@ void frame(void)
 	// Space Bar + Left Control Starts/Stops simulation 
 	DEFINE_TOGGLE_TWO_KEYS(state.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
+	#if WITH_DEBUG_UI
 	// Control + I toggles imgui debug window
-	DEFINE_TOGGLE_TWO_KEYS(state.show_imgui, SAPP_KEYCODE_I, SAPP_KEYCODE_LEFT_CONTROL);
+	DEFINE_TOGGLE_TWO_KEYS(g_show_imgui, SAPP_KEYCODE_I, SAPP_KEYCODE_LEFT_CONTROL);
+	#endif // WITH_DEBUG_UI
 
 	// D + Left Control toggle debug camera
 	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_D, SAPP_KEYCODE_LEFT_CONTROL,
@@ -1864,7 +1874,7 @@ void frame(void)
 					// Get our jolt body interface
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-					CullResult cull_result = cull_meshes(state.objects, view_projection_matrix);
+					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
 
 					DEBUG_UI(
 						if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1874,11 +1884,11 @@ void frame(void)
 							if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
 							{
 								#if WITH_VERBOSE_CULL_RESULTS
-								ImGui::Text("Non-Renderable Objects: %i", cull_result.non_renderable_cull_count);
-								ImGui::Text("Invisible Objects: %i", cull_result.visibility_cull_count);
-								ImGui::Text("Frustum Culled Objects: %i", cull_result.frustum_cull_count);
+								ImGui::Text("Non-Renderable: %i", cull_result.non_renderable_cull_count);
+								ImGui::Text("Invisible: %i", cull_result.visibility_cull_count);
+								ImGui::Text("Frustum Culled: %i", cull_result.frustum_cull_count);
 								#else
-								ImGui::Text("Set WITH_VERBOSE_CULL_RESULTS to 1 for additional culling stats");
+								ImGui::Text("#define WITH_VERBOSE_CULL_RESULTS 1 for additional culling stats");
 								#endif
 								ImGui::TreePop();
 							}
@@ -2141,7 +2151,9 @@ void frame(void)
 
 					sg_draw(0,6,1);
 
+					#if WITH_DEBUG_UI
 					simgui_render();
+					#endif // WITH_DEBUG_UI
 				}
 			);
 		}
@@ -2159,14 +2171,22 @@ void cleanup(void)
 	state.live_link_thread.join();
 
 	jolt_shutdown();
+
+	#if WITH_DEBUG_UI
 	simgui_shutdown();
+	#endif // WITH_DEBUG_UI
+
     sg_shutdown();
 }
 
 void event(const sapp_event* event)
 {
+	#if WITH_DEBUG_UI
 	// Pass events to sokol_imgui
 	const bool simgui_wants_keyboard_capture = simgui_handle_event(event);
+	#else
+	const bool simgui_wants_keyboard_capture = false;
+	#endif // WITH_DEBUG_UI
 
 	switch(event->type)
 	{
