@@ -21,6 +21,8 @@ struct Vertex
 {
 	HMM_Vec4 position;
 	HMM_Vec4 normal;
+	HMM_Vec2 texcoord;
+	float _padding[2];
 };
 
 struct Mesh 

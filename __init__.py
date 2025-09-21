@@ -25,6 +25,14 @@ from io import StringIO
 from os.path import dirname, realpath, basename, isfile, join
 import glob
 
+# ignore SIGPIPE so that writing to a closed socket raises a Python exception
+import signal
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+except Exception:
+    # Not all platforms expose SIGPIPE (Windows), ignore failures
+    pass
+
 path_to_append = dirname(realpath(__file__)) + "/compiled_schemas/python"
 if path_to_append not in sys.path:
     sys.path.append(path_to_append)
@@ -34,6 +42,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
+from .compiled_schemas.python.Blender.LiveLink import Image
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import LightType
 from .compiled_schemas.python.Blender.LiveLink import Material
@@ -86,7 +95,22 @@ class LiveLinkConnection():
     def create_socket(self):
         # Create a new socket object 
         self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.my_socket.settimeout(5)
+        self.my_socket.settimeout(5.0)
+
+        # Try to disable SIGPIPE on BSD / macOS (SO_NOSIGPIPE) if available
+        # and otherwise rely on the global SIGPIPE ignore above.
+        try:
+            if hasattr(socket, "SO_NOSIGPIPE"):
+                self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_NOSIGPIPE, 1)
+        except Exception:
+            # best-effort; ignore if platform doesn't support it
+            pass
+
+        # Allow immediate reuse of address if you repeatedly restart game/server locally
+        try:
+            self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
 
     def close_socket(self):
         try:
@@ -184,31 +208,73 @@ class LiveLinkConnection():
         object_name = builder.CreateString(obj.name)
 
         # Mesh Data
-        mesh = None
+        fb_mesh = None
         if obj.type == 'MESH': 
             mesh = self.get_mesh(obj, dependency_graph)
 
-            # Export Vertices
-            blender_vertices = mesh.vertices 
-            vertex_count = len(blender_vertices)
+            vertex_count = len(mesh.vertices)
+            loop_count = len(mesh.loops)
+            poly_count = len(mesh.polygons)
 
-            # Extract positions and normals using foreach_get
+            # --- Positions and normals per vertex ---
             positions = np.zeros(vertex_count * 3, dtype=np.float32)
-            normals = np.zeros(vertex_count * 3, dtype=np.float32)
-            blender_vertices.foreach_get("co", positions)
-            blender_vertices.foreach_get("normal", normals)
-            mesh_positions = builder.CreateNumpyVector(positions) 
-            mesh_normals = builder.CreateNumpyVector(normals)
+            normals   = np.zeros(vertex_count * 3, dtype=np.float32)
+            mesh.vertices.foreach_get("co", positions)
+            mesh.vertices.foreach_get("normal", normals)
+            positions = positions.reshape(vertex_count, 3)
+            normals   = normals.reshape(vertex_count, 3)
 
-            # Extract Index data from triangulated polygons
-            num_indices = len(mesh.polygons) * 3
-            indices = np.zeros(num_indices, dtype=np.int32)
-            for i, poly in enumerate(mesh.polygons):
-                indices[i * 3:i * 3 + 3] = poly.vertices
-            mesh_indices = builder.CreateNumpyVector(indices);
+            # --- Loop -> vertex index mapping ---
+            loop_vertex_indices = np.zeros(loop_count, dtype=np.int32)
+            mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
 
+            # --- Polygon loop ranges ---
+            poly_loop_starts = np.zeros(poly_count, dtype=np.int32)
+            poly_loop_totals = np.zeros(poly_count, dtype=np.int32)
+            mesh.polygons.foreach_get("loop_start", poly_loop_starts)
+            mesh.polygons.foreach_get("loop_total", poly_loop_totals)
+
+            # --- UVs per loop (or zeros if none) ---
+            if mesh.uv_layers.active:
+                uv_layer = mesh.uv_layers.active.data
+                uvs = np.zeros(loop_count * 2, dtype=np.float32)
+                uv_layer.foreach_get("uv", uvs)
+                uvs = uvs.reshape(loop_count, 2)
+            else:
+                uvs = np.zeros((loop_count, 2), dtype=np.float32)
+
+            # --- Build unique (vertex, uv) keys ---
+            rounded_uvs = (uvs * 1e6).astype(np.int32)  # prevent float issues
+            dtype = np.dtype([('v', np.int32), ('u', np.int32), ('v2', np.int32)])
+            keys = np.zeros((loop_count,), dtype=dtype)
+            keys['v']  = loop_vertex_indices
+            keys['u']  = rounded_uvs[:, 0]
+            keys['v2'] = rounded_uvs[:, 1]
+
+            unique_keys, inverse_indices = np.unique(keys, return_inverse=True)
+            new_indices = inverse_indices.astype(np.int32)
+            new_vertex_count = len(unique_keys)
+
+            # --- Build new vertex buffers ---
+            mesh_positions = positions[unique_keys['v']]
+            mesh_normals   = normals[unique_keys['v']]
+            mesh_uvs       = np.zeros((new_vertex_count, 2), dtype=np.float32)
+            mesh_uvs[:, 0] = unique_keys['u'] / 1e6
+            mesh_uvs[:, 1] = unique_keys['v2'] / 1e6
+
+            # --- Build face index buffer ---
+            indices = np.empty(loop_count, dtype=np.int32)
+            for start, total in zip(poly_loop_starts, poly_loop_totals):
+                indices[start:start+total] = new_indices[start:start+total]
+
+            # --- Flatten arrays for FlatBuffers ---
+            mesh_positions_fb = builder.CreateNumpyVector(mesh_positions.flatten())
+            mesh_normals_fb   = builder.CreateNumpyVector(mesh_normals.flatten())
+            mesh_uvs_fb       = builder.CreateNumpyVector(mesh_uvs.flatten())
+            mesh_indices_fb   = builder.CreateNumpyVector(indices)
+
+            # --- Material IDs (optional) ---
             # Get Materials
-            #material_ids = []
             material_ids = np.empty(0, dtype=np.int32)
             if obj.data.materials:
                 for material in obj.data.materials:
@@ -218,9 +284,7 @@ class LiveLinkConnection():
                     # Add to referenced material dict
                     if referenced_materials.get(material_id) is None:
                         referenced_materials[material_id] = material
-
-            # Create flatbuffers material list if we have valid material ids
-            flatbuffer_material_ids = builder.CreateNumpyVector(material_ids)
+            material_ids_fb = builder.CreateNumpyVector(material_ids)
 
             # TODO: if we find an armature build up skinned vertex info in new field
             # Check for armature
@@ -228,12 +292,14 @@ class LiveLinkConnection():
             if mesh_armature is not None:
                 print("Mesh is skinned!")
 
+            # --- Build FlatBuffer Mesh ---
             Mesh.Start(builder)
-            Mesh.AddPositions(builder, mesh_positions)
-            Mesh.AddNormals(builder, mesh_normals)
-            Mesh.AddIndices(builder, mesh_indices)
-            Mesh.AddMaterialIds(builder, flatbuffer_material_ids)
-            mesh = Mesh.End(builder)
+            Mesh.AddPositions(builder, mesh_positions_fb)
+            Mesh.AddNormals(builder, mesh_normals_fb)
+            Mesh.AddTexcoords(builder, mesh_uvs_fb)
+            Mesh.AddIndices(builder, mesh_indices_fb)
+            Mesh.AddMaterialIds(builder, material_ids_fb)
+            fb_mesh = Mesh.End(builder)
 
         # Light Info
         light = None
@@ -350,8 +416,8 @@ class LiveLinkConnection():
         Object.AddRotation(builder, rotation_quat)
 
         # Add Object Mesh Data if it exists
-        if mesh is not None:
-            Object.AddMesh(builder, mesh)
+        if fb_mesh is not None:
+            Object.AddMesh(builder, fb_mesh)
 
         # Add Object Light Data if it exists
         if light is not None:
@@ -390,7 +456,14 @@ class LiveLinkConnection():
         for blender_object in in_object_list: 
             # Only add if enable_live_link is set
             if (blender_object.live_link_settings.enable_live_link):
-                live_link_objects.append(self.make_flatbuffer_object(builder, blender_object, dependency_graph, referenced_materials))
+                live_link_objects.append(
+                    self.make_flatbuffer_object(
+                        builder, 
+                        blender_object, 
+                        dependency_graph, 
+                        referenced_materials
+                    )
+                )
 
         # actually create the scene objects vector
         Update.UpdateStartObjectsVector(builder, len(live_link_objects))
@@ -404,10 +477,67 @@ class LiveLinkConnection():
             builder.PrependInt32(deleted_object_uid)
         update_deleted_object_uids = builder.EndVector()
 
+        # referenced images, keyed by session_uid and updated when building up material list below 
+        referenced_images = {}
+
         # create flatbuffers materials
         flatbuffer_materials = []
         for material_id, material in referenced_materials.items():
-            # Material Name String
+            class MaterialData:
+                def __init__(self):
+                    self.base_color = (1,1,1,1)
+                    self.base_color_image_id = None 
+                    self.metallic = 0.0
+                    self.roughness = 0.0
+
+
+            # Helper to register an image id for a material_node_input if it contains a valid image
+            def extract_image_id(material_node_input):
+                if not material_node_input or not material_node_input.is_linked:
+                    return None
+
+                # Take the first link only
+                link = material_node_input.links[0]
+                from_node = link.from_node
+
+                # Check for Image Texture node
+                if from_node.type != 'TEX_IMAGE' or not from_node.image:
+                    return None
+
+                image = from_node.image
+                image_id = image.session_uid
+                referenced_images[image_id] = image
+                return image_id
+
+            # Init material data
+            material_data = MaterialData()
+
+            # Add Material Properties to material data
+            if material.use_nodes:
+                bsdf = material.node_tree.nodes.get("Principled BSDF")
+                if bsdf:
+                    # Base Color
+                    base_color_input = bsdf.inputs["Base Color"]
+
+                    # Base Color default value
+                    material_data.base_color = base_color_input.default_value
+
+                    # Base Color Texture ID
+                    material_data.base_color_image_id = extract_image_id(base_color_input)
+
+                    # Metallic default value
+                    material_data.metallic = bsdf.inputs["Metallic"].default_value
+
+                    # TODO: Metallic Texture ID
+
+                    # Roughness default value
+                    material_data.roughness = bsdf.inputs["Roughness"].default_value                    
+
+                    #TODO: Roughness Texture ID
+
+            # End current flatbuffers Material and add to list
+
+            # Need to create Material Name String before starting material table
             material_name = builder.CreateString(material.name_full)
 
             # Begin new flatbuffers Material 
@@ -418,30 +548,19 @@ class LiveLinkConnection():
 
             # Set material name
             Material.AddName(builder, material_name)
+            
+            # Base Color
+            base_color_vec4 = Vec4.CreateVec4(builder, *material_data.base_color)
+            Material.AddBaseColor(builder, base_color_vec4)
+            if material_data.base_color_image_id is not None:
+                Material.AddBaseColorImageId(builder, material_data.base_color_image_id)
 
-            def setup_default_material_properties():
-                print("Setting Default Material Properties")
-                base_color_vec4 = Vec4.CreateVec4(builder, material.base_color.r, material.base_color.g, material.base_color.g, material.base_color.g)
-                Material.AddBaseColor(builder, base_color_vec4); 
-                Material.AddMetallic(builder, material.metallic);
-                Material.AddRoughness(builder, material.roughness);
+            # Metallic
+            Material.AddMetallic(builder, material_data.metallic)
 
-            # Add Material Properties (Constant)
-            if material.use_nodes:
-                bsdf = material.node_tree.nodes.get("Principled BSDF")
-                if bsdf:
-                    base_color = bsdf.inputs["Base Color"].default_value
-                    r,g,b,a = base_color
-                    base_color_vec4 = Vec4.CreateVec4(builder, r, g, b, a)
-                    Material.AddBaseColor(builder, base_color_vec4);
-                    Material.AddMetallic(builder, bsdf.inputs["Metallic"].default_value);
-                    Material.AddRoughness(builder, bsdf.inputs["Roughness"].default_value);
-                else:
-                    setup_default_material_properties()
-            else:
-                setup_default_material_properties()
+            # Roughness
+            Material.AddRoughness(builder, material_data.roughness)
 
-            # End current flatbuffers Material and add to list
             flatbuffer_material = Material.End(builder)
             flatbuffer_materials.append(flatbuffer_material)
 
@@ -451,12 +570,45 @@ class LiveLinkConnection():
             builder.PrependUOffsetTRelative(material)
         update_materials = builder.EndVector()
 
+        flatbuffer_images = []
+        for image_id, image in referenced_images.items():
+            print("Found Referenced Image with ID: " + str(image_id))
+            
+            image_width, image_height = image.size
+
+            # Ensure pixels are loaded
+            _ = image.pixels[0]
+
+            # Get float32 pixel array (RGBA)
+            pixels_f32 = np.array(image.pixels[:], dtype=np.float32)
+
+            # Reinterpret the float32 array as uint8 bytes
+            pixels_bytes = pixels_f32.view(np.uint8)
+
+            # Now pass to FlatBuffers
+            flatbuffer_image_data = builder.CreateNumpyVector(pixels_bytes)
+
+            Image.Start(builder)
+            Image.AddUniqueId(builder, image_id)
+            Image.AddWidth(builder, image_width)
+            Image.AddHeight(builder, image_height)
+            Image.AddData(builder, flatbuffer_image_data) 
+
+            flatbuffer_image = Image.End(builder)
+            flatbuffer_images.append(flatbuffer_image)
+
+        Update.UpdateStartImagesVector(builder, len(flatbuffer_images))   
+        for image in reversed(flatbuffer_images):
+            builder.PrependUOffsetTRelative(image)
+        update_images = builder.EndVector()            
+
         Update.Start(builder)
 
         # Add objects vector to scene
         Update.AddObjects(builder, update_objects)
         Update.AddDeletedObjectUids(builder, update_deleted_object_uids)
-        Update.AddMaterials(builder, update_materials);
+        Update.AddMaterials(builder, update_materials)
+        Update.AddImages(builder, update_images)
         Update.AddReset(builder, reset)
 
         # finalize scene flatbuffer
@@ -729,7 +881,7 @@ def builder_create_gameplay_components(builder, live_link_settings):
     out_flatbuffers_object = None
 
     if len(live_link_settings.components) > 0:
-        flatbuffer_components = [];
+        flatbuffer_components = []
         for component in live_link_settings.components:
             flatbuffer_components.append(component.create_flatbuffers_object(builder))
 

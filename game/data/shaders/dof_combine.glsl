@@ -16,7 +16,8 @@ layout(binding=0) uniform fs_params {
 	vec4 cam_pos;
 	float min_distance;
 	float max_distance;
-	PADDING(2);
+	int dof_enabled;
+	PADDING(1);
 };
 
 in vec2 uv;
@@ -27,6 +28,14 @@ void main()
 {
 	// Depth of Field Combine
  	vec4 color = texture(sampler2D(tex, smp), uv);
+
+	// just return sampled non-blurred color if feature is disabled
+	if (dof_enabled == 0)
+	{
+		frag_color = color;
+		return;
+	}
+
 	vec4 blurred_color = texture(sampler2D(blur_tex, smp), uv);
 	vec4 world_position	= texture(sampler2D(position_tex, smp), uv);
 

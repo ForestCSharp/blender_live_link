@@ -22,14 +22,17 @@ layout(binding=0) readonly buffer ObjectDataBuffer {
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec4 normal;
+layout(location = 2) in vec2 texcoord;
 
 out vec4 world_position;
 out vec4 world_normal;
+out vec2 pixel_texcoord;
 out flat int material_index;
 
 void main() {
 	world_position = object_data_array[0].model_matrix * position;
 	world_normal = object_data_array[0].rotation_matrix * normal;
+	pixel_texcoord = texcoord;
 	material_index = object_data_array[0].material_index;
 
     gl_Position = projection * view * world_position;
@@ -43,8 +46,15 @@ layout(binding=1) readonly buffer MaterialDataBuffer {
 	Material material_data_array[];
 };
 
+layout(binding=0) uniform sampler smp;
+
+layout(binding=0) uniform texture2D base_color_texture;
+//layout(binding=1) uniform texture2D metallic_texture;
+//layout(binding=2) uniform texture2D roughness_texture;
+
 in vec4 world_position;
 in vec4 world_normal;
+in vec2 pixel_texcoord;
 in flat int material_index;
 
 out vec4 out_color;
@@ -57,7 +67,14 @@ void main()
 	if (material_index >= 0)
 	{	
 		Material material = material_data_array[material_index];
-		out_color = material.base_color;
+		if (material.base_color_image_index >= 0)
+		{
+			out_color = texture(sampler2D(base_color_texture, smp), pixel_texcoord);
+		}
+		else
+		{
+			out_color = material.base_color;
+		}
 		out_roughness_metallic.r = material.roughness;
 		out_roughness_metallic.g = material.metallic;
 	}

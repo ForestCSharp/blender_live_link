@@ -38,6 +38,9 @@ using std::atomic;
 // Gpu Buffer Wrapper
 #include "gpu_buffer.h"
 
+// Gpu Image Wrapper
+#include "gpu_image.h"
+
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
 using ankerl::unordered_dense::map;
@@ -84,6 +87,7 @@ using ankerl::unordered_dense::map;
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
+#include "crt.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -423,6 +427,7 @@ enum class ERenderPass : int
 	DOF_Combine,
 	Tonemapping,
 	DebugText,
+	CathodeRayTube,
 	CopyToSwapchain,
 	COUNT,
 };
@@ -436,8 +441,12 @@ struct {
 	// Render Passes
 	RenderPass render_passes[(int)ERenderPass::COUNT];
 
-	// SSAO Data 
+	// Rendering Feature Flags
 	bool ssao_enable = true;
+	bool dof_enable = true;
+	bool crt_enable = false;
+
+	// SSAO Data 
 	sg_image ssao_noise_texture;
 	ssao_fs_params_t ssao_fs_params;
 
@@ -486,6 +495,14 @@ struct {
 	map<i32,i32> material_id_to_index;
 	StretchyBuffer<geometry_Material_t> materials;
 	GpuBuffer<geometry_Material_t> materials_buffer;
+
+	// Images
+	map<i32,i32> image_id_to_index;
+	StretchyBuffer<GpuImage> images;
+	GpuImage default_image;
+
+	bool enable_debug_image_viewer = false;
+	i32 debug_image_index = 0;
 	
 	// Thread that listens for updates from Blender
 	std::thread live_link_thread;
@@ -501,6 +518,30 @@ struct {
 	};
 } state;
 
+bool register_image(const Blender::LiveLink::Image& in_image)
+{
+	int image_id = in_image.unique_id();
+
+	if (state.image_id_to_index.contains(image_id))
+	{
+		return false;
+	}
+	printf("Registering image with ID: %i\n", image_id);
+
+	auto data_vec = in_image.data();
+
+	GpuImageDesc image_desc = {
+		.width = in_image.width(),
+		.height = in_image.height(),
+		.pixel_format = SG_PIXELFORMAT_RGBA32F, 
+		.data = data_vec->data(),
+	};
+
+	const i32 array_index = state.images.length();
+	state.images.add(GpuImage(image_desc));
+	state.image_id_to_index[image_id] = array_index;
+	return true;
+}
 
 const i32 MAX_MATERIALS = 1024;
 void init_materials_buffer()
@@ -540,13 +581,12 @@ void update_materials_buffer()
 bool register_material(const Blender::LiveLink::Material& in_material)
 {
 	int material_id = in_material.unique_id();
-	printf("Registering material with ID: %i\n", material_id);
-
 	if (state.material_id_to_index.contains(material_id))
 	{
 		return false;
 	}
 
+	printf("Registering material with ID: %i\n", material_id);
 	if (state.materials.length() >= MAX_MATERIALS)
 	{
 		printf("Error Material Limit Reached: %i\n", MAX_MATERIALS);
@@ -558,19 +598,23 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		.base_color = flatbuffer_helpers::to_hmm_vec4(in_material.base_color()),
 		.metallic = in_material.metallic(),
 		.roughness = in_material.roughness(),
+		.base_color_image_index = -1,
 	};
+
+	//FCS TODO: need to register textures first and then just reference their idx here?
+	int base_color_image_id = in_material.base_color_image_id();
+	if (base_color_image_id > 0)
+	{
+		printf("Found base color image id: %i\n", base_color_image_id);
+		assert(state.image_id_to_index.contains(base_color_image_id));
+		new_material.base_color_image_index = state.image_id_to_index[base_color_image_id];
+	}
+	//FCS TODO: metallic texture
+	//FCS TODO: roughness texture
 
 	const i32 array_index = state.materials.length();
 	state.materials.add(new_material);
 	state.material_id_to_index[material_id] = array_index;
-
-	printf("Registered Material\n");
-	printf("\tUniqueID: %i\n", material_id);
-	printf("\tArrayIndex: %i\n", array_index);
-	printf("\tBaseColor: %f %f %f %f\n", new_material.base_color.X, new_material.base_color.Y, new_material.base_color.Z, new_material.base_color.W);
-	printf("\tMetallic: %f\n", new_material.metallic);
-	printf("\tRougness: %f\n", new_material.roughness);
-
 	return true;	
 }
 
@@ -605,6 +649,18 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 		assert(update);
+
+		// process images from update
+		if (auto images = update->images())
+		{
+			bool needs_images_update = false;
+			for (i32 idx = 0; idx < images->size(); ++idx)
+			{
+				auto image = images->Get(idx);
+				assert(image);
+				needs_images_update = register_image(*image);
+			}
+		}
 
 		// process materials from update
 		if (auto materials = update->materials())
@@ -674,24 +730,32 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 					auto flatbuffer_positions = object_mesh->positions();
 					auto flatbuffer_normals = object_mesh->normals();
-					if (flatbuffer_positions && flatbuffer_normals)
+					auto flatbuffer_texcoords = object_mesh->texcoords();
+					if (flatbuffer_positions && flatbuffer_normals && flatbuffer_texcoords)
 					{
 						num_vertices = flatbuffer_positions->size() / 3;
+						u32 num_normals = flatbuffer_normals->size() / 3;
+						u32 num_texcoords = flatbuffer_texcoords->size() / 2;
+
 						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 						{
 							vertices[vertex_idx] = {
 								.position = {
-									.X = flatbuffer_positions->Get(vertex_idx * 3),
+									.X = flatbuffer_positions->Get(vertex_idx * 3 + 0),
 									.Y = flatbuffer_positions->Get(vertex_idx * 3 + 1),
 									.Z = flatbuffer_positions->Get(vertex_idx * 3 + 2),
 									.W = 1.0,
 								},
 								.normal = {
-									.X = flatbuffer_normals->Get(vertex_idx * 3),
+									.X = flatbuffer_normals->Get(vertex_idx * 3 + 0),
 									.Y = flatbuffer_normals->Get(vertex_idx * 3 + 1),
 									.Z = flatbuffer_normals->Get(vertex_idx * 3 + 2),
 									.W = 0.0,
+								},
+								.texcoord = {
+									.X = flatbuffer_texcoords->Get(vertex_idx * 2 + 0),
+									.Y = flatbuffer_texcoords->Get(vertex_idx * 2 + 1),
 								},
 							};
 						}
@@ -1052,6 +1116,17 @@ void init(void)
         .logger.func = slog_func,
     });
 
+	// Create Default Image
+	HMM_Vec4 default_image_data[1] = { HMM_V4(0,0,0,1) };
+	GpuImageDesc default_image_desc = {
+		.width = 1,
+		.height = 1,
+		.pixel_format = SG_PIXELFORMAT_RGBA32F,
+		.data = (u8*) &default_image_data,
+	};
+	state.default_image = GpuImage(default_image_desc),
+
+
 	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
 	simgui_setup((simgui_desc_t) {
@@ -1100,6 +1175,7 @@ void init(void)
 				.attrs = {
 					[ATTR_geometry_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
 					[ATTR_geometry_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
+					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
 			   }
 			},
 			.shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend())),
@@ -1336,6 +1412,27 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::DebugText).init(debug_text_pass_desc);
 
+	RenderPassDesc crt_pass_desc = {
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(crt_crt_shader_desc(sg_query_backend())),
+			.cull_mode = SG_CULLMODE_NONE,
+			.depth = {
+					.pixel_format = swapchain.depth_format,
+					.compare = SG_COMPAREFUNC_ALWAYS,
+						.write_enabled = false,
+					},
+			.label = "crt-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs[0] = {
+			.pixel_format = swapchain.color_format,
+			.load_action = SG_LOADACTION_CLEAR,
+			.store_action = SG_STOREACTION_STORE,
+			.clear_value = {0.0, 0.0, 0.0, 0.0},
+		}
+	};
+	get_render_pass(ERenderPass::CathodeRayTube).init(crt_pass_desc);
+
 	RenderPassDesc copy_to_swapchain_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(overlay_texture_overlay_texture_shader_desc(sg_query_backend())),
@@ -1514,11 +1611,6 @@ void frame(void)
 		state.debug_camera_active = !state.debug_camera_active;
 	);
 
-	// SSAO enable/disable
-	DEFINE_EVENT_ONE_KEY(SAPP_KEYCODE_P,
-		state.ssao_enable = !state.ssao_enable;
-	);
-
 	// Reset State
 	DEFINE_EVENT_ONE_KEY(SAPP_KEYCODE_R,
 		// Reset object transforms and recreate physics state
@@ -1535,6 +1627,19 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
+
+		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::Text("FPS: %f", 1.0 / delta_time);
+			ImGui::Spacing();
+		}
+	
+		if (ImGui::CollapsingHeader("Rendering Features"), ImGuiTreeNodeFlags_DefaultOpen)
+		{
+			ImGui::Checkbox("SSAO", &state.ssao_enable);
+			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
+			ImGui::Checkbox("CRT Filter", &state.crt_enable);
+		}
 	);
 
 	if (state.is_simulating)
@@ -1875,10 +1980,12 @@ void frame(void)
 					// Get our jolt body interface
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
+					// Cull objects
 					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
 
 					DEBUG_UI(
-						if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+						if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen))
+						{
 							ImGui::Text("Total Objects:%zu", state.objects.size());
 
 							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
@@ -1896,6 +2003,7 @@ void frame(void)
 						}
 					);
 
+					// Submit draw calls for culled objects
 					for (auto& [unique_id, object_ptr] : cull_result.objects)
 					{
 						assert(object_ptr);
@@ -1906,7 +2014,7 @@ void frame(void)
 							continue;
 						}
 
-						// For objects that simulate physics, update their transforms
+						// For objects that simulate physics, copy their physics transforms into their uniform buffers
 						object_copy_physics_transform(object, body_interface);
 
 						if (object.storage_buffer_needs_update)
@@ -1918,9 +2026,24 @@ void frame(void)
 						if (object.has_mesh)
 						{
 							Mesh& mesh = object.mesh;
+
+							int mesh_material_idx = mesh.material_indices[0];
+							assert(mesh_material_idx >= 0);
+							const geometry_Material_t& material = state.materials[mesh_material_idx]; 
+
+							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images[material.base_color_image_index] : state.default_image;
+							//TODO: Metallic
+							//TODO: Roughness
+
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+								.images = {
+									[0] = base_color_image.get_gpu_image(),
+									// TODO: Metallic
+									// TODO: Roughness
+								},
+								.samplers[0] = state.sampler,
 								.storage_buffers = {
 									[0] = object.storage_buffer.get_gpu_buffer(),
 									[1] = get_materials_buffer().get_gpu_buffer(),
@@ -2063,6 +2186,7 @@ void frame(void)
 						.cam_pos = camera.location,
 						.min_distance = 50.0f,
 						.max_distance = 100.0f,
+						.dof_enabled = state.dof_enable,
 					};
 					sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
@@ -2130,30 +2254,70 @@ void frame(void)
 			);
 		}
 
-
-		DEBUG_UI(
-			ImGui::End();
-		);
-
-		{ // Copy To Swapchain Pass	
-			get_render_pass(ERenderPass::CopyToSwapchain).execute(
+		{ // CRT Pass
+			get_render_pass(ERenderPass::CathodeRayTube).execute(
 				[&]()
 				{	
 					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
-					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
+
+					const crt_fs_params_t crt_fs_params = {
+						.warp = 0.25f,
+						.scan = 0.75f,
+						.crt_enabled = state.crt_enable,
+					};
+					sg_apply_uniforms(0, SG_RANGE(crt_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.images[0] = tonemapping_pass.color_outputs[0], 
-						.images[1] = debug_text_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
 
 					sg_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		{ // Copy To Swapchain Pass	
+			get_render_pass(ERenderPass::CopyToSwapchain).execute(
+				[&]()
+				{	
+					RenderPass& crt_pass = get_render_pass(ERenderPass::CathodeRayTube);
+					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
+
+					sg_image image_to_use = crt_pass.color_outputs[0];
+
+					DEBUG_UI(
+						const i32 num_images = state.images.length();
+						if (num_images > 0)
+						{
+							if (ImGui::CollapsingHeader("Debug Image Viewer"), ImGuiTreeNodeFlags_DefaultOpen)
+							{
+								ImGui::Checkbox("Enable", &state.enable_debug_image_viewer);
+								ImGui::SliderInt("Image Index", &state.debug_image_index, 0, num_images - 1);
+							}
+							if (state.enable_debug_image_viewer)
+							{
+								image_to_use = state.images[state.debug_image_index].get_gpu_image();		
+							}
+						}
+					);	
+
+					sg_bindings bindings = (sg_bindings){
+						.images[0] = image_to_use, 
+						.images[1] = debug_text_pass.color_outputs[0],
+						.samplers[0] = state.sampler,
+					};
+					sg_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
 
 					#if WITH_DEBUG_UI
-					simgui_render();
+					DEBUG_UI(
+						ImGui::End();
+						simgui_render();
+					);
 					#endif // WITH_DEBUG_UI
 				}
 			);

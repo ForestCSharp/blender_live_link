@@ -24,7 +24,6 @@ TYPE_DEF(HMM_Mat4,mat4)
 
 #define PADDING(count) _PADDING ## count
 
-
 #if !defined(__cplusplus) || !defined(__STDC__)
 @block material
 #endif
@@ -34,9 +33,10 @@ struct Material
 	vec4 base_color;
 	float metallic;
 	float roughness;
-	PADDING(2);
+	int base_color_image_index;
+	PADDING(1);
 };
 
 #if !defined(__cplusplus) || !defined(__STDC__)
-@end
+@end // @block material
 #endif

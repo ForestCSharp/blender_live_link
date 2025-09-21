@@ -102,14 +102,39 @@ class Update(object):
         return o == 0
 
     # Update
-    def Reset(self):
+    def Images(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
+        if o != 0:
+            x = self._tab.Vector(o)
+            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 4
+            x = self._tab.Indirect(x)
+            from Blender.LiveLink.Image import Image
+            obj = Image()
+            obj.Init(self._tab.Bytes, x)
+            return obj
+        return None
+
+    # Update
+    def ImagesLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # Update
+    def ImagesIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
+        return o == 0
+
+    # Update
+    def Reset(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
         if o != 0:
             return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
         return False
 
 def UpdateStart(builder):
-    builder.StartObject(4)
+    builder.StartObject(5)
 
 def Start(builder):
     UpdateStart(builder)
@@ -150,8 +175,20 @@ def UpdateStartMaterialsVector(builder, numElems):
 def StartMaterialsVector(builder, numElems):
     return UpdateStartMaterialsVector(builder, numElems)
 
+def UpdateAddImages(builder, images):
+    builder.PrependUOffsetTRelativeSlot(3, flatbuffers.number_types.UOffsetTFlags.py_type(images), 0)
+
+def AddImages(builder, images):
+    UpdateAddImages(builder, images)
+
+def UpdateStartImagesVector(builder, numElems):
+    return builder.StartVector(4, numElems, 4)
+
+def StartImagesVector(builder, numElems):
+    return UpdateStartImagesVector(builder, numElems)
+
 def UpdateAddReset(builder, reset):
-    builder.PrependBoolSlot(3, reset, 0)
+    builder.PrependBoolSlot(4, reset, 0)
 
 def AddReset(builder, reset):
     UpdateAddReset(builder, reset)

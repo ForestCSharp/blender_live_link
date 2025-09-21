@@ -53,6 +53,9 @@ struct ObjectBuilder;
 struct Material;
 struct MaterialBuilder;
 
+struct Image;
+struct ImageBuilder;
+
 struct Update;
 struct UpdateBuilder;
 
@@ -377,14 +380,18 @@ struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_POSITIONS = 4,
     VT_NORMALS = 6,
-    VT_INDICES = 8,
-    VT_MATERIAL_IDS = 10
+    VT_TEXCOORDS = 8,
+    VT_INDICES = 10,
+    VT_MATERIAL_IDS = 12
   };
   const ::flatbuffers::Vector<float> *positions() const {
     return GetPointer<const ::flatbuffers::Vector<float> *>(VT_POSITIONS);
   }
   const ::flatbuffers::Vector<float> *normals() const {
     return GetPointer<const ::flatbuffers::Vector<float> *>(VT_NORMALS);
+  }
+  const ::flatbuffers::Vector<float> *texcoords() const {
+    return GetPointer<const ::flatbuffers::Vector<float> *>(VT_TEXCOORDS);
   }
   const ::flatbuffers::Vector<uint32_t> *indices() const {
     return GetPointer<const ::flatbuffers::Vector<uint32_t> *>(VT_INDICES);
@@ -398,6 +405,8 @@ struct Mesh FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            verifier.VerifyVector(positions()) &&
            VerifyOffset(verifier, VT_NORMALS) &&
            verifier.VerifyVector(normals()) &&
+           VerifyOffset(verifier, VT_TEXCOORDS) &&
+           verifier.VerifyVector(texcoords()) &&
            VerifyOffset(verifier, VT_INDICES) &&
            verifier.VerifyVector(indices()) &&
            VerifyOffset(verifier, VT_MATERIAL_IDS) &&
@@ -415,6 +424,9 @@ struct MeshBuilder {
   }
   void add_normals(::flatbuffers::Offset<::flatbuffers::Vector<float>> normals) {
     fbb_.AddOffset(Mesh::VT_NORMALS, normals);
+  }
+  void add_texcoords(::flatbuffers::Offset<::flatbuffers::Vector<float>> texcoords) {
+    fbb_.AddOffset(Mesh::VT_TEXCOORDS, texcoords);
   }
   void add_indices(::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices) {
     fbb_.AddOffset(Mesh::VT_INDICES, indices);
@@ -437,11 +449,13 @@ inline ::flatbuffers::Offset<Mesh> CreateMesh(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::Vector<float>> positions = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<float>> normals = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<float>> texcoords = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<uint32_t>> indices = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> material_ids = 0) {
   MeshBuilder builder_(_fbb);
   builder_.add_material_ids(material_ids);
   builder_.add_indices(indices);
+  builder_.add_texcoords(texcoords);
   builder_.add_normals(normals);
   builder_.add_positions(positions);
   return builder_.Finish();
@@ -451,16 +465,19 @@ inline ::flatbuffers::Offset<Mesh> CreateMeshDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<float> *positions = nullptr,
     const std::vector<float> *normals = nullptr,
+    const std::vector<float> *texcoords = nullptr,
     const std::vector<uint32_t> *indices = nullptr,
     const std::vector<int32_t> *material_ids = nullptr) {
   auto positions__ = positions ? _fbb.CreateVector<float>(*positions) : 0;
   auto normals__ = normals ? _fbb.CreateVector<float>(*normals) : 0;
+  auto texcoords__ = texcoords ? _fbb.CreateVector<float>(*texcoords) : 0;
   auto indices__ = indices ? _fbb.CreateVector<uint32_t>(*indices) : 0;
   auto material_ids__ = material_ids ? _fbb.CreateVector<int32_t>(*material_ids) : 0;
   return Blender::LiveLink::CreateMesh(
       _fbb,
       positions__,
       normals__,
+      texcoords__,
       indices__,
       material_ids__);
 }
@@ -905,8 +922,9 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_UNIQUE_ID = 4,
     VT_NAME = 6,
     VT_BASE_COLOR = 8,
-    VT_METALLIC = 10,
-    VT_ROUGHNESS = 12
+    VT_BASE_COLOR_IMAGE_ID = 10,
+    VT_METALLIC = 12,
+    VT_ROUGHNESS = 14
   };
   int32_t unique_id() const {
     return GetField<int32_t>(VT_UNIQUE_ID, 0);
@@ -916,6 +934,9 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   const Blender::LiveLink::Vec4 *base_color() const {
     return GetStruct<const Blender::LiveLink::Vec4 *>(VT_BASE_COLOR);
+  }
+  int32_t base_color_image_id() const {
+    return GetField<int32_t>(VT_BASE_COLOR_IMAGE_ID, 0);
   }
   float metallic() const {
     return GetField<float>(VT_METALLIC, 0.0f);
@@ -929,6 +950,7 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyOffset(verifier, VT_NAME) &&
            verifier.VerifyString(name()) &&
            VerifyField<Blender::LiveLink::Vec4>(verifier, VT_BASE_COLOR, 4) &&
+           VerifyField<int32_t>(verifier, VT_BASE_COLOR_IMAGE_ID, 4) &&
            VerifyField<float>(verifier, VT_METALLIC, 4) &&
            VerifyField<float>(verifier, VT_ROUGHNESS, 4) &&
            verifier.EndTable();
@@ -947,6 +969,9 @@ struct MaterialBuilder {
   }
   void add_base_color(const Blender::LiveLink::Vec4 *base_color) {
     fbb_.AddStruct(Material::VT_BASE_COLOR, base_color);
+  }
+  void add_base_color_image_id(int32_t base_color_image_id) {
+    fbb_.AddElement<int32_t>(Material::VT_BASE_COLOR_IMAGE_ID, base_color_image_id, 0);
   }
   void add_metallic(float metallic) {
     fbb_.AddElement<float>(Material::VT_METALLIC, metallic, 0.0f);
@@ -970,11 +995,13 @@ inline ::flatbuffers::Offset<Material> CreateMaterial(
     int32_t unique_id = 0,
     ::flatbuffers::Offset<::flatbuffers::String> name = 0,
     const Blender::LiveLink::Vec4 *base_color = nullptr,
+    int32_t base_color_image_id = 0,
     float metallic = 0.0f,
     float roughness = 0.0f) {
   MaterialBuilder builder_(_fbb);
   builder_.add_roughness(roughness);
   builder_.add_metallic(metallic);
+  builder_.add_base_color_image_id(base_color_image_id);
   builder_.add_base_color(base_color);
   builder_.add_name(name);
   builder_.add_unique_id(unique_id);
@@ -986,6 +1013,7 @@ inline ::flatbuffers::Offset<Material> CreateMaterialDirect(
     int32_t unique_id = 0,
     const char *name = nullptr,
     const Blender::LiveLink::Vec4 *base_color = nullptr,
+    int32_t base_color_image_id = 0,
     float metallic = 0.0f,
     float roughness = 0.0f) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
@@ -994,8 +1022,96 @@ inline ::flatbuffers::Offset<Material> CreateMaterialDirect(
       unique_id,
       name__,
       base_color,
+      base_color_image_id,
       metallic,
       roughness);
+}
+
+struct Image FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+  typedef ImageBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_UNIQUE_ID = 4,
+    VT_WIDTH = 6,
+    VT_HEIGHT = 8,
+    VT_DATA = 10
+  };
+  int32_t unique_id() const {
+    return GetField<int32_t>(VT_UNIQUE_ID, 0);
+  }
+  int32_t width() const {
+    return GetField<int32_t>(VT_WIDTH, 0);
+  }
+  int32_t height() const {
+    return GetField<int32_t>(VT_HEIGHT, 0);
+  }
+  const ::flatbuffers::Vector<uint8_t> *data() const {
+    return GetPointer<const ::flatbuffers::Vector<uint8_t> *>(VT_DATA);
+  }
+  bool Verify(::flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<int32_t>(verifier, VT_UNIQUE_ID, 4) &&
+           VerifyField<int32_t>(verifier, VT_WIDTH, 4) &&
+           VerifyField<int32_t>(verifier, VT_HEIGHT, 4) &&
+           VerifyOffset(verifier, VT_DATA) &&
+           verifier.VerifyVector(data()) &&
+           verifier.EndTable();
+  }
+};
+
+struct ImageBuilder {
+  typedef Image Table;
+  ::flatbuffers::FlatBufferBuilder &fbb_;
+  ::flatbuffers::uoffset_t start_;
+  void add_unique_id(int32_t unique_id) {
+    fbb_.AddElement<int32_t>(Image::VT_UNIQUE_ID, unique_id, 0);
+  }
+  void add_width(int32_t width) {
+    fbb_.AddElement<int32_t>(Image::VT_WIDTH, width, 0);
+  }
+  void add_height(int32_t height) {
+    fbb_.AddElement<int32_t>(Image::VT_HEIGHT, height, 0);
+  }
+  void add_data(::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> data) {
+    fbb_.AddOffset(Image::VT_DATA, data);
+  }
+  explicit ImageBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  ::flatbuffers::Offset<Image> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = ::flatbuffers::Offset<Image>(end);
+    return o;
+  }
+};
+
+inline ::flatbuffers::Offset<Image> CreateImage(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    int32_t unique_id = 0,
+    int32_t width = 0,
+    int32_t height = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> data = 0) {
+  ImageBuilder builder_(_fbb);
+  builder_.add_data(data);
+  builder_.add_height(height);
+  builder_.add_width(width);
+  builder_.add_unique_id(unique_id);
+  return builder_.Finish();
+}
+
+inline ::flatbuffers::Offset<Image> CreateImageDirect(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    int32_t unique_id = 0,
+    int32_t width = 0,
+    int32_t height = 0,
+    const std::vector<uint8_t> *data = nullptr) {
+  auto data__ = data ? _fbb.CreateVector<uint8_t>(*data) : 0;
+  return Blender::LiveLink::CreateImage(
+      _fbb,
+      unique_id,
+      width,
+      height,
+      data__);
 }
 
 struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
@@ -1004,7 +1120,8 @@ struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_OBJECTS = 4,
     VT_DELETED_OBJECT_UIDS = 6,
     VT_MATERIALS = 8,
-    VT_RESET = 10
+    VT_IMAGES = 10,
+    VT_RESET = 12
   };
   const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects() const {
     return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *>(VT_OBJECTS);
@@ -1014,6 +1131,9 @@ struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Material>> *materials() const {
     return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Material>> *>(VT_MATERIALS);
+  }
+  const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Image>> *images() const {
+    return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Image>> *>(VT_IMAGES);
   }
   bool reset() const {
     return GetField<uint8_t>(VT_RESET, 0) != 0;
@@ -1028,6 +1148,9 @@ struct Update FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyOffset(verifier, VT_MATERIALS) &&
            verifier.VerifyVector(materials()) &&
            verifier.VerifyVectorOfTables(materials()) &&
+           VerifyOffset(verifier, VT_IMAGES) &&
+           verifier.VerifyVector(images()) &&
+           verifier.VerifyVectorOfTables(images()) &&
            VerifyField<uint8_t>(verifier, VT_RESET, 1) &&
            verifier.EndTable();
   }
@@ -1045,6 +1168,9 @@ struct UpdateBuilder {
   }
   void add_materials(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Material>>> materials) {
     fbb_.AddOffset(Update::VT_MATERIALS, materials);
+  }
+  void add_images(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Image>>> images) {
+    fbb_.AddOffset(Update::VT_IMAGES, images);
   }
   void add_reset(bool reset) {
     fbb_.AddElement<uint8_t>(Update::VT_RESET, static_cast<uint8_t>(reset), 0);
@@ -1065,8 +1191,10 @@ inline ::flatbuffers::Offset<Update> CreateUpdate(
     ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Object>>> objects = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<int32_t>> deleted_object_uids = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Material>>> materials = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<Blender::LiveLink::Image>>> images = 0,
     bool reset = false) {
   UpdateBuilder builder_(_fbb);
+  builder_.add_images(images);
   builder_.add_materials(materials);
   builder_.add_deleted_object_uids(deleted_object_uids);
   builder_.add_objects(objects);
@@ -1079,15 +1207,18 @@ inline ::flatbuffers::Offset<Update> CreateUpdateDirect(
     const std::vector<::flatbuffers::Offset<Blender::LiveLink::Object>> *objects = nullptr,
     const std::vector<int32_t> *deleted_object_uids = nullptr,
     const std::vector<::flatbuffers::Offset<Blender::LiveLink::Material>> *materials = nullptr,
+    const std::vector<::flatbuffers::Offset<Blender::LiveLink::Image>> *images = nullptr,
     bool reset = false) {
   auto objects__ = objects ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Object>>(*objects) : 0;
   auto deleted_object_uids__ = deleted_object_uids ? _fbb.CreateVector<int32_t>(*deleted_object_uids) : 0;
   auto materials__ = materials ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Material>>(*materials) : 0;
+  auto images__ = images ? _fbb.CreateVector<::flatbuffers::Offset<Blender::LiveLink::Image>>(*images) : 0;
   return Blender::LiveLink::CreateUpdate(
       _fbb,
       objects__,
       deleted_object_uids__,
       materials__,
+      images__,
       reset);
 }
 

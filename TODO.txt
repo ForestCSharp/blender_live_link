@@ -1,7 +1,5 @@
-NOTE
-	- Search 'HERE' for stopping point
-
 TODO
+	- Don't run shaders on disabled render passes...
 	- Materials + Textures
 		- TODO: Need to use some default material if no material assigned in blender
 

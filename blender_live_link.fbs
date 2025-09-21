@@ -36,6 +36,7 @@ table Mesh
 {
 	positions		: [float];
 	normals			: [float];
+	texcoords		: [float];
 	indices			: [uint];
 	material_ids	: [int];
 }
@@ -153,9 +154,20 @@ table Material
 {
 	unique_id	: int;
 	name		: string;
-	base_color	: Vec4;
+
+	base_color			: Vec4;
+	base_color_image_id	: int; 
+
 	metallic	: float;
 	roughness	: float;
+}
+
+table Image
+{
+	unique_id	: int;
+	width		: int;
+	height		: int;
+	data		: [ubyte];
 }
 
 table Update 
@@ -163,6 +175,7 @@ table Update
 	objects				: [Object];
 	deleted_object_uids : [int];
 	materials			: [Material];
+	images				: [Image];
 	reset 				: bool = false;
 }
 
