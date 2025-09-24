@@ -40,7 +40,6 @@ layout(binding=0) uniform fs_params {
 	float warp;
 	float scan; 
 	int crt_enabled;
-	PADDING(1);
 };
 
 in vec2 uv;

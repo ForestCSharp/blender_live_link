@@ -13,7 +13,6 @@ struct ObjectData
 	mat4 model_matrix;
 	mat4 rotation_matrix;
 	int material_index;
-	PADDING(3);
 };
 
 layout(binding=0) readonly buffer ObjectDataBuffer {
@@ -49,8 +48,8 @@ layout(binding=1) readonly buffer MaterialDataBuffer {
 layout(binding=0) uniform sampler smp;
 
 layout(binding=0) uniform texture2D base_color_texture;
-//layout(binding=1) uniform texture2D metallic_texture;
-//layout(binding=2) uniform texture2D roughness_texture;
+layout(binding=1) uniform texture2D metallic_texture;
+layout(binding=2) uniform texture2D roughness_texture;
 
 in vec4 world_position;
 in vec4 world_normal;
@@ -67,6 +66,8 @@ void main()
 	if (material_index >= 0)
 	{	
 		Material material = material_data_array[material_index];
+
+		// Base Color
 		if (material.base_color_image_index >= 0)
 		{
 			out_color = texture(sampler2D(base_color_texture, smp), pixel_texcoord);
@@ -75,8 +76,26 @@ void main()
 		{
 			out_color = material.base_color;
 		}
-		out_roughness_metallic.r = material.roughness;
-		out_roughness_metallic.g = material.metallic;
+
+		// Metallic
+		if (material.metallic_image_index >= 0)
+		{
+			out_roughness_metallic.g = texture(sampler2D(metallic_texture, smp), pixel_texcoord).r;
+		}
+		else
+		{
+			out_roughness_metallic.g = material.metallic;
+		}
+
+		// Roughness
+		if (material.roughness_image_index >= 0)
+		{
+			out_roughness_metallic.r = texture(sampler2D(roughness_texture, smp), pixel_texcoord).r;
+		}
+		else
+		{
+			out_roughness_metallic.r = material.roughness;
+		}
 	}
 	else
 	{

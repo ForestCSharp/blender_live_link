@@ -924,7 +924,9 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_BASE_COLOR = 8,
     VT_BASE_COLOR_IMAGE_ID = 10,
     VT_METALLIC = 12,
-    VT_ROUGHNESS = 14
+    VT_METALLIC_IMAGE_ID = 14,
+    VT_ROUGHNESS = 16,
+    VT_ROUGHNESS_IMAGE_ID = 18
   };
   int32_t unique_id() const {
     return GetField<int32_t>(VT_UNIQUE_ID, 0);
@@ -941,8 +943,14 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   float metallic() const {
     return GetField<float>(VT_METALLIC, 0.0f);
   }
+  int32_t metallic_image_id() const {
+    return GetField<int32_t>(VT_METALLIC_IMAGE_ID, 0);
+  }
   float roughness() const {
     return GetField<float>(VT_ROUGHNESS, 0.0f);
+  }
+  int32_t roughness_image_id() const {
+    return GetField<int32_t>(VT_ROUGHNESS_IMAGE_ID, 0);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
@@ -952,7 +960,9 @@ struct Material FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<Blender::LiveLink::Vec4>(verifier, VT_BASE_COLOR, 4) &&
            VerifyField<int32_t>(verifier, VT_BASE_COLOR_IMAGE_ID, 4) &&
            VerifyField<float>(verifier, VT_METALLIC, 4) &&
+           VerifyField<int32_t>(verifier, VT_METALLIC_IMAGE_ID, 4) &&
            VerifyField<float>(verifier, VT_ROUGHNESS, 4) &&
+           VerifyField<int32_t>(verifier, VT_ROUGHNESS_IMAGE_ID, 4) &&
            verifier.EndTable();
   }
 };
@@ -976,8 +986,14 @@ struct MaterialBuilder {
   void add_metallic(float metallic) {
     fbb_.AddElement<float>(Material::VT_METALLIC, metallic, 0.0f);
   }
+  void add_metallic_image_id(int32_t metallic_image_id) {
+    fbb_.AddElement<int32_t>(Material::VT_METALLIC_IMAGE_ID, metallic_image_id, 0);
+  }
   void add_roughness(float roughness) {
     fbb_.AddElement<float>(Material::VT_ROUGHNESS, roughness, 0.0f);
+  }
+  void add_roughness_image_id(int32_t roughness_image_id) {
+    fbb_.AddElement<int32_t>(Material::VT_ROUGHNESS_IMAGE_ID, roughness_image_id, 0);
   }
   explicit MaterialBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -997,9 +1013,13 @@ inline ::flatbuffers::Offset<Material> CreateMaterial(
     const Blender::LiveLink::Vec4 *base_color = nullptr,
     int32_t base_color_image_id = 0,
     float metallic = 0.0f,
-    float roughness = 0.0f) {
+    int32_t metallic_image_id = 0,
+    float roughness = 0.0f,
+    int32_t roughness_image_id = 0) {
   MaterialBuilder builder_(_fbb);
+  builder_.add_roughness_image_id(roughness_image_id);
   builder_.add_roughness(roughness);
+  builder_.add_metallic_image_id(metallic_image_id);
   builder_.add_metallic(metallic);
   builder_.add_base_color_image_id(base_color_image_id);
   builder_.add_base_color(base_color);
@@ -1015,7 +1035,9 @@ inline ::flatbuffers::Offset<Material> CreateMaterialDirect(
     const Blender::LiveLink::Vec4 *base_color = nullptr,
     int32_t base_color_image_id = 0,
     float metallic = 0.0f,
-    float roughness = 0.0f) {
+    int32_t metallic_image_id = 0,
+    float roughness = 0.0f,
+    int32_t roughness_image_id = 0) {
   auto name__ = name ? _fbb.CreateString(name) : 0;
   return Blender::LiveLink::CreateMaterial(
       _fbb,
@@ -1024,7 +1046,9 @@ inline ::flatbuffers::Offset<Material> CreateMaterialDirect(
       base_color,
       base_color_image_id,
       metallic,
-      roughness);
+      metallic_image_id,
+      roughness,
+      roughness_image_id);
 }
 
 struct Image FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {

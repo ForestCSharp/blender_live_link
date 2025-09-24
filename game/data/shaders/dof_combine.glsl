@@ -17,7 +17,6 @@ layout(binding=0) uniform fs_params {
 	float min_distance;
 	float max_distance;
 	int dof_enabled;
-	PADDING(1);
 };
 
 in vec2 uv;

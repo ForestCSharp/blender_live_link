@@ -278,6 +278,8 @@ class LiveLinkConnection():
             material_ids = np.empty(0, dtype=np.int32)
             if obj.data.materials:
                 for material in obj.data.materials:
+                    if material is None:
+                        continue
                     material_id = material.session_uid
                     # append to our material list
                     material_ids = np.append(material_ids, material_id)
@@ -488,7 +490,9 @@ class LiveLinkConnection():
                     self.base_color = (1,1,1,1)
                     self.base_color_image_id = None 
                     self.metallic = 0.0
+                    self.metallic_image_id = None
                     self.roughness = 0.0
+                    self.roughness_image_id = None
 
 
             # Helper to register an image id for a material_node_input if it contains a valid image
@@ -518,22 +522,16 @@ class LiveLinkConnection():
                 if bsdf:
                     # Base Color
                     base_color_input = bsdf.inputs["Base Color"]
-
-                    # Base Color default value
                     material_data.base_color = base_color_input.default_value
-
-                    # Base Color Texture ID
                     material_data.base_color_image_id = extract_image_id(base_color_input)
-
-                    # Metallic default value
-                    material_data.metallic = bsdf.inputs["Metallic"].default_value
-
-                    # TODO: Metallic Texture ID
-
-                    # Roughness default value
-                    material_data.roughness = bsdf.inputs["Roughness"].default_value                    
-
-                    #TODO: Roughness Texture ID
+                    # Metallic 
+                    metallic_input = bsdf.inputs["Metallic"]
+                    material_data.metallic = metallic_input.default_value
+                    material_data.metallic_image_id = extract_image_id(metallic_input)
+                    # Roughness 
+                    roughness_input = bsdf.inputs["Roughness"]
+                    material_data.roughness = roughness_input.default_value
+                    material_data.roughness_image_id = extract_image_id(roughness_input)
 
             # End current flatbuffers Material and add to list
 
@@ -557,9 +555,13 @@ class LiveLinkConnection():
 
             # Metallic
             Material.AddMetallic(builder, material_data.metallic)
+            if material_data.metallic_image_id is not None:
+                Material.AddMetallicImageId(builder, material_data.metallic_image_id)
 
             # Roughness
             Material.AddRoughness(builder, material_data.roughness)
+            if material_data.roughness_image_id is not None:
+                Material.AddRoughnessImageId(builder, material_data.roughness_image_id)
 
             flatbuffer_material = Material.End(builder)
             flatbuffer_materials.append(flatbuffer_material)

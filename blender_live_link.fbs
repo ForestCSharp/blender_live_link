@@ -158,8 +158,11 @@ table Material
 	base_color			: Vec4;
 	base_color_image_id	: int; 
 
-	metallic	: float;
-	roughness	: float;
+	metallic			: float;
+	metallic_image_id	: int;
+
+	roughness			: float;
+	roughness_image_id	: int;
 }
 
 table Image

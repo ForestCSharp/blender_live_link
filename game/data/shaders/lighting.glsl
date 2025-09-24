@@ -17,7 +17,6 @@ struct PointLight {
 	vec4 color;
 
 	float power;
-	PADDING(3);
 };
 
 struct SpotLight {
@@ -27,10 +26,8 @@ struct SpotLight {
 	float power;
 	float spot_angle_radians;
 	float edge_blend;
-	PADDING(1);
 
 	vec3 direction;
-	PADDING(1);
 };
 
 struct SunLight {
@@ -39,10 +36,8 @@ struct SunLight {
 
 	float power;
 	int cast_shadows;
-	PADDING(2);
 
 	vec3 direction;
-	PADDING(1);
 };
 
 layout(binding=0) uniform texture2D color_tex;
@@ -55,11 +50,9 @@ layout(binding=0) uniform sampler tex_sampler;
 
 layout(binding=0) uniform fs_params {
 	vec3 view_position;
-	PADDING(1);	
     int num_point_lights;
 	int num_spot_lights;
 	int num_sun_lights;
-	PADDING(1);	
 };
 
 layout(binding=0) readonly buffer PointLightsBuffer {

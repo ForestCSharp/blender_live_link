@@ -15,14 +15,14 @@ TYPE_DEF(HMM_Mat4,mat4)
 #define M_PI 3.1415926535897932384626433832795
 #endif
 
-#define TOKEN_PASTE(x, y) x##y
-#define COMBINE(a,b) TOKEN_PASTE(a,b)
-
-#define _PADDING1 float COMBINE(padding_line_, __LINE__)
-#define _PADDING2 vec2 COMBINE(padding_line_, __LINE__)
-#define _PADDING3 vec3 COMBINE(padding_line_, __LINE__)
-
-#define PADDING(count) _PADDING ## count
+// Commenting out. sokol_shdc seems to handle padding for us now
+//#define TOKEN_PASTE(x, y) x##y
+//#define COMBINE(a,b) TOKEN_PASTE(a,b)
+//#define _PADDING1 float COMBINE(padding_line_, __LINE__)
+//#define _PADDING2 vec2 COMBINE(padding_line_, __LINE__)
+//#define _PADDING3 vec3 COMBINE(padding_line_, __LINE__)
+//#define _PADDING4 vec4 COMBINE(padding_line_, __LINE__)
+//#define PADDING(count) _PADDING ## count
 
 #if !defined(__cplusplus) || !defined(__STDC__)
 @block material
@@ -34,7 +34,8 @@ struct Material
 	float metallic;
 	float roughness;
 	int base_color_image_index;
-	PADDING(1);
+	int metallic_image_index;
+	int roughness_image_index;
 };
 
 #if !defined(__cplusplus) || !defined(__STDC__)

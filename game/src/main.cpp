@@ -78,7 +78,6 @@ using ankerl::unordered_dense::map;
 #include "sokol/util/sokol_imgui.h"
 
 // Generated Shader Files
-#include "../data/shaders/shader_common.h"
 #include "../data/shaders/ssao_constants.h"
 #include "geometry.compiled.h"
 #include "ssao.compiled.h"
@@ -543,6 +542,14 @@ bool register_image(const Blender::LiveLink::Image& in_image)
 	return true;
 }
 
+void reset_images()
+{
+	state.image_id_to_index.clear();
+	state.images.reset();
+	state.enable_debug_image_viewer = false;
+	state.debug_image_index = 0;
+}
+
 const i32 MAX_MATERIALS = 1024;
 void init_materials_buffer()
 {
@@ -599,9 +606,10 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		.metallic = in_material.metallic(),
 		.roughness = in_material.roughness(),
 		.base_color_image_index = -1,
+		.metallic_image_index = -1,
+		.roughness_image_index = -1,
 	};
 
-	//FCS TODO: need to register textures first and then just reference their idx here?
 	int base_color_image_id = in_material.base_color_image_id();
 	if (base_color_image_id > 0)
 	{
@@ -609,8 +617,23 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		assert(state.image_id_to_index.contains(base_color_image_id));
 		new_material.base_color_image_index = state.image_id_to_index[base_color_image_id];
 	}
-	//FCS TODO: metallic texture
-	//FCS TODO: roughness texture
+
+
+	int metallic_image_id = in_material.metallic_image_id();
+	if (metallic_image_id > 0)
+	{
+		printf("Found metallic image id: %i\n", metallic_image_id);
+		assert(state.image_id_to_index.contains(metallic_image_id));
+		new_material.metallic_image_index = state.image_id_to_index[metallic_image_id];
+	}
+
+	int roughness_image_id = in_material.roughness_image_id();
+	if (roughness_image_id > 0)
+	{
+		printf("Found roughness image id: %i\n", roughness_image_id);
+		assert(state.image_id_to_index.contains(roughness_image_id));
+		new_material.roughness_image_index = state.image_id_to_index[roughness_image_id];
+	}
 
 	const i32 array_index = state.materials.length();
 	state.materials.add(new_material);
@@ -1518,14 +1541,14 @@ void frame(void)
 {
 	double delta_time = sapp_frame_duration();
 
-	#if WITH_DEBUG_UI
-	simgui_new_frame((simgui_frame_desc_t){
-		.width = state.width,
-		.height = state.height, 
-		.delta_time = delta_time,
-		//.dpi_scale = ,
-	});
-	#endif // WITH_DEBUG_UI
+	DEBUG_UI(
+		simgui_new_frame((simgui_frame_desc_t){
+			.width = state.width,
+			.height = state.height, 
+			.delta_time = delta_time,
+			//.dpi_scale = ,
+		});
+	);
 
 	// Receive Any Updated Objects
 	while (optional<Object> received_updated_object = state.updated_objects.receive())
@@ -1595,6 +1618,7 @@ void frame(void)
 		state.player_character_id.reset();
 
 		reset_materials();
+		reset_images();
 	}
 
 	// Space Bar + Left Control Starts/Stops simulation 
@@ -1627,9 +1651,9 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
-
 		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
+			ImGui::Text("frame time: %f ms", delta_time * 1000.f);
 			ImGui::Text("FPS: %f", 1.0 / delta_time);
 			ImGui::Spacing();
 		}
@@ -2032,16 +2056,16 @@ void frame(void)
 							const geometry_Material_t& material = state.materials[mesh_material_idx]; 
 
 							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images[material.base_color_image_index] : state.default_image;
-							//TODO: Metallic
-							//TODO: Roughness
+							GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images[material.metallic_image_index] : state.default_image;
+							GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images[material.roughness_image_index] : state.default_image;
 
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
 								.images = {
 									[0] = base_color_image.get_gpu_image(),
-									// TODO: Metallic
-									// TODO: Roughness
+									[1] = metallic_image.get_gpu_image(),
+									[2] = roughness_image.get_gpu_image(),
 								},
 								.samplers[0] = state.sampler,
 								.storage_buffers = {
@@ -2296,6 +2320,11 @@ void frame(void)
 							{
 								ImGui::Checkbox("Enable", &state.enable_debug_image_viewer);
 								ImGui::SliderInt("Image Index", &state.debug_image_index, 0, num_images - 1);
+								//if (state.enable_debug_image_viewer)
+								//{
+								//	sg_view tex_view = sg_make_view(&(sg_view_desc){ .texture_binding.image = img });
+								//	ImTextureID imtex_id = simgui_imtextureid_with_sampler(tex_img, smp);
+								//}
 							}
 							if (state.enable_debug_image_viewer)
 							{
@@ -2313,12 +2342,10 @@ void frame(void)
 
 					sg_draw(0,6,1);
 
-					#if WITH_DEBUG_UI
 					DEBUG_UI(
 						ImGui::End();
 						simgui_render();
 					);
-					#endif // WITH_DEBUG_UI
 				}
 			);
 		}
