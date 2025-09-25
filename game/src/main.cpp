@@ -500,7 +500,7 @@ struct {
 	StretchyBuffer<GpuImage> images;
 	GpuImage default_image;
 
-	bool enable_debug_image_viewer = false;
+	bool enable_debug_image_fullscreen = false;
 	i32 debug_image_index = 0;
 	
 	// Thread that listens for updates from Blender
@@ -546,7 +546,7 @@ void reset_images()
 {
 	state.image_id_to_index.clear();
 	state.images.reset();
-	state.enable_debug_image_viewer = false;
+	state.enable_debug_image_fullscreen = false;
 	state.debug_image_index = 0;
 }
 
@@ -2310,31 +2310,32 @@ void frame(void)
 					RenderPass& crt_pass = get_render_pass(ERenderPass::CathodeRayTube);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
-					sg_image image_to_use = crt_pass.color_outputs[0];
+					// This can be overridden by the debug image viewer below
+					sg_image image_to_copy_to_swapchain = crt_pass.color_outputs[0];
 
 					DEBUG_UI(
 						const i32 num_images = state.images.length();
 						if (num_images > 0)
 						{
-							if (ImGui::CollapsingHeader("Debug Image Viewer"), ImGuiTreeNodeFlags_DefaultOpen)
+							if (ImGui::CollapsingHeader("Debug Image Viewer"))
 							{
-								ImGui::Checkbox("Enable", &state.enable_debug_image_viewer);
+								ImGui::Checkbox("Fullscreen", &state.enable_debug_image_fullscreen);
 								ImGui::SliderInt("Image Index", &state.debug_image_index, 0, num_images - 1);
-								//if (state.enable_debug_image_viewer)
-								//{
-								//	sg_view tex_view = sg_make_view(&(sg_view_desc){ .texture_binding.image = img });
-								//	ImTextureID imtex_id = simgui_imtextureid_with_sampler(tex_img, smp);
-								//}
+
+								GpuImage& image = state.images[state.debug_image_index];
+								ImVec2 size = ImVec2(256, 256);
+								ImGui::Image(simgui_imtextureid(image.get_gpu_image()), size);
 							}
-							if (state.enable_debug_image_viewer)
+
+							if (state.enable_debug_image_fullscreen)
 							{
-								image_to_use = state.images[state.debug_image_index].get_gpu_image();		
+								image_to_copy_to_swapchain = state.images[state.debug_image_index].get_gpu_image();		
 							}
 						}
 					);	
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = image_to_use, 
+						.images[0] = image_to_copy_to_swapchain, 
 						.images[1] = debug_text_pass.color_outputs[0],
 						.samplers[0] = state.sampler,
 					};
