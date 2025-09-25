@@ -63,7 +63,7 @@ SOCKET socket_open(int domain, int type, int protocol)
 
 #if defined(SOCKET_PLATFORM_WINDOWS)
 	// Change IO mode of socket to nonblocking (mode == 1)
-	const u_long mode_nonblocking = 1;
+	u_long mode_nonblocking = 1;
 	ioctlsocket(new_socket, FIONBIO, &mode_nonblocking);
 #else
 	// Add O_NONBLOCK flag to file descriptor

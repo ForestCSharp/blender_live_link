@@ -1,5 +1,8 @@
 #pragma once
 
+// Basic Types
+#include "types.h"
+
 // cstdlib stdarg.h
 #include <cstdarg> 
 
@@ -36,7 +39,7 @@ static void TraceImpl(const char *inFMT, ...)
 }
 
 // Callback for asserts, connect this to your own assert handler if you have one
-static bool AssertFailedImpl(const char *inExpression, const char *inMessage, const char *inFile, uint inLine)
+static bool AssertFailedImpl(const char *inExpression, const char *inMessage, const char *inFile, u32 inLine)
 {
 	// Print to the TTY
 	printf("%s: %u: (%s) %s\n", inFile, inLine, inExpression, (inMessage != nullptr? inMessage : ""));
@@ -56,7 +59,7 @@ namespace BroadPhaseLayers
 {
 	static constexpr JPH::BroadPhaseLayer NON_MOVING(0);
 	static constexpr JPH::BroadPhaseLayer MOVING(1);
-	static constexpr uint NUM_LAYERS(2);
+	static constexpr u32 NUM_LAYERS(2);
 };
 
 // BroadPhaseLayerInterface implementation
@@ -71,7 +74,7 @@ public:
 		mObjectToBroadPhase[Layers::MOVING] = BroadPhaseLayers::MOVING;
 	}
 
-	virtual uint GetNumBroadPhaseLayers() const override
+	virtual u32 GetNumBroadPhaseLayers() const override
 	{
 		return BroadPhaseLayers::NUM_LAYERS;
 	}
@@ -186,21 +189,21 @@ void jolt_init()
 
 	// This is the max amount of rigid bodies that you can add to the physics system. If you try to add more you'll get an error.
 	// Note: This value is low because this is a simple test. For a real project use something in the order of 65536.
-	const uint cMaxBodies = 1024;
+	const u32 cMaxBodies = 1024;
 
 	// This determines how many mutexes to allocate to protect rigid bodies from concurrent access. Set it to 0 for the default settings.
-	const uint cNumBodyMutexes = 0;
+	const u32 cNumBodyMutexes = 0;
 
 	// This is the max amount of body pairs that can be queued at any time (the broad phase will detect overlapping
 	// body pairs based on their bounding boxes and will insert them into a queue for the narrowphase). If you make this buffer
 	// too small the queue will fill up and the broad phase jobs will start to do narrow phase work. This is slightly less efficient.
 	// Note: This value is low because this is a simple test. For a real project use something in the order of 65536.
-	const uint cMaxBodyPairs = 1024;
+	const u32 cMaxBodyPairs = 1024;
 
 	// This is the maximum size of the contact constraint buffer. If more contacts (collisions between bodies) are detected than this
 	// number then these contacts will be ignored and bodies will start interpenetrating / fall through the world.
 	// Note: This value is low because this is a simple test. For a real project use something in the order of 10240.
-	const uint cMaxContactConstraints = 1024;
+	const u32 cMaxContactConstraints = 1024;
 
 	// Now we can create the actual physics system.
 	jolt_state.physics_system.Init(

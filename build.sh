@@ -47,7 +47,7 @@ if [[ $OS = Windows ]]; then
 		-x!"$BASE_DIR/flatbuffers/*" \
 		-x!"$BASE_DIR/.git/*" \
 		-x!"$BASE_DIR/game/*" \
-		-x! "$BASE_DIR/blend_files/*"
+		-x!"$BASE_DIR/blend_files/*"
 else
 	zip -r $SCRIPT_DIR.zip $BASE_DIR \
 		-x "$BASE_DIR/flatbuffers/*" \
@@ -64,13 +64,18 @@ run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 #run_args="$SCRIPT_DIR/../wanderer.blend"
 
 if [[ $OS = Windows ]]; then
-	# Note: blender.exe should be on system path
+	# Note: blender.exe should be on system path on windows
+	# kill previous blender instances
+	taskkill.exe //F //IM blender.exe
+	sleep 0.5
+	# install add-on and wait for completion
 	blender.exe $install_args
 	sleep 0.5
+	# open blender to specified map file
 	start "" blender.exe $run_args
 elif [[ $OS = Mac ]]; then
-	killall Blender
-	
+	# kill previous blender instances
+	killall Blender	
 	# install add-on and wait for completion
 	/Applications/Blender.app/Contents/MacOS/Blender $install_args 
 	sleep 0.5
