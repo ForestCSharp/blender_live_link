@@ -86,7 +86,6 @@ using ankerl::unordered_dense::map;
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
-#include "crt.compiled.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -426,7 +425,6 @@ enum class ERenderPass : int
 	DOF_Combine,
 	Tonemapping,
 	DebugText,
-	CathodeRayTube,
 	CopyToSwapchain,
 	COUNT,
 };
@@ -443,7 +441,6 @@ struct {
 	// Rendering Feature Flags
 	bool ssao_enable = true;
 	bool dof_enable = true;
-	bool crt_enable = false;
 
 	// SSAO Data 
 	sg_image ssao_noise_texture;
@@ -1435,27 +1432,6 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::DebugText).init(debug_text_pass_desc);
 
-	RenderPassDesc crt_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(crt_crt_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
-			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-						.write_enabled = false,
-					},
-			.label = "crt-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_CLEAR,
-			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		}
-	};
-	get_render_pass(ERenderPass::CathodeRayTube).init(crt_pass_desc);
-
 	RenderPassDesc copy_to_swapchain_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(overlay_texture_overlay_texture_shader_desc(sg_query_backend())),
@@ -1662,7 +1638,6 @@ void frame(void)
 		{
 			ImGui::Checkbox("SSAO", &state.ssao_enable);
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
-			ImGui::Checkbox("CRT Filter", &state.crt_enable);
 		}
 	);
 
@@ -2278,40 +2253,15 @@ void frame(void)
 			);
 		}
 
-		{ // CRT Pass
-			get_render_pass(ERenderPass::CathodeRayTube).execute(
-				[&]()
-				{	
-					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
-
-					const crt_fs_params_t crt_fs_params = {
-						.warp = 0.25f,
-						.scan = 0.75f,
-						.crt_enabled = state.crt_enable,
-					};
-					sg_apply_uniforms(0, SG_RANGE(crt_fs_params));
-
-					sg_bindings bindings = (sg_bindings){
-						.images[0] = tonemapping_pass.color_outputs[0], 
-						.samplers[0] = state.sampler,
-					};
-
-					sg_apply_bindings(&bindings);
-
-					sg_draw(0,6,1);
-				}
-			);
-		}
-
 		{ // Copy To Swapchain Pass	
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(
 				[&]()
 				{	
-					RenderPass& crt_pass = get_render_pass(ERenderPass::CathodeRayTube);
+					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
 					// This can be overridden by the debug image viewer below
-					sg_image image_to_copy_to_swapchain = crt_pass.color_outputs[0];
+					sg_image image_to_copy_to_swapchain = tonemapping_pass.color_outputs[0];
 
 					DEBUG_UI(
 						const i32 num_images = state.images.length();
@@ -2320,7 +2270,12 @@ void frame(void)
 							if (ImGui::CollapsingHeader("Debug Image Viewer"))
 							{
 								ImGui::Checkbox("Fullscreen", &state.enable_debug_image_fullscreen);
-								ImGui::SliderInt("Image Index", &state.debug_image_index, 0, num_images - 1);
+								ImGui::SliderInt(
+									"Image Index", 
+									&state.debug_image_index, 
+									0, num_images - 1, 
+									"%d", ImGuiSliderFlags_ClampOnInput
+								);
 
 								GpuImage& image = state.images[state.debug_image_index];
 								ImVec2 size = ImVec2(256, 256);
