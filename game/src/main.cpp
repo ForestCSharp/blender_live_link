@@ -71,12 +71,6 @@ using ankerl::unordered_dense::map;
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
 
-// Dear ImGui
-#define IMGUI_IMPLEMENTATION
-#define SOKOL_IMGUI_IMPL
-#include "imgui/misc/single_file/imgui_single_file.h"
-#include "sokol/util/sokol_imgui.h"
-
 // Generated Shader Files
 #include "../data/shaders/ssao_constants.h"
 #include "geometry.compiled.h"
@@ -127,6 +121,13 @@ using ankerl::unordered_dense::map;
 
 #define WITH_DEBUG_UI 1
 #if WITH_DEBUG_UI
+
+// Only include ImGui when debug UI is enabled
+#define IMGUI_IMPLEMENTATION
+#define SOKOL_IMGUI_IMPL
+#include "imgui/misc/single_file/imgui_single_file.h"
+#include "sokol/util/sokol_imgui.h"
+
 bool g_show_imgui = true;
 // All imgui debug ui should be wrapped in this.
 #define DEBUG_UI(...)\
@@ -781,6 +782,16 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						}
 					}
 
+					// Check for skinning data
+					i32 armature_id = object_mesh->armature_id();
+					auto flatbuffer_joint_indices = object_mesh->joint_indices();
+					auto flatbuffer_joint_weights = object_mesh->joint_weights();
+					if (armature_id > 0 && flatbuffer_joint_indices && flatbuffer_joint_weights)
+					{
+						printf("We have skinning data!\n");
+						//FCS TODO:
+					}
+
 					u32 num_indices = 0;
 					u32* indices = nullptr;
 					if (auto flatbuffer_indices = object_mesh->indices())
@@ -1144,7 +1155,7 @@ void init(void)
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = (u8*) &default_image_data,
 	};
-	state.default_image = GpuImage(default_image_desc),
+	state.default_image = GpuImage(default_image_desc);
 
 
 	#if WITH_DEBUG_UI
@@ -1623,7 +1634,7 @@ void frame(void)
 				object_reset_jolt_body(object);
 			}
 		}
-	)
+	);
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
@@ -1979,6 +1990,19 @@ void frame(void)
 					// Get our jolt body interface
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
+					// Update Objects
+					for (auto& [unique_id, object] : state.objects)
+					{
+						// For objects that simulate physics, copy their physics transforms into their uniform buffers
+						object_copy_physics_transform(object, body_interface);
+
+						if (object.storage_buffer_needs_update)
+						{
+							object.storage_buffer_needs_update = false;
+							object_update_storage_buffer(object);
+						}
+					}
+
 					// Cull objects
 					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
 
@@ -2007,20 +2031,6 @@ void frame(void)
 					{
 						assert(object_ptr);
 						Object& object = *object_ptr;
-
-						if (!object.visibility)
-						{
-							continue;
-						}
-
-						// For objects that simulate physics, copy their physics transforms into their uniform buffers
-						object_copy_physics_transform(object, body_interface);
-
-						if (object.storage_buffer_needs_update)
-						{
-							object.storage_buffer_needs_update = false;
-							object_update_storage_buffer(object);
-						}
 
 						if (object.has_mesh)
 						{

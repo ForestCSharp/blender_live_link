@@ -32,13 +32,42 @@ struct Quat
   w	: float;
 }
 
+table Matrix
+{
+	elements : [float];
+}
+
 table Mesh
 {
-	positions		: [float];
-	normals			: [float];
-	texcoords		: [float];
-	indices			: [uint];
-	material_ids	: [int];
+	// Basic Geometric Data
+	positions		: [float];	// 3 components per vert (X,Y,Z)
+	normals			: [float];	// 3 components per vert (X,Y,Z)
+	texcoords		: [float];	// 2 components per vert (U,V)
+
+	// Index Buffer
+	indices			: [uint];	// 1 index per vert
+
+	// Optional Skinning Data
+	joint_indices	: [int];	// 4 joint indices per vert
+	joint_weights	: [int];	// 4 joint weights per vert
+
+	// Material Data
+	material_ids	: [int];	
+
+	// Armature this mesh is bound to
+	armature_id		: int = -1;
+}
+
+table Bone
+{
+	name				: string;
+	parent_name			: string;
+	inverse_bind_matrix	: Matrix;
+}
+
+table Armature
+{
+	bones : [Bone];
 }
 
 struct RigidBody
@@ -139,6 +168,9 @@ table Object
 
 	// optional mesh data
 	mesh		: Mesh;
+
+	// optional armature data
+	armature 	: Armature;
 
 	// optional rigid body data
 	rigid_body  : RigidBody;
