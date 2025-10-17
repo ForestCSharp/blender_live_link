@@ -50,6 +50,7 @@ layout(binding=0) uniform sampler smp;
 layout(binding=0) uniform texture2D base_color_texture;
 layout(binding=1) uniform texture2D metallic_texture;
 layout(binding=2) uniform texture2D roughness_texture;
+layout(binding=3) uniform texture2D emission_texture;
 
 in vec4 world_position;
 in vec4 world_normal;
@@ -59,7 +60,7 @@ in flat int material_index;
 out vec4 out_color;
 out vec4 out_position;
 out vec4 out_normal;
-out vec2 out_roughness_metallic;
+out vec4 out_roughness_metallic_emissive;
 
 void main()
 {
@@ -80,28 +81,47 @@ void main()
 		// Metallic
 		if (material.metallic_image_index >= 0)
 		{
-			out_roughness_metallic.g = texture(sampler2D(metallic_texture, smp), pixel_texcoord).r;
+			out_roughness_metallic_emissive.g = texture(sampler2D(metallic_texture, smp), pixel_texcoord).r;
 		}
 		else
 		{
-			out_roughness_metallic.g = material.metallic;
+			out_roughness_metallic_emissive.g = material.metallic;
 		}
 
 		// Roughness
 		if (material.roughness_image_index >= 0)
 		{
-			out_roughness_metallic.r = texture(sampler2D(roughness_texture, smp), pixel_texcoord).r;
+			out_roughness_metallic_emissive.r = texture(sampler2D(roughness_texture, smp), pixel_texcoord).r;
 		}
 		else
 		{
-			out_roughness_metallic.r = material.roughness;
+			out_roughness_metallic_emissive.r = material.roughness;
+		}
+
+		// Emission Color and Strength
+		if (material.emission_strength > 0.0)
+		{	
+			out_roughness_metallic_emissive.b = material.emission_strength;
+			if (material.emission_color_image_index >= 0)
+			{
+				out_color.rgb = texture(sampler2D(emission_texture, smp), pixel_texcoord).rgb;
+				out_color.a = 1.0;
+			}
+			else
+			{
+				out_color.rgb = material.emission_color.rgb;
+				out_color.a = 1.0;
+			}
+		}
+		else
+		{
+			out_roughness_metallic_emissive.b = 0.0;
 		}
 	}
 	else
 	{
 		out_color = vec4(1,0,1,1);
-		out_roughness_metallic.r = 1.0;
-		out_roughness_metallic.g = 0.0;
+		out_roughness_metallic_emissive = vec4(1,0,0,0);
 	}
 	out_position = world_position; 
 	out_normal = normalize(world_normal);

@@ -184,17 +184,21 @@ table Object
 
 table Material
 {
-	unique_id	: int;
-	name		: string;
+	unique_id				: int;
+	name					: string;
 
-	base_color			: Vec4;
-	base_color_image_id	: int; 
+	base_color				: Vec4;
+	base_color_image_id		: int; 
 
-	metallic			: float;
-	metallic_image_id	: int;
+	metallic				: float;
+	metallic_image_id		: int;
 
-	roughness			: float;
-	roughness_image_id	: int;
+	roughness				: float;
+	roughness_image_id		: int;
+
+	emission_color			: Vec4;
+	emission_color_image_id	: int;
+	emission_strength		: float;
 }
 
 table Image

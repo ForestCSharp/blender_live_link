@@ -31,9 +31,12 @@ TYPE_DEF(HMM_Mat4,mat4)
 struct Material
 {
 	vec4 base_color;
+	vec4 emission_color;
 	float metallic;
 	float roughness;
+	float emission_strength;
 	int base_color_image_index;
+	int emission_color_image_index;
 	int metallic_image_index;
 	int roughness_image_index;
 };

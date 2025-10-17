@@ -43,7 +43,7 @@ struct SunLight {
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=1) uniform texture2D position_tex;
 layout(binding=2) uniform texture2D normal_tex;
-layout(binding=3) uniform texture2D roughness_metallic_tex;
+layout(binding=3) uniform texture2D roughness_metallic_emissive_tex;
 layout(binding=4) uniform texture2D ssao_tex;
 
 layout(binding=0) uniform sampler tex_sampler;
@@ -249,52 +249,63 @@ void main()
 	else
 	{
 		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
-		vec2 sampled_roughness_metallic = texture(sampler2D(roughness_metallic_tex, tex_sampler), uv).rg;
-		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;	
+		vec4 sampled_roughness_metallic_emissive = texture(sampler2D(roughness_metallic_emissive_tex, tex_sampler), uv);
+		float roughness = sampled_roughness_metallic_emissive.r;
+		float metallic = sampled_roughness_metallic_emissive.g;
+		float emission_strength = sampled_roughness_metallic_emissive.b;
 
-		for (int i = 0; i < num_point_lights; ++i)
+		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;
+
+		// When emission_strength is greater than zero, the emission color lives in color_tex
+		if (emission_strength > 0.0)
 		{
-			final_color.xyz += sample_point_light(
-				point_lights[i], 
-				view_position,
-				sampled_position.xyz, 
-				sampled_normal.xyz, 
-				sampled_color.xyz, 
-				sampled_roughness_metallic.r, 
-				sampled_roughness_metallic.g
-			);
-
+			final_color = sampled_color * emission_strength;
 		}
-
-		for (int i = 0; i < num_spot_lights; ++i)
+		else
 		{
-			final_color.xyz += sample_spot_light(
-				spot_lights[i], 
-				view_position,
-				sampled_position.xyz, 
-				sampled_normal.xyz, 
-				sampled_color.xyz, 
-				sampled_roughness_metallic.r, 
-				sampled_roughness_metallic.g
-			);
+			for (int i = 0; i < num_point_lights; ++i)
+			{
+				final_color.xyz += sample_point_light(
+					point_lights[i], 
+					view_position,
+					sampled_position.xyz, 
+					sampled_normal.xyz, 
+					sampled_color.xyz, 
+					roughness, 
+					metallic
+				);
+
+			}
+
+			for (int i = 0; i < num_spot_lights; ++i)
+			{
+				final_color.xyz += sample_spot_light(
+					spot_lights[i], 
+					view_position,
+					sampled_position.xyz, 
+					sampled_normal.xyz, 
+					sampled_color.xyz, 
+					roughness, 
+					metallic
+				);
+			}
+
+			for (int i = 0; i < num_sun_lights; ++i)
+			{
+				final_color.xyz += sample_sun_light(
+					sun_lights[i], 
+					view_position,
+					sampled_position.xyz, 
+					sampled_normal.xyz, 
+					sampled_color.xyz, 
+					roughness, 
+					metallic
+				);
+			}
+
+			// Apply ambient occlusion
+			final_color *= ambient_occlusion;
 		}
-
-		for (int i = 0; i < num_sun_lights; ++i)
-		{
-			final_color.xyz += sample_sun_light(
-				sun_lights[i], 
-				view_position,
-				sampled_position.xyz, 
-				sampled_normal.xyz, 
-				sampled_color.xyz, 
-				sampled_roughness_metallic.r, 
-				sampled_roughness_metallic.g
-			);
-		}
-
-
-		// Apply ambient occlusion
-		final_color *= ambient_occlusion;
 	}
 
 	frag_color = final_color;

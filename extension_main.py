@@ -565,12 +565,16 @@ class LiveLinkConnection():
         for material_id, material in referenced_materials.items():
             class MaterialData:
                 def __init__(self):
-                    self.base_color = (1,1,1,1)
+                    self.base_color = (1.0,1.0,1.0,1.0)
                     self.base_color_image_id = None 
                     self.metallic = 0.0
                     self.metallic_image_id = None
                     self.roughness = 0.0
                     self.roughness_image_id = None
+                    self.emission_color = (0.0,0.0,0.0,0.0)
+                    self.emission_color_image_id = None
+                    self.emission_strength = 0.0
+
 
 
             # Helper to register an image id for a material_node_input if it contains a valid image
@@ -612,6 +616,12 @@ class LiveLinkConnection():
                     roughness_input = bsdf.inputs["Roughness"]
                     material_data.roughness = roughness_input.default_value
                     material_data.roughness_image_id = extract_image_id(roughness_input)
+                    # Emissive
+                    emission_color_input = bsdf.inputs["Emission Color"]
+                    emission_strength_input = bsdf.inputs["Emission Strength"]
+                    material_data.emission_color = emission_color_input.default_value
+                    material_data.emission_color_image_id = extract_image_id(emission_color_input)
+                    material_data.emission_strength = emission_strength_input.default_value
 
             # End current flatbuffers Material and add to list
 
@@ -642,6 +652,13 @@ class LiveLinkConnection():
             Material.AddRoughness(builder, material_data.roughness)
             if material_data.roughness_image_id is not None:
                 Material.AddRoughnessImageId(builder, material_data.roughness_image_id)
+
+            # Emission
+            emission_color_vec4 = Vec4.CreateVec4(builder, *material_data.emission_color)
+            Material.AddEmissionColor(builder, emission_color_vec4)
+            if material_data.emission_color_image_id is not None:
+                Material.AddEmissionColorImageId(builder, material_data.emission_color_image_id)
+            Material.AddEmissionStrength(builder, material_data.emission_strength)
 
             flatbuffer_material = Material.End(builder)
             flatbuffer_materials.append(flatbuffer_material)

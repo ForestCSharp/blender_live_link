@@ -601,11 +601,14 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 
 	geometry_Material_t new_material = {
 		.base_color = flatbuffer_helpers::to_hmm_vec4(in_material.base_color()),
+		.emission_color = flatbuffer_helpers::to_hmm_vec4(in_material.emission_color()),
 		.metallic = in_material.metallic(),
 		.roughness = in_material.roughness(),
+		.emission_strength = in_material.emission_strength(),
 		.base_color_image_index = -1,
 		.metallic_image_index = -1,
 		.roughness_image_index = -1,
+		.emission_color_image_index = -1,
 	};
 
 	int base_color_image_id = in_material.base_color_image_id();
@@ -615,7 +618,6 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		assert(state.image_id_to_index.contains(base_color_image_id));
 		new_material.base_color_image_index = state.image_id_to_index[base_color_image_id];
 	}
-
 
 	int metallic_image_id = in_material.metallic_image_id();
 	if (metallic_image_id > 0)
@@ -631,6 +633,14 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		printf("Found roughness image id: %i\n", roughness_image_id);
 		assert(state.image_id_to_index.contains(roughness_image_id));
 		new_material.roughness_image_index = state.image_id_to_index[roughness_image_id];
+	}
+
+	int emission_color_image_id = in_material.emission_color_image_id();
+	if (emission_color_image_id > 0)
+	{
+		printf("Found roughness image id: %i\n", emission_color_image_id);
+		assert(state.image_id_to_index.contains(emission_color_image_id));
+		new_material.emission_color_image_index = state.image_id_to_index[emission_color_image_id];
 	}
 
 	const i32 array_index = state.materials.length();
@@ -1227,7 +1237,7 @@ void init(void)
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
 			.colors[3] = {
-				.pixel_format = SG_PIXELFORMAT_RG32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
 			.label = "geometry-pipeline"
 		},
@@ -1251,7 +1261,7 @@ void init(void)
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
 		},
 		.outputs[3] = {
-			.pixel_format = SG_PIXELFORMAT_RG32F,
+			.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			.load_action = SG_LOADACTION_CLEAR,
 			.store_action = SG_STOREACTION_STORE,
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
@@ -2043,6 +2053,7 @@ void frame(void)
 							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images[material.base_color_image_index] : state.default_image;
 							GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images[material.metallic_image_index] : state.default_image;
 							GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images[material.roughness_image_index] : state.default_image;
+							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images[material.emission_color_image_index] : state.default_image;
 
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
@@ -2051,6 +2062,7 @@ void frame(void)
 									[0] = base_color_image.get_gpu_image(),
 									[1] = metallic_image.get_gpu_image(),
 									[2] = roughness_image.get_gpu_image(),
+									[3] = emission_color_image.get_gpu_image(),
 								},
 								.samplers[0] = state.sampler,
 								.storage_buffers = {
