@@ -25,6 +25,27 @@ struct Vertex
 	float _padding[2];
 };
 
+struct SkinnedVertex
+{
+	HMM_Vec4 joint_indices;
+	HMM_Vec4 joint_weights;
+};
+
+struct MeshInitData
+{	
+	u32 num_indices;
+	u32* indices;
+
+	u32 num_vertices;
+	Vertex* vertices;
+	SkinnedVertex* skinned_vertices;
+
+	u32 num_material_indices;
+	i32* material_indices;
+};
+
+// FCS TODO: Don't keep CPU-side data around if you don't need it (indices, vertices, etc.
+// FCS TODO: verts kept around for physics body creation. Refactor
 struct Mesh 
 {
 	u32 index_count;
@@ -32,8 +53,11 @@ struct Mesh
 	GpuBuffer<u32> index_buffer; 
 
 	u32 vertex_count;
-	Vertex* vertices;
+	Vertex* vertices; 
 	GpuBuffer<Vertex> vertex_buffer;
+
+	bool has_skinned_vertices;
+	GpuBuffer<SkinnedVertex> skinned_vertex_buffer;
 
 	u32 material_indices_count;
 	i32* material_indices;
@@ -42,50 +66,62 @@ struct Mesh
 };
 
 // Takes ownership of vertices and indices
-Mesh make_mesh(
-	Vertex* vertices, u32 vertices_len, 
-	u32* indices, u32 indices_len,
-	i32* material_indices, u32 num_material_indices
-)
+Mesh make_mesh(const MeshInitData& in_init_data)
 {
 	BoundingBox bounding_box = bounding_box_init();
 
-	for (i32 vtx_idx = 0; vtx_idx < vertices_len; ++vtx_idx)
+	for (i32 vtx_idx = 0; vtx_idx < in_init_data.num_vertices; ++vtx_idx)
 	{
-		Vertex v = vertices[vtx_idx];
+		Vertex v = in_init_data.vertices[vtx_idx];
 		HMM_Vec3 vtx_pos = v.position.XYZ;
 		bounding_box.min = HMM_MinV3(bounding_box.min, vtx_pos);
 		bounding_box.max = HMM_MaxV3(bounding_box.max, vtx_pos);
 	}
 
-	u64 indices_size = sizeof(u32) * indices_len;
-	u64 vertices_size = sizeof(Vertex) * vertices_len;
+	u64 indices_size = sizeof(u32) * in_init_data.num_indices;
+	u64 vertices_size = sizeof(Vertex) * in_init_data.num_vertices;
 
-	return (Mesh) {
-		.index_count = indices_len,
-		.indices = indices,
+	Mesh out_mesh {
+		.index_count = in_init_data.num_indices,
+		.indices = in_init_data.indices,
 		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
-			.data = indices,
+			.data = in_init_data.indices,
 			.size = indices_size,
 			.usage = {
 				.index_buffer = true,
 			},
 			.label = "Mesh::index_buffer",
 		}),
-		.vertex_count = vertices_len,
-		.vertices = vertices,
+		.vertex_count = in_init_data.num_vertices,
+		.vertices = in_init_data.vertices,
 		.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>){
-			.data = vertices,
+			.data = in_init_data.vertices,
 			.size = vertices_size,
 			.usage = {
 				.vertex_buffer = true,
 			},
 			.label = "Mesh::vertex_buffer",
 		}),	
-		.material_indices_count = num_material_indices,
-		.material_indices = material_indices,
+		.material_indices_count = in_init_data.num_material_indices,
+		.material_indices = in_init_data.material_indices,
 		.bounding_box = bounding_box,
 	};
+
+	if (in_init_data.skinned_vertices != nullptr)
+	{
+		u64 skinned_vertices_size = sizeof(SkinnedVertex) * in_init_data.num_vertices;
+		out_mesh.has_skinned_vertices = true;
+		out_mesh.skinned_vertex_buffer = GpuBuffer((GpuBufferDesc<SkinnedVertex>){
+			.data = in_init_data.skinned_vertices,
+			.size = skinned_vertices_size,
+			.usage = {
+				.vertex_buffer = true,
+			},
+			.label = "Mesh::skinned_vertex_buffer",
+		});
+	}
+
+	return out_mesh;
 }
 
 enum class LightType : u8
@@ -410,8 +446,16 @@ void object_cleanup_gpu_resources(Object& in_object)
 		free(in_object.mesh.indices);
 		in_object.mesh.index_buffer.destroy_gpu_buffer();
 
-		free(in_object.mesh.vertices);
-		in_object.mesh.vertex_buffer.destroy_gpu_buffer();
+		if (in_object.mesh.vertices)
+		{
+			free(in_object.mesh.vertices);
+			in_object.mesh.vertex_buffer.destroy_gpu_buffer();
+		}
+
+		if (in_object.mesh.has_skinned_vertices)
+		{
+			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
+		}
 	}
 }
 

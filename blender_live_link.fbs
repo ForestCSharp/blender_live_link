@@ -49,7 +49,7 @@ table Mesh
 
 	// Optional Skinning Data
 	joint_indices	: [int];	// 4 joint indices per vert
-	joint_weights	: [int];	// 4 joint weights per vert
+	joint_weights	: [float];	// 4 joint weights per vert
 
 	// Material Data
 	material_ids	: [int];	

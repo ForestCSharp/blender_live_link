@@ -39,6 +39,7 @@ public:
 	GpuBuffer(GpuBufferDesc<T> in_desc)
 	: data(in_desc.data)
 	, size(in_desc.size)
+	, _length(in_desc.size / sizeof(T))
 	, usage(in_desc.usage)
 	{
 		set_label(in_desc.label);
@@ -114,12 +115,17 @@ public:
 		label = std::string(in_label);
 	}
 
+	u64 length() const { return _length; }
+
 protected:
 	/* Underlying Buffer Data */
 	T* data;
 
 	/* Data Size */ 
 	u64 size;
+
+	/* The element count of the buffer */
+	u64 _length;
 
 	/* buffer usage info */
 	sg_buffer_usage usage;

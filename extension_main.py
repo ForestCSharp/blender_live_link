@@ -19,6 +19,7 @@ import os
 import socket
 import sys
 import traceback
+import time
 
 from io import StringIO
 
@@ -734,6 +735,40 @@ class LiveLinkConnection():
 
 live_link_connection = []
 
+batched_updates = set()
+batched_deleted = set()
+
+# Actually sends batched updates
+def send_updates_timer(): 
+    global batched_updates, batched_deleted 
+
+    # No new updates in SEND_DELAY seconds → send batched data
+    if batched_updates or batched_deleted:
+
+        depsgraph_update_post_callback.enabled = False
+
+        live_link_connection.send_object_list(
+            updated_objects=list(batched_updates),
+            deleted_object_uids=list(batched_deleted),
+        )
+
+        depsgraph_update_post_callback.enabled = True
+
+        # Clear batch
+        batched_updates.clear()
+        batched_deleted.clear()
+
+    return None
+
+# Schedules send but doesn't actually send the objects to the game
+def schedule_send():
+    # unregister timer if currently active:
+    if bpy.app.timers.is_registered(send_updates_timer):
+        bpy.app.timers.unregister(send_updates_timer)
+    # Schedule new timer
+    SEND_DELAY = 0.25
+    bpy.app.timers.register(send_updates_timer, first_interval=SEND_DELAY)
+
 # Callback when depsgraph has finished updating
 @persistent
 def depsgraph_update_post_callback(scene, depsgraph):
@@ -741,7 +776,6 @@ def depsgraph_update_post_callback(scene, depsgraph):
         return
 
     updated_objects = []
-    deleted_object_uids = []
 
     # Determine if any objects were deleted
     current_objects = set(obj.session_uid for obj in scene.objects)
@@ -750,32 +784,22 @@ def depsgraph_update_post_callback(scene, depsgraph):
     if hasattr(depsgraph_update_post_callback, "previous_objects"):
         previous_objects = depsgraph_update_post_callback.previous_objects
         # Find the difference (deleted objects)
+        deleted_object_uids = []
         deleted_object_uids = list(previous_objects - current_objects)
-        if len(deleted_object_uids) > 0:
-            print(f"Deleted Objects UIDs: {', '.join(map(str, deleted_object_uids))}")
+        batched_deleted.update(deleted_object_uids)
     
     # Store the current object names for the next update
     depsgraph_update_post_callback.previous_objects = current_objects
 
+    # Accumulate updated objects
     for update in depsgraph.updates:
         update_id = update.id
         if isinstance(update_id, bpy.types.Object):
             if update.is_updated_transform or update.is_updated_geometry:
-                # appending update_id won't work, need to look up object in scene.objects
-                updated_object = scene.objects[update_id.name]
-                updated_objects.append(updated_object)
+                batched_updates.add(scene.objects[update_id.name])
 
-    if len(updated_objects) > 0 or len(deleted_object_uids) > 0: 
-        # Temporarily disable depsgraph_update_post_callback to prevent infinite recursion
-        depsgraph_update_post_callback.enabled = False 
-
-        live_link_connection.send_object_list(
-            updated_objects = updated_objects, 
-            deleted_object_uids = deleted_object_uids
-        )
-
-        # Re-Enable depsgraph_update_post_callback
-        depsgraph_update_post_callback.enabled = True 
+    # Start/refresh the timer
+    schedule_send()
 
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True

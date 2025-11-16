@@ -49,9 +49,9 @@ using ankerl::unordered_dense::map;
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "handmade_math/HandmadeMath.h"
 
-// STB Dynamic Array
+// Simple Template Wrapper around stb_ds array
 #define STB_DS_IMPLEMENTATION
-#include "stb/stb_ds.h"
+#include "stretchy_buffer.h"
 
 // cxxopts
 #include "cxxopts/cxxopts.hpp"
@@ -142,25 +142,6 @@ bool g_show_imgui = true;
 #define DEBUG_UI(...)
 #endif // WITH_DEBUG_UI
 
-// Basic Template-wrapper around stb_ds array functionality
-template<typename T>
-struct StretchyBuffer
-{	
-public:
-	StretchyBuffer() { _data = nullptr; }
-	~StretchyBuffer() { reset(); }
-	StretchyBuffer( const StretchyBuffer& ) = delete; // non construction-copyable
-    StretchyBuffer& operator=( const StretchyBuffer& ) = delete; // non copyable
-	void add(const T& value) { arrput(_data, value); }
-	void add_unitialized(const size_t num) { arraddn(_data, num); }
-	void reset() { if (_data) { arrfree(_data); _data = nullptr; } }
-	size_t length() { return arrlen(_data); }
-	T* data() { return _data; }
-	T& operator[](i32 idx) { return _data[idx]; }
-protected:
-	T* _data = nullptr;
-};
-
 // Flatbuffer helper conversion functions
 namespace flatbuffer_helpers
 {
@@ -240,7 +221,6 @@ CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_pr
 	};
 
 	Frustum frustum = frustum_create(in_view_proj);
-
 
 	for (auto& [unique_id, object] : in_objects)
 	{
@@ -758,6 +738,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				{
 					u32 num_vertices = 0;
 					Vertex* vertices = nullptr;
+					SkinnedVertex* skinned_vertices = nullptr;
 
 					auto flatbuffer_positions = object_mesh->positions();
 					auto flatbuffer_normals = object_mesh->normals();
@@ -798,8 +779,38 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					auto flatbuffer_joint_weights = object_mesh->joint_weights();
 					if (armature_id > 0 && flatbuffer_joint_indices && flatbuffer_joint_weights)
 					{
+						// Make sure we already set up regular vertices and the skinned data matches that count
+						assert(num_vertices > 0);
+						
+						const u32 num_joint_indices = flatbuffer_joint_indices->size();
+						const u32 num_joint_weights = flatbuffer_joint_weights->size();
+						assert(num_joint_indices == num_joint_weights);
+
+						u32 num_skinned_vertices = num_joint_indices / 4;
+						assert(num_vertices == num_skinned_vertices);
+
 						printf("We have skinning data!\n");
-						//FCS TODO:
+
+						skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
+						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
+						{
+							skinned_vertices[vertex_idx] = {
+								.joint_indices = {	
+									.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
+									.Y = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 1),
+									.Z = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 2),
+									.W = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 3),
+								},
+								.joint_weights = {
+									.X = flatbuffer_joint_weights->Get(vertex_idx * 4 + 0),
+									.Y = flatbuffer_joint_weights->Get(vertex_idx * 4 + 1),
+									.Z = flatbuffer_joint_weights->Get(vertex_idx * 4 + 2),
+									.W = flatbuffer_joint_weights->Get(vertex_idx * 4 + 3),
+								},
+							};
+
+							//FCS TODO: PRINT
+						}
 					}
 
 					u32 num_indices = 0;
@@ -827,7 +838,6 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							{
 								printf("\tFailed to find material with id: %i\n", material_id);
 								continue;
-								//exit(0);
 							}
 							material_indices[material_id_idx] = state.material_id_to_index[material_id];
 						}
@@ -836,12 +846,19 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					// Set Mesh Data on Game Object
 					if (num_vertices > 0 && num_indices > 0)
 					{
+						const MeshInitData mesh_init_data = {
+							.num_indices = num_indices,
+							.indices = indices,
+
+							.num_vertices = num_vertices,
+							.vertices = vertices,
+							.skinned_vertices = skinned_vertices,
+
+							.num_material_indices = num_material_indices,
+							.material_indices = material_indices,
+						};
+						game_object.mesh = make_mesh(mesh_init_data);
 						game_object.has_mesh = true;
-						game_object.mesh = make_mesh(
-							vertices, num_vertices, 
-							indices, num_indices,
-							material_indices, num_material_indices
-						);
 					}
 				}
 
@@ -1104,7 +1121,7 @@ void live_link_thread_function()
 				total_bytes_read += current_bytes_read;
 				i32 next_idx = flatbuffer_data.length(); 
 				//arraddn(flatbuffer_data, current_bytes_read);
-				flatbuffer_data.add_unitialized(current_bytes_read);
+				flatbuffer_data.add_uninitialized(current_bytes_read);
 				memcpy(&flatbuffer_data[next_idx], buffer, current_bytes_read);
 				++packets_read;	
 			}
@@ -1481,7 +1498,7 @@ void init(void)
 			assert(file_size > 0);
 
 			StretchyBuffer<u8> flatbuffer_data;
-			flatbuffer_data.add_unitialized(file_size);
+			flatbuffer_data.add_uninitialized(file_size);
 
 			size_t bytes_read = fread(flatbuffer_data.data(), 1, file_size, file);
 			assert(bytes_read == (size_t) file_size);
