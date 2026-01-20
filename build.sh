@@ -58,10 +58,11 @@ fi
 
 install_args="--command extension install-file blender_live_link.zip --repo user_default --enable"
 
+# Default to test_file but check first arg for a specific blend file
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
-#run_args="$SCRIPT_DIR/blend_files/cube.blend"
-#run_args="$SCRIPT_DIR/blend_files/sponza.blend"
-#run_args="$SCRIPT_DIR/../wanderer.blend"
+if [ -n "$1" ]; then
+	run_args="$SCRIPT_DIR/blend_files/$1"
+fi
 
 if [[ $OS = Windows ]]; then
 	# Note: blender.exe should be on system path on windows

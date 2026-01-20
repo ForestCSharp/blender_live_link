@@ -1,23 +1,17 @@
 TODO
-	- Don't run shaders on disabled render passes...
-	- Materials + Textures
-		- TODO: Need to use some default material if no material assigned in blender
+	- Cubemap rendering (for GI)
+		- need to add cubemap support to render_pass.h
 
-		- V1: Just send base_color, metallic, roughness as values
-		- V2: Optional textures for those three as well
-			- textures will need a similar setup to key by their uid and stored at top-level Update table
+	- Don't run shaders on disabled render passes...
 	- Fix IsGrounded for Character Jumping
 
 Tasks:
 	- Skinned Animations
-	- Texturing and PBR
-		- subset of blender nodes converted to material shaders...
-	- Reflection Captures
+	- GI/Reflection Captures
 	- Shadows
 		- Cascaded Shadow Map on Sunlight
 		- Screen Space Shadows
 	- Temporal Anti Aliasing
-
 	- Sokol Compute Shaders
 		- [TODO] first use-case
 

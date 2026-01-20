@@ -2,6 +2,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Simple Template Wrapper around stb_ds array
+#define STB_DS_IMPLEMENTATION
+#include "core/stretchy_buffer.h"
+
 // C++ std lib Optional
 #include <optional>
 using std::optional;
@@ -27,19 +31,23 @@ using std::atomic;
 
 // Jolt Physics
 //#include "Jolt/jolt_single_file.cpp"
-#include "physics_system.h"
+#include "physics/physics_system.h"
 
 // Basic Types
-#include "types.h"
+#include "core/types.h"
 
 // Game Objects we receive from Blender
-#include "game_object.h"
+#include "game_object/game_object.h"
 
-// Gpu Buffer Wrapper
-#include "gpu_buffer.h"
+// Gpu Image and Buffer Wrappers
+#include "render/gpu_buffer.h"
+#include "render/gpu_image.h"
 
-// Gpu Image Wrapper
-#include "gpu_image.h"
+// Render Pass abstraction
+#include "render/render_pass.h"
+
+// Cubemap rendering
+#include "render/cubemap_render.h"
 
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
@@ -48,10 +56,6 @@ using ankerl::unordered_dense::map;
 // Handmade Math
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "handmade_math/HandmadeMath.h"
-
-// Simple Template Wrapper around stb_ds array
-#define STB_DS_IMPLEMENTATION
-#include "stretchy_buffer.h"
 
 // cxxopts
 #include "cxxopts/cxxopts.hpp"
@@ -71,15 +75,10 @@ using ankerl::unordered_dense::map;
 #define FONT_C64   (4)
 #define FONT_ORIC  (5)
 
-// Generated Shader Files
-#include "../data/shaders/ssao_constants.h"
-#include "geometry.compiled.h"
-#include "ssao.compiled.h"
-#include "blur.compiled.h"
-#include "dof_combine.compiled.h"
-#include "lighting.compiled.h"
-#include "tonemapping.compiled.h"
-#include "overlay_texture.compiled.h"
+#include "render/shader_files.h"
+
+// geometry pass
+#include "render/geometry_pass.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -87,8 +86,11 @@ using ankerl::unordered_dense::map;
 // Thread-Safe Channel
 #include "network/channel.h"
 
-// Rendering Sample Count
-#define SAMPLE_COUNT 1
+// Culling
+#include "render/culling.h"
+
+// Global State
+#include "state/state.h"
 
 // Macro to define an event and run code in __VA_ARGS__ when it triggers
 #define DEFINE_EVENT_TWO_KEYS(key_1, key_2, ...)\
@@ -197,304 +199,6 @@ static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_
     sdtx_crlf();
 }
 
-#define WITH_VERBOSE_CULL_RESULTS 1
-
-struct CullResult
-{
-	// Pointers to objects remaining after culling
-	map<i32, Object*> objects;
-
-	// Number of objects this cull result rejected
-	i32 cull_count = 0;
-
-	#if WITH_VERBOSE_CULL_RESULTS
-	i32 non_renderable_cull_count = 0;
-	i32 visibility_cull_count = 0;
-	i32 frustum_cull_count = 0;
-	#endif
-};
-
-CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj)
-{
-	CullResult out_cull_result = {
-		.cull_count = 0,
-	};
-
-	Frustum frustum = frustum_create(in_view_proj);
-
-	for (auto& [unique_id, object] : in_objects)
-	{
-		// Cull non-renderable objects
-		if (!object.has_mesh)
-		{
-			out_cull_result.cull_count += 1;
-			#if WITH_VERBOSE_CULL_RESULTS
-			out_cull_result.non_renderable_cull_count += 1;
-	  		#endif
-			continue;
-		}
-
-		// Cull invisible objects
-		if (!object.visibility)
-		{
-			out_cull_result.cull_count += 1;
-			#if WITH_VERBOSE_CULL_RESULTS
-			out_cull_result.visibility_cull_count += 1;
-	  		#endif
-			continue;
-		}
-
-		// Frustum Cull
-		BoundingBox object_bounding_box = object_get_bounding_box(object);
-		if (frustum_cull(frustum, object_bounding_box))
-		{
-			out_cull_result.cull_count += 1;
-			#if WITH_VERBOSE_CULL_RESULTS
-			out_cull_result.frustum_cull_count += 1;
-	  		#endif
-			continue;
-		}
-
-		out_cull_result.objects[unique_id] = &object;
-	}
-
-	return out_cull_result;
-}
-
-struct RenderPassOutputDesc {
-	sg_pixel_format pixel_format	= _SG_PIXELFORMAT_DEFAULT;
-	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
-	sg_store_action store_action	= SG_STOREACTION_STORE;
-	sg_color clear_value			= {0.0f, 0.0f, 0.0f, 0.0f };
-};
-
-struct RenderPassDesc {
-	optional<sg_pipeline_desc> pipeline_desc;
-	int num_outputs = 0;
-	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
-	bool render_to_swapchain = false;
-};
-
-struct RenderPass {
-public: // Variables
-	sg_pipeline pipeline;
-
-	sg_image color_outputs[SG_MAX_COLOR_ATTACHMENTS];
-
-	//FCS TODO: Make Optional
-	sg_image depth_image;
-
-	sg_attachments attachments;
-
-	RenderPassDesc desc;
-
-public: // Functions
-	void init(const RenderPassDesc& in_desc)
-	{	
-		assert(in_desc.num_outputs > 0 || in_desc.render_to_swapchain);
-
-		desc = in_desc;
-		if (desc.pipeline_desc)
-		{
-			pipeline = sg_make_pipeline(*desc.pipeline_desc);
-		}
-		handle_resize();
-	}
-
-	void handle_resize()
-	{
-		int width = sapp_width();
-		int height = sapp_height();
-		sg_swapchain swapchain = sglue_swapchain();
-
-		// Create render target if we aren't rendering directly to swapchain
-		if (!desc.render_to_swapchain)
-		{
-			sg_attachments_desc attachments_desc = {};
-
-			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
-			{
-				const RenderPassOutputDesc& output_desc = desc.outputs[output_idx];
-				sg_image& color_image = color_outputs[output_idx];	
-				if (color_image.id != SG_INVALID_ID)
-				{
-					sg_destroy_image(color_image);
-				}
-
-				sg_image_desc color_image_desc = {
-					.usage = {
-						.render_attachment = true,
-					},
-					.width = width,
-					.height = height,
-					.pixel_format = output_desc.pixel_format,
-					.sample_count = SAMPLE_COUNT,
-					.label = "color_image",
-				};
-			
-				color_image = sg_make_image(&color_image_desc);
-
-				attachments_desc.colors[output_idx].image = color_image;
-			}
-
-			if (depth_image.id != SG_INVALID_ID)
-			{
-				sg_destroy_image(depth_image);
-			}
-
-			sg_image_desc depth_image_desc = {
-				.usage = {
-					.render_attachment = true,
-				},
-				.width = width,
-				.height = height,
-				.pixel_format = swapchain.depth_format,
-				.sample_count = SAMPLE_COUNT,
-				.label = "depth-image"
-			};
-
-			depth_image = sg_make_image(&depth_image_desc);
-			attachments_desc.depth_stencil.image = depth_image;
-		
-			if (attachments.id != SG_INVALID_ID)
-			{
-				sg_destroy_attachments(attachments);
-			}
-
-			attachments = sg_make_attachments(attachments_desc);
-		}
-	}
-
-	void execute(std::function<void()> in_callback)
-	{
-		sg_pass pass = {
-			.attachments = !desc.render_to_swapchain ? attachments : (sg_attachments){},
-			.swapchain = desc.render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
-		};
-
-		for (int i = 0; i < SG_MAX_COLOR_ATTACHMENTS; ++i)
-		{
-			const RenderPassOutputDesc& output_desc = desc.outputs[i];
-
-			pass.action.colors[i] = {
-				.load_action = output_desc.load_action,
-				.store_action = output_desc.store_action,
-				.clear_value = output_desc.clear_value,
-			};	
-		}
-
-		sg_begin_pass(pass);
-
-		if (pipeline.id != SG_INVALID_ID)
-		{
-			sg_apply_pipeline(pipeline);
-		}
-
-		in_callback();
-
-		sg_end_pass();
-	}
-};
-
-enum class ERenderPass : int
-{
-	Geometry,
-	SSAO,
-	SSAO_Blur,
-	Lighting,
-	DOF_Blur,
-	DOF_Combine,
-	Tonemapping,
-	DebugText,
-	CopyToSwapchain,
-	COUNT,
-};
-
-struct {
-	optional<std::string> init_file;
-
-	int width;
-	int height;
-
-	// Render Passes
-	RenderPass render_passes[(int)ERenderPass::COUNT];
-
-	// Rendering Feature Flags
-	bool ssao_enable = true;
-	bool dof_enable = true;
-
-	// SSAO Data 
-	sg_image ssao_noise_texture;
-	ssao_fs_params_t ssao_fs_params;
-
-	// Texture Sampler
-	sg_sampler sampler;
-
-	atomic<bool> game_running = true;
-	atomic<bool> blender_data_loaded = false;
-
-	// Active game objects
-	map<i32, Object> objects;
-
-	// ID of player character
-	optional<i32> player_character_id;
-
-	// ID of camera controller
-	optional<i32> camera_control_id;
-
-	// Are we currently simulating
-	bool is_simulating = true;
-
-	// These channels are how we pass our data from our live-link thread to the main thread
-	Channel<Object> updated_objects;
-	Channel<i32> deleted_objects;
-	Channel<bool> reset;
-
-	// Lighting fragment shader params
-	lighting_fs_params_t lighting_fs_params;
-
-	// Contains Lights Data packed up for gpu usage
-	bool needs_light_data_update = true;	
-
-	// Point Lights
-	StretchyBuffer<lighting_PointLight_t> point_lights;
-	GpuBuffer<lighting_PointLight_t> point_lights_buffer;
-
-	// Spot Lights
-	StretchyBuffer<lighting_SpotLight_t> spot_lights;
-	GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
-
-	// Sun (Directional) Lights
-	StretchyBuffer<lighting_SunLight_t> sun_lights;
-	GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
-
-	// Materials
-	map<i32,i32> material_id_to_index;
-	StretchyBuffer<geometry_Material_t> materials;
-	GpuBuffer<geometry_Material_t> materials_buffer;
-
-	// Images
-	map<i32,i32> image_id_to_index;
-	StretchyBuffer<GpuImage> images;
-	GpuImage default_image;
-
-	bool enable_debug_image_fullscreen = false;
-	i32 debug_image_index = 0;
-	
-	// Thread that listens for updates from Blender
-	std::thread live_link_thread;
-
-	SOCKET blender_socket = socket_invalid();
-	SOCKET connection_socket = socket_invalid();
-
-	bool debug_camera_active = true;
-	Camera debug_camera = {
-		.location = HMM_V3(2.5f, -15.0f, 3.0f),
-		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
-		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
-	};
-} state;
-
 bool register_image(const Blender::LiveLink::Image& in_image)
 {
 	int image_id = in_image.unique_id();
@@ -508,6 +212,7 @@ bool register_image(const Blender::LiveLink::Image& in_image)
 	auto data_vec = in_image.data();
 
 	GpuImageDesc image_desc = {
+		.type = SG_IMAGETYPE_2D,
 		.width = in_image.width(),
 		.height = in_image.height(),
 		.pixel_format = SG_PIXELFORMAT_RGBA32F, 
@@ -526,40 +231,6 @@ void reset_images()
 	state.images.reset();
 	state.enable_debug_image_fullscreen = false;
 	state.debug_image_index = 0;
-}
-
-const i32 MAX_MATERIALS = 1024;
-void init_materials_buffer()
-{
-	if (!state.materials_buffer.is_gpu_buffer_valid())
-	{
-		state.materials_buffer = GpuBuffer((GpuBufferDesc<geometry_Material_t>){
-			.data = nullptr,
-			.size = sizeof(geometry_Material_t) * MAX_MATERIALS,
-			.usage = {
-				.storage_buffer = true,
-				.stream_update = true,
-			},
-			.label = "materials",
-		});
-	}
-}
-
-GpuBuffer<geometry_Material_t>& get_materials_buffer()
-{
-	init_materials_buffer();
-	return state.materials_buffer;
-}
-
-void update_materials_buffer()
-{
-	// Write update to materials buffer
-	get_materials_buffer().update_gpu_buffer(
-		(sg_range){
-			.ptr = state.materials.data(),
-			.size = sizeof(geometry_Material_t) * state.materials.length(),
-		}
-	);	
 }
 
 // Registers a material and adds it to our gpu buffer
@@ -1150,16 +821,18 @@ void handle_resize()
 	{
 		state.width = new_width;
 		state.height = new_height;
-
-		sg_swapchain swapchain = sglue_swapchain();
 	
 		const int render_pass_count = (int) ERenderPass::COUNT;
 		for (i32 pass_index = 0; pass_index < render_pass_count; ++pass_index)
 		{
-			state.render_passes[pass_index].handle_resize();
+			state.render_passes[pass_index].handle_resize(state.width, state.height);
 		}
 	}
 }
+
+//FCS TODO: BEGIN Testing Cubemap
+Cubemap test_cubemap;
+//FCS TODO: END Testing Cubemap
 
 void init(void)
 {
@@ -1168,8 +841,9 @@ void init(void)
 	// Init sokol graphics
     sg_setup((sg_desc) {
 		.buffer_pool_size = 4096,
-		//.image_pool_size = 4096,
+		.image_pool_size = 4096,
 		//.sampler_pool_size = 1024,
+		.attachments_pool_size = 128,
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
@@ -1177,6 +851,7 @@ void init(void)
 	// Create Default Image
 	HMM_Vec4 default_image_data[1] = { HMM_V4(0,0,0,1) };
 	GpuImageDesc default_image_desc = {
+		.type = SG_IMAGETYPE_2D,
 		.width = 1,
 		.height = 1,
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
@@ -1184,6 +859,13 @@ void init(void)
 	};
 	state.default_image = GpuImage(default_image_desc);
 
+	// FCS TODO: BEGIN Testing Cubemap rendering
+	const CubemapDesc cubemap_desc = {
+		.size = 1024,
+		.location = HMM_V3(0,0,0),
+	};
+	test_cubemap = Cubemap(cubemap_desc);
+	// FCS TODO: END Testing Cubemap rendering
 
 	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
@@ -1224,76 +906,15 @@ void init(void)
 
 	sg_swapchain swapchain = sglue_swapchain();
 
-	//FCS TODO: shared info in pipeline desc and render pass desc re: outputs 
-	const i32 num_geometry_pass_outputs = 4;
-	RenderPassDesc geometry_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.layout = {
-				.buffers[0].stride = sizeof(Vertex),
-				.attrs = {
-					[ATTR_geometry_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
-					[ATTR_geometry_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
-					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
-			   }
-			},
-			.shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend())),
-			.index_type = SG_INDEXTYPE_UINT32,
-			.cull_mode = SG_CULLMODE_NONE,
-			.depth = {
-				.write_enabled = true,
-				.compare = SG_COMPAREFUNC_LESS_EQUAL,
-			},
-			.color_count = num_geometry_pass_outputs,
-			.colors[0] = {
-				.pixel_format = swapchain.color_format,
-			},
-			.colors[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			},
-			.colors[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			},
-			.colors[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			},
-			.label = "geometry-pipeline"
-		},
-		.num_outputs = num_geometry_pass_outputs,
-		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_CLEAR,
-			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.25, 0.25, 0.25, 1.0},
-		},
-		.outputs[1] = {
-			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.load_action = SG_LOADACTION_CLEAR,
-			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		},
-		.outputs[2] = {
-			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.load_action = SG_LOADACTION_CLEAR,
-			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		},
-		.outputs[3] = {
-			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.load_action = SG_LOADACTION_CLEAR,
-			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		},
-	};
-	get_render_pass(ERenderPass::Geometry).init(geometry_pass_desc);
-
+	// Init main geometry pass
+	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
+	
 	RenderPassDesc ssao_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-				.pixel_format = swapchain.depth_format,
-				.compare = SG_COMPAREFUNC_ALWAYS,
-				.write_enabled = false,
+				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
 			.label = "ssao-pipeline",
 		},
@@ -1306,7 +927,7 @@ void init(void)
 		},
 	};
 	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
-
+	
 	{	//SSAO Noise Texture
 		std::uniform_real_distribution<float> randomFloats(0.0, 1.0); // random floats between [0.0, 1.0]
 		std::default_random_engine generator;
@@ -1325,7 +946,7 @@ void init(void)
 			.width = SSAO_TEXTURE_WIDTH,
 			.height = SSAO_TEXTURE_WIDTH,
 			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.sample_count = SAMPLE_COUNT,
+			.sample_count = 1, 
 			.data.subimage[0][0].ptr = &ssao_noise,
 			.data.subimage[0][0].size = SSAO_TEXTURE_SIZE * sizeof(HMM_Vec4),
 			.label = "ssao_noise_texture"
@@ -1363,10 +984,8 @@ void init(void)
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-					.write_enabled = false,
-					},
+				.pixel_format = SG_PIXELFORMAT_NONE,
+			},
 			.label = "blur-pipeline",
 		},
 		.num_outputs = 1,
@@ -1383,9 +1002,7 @@ void init(void)
 			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-				.pixel_format = swapchain.depth_format,
-				.compare = SG_COMPAREFUNC_ALWAYS,
-				.write_enabled = false,
+				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
 			.label = "lighting-pipeline",
 		},
@@ -1403,10 +1020,8 @@ void init(void)
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-					.write_enabled = false,
-					},
+				.pixel_format = SG_PIXELFORMAT_NONE,
+			},
 			.label = "dof-blur-pipeline",
 		},
 		.num_outputs = 1,
@@ -1423,10 +1038,8 @@ void init(void)
 			.shader = sg_make_shader(dof_combine_dof_combine_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-						.write_enabled = false,
-					},
+				.pixel_format = SG_PIXELFORMAT_NONE,
+			},
 			.label = "dof-combine-pipeline",
 		},
 		.num_outputs = 1,
@@ -1443,10 +1056,8 @@ void init(void)
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-						.write_enabled = false,
-					},
+				.pixel_format = SG_PIXELFORMAT_NONE,
+			},
 			.label = "tonemapping-pipeline",
 		},
 		.num_outputs = 1,
@@ -1466,7 +1077,10 @@ void init(void)
 			.load_action = SG_LOADACTION_CLEAR,
 			.store_action = SG_STOREACTION_STORE,
 			.clear_value = {0.0, 0.0, 0.0, 0.0},
-		}
+		},
+		.depth_output = {
+			.pixel_format = swapchain.depth_format,
+		},
 	};
 	get_render_pass(ERenderPass::DebugText).init(debug_text_pass_desc);
 
@@ -1475,13 +1089,16 @@ void init(void)
 			.shader = sg_make_shader(overlay_texture_overlay_texture_shader_desc(sg_query_backend())),
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-					.pixel_format = swapchain.depth_format,
-					.compare = SG_COMPAREFUNC_ALWAYS,
-						.write_enabled = false,
-					},
+				.pixel_format = swapchain.depth_format,
+				.compare = SG_COMPAREFUNC_ALWAYS,
+				.write_enabled = false,
+			},
 			.label = "copy-to-swapchain-pipeline",
 		},
-		.render_to_swapchain = true,
+		.depth_output = {
+			.pixel_format = swapchain.depth_format,
+		},
+		.type = ERenderPassType::Swapchain,
 	};
 	get_render_pass(ERenderPass::CopyToSwapchain).init(copy_to_swapchain_pass_desc);
 
@@ -1650,7 +1267,7 @@ void frame(void)
 	);
 
 	// Reset State
-	DEFINE_EVENT_ONE_KEY(SAPP_KEYCODE_R,
+	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_R, SAPP_KEYCODE_LEFT_CONTROL,
 		// Reset object transforms and recreate physics state
 		for (auto& [unique_id, object] : state.objects)
 		{
@@ -1665,14 +1282,14 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
-		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("FPS", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Text("frame time: %f ms", delta_time * 1000.f);
 			ImGui::Text("FPS: %f", 1.0 / delta_time);
 			ImGui::Spacing();
 		}
 	
-		if (ImGui::CollapsingHeader("Rendering Features"), ImGuiTreeNodeFlags_DefaultOpen)
+		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Checkbox("SSAO", &state.ssao_enable);
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
@@ -1819,6 +1436,36 @@ void frame(void)
 
 	// Rendering
 	{
+		test_cubemap.render(state);
+
+		DEBUG_UI(
+			const i32 num_images = NUM_CUBE_FACES;
+			if (ImGui::CollapsingHeader("Cubemap Viewer"))
+			{
+				static i32 cube_face_idx = 0;
+				ImGui::SliderInt(
+					"Cube Face Index", 
+					&cube_face_idx, 
+					0, NUM_CUBE_FACES - 1, 
+					"%d", ImGuiSliderFlags_ClampOnInput
+				);
+
+				static i32 color_output_idx = 0;
+				ImGui::SliderInt(
+					"Colour Output Index", 
+					&color_output_idx, 
+					0, 3, 
+					"%d", ImGuiSliderFlags_ClampOnInput
+				);
+
+				RenderPass& geometry_pass = test_cubemap.geometry_passes[cube_face_idx];
+				sg_image color_output = geometry_pass.color_outputs[color_output_idx];
+
+				ImVec2 size = ImVec2(256, 256);
+				ImGui::Image(simgui_imtextureid(color_output), size);
+			}
+		);
+
 		{
 			// Run initially, and then only if our updates from blender encounter a light
 			if (state.needs_light_data_update)
@@ -2003,6 +1650,22 @@ void frame(void)
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
+		// Get our jolt body interface
+		JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
+		// Update Objects
+		for (auto& [unique_id, object] : state.objects)
+		{
+			// For objects that simulate physics, copy their physics transforms into their uniform buffers
+			object_copy_physics_transform(object, body_interface);
+
+			if (object.storage_buffer_needs_update)
+			{
+				object.storage_buffer_needs_update = false;
+				object_update_storage_buffer(object);
+			}
+		}
+
 		{ // Geometry Pass 	
 			get_render_pass(ERenderPass::Geometry).execute(
 				[&]()
@@ -2017,26 +1680,13 @@ void frame(void)
 					// Get our jolt body interface
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-					// Update Objects
-					for (auto& [unique_id, object] : state.objects)
-					{
-						// For objects that simulate physics, copy their physics transforms into their uniform buffers
-						object_copy_physics_transform(object, body_interface);
-
-						if (object.storage_buffer_needs_update)
-						{
-							object.storage_buffer_needs_update = false;
-							object_update_storage_buffer(object);
-						}
-					}
-
 					// Cull objects
 					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
 
 					DEBUG_UI(
-						if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen))
+						if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
 						{
-							ImGui::Text("Total Objects:%zu", state.objects.size());
+							ImGui::Text("Total Objects: %zu", state.objects.size());
 
 							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 							if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
@@ -2050,6 +1700,16 @@ void frame(void)
 								#endif
 								ImGui::TreePop();
 							}
+
+							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+							if (ImGui::TreeNode("Lights", "Lights"))
+							{
+								ImGui::Text("Num Point Lights: %i", state.point_lights.length());
+								ImGui::Text("Num Spot Lights:  %i", state.spot_lights.length());
+								ImGui::Text("Num Sun Lights:   %i", state.sun_lights.length());
+								ImGui::TreePop();
+							}
+
 						}
 					);
 
@@ -2089,11 +1749,6 @@ void frame(void)
 							};
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
-						}
-
-						if (object.has_light)
-						{
-							//FCS TODO: Draw Light Icon
 						}
 					}	
 				}
@@ -2461,7 +2116,7 @@ sapp_desc sokol_main(int argc, char* argv[])
 		.event_cb = event,
         .width = 1920,
         .height = 1080,
-        .sample_count = SAMPLE_COUNT,
+        .sample_count = 1,
         .window_title = "Blender Game",
         .icon = {
 			.sokol_default = true,

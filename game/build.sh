@@ -20,9 +20,9 @@ if [[ $OS_ARG = Windows ]]; then
 	rm -rf bin/game.exe
 
 	# Compile Sokol Library
-	clang -c src/sokol/sokol_single_file.c \
+	clang -c src/extern/sokol/sokol_single_file.c \
 			-g -O0 \
-			-I src/sokol/ \
+			-I src/extern/sokol/ \
 			-D SOKOL_D3D11 \
 			-o bin/sokol.lib
 
@@ -41,6 +41,7 @@ if [[ $OS_ARG = Windows ]]; then
 		-g -O0 \
 		-o bin/game.exe \
 		-I src \
+		-I src/extern \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
@@ -58,19 +59,19 @@ elif [[ $OS_ARG = Mac ]]; then
 	rm -rf bin/game
 
 	# Compile Sokol library
-	clang -c src/sokol/sokol_single_file.c \
+	clang -c src/extern/sokol/sokol_single_file.c \
 			-ObjC \
-			-I src/sokol/ \
+			-I src/extern/sokol/ \
 			-D SOKOL_METAL \
 			-o bin/libsokol.a
 
 	# Compile jolt as library, but only if it doesn't exist 
 	if [ ! -f ./bin/libjolt.a ]; then
 		echo "libjolt.a not found, building"
-		clang 	-c src/Jolt/jolt_single_file.cpp \
+		clang 	-c src/extern/Jolt/jolt_single_file.cpp \
 				-o ./bin/libjolt.a \
 				--std=c++20 \
-				-I src 
+				-I src/extern
 	fi
 
 	# Main Mac Build
@@ -78,6 +79,7 @@ elif [[ $OS_ARG = Mac ]]; then
 		-g -O0 \
 		-o bin/game \
 		-I src \
+		-I src/extern \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
