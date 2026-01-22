@@ -46,8 +46,8 @@ using std::atomic;
 // Render Pass abstraction
 #include "render/render_pass.h"
 
-// Cubemap rendering
-#include "render/cubemap_render.h"
+// Cubemap environment captures
+#include "render/cubemap_capture.h"
 
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
@@ -79,6 +79,10 @@ using ankerl::unordered_dense::map;
 
 // geometry pass
 #include "render/geometry_pass.h"
+#include "render/lighting_pass.h"
+
+// cubemap debug pass
+#include "render/cubemap_debug_pass.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -168,7 +172,7 @@ namespace flatbuffer_helpers
 		);
 	}
 
-	HMM_Vec4 to_hmm_vec4(const Blender::LiveLink::Vec3* in_flatbuffers_vector, float in_w)
+	HMM_Vec4 to_hmm_vec4(const Blender::LiveLink::Vec3* in_flatbuffers_vector, f32 in_w)
 	{
 		assert(in_flatbuffers_vector);
 		return HMM_V4(
@@ -310,18 +314,6 @@ void reset_materials()
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
 	return state.render_passes[static_cast<int>(in_pass_id)];
-}
-
-Camera& get_active_camera()
-{
-	if (state.camera_control_id && !state.debug_camera_active)
-	{	
-		Object& camera_control_target = state.objects[*state.camera_control_id];
-		assert(camera_control_target.has_camera_control);
-		return camera_control_target.camera_control.camera;
-	}
-
-	return state.debug_camera;
 }
 
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
@@ -639,8 +631,8 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								using Blender::LiveLink::GameplayComponentCameraControl;
 								const GameplayComponentCameraControl* cam_control_component = reinterpret_cast<const GameplayComponentCameraControl*>(component);
 
-								const float cam_control_follow_distance = cam_control_component->follow_distance();
-								const float cam_control_follow_speed = cam_control_component->follow_speed();
+								const f32 cam_control_follow_distance = cam_control_component->follow_distance();
+								const f32 cam_control_follow_speed = cam_control_component->follow_speed();
 
 								printf("\t\tCamera Control Component\n");
 								printf("\t\t\t Follow Distance: %f\n", cam_control_follow_distance);
@@ -831,7 +823,9 @@ void handle_resize()
 }
 
 //FCS TODO: BEGIN Testing Cubemap
-Cubemap test_cubemap;
+CubemapCapture cubemap_debug_capture;
+sg_pipeline cubemap_debug_pipeline;
+Mesh cubemap_debug_sphere;
 //FCS TODO: END Testing Cubemap
 
 void init(void)
@@ -848,6 +842,8 @@ void init(void)
         .logger.func = slog_func,
     });
 
+	sg_swapchain swapchain = sglue_swapchain();
+
 	// Create Default Image
 	HMM_Vec4 default_image_data[1] = { HMM_V4(0,0,0,1) };
 	GpuImageDesc default_image_desc = {
@@ -860,11 +856,13 @@ void init(void)
 	state.default_image = GpuImage(default_image_desc);
 
 	// FCS TODO: BEGIN Testing Cubemap rendering
-	const CubemapDesc cubemap_desc = {
+	const CubemapCaptureDesc cubemap_capture_desc = {
 		.size = 1024,
-		.location = HMM_V3(0,0,0),
+		.location = HMM_V3(4,-10,1.5),
 	};
-	test_cubemap = Cubemap(cubemap_desc);
+	cubemap_debug_capture = CubemapCapture(cubemap_capture_desc);
+	cubemap_debug_pipeline = sg_make_pipeline(CubemapDebugPass::make_pipeline_desc(swapchain.depth_format));
+	cubemap_debug_sphere = make_mesh(mesh_init_data_uv_sphere(1.0f,24,24));
 	// FCS TODO: END Testing Cubemap rendering
 
 	#if WITH_DEBUG_UI
@@ -904,8 +902,6 @@ void init(void)
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
     });
 
-	sg_swapchain swapchain = sglue_swapchain();
-
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
 	
@@ -929,14 +925,14 @@ void init(void)
 	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
 	
 	{	//SSAO Noise Texture
-		std::uniform_real_distribution<float> randomFloats(0.0, 1.0); // random floats between [0.0, 1.0]
+		std::uniform_real_distribution<f32> randomf32s(0.0, 1.0); // random f32s between [0.0, 1.0]
 		std::default_random_engine generator;
 		HMM_Vec4 ssao_noise[SSAO_TEXTURE_SIZE];
 		for (u32 i = 0; i < SSAO_TEXTURE_SIZE; ++i)
 		{
 			ssao_noise[i] = HMM_V4(
-				randomFloats(generator) * 2.0f - 1.0f,
-				randomFloats(generator) * 2.0f - 1.0f, 
+				randomf32s(generator) * 2.0f - 1.0f,
+				randomf32s(generator) * 2.0f - 1.0f, 
 				0.0f,
 				0.0f
 			);
@@ -963,15 +959,15 @@ void init(void)
 		for (u32 i = 0; i < SSAO_KERNEL_SIZE; ++i)
 		{
 			HMM_Vec3 sample = HMM_V3(
-				randomFloats(generator) * 2.0f - 1.0f,
-				randomFloats(generator) * 2.0f - 1.0f,
-				randomFloats(generator)
+				randomf32s(generator) * 2.0f - 1.0f,
+				randomf32s(generator) * 2.0f - 1.0f,
+				randomf32s(generator)
 			);
 			sample = HMM_NormV3(sample);
-			sample *= randomFloats(generator);
+			sample *= randomf32s(generator);
 
 			// scale samples s.t. they're more aligned to center of kernel
-			float scale = float(i) / (float) SSAO_KERNEL_SIZE;
+			f32 scale = f32(i) / (f32) SSAO_KERNEL_SIZE;
 			scale = HMM_Lerp(0.1f, scale * scale, 1.0f);
 			sample *= scale;
 
@@ -1013,7 +1009,8 @@ void init(void)
 			.store_action = SG_STOREACTION_STORE,
 		},
 	};
-	get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
+	//get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
+	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
 
 	RenderPassDesc dof_blur_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1310,7 +1307,7 @@ void frame(void)
 		Camera& camera = state.debug_camera;	
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 
-		float move_speed = 10.0f * delta_time;
+		f32 move_speed = 10.0f * delta_time;
 		if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
 		{
 			move_speed *= 5.0f;
@@ -1343,7 +1340,7 @@ void frame(void)
 
 		if (is_mouse_locked())
 		{
-			const float look_speed = 1.0f * delta_time;
+			const f32 look_speed = 1.0f * delta_time;
 			const HMM_Vec2 mouse_delta = get_mouse_delta();
 			
 			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
@@ -1363,7 +1360,7 @@ void frame(void)
 		{
 			//FCS TODO: Add max angle property (angle above XY plane) that we can rotate camera
 			//FCS TODO: Add rotation speed property to camera control component
-			const float look_speed = 1.0f * delta_time;
+			const f32 look_speed = 1.0f * delta_time;
 			const HMM_Vec2 mouse_delta = get_mouse_delta();
 
 			// Get current target at old forward vector
@@ -1401,7 +1398,7 @@ void frame(void)
 
 		Object& player_character_object = state.objects[*state.player_character_id];
 		Character& player_character_state = player_character_object.character;
-		float character_move_speed = player_character_state.settings.move_speed * delta_time;
+		f32 character_move_speed = player_character_state.settings.move_speed * delta_time;
 
 		HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
 		HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
@@ -1436,36 +1433,6 @@ void frame(void)
 
 	// Rendering
 	{
-		test_cubemap.render(state);
-
-		DEBUG_UI(
-			const i32 num_images = NUM_CUBE_FACES;
-			if (ImGui::CollapsingHeader("Cubemap Viewer"))
-			{
-				static i32 cube_face_idx = 0;
-				ImGui::SliderInt(
-					"Cube Face Index", 
-					&cube_face_idx, 
-					0, NUM_CUBE_FACES - 1, 
-					"%d", ImGuiSliderFlags_ClampOnInput
-				);
-
-				static i32 color_output_idx = 0;
-				ImGui::SliderInt(
-					"Colour Output Index", 
-					&color_output_idx, 
-					0, 3, 
-					"%d", ImGuiSliderFlags_ClampOnInput
-				);
-
-				RenderPass& geometry_pass = test_cubemap.geometry_passes[cube_face_idx];
-				sg_image color_output = geometry_pass.color_outputs[color_output_idx];
-
-				ImVec2 size = ImVec2(256, 256);
-				ImGui::Image(simgui_imtextureid(color_output), size);
-			}
-		);
-
 		{
 			// Run initially, and then only if our updates from blender encounter a light
 			if (state.needs_light_data_update)
@@ -1537,8 +1504,8 @@ void frame(void)
 
 								lighting_PointLight_t new_point_light = {};
 								const Transform& transform = object.current_transform;
-								memcpy(&new_point_light.location, &transform.location, sizeof(float) * 4);
-								memcpy(&new_point_light.color, &object.light.color, sizeof(float) * 3);
+								memcpy(&new_point_light.location, &transform.location, sizeof(f32) * 4);
+								memcpy(&new_point_light.color, &object.light.color, sizeof(f32) * 3);
 								new_point_light.color[3] = 1.0; // Force alpha to 1.0
 								new_point_light.power = object.light.point.power;
 								state.point_lights.add(new_point_light);
@@ -1554,12 +1521,12 @@ void frame(void)
 
 								lighting_SpotLight_t new_spot_light = {};
 								const Transform& transform = object.current_transform;
-								memcpy(&new_spot_light.location, &transform.location, sizeof(float) * 4);
-								memcpy(&new_spot_light.color, &object.light.color, sizeof(float) * 3);
+								memcpy(&new_spot_light.location, &transform.location, sizeof(f32) * 4);
+								memcpy(&new_spot_light.color, &object.light.color, sizeof(f32) * 3);
 								new_spot_light.color[3] = 1.0; // Force alpha to 1.0
 
 								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(float) * 3);
+								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(f32) * 3);
 
 								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
 								new_spot_light.power = object.light.spot.power;
@@ -1577,12 +1544,12 @@ void frame(void)
 
 								lighting_SunLight_t new_sun_light = {};
 								const Transform& transform = object.current_transform;
-								memcpy(&new_sun_light.location, &transform.location, sizeof(float) * 4);
-								memcpy(&new_sun_light.color, &object.light.color, sizeof(float) * 3);
+								memcpy(&new_sun_light.location, &transform.location, sizeof(f32) * 4);
+								memcpy(&new_sun_light.color, &object.light.color, sizeof(f32) * 3);
 								new_sun_light.color[3] = 1.0; // Force alpha to 1.0
 
 								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(&new_sun_light.direction, &spot_light_dir, sizeof(float) * 3);
+								memcpy(&new_sun_light.direction, &spot_light_dir, sizeof(f32) * 3);
 
 								new_sun_light.power = object.light.sun.power;
 								new_sun_light.cast_shadows = object.light.sun.cast_shadows;
@@ -1637,12 +1604,16 @@ void frame(void)
 			}
 		}
 
+		//FCS TODO: BEGIN Testing Cubemap
+		cubemap_debug_capture.render(state);
+		//FCS TODO: END Testing Cubemap
+
 		// View + Projection matrix setup
-		const float w = sapp_widthf();
-		const float h = sapp_heightf();
-		const float t = (float)(sapp_frame_duration() * 60.0);
-		const float projection_near = 0.01f;
-		const float projection_far = 10000.0f;
+		const f32 w = sapp_widthf();
+		const f32 h = sapp_heightf();
+
+		const f32 projection_near = 0.01f;
+		const f32 projection_far = 10000.0f;
 		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
 
 		Camera& camera = get_active_camera();
@@ -1668,7 +1639,7 @@ void frame(void)
 
 		{ // Geometry Pass 	
 			get_render_pass(ERenderPass::Geometry).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{
 				    geometry_vs_params_t vs_params;
 					vs_params.view = view_matrix;
@@ -1751,13 +1722,40 @@ void frame(void)
 							sg_draw(0, mesh.index_count, 1);
 						}
 					}	
+
+					//FCS TODO: BEGIN Testing Cubemap
+					{
+						sg_apply_pipeline(cubemap_debug_pipeline);
+
+						cubemap_debug_vs_params_t vs_params;
+						vs_params.view = view_matrix;
+						vs_params.projection = projection_matrix;
+						vs_params.model = HMM_Translate(cubemap_debug_capture.desc.location);
+;
+						vs_params.rotation = HMM_M4D(1.0);
+
+						// Apply Vertex Uniforms
+						sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+						sg_bindings bindings = {
+							.vertex_buffers[0] = cubemap_debug_sphere.vertex_buffer.get_gpu_buffer(),
+							.index_buffer = cubemap_debug_sphere.index_buffer.get_gpu_buffer(),
+							.images = {
+								[0] = cubemap_debug_capture.geometry_pass.color_outputs[0],
+							},
+							.samplers[0] = state.sampler,
+						};
+						sg_apply_bindings(&bindings);
+						sg_draw(0, cubemap_debug_sphere.index_count, 1);
+					}
+					//FCS TODO: BEGIN Testing Cubemap
 				}
 			);
 		}
 
 		{ // SSAO
 			get_render_pass(ERenderPass::SSAO).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					state.ssao_fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
 					state.ssao_fs_params.view = view_matrix;
@@ -1784,7 +1782,7 @@ void frame(void)
 
 		{ // SSAO Blur
 			get_render_pass(ERenderPass::SSAO_Blur).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					const blur_fs_params_t blur_fs_params = {
 						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
@@ -1806,9 +1804,10 @@ void frame(void)
 
 		{ // Lighting Pass
 			get_render_pass(ERenderPass::Lighting).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
+					state.lighting_fs_params.ssao_enable = state.ssao_enable;
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -1848,7 +1847,7 @@ void frame(void)
 
 			// Blurred lighting texture
 			get_render_pass(ERenderPass::DOF_Blur).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					const blur_fs_params_t blur_fs_params = {
 						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
@@ -1869,7 +1868,7 @@ void frame(void)
 
 			// Mix blurred and unblurred texture based on camera distance
 			get_render_pass(ERenderPass::DOF_Combine).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
@@ -1901,7 +1900,7 @@ void frame(void)
 
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 
@@ -1919,10 +1918,10 @@ void frame(void)
 
 		{ // Debug Text
 			get_render_pass(ERenderPass::DebugText).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{
 					// Larger numbers scales down text
-					const float text_scale = 0.5f;
+					const f32 text_scale = 0.5f;
 					sdtx_canvas(sapp_width() * text_scale, sapp_height() * text_scale);
 					sdtx_origin(1.0f, 2.0f);
 					sdtx_home();
@@ -1949,7 +1948,7 @@ void frame(void)
 
 		{ // Copy To Swapchain Pass	
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(
-				[&]()
+				[&](const i32 pass_idx)
 				{	
 					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);

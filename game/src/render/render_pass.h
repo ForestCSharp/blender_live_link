@@ -193,7 +193,8 @@ public: // Functions
 		}
 	}
 
-	void execute(std::function<void()> in_callback)
+	// pass_idx arg on in_callback is used for cubemap render passes
+	void execute(std::function<void(const i32 pass_idx)> in_callback)
 	{
 		const bool render_to_swapchain = desc.type == ERenderPassType::Swapchain;
 
@@ -223,7 +224,7 @@ public: // Functions
 				sg_apply_pipeline(pipeline);
 			}
 
-			in_callback();
+			in_callback(pass_idx);
 
 			sg_end_pass();
 		}

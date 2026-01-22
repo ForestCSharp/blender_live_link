@@ -2,23 +2,22 @@
 
 #include <optional>
 
-#include "geometry.compiled.h"
+#include "cubemap_debug.compiled.h"
 
 #include "render/render_types.h"
 #include "render/render_pass.h"
 
-namespace GeometryPass
+namespace CubemapDebugPass
 {
 	// this is lazily created the first time we request the GeometryPass desc
-	optional<sg_shader> shader;		
-
+	optional<sg_shader> shader;
 	const i32 num_pass_outputs = 4;
 
 	sg_pipeline_desc make_pipeline_desc(sg_pixel_format depth_format)
 	{
 		if (!shader.has_value())
 		{
-			shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend()));
+			shader = sg_make_shader(cubemap_debug_cubemap_debug_shader_desc(sg_query_backend()));
 		}
 
 		return (sg_pipeline_desc) {
@@ -28,16 +27,16 @@ namespace GeometryPass
 					[ATTR_geometry_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
 					[ATTR_geometry_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
 					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
-				}
+				},
 			},
 			.shader = shader.value(),
 			.index_type = SG_INDEXTYPE_UINT32,
 			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
-				.pixel_format = depth_format,
-				.write_enabled = true,
-				.compare = SG_COMPAREFUNC_LESS_EQUAL,
-			},
+					.pixel_format = depth_format,
+					.write_enabled = true,
+					.compare = SG_COMPAREFUNC_LESS_EQUAL,
+				},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
@@ -51,14 +50,14 @@ namespace GeometryPass
 			.colors[3] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
-			.label = "geometry-pipeline"
+			.label = "cubemap-debug-pipeline"
 		};
 	}
 
 	RenderPassDesc make_render_pass_desc(sg_pixel_format depth_format)
 	{
 		return (RenderPassDesc) {
-			.pipeline_desc = GeometryPass::make_pipeline_desc(depth_format),
+			.pipeline_desc = CubemapDebugPass::make_pipeline_desc(depth_format),
 			.num_outputs = num_pass_outputs,
 			.outputs[0] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,

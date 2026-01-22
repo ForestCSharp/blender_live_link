@@ -155,3 +155,15 @@ void update_materials_buffer()
 		}
 	);	
 }
+
+Camera& get_active_camera()
+{
+	if (state.camera_control_id && !state.debug_camera_active)
+	{	
+		Object& camera_control_target = state.objects[*state.camera_control_id];
+		assert(camera_control_target.has_camera_control);
+		return camera_control_target.camera_control.camera;
+	}
+
+	return state.debug_camera;
+}

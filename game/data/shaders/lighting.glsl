@@ -53,6 +53,7 @@ layout(binding=0) uniform fs_params {
     int num_point_lights;
 	int num_spot_lights;
 	int num_sun_lights;
+	int ssao_enable;
 };
 
 layout(binding=0) readonly buffer PointLightsBuffer {
@@ -254,7 +255,7 @@ void main()
 		float metallic = sampled_roughness_metallic_emissive.g;
 		float emission_strength = sampled_roughness_metallic_emissive.b;
 
-		float ambient_occlusion = texture(sampler2D(ssao_tex, tex_sampler), uv).r;
+		float ambient_occlusion = (ssao_enable != 0) ? texture(sampler2D(ssao_tex, tex_sampler), uv).r : 1.0;
 
 		// When emission_strength is greater than zero, the emission color lives in color_tex
 		if (emission_strength > 0.0)

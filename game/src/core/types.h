@@ -13,6 +13,22 @@
         } \
     } while (0)
 
+#ifndef MAX
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#endif
+
+#ifndef MIN
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#endif
+
+#ifndef CLAMP
+#define CLAMP(value, min, max) (MAX(min, MIN(max, value)))
+#endif
+
+#ifndef ABS
+#define ABS(value) (value < 0 ? -value : value)
+#endif
+
 static constexpr float LOWEST_FLOAT = std::numeric_limits<float>::lowest(); 
 static constexpr float HIGHEST_FLOAT = std::numeric_limits<float>::max(); 
 
@@ -41,7 +57,7 @@ struct Transform
 
 namespace Constants
 {
-	constexpr double Pi = 3.1415926535897932384626433832795;
+	constexpr f64 Pi = 3.1415926535897932384626433832795;
 }
 
 namespace UnitVectors
