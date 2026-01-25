@@ -12,8 +12,6 @@
 
 using std::optional;
 
-static constexpr i32 NUM_CUBE_FACES = 6;
-
 struct RenderPassOutputDesc {
 	sg_pixel_format pixel_format	= SG_PIXELFORMAT_NONE;
 	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
@@ -44,9 +42,11 @@ struct RenderPass {
 public: // Variables
 	sg_pipeline pipeline = {};
 
-	sg_image color_outputs[SG_MAX_COLOR_ATTACHMENTS] = {};
+	//sg_image color_outputs[SG_MAX_COLOR_ATTACHMENTS] = {};
 
-	optional<sg_image> depth_image;
+	GpuImage color_outputs[SG_MAX_COLOR_ATTACHMENTS] = {};
+
+	optional<GpuImage> depth_image;
 
 	StretchyBuffer<sg_attachments> attachments;
 
@@ -102,93 +102,72 @@ public: // Functions
 										? SG_IMAGETYPE_CUBE
 										: SG_IMAGETYPE_2D;
 
-			const i32 attachments_descs_count = get_pass_count();
+			const i32 attachments_array_count = get_pass_count();
 
-			StretchyBuffer<sg_attachments_desc> attachments_descs;
-			for (i32 i = 0; i < attachments_descs_count; ++i)
+			attachments.reset();
+			for (i32 i = 0; i < attachments_array_count; ++i)
 			{
-				sg_attachments_desc new_desc = {};	
-				attachments_descs.add(new_desc);
+				sg_attachments new_attachments = {};	
+				attachments.add(new_attachments);
 			}
 
 			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 			{
 				const RenderPassOutputDesc& output_desc = desc.outputs[output_idx];
-				sg_image& color_image = color_outputs[output_idx];	
-				if (color_image.id != SG_INVALID_ID)
-				{
-					sg_destroy_image(color_image);
-				}
+				GpuImage& color_image = color_outputs[output_idx];
 
-				sg_image_desc color_image_desc = {
-					.type = image_type,	
+				GpuImageDesc image_desc = {
+					.type = image_type,
 					.usage = {
-						.render_attachment = true,
+						.color_attachment = true,
 					},
 					.width = current_width,
 					.height = current_height,
-					.pixel_format = output_desc.pixel_format,
-					.sample_count = 1,
+					.pixel_format = output_desc.pixel_format, 
 					.label = "color_image",
 				};
 
-				color_image = sg_make_image(&color_image_desc);
+				color_image.recreate(image_desc);
 
-				for (i32 i = 0; i < attachments_descs_count; ++i)
+				for (i32 i = 0; i < attachments_array_count; ++i)
 				{
-					attachments_descs[i].colors[output_idx] = {
-						.image = color_image,
-						.mip_level = 0,
-						.slice = i,
-					};
-				}	
-			}
-
-			if (depth_image.has_value() && depth_image->id != SG_INVALID_ID)
-			{
-				sg_destroy_image(depth_image.value());
+					attachments[i].colors[output_idx] = color_image.get_attachment_view(i);
+				}
 			}
 
 			if (desc.depth_output.pixel_format != SG_PIXELFORMAT_NONE)
 			{
-				sg_image_desc depth_image_desc = {
+				GpuImageDesc depth_image_desc = {
 					.type = image_type,	
 					.usage = {
-						.render_attachment = true,
+						.depth_stencil_attachment = true,
 					},
 					.width = current_width,
 					.height = current_height,
 					.pixel_format = desc.depth_output.pixel_format,
-					.sample_count = 1,
 					.label = "depth-image"
 				};
 
-				depth_image = sg_make_image(&depth_image_desc);
-
-				for (i32 i = 0; i < attachments_descs_count; ++i)
+				if (depth_image.has_value())
 				{
-					attachments_descs[i].depth_stencil = {
-						.image = depth_image.value(),
-						.mip_level = 0,
-						.slice = i,
+					depth_image.value().recreate(depth_image_desc);
+				}
+				else
+				{
+					depth_image = GpuImage(depth_image_desc);
+				}
+
+				for (i32 i = 0; i < attachments_array_count; ++i)
+				{
+					sg_view_desc depth_view_desc = {
+						.depth_stencil_attachment = {
+							.image = depth_image.value().get_gpu_image(),	
+							.mip_level = 0,
+							.slice = i,
+						},
 					};
+					attachments[i].depth_stencil = sg_make_view(depth_view_desc);
 				}
-			}	
-
-			// Clean up old attachments
-			for (i32 i = 0; i < attachments.length(); ++i)
-			{
-				if (attachments[i].id != SG_INVALID_ID)
-				{
-					sg_destroy_attachments(attachments[i]);
-				}
-			}
-			attachments.reset();
-
-			// Setup new attachments
-			for (i32 i = 0; i < attachments_descs_count; ++i)
-			{
-				attachments.add(sg_make_attachments(attachments_descs[i]));
 			}
 		}
 	}

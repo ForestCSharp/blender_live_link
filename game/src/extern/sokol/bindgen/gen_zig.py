@@ -24,6 +24,7 @@ module_names = {
     'sglue_':   'glue',
     'sfetch_':  'fetch',
     'simgui_':  'imgui',
+    'sgimgui_': 'sgimgui',
 }
 
 c_source_paths = {
@@ -38,13 +39,12 @@ c_source_paths = {
     'sglue_':   'sokol-zig/src/sokol/c/sokol_glue.c',
     'sfetch_':  'sokol-zig/src/sokol/c/sokol_fetch.c',
     'simgui_':  'sokol-zig/src/sokol/c/sokol_imgui.c',
+    'sgimgui_': 'sokol-zig/src/sokol/c/sokol_gfx_imgui.c',
 }
 
 ignores = [
     'sdtx_printf',
     'sdtx_vprintf',
-    'sg_install_trace_hooks',
-    'sg_trace_hooks',
 ]
 
 # functions that need to be exposed as 'raw' C callbacks without a Zig wrapper function
@@ -352,7 +352,7 @@ def gen_struct(decl, prefix):
         elif is_const_prim_ptr(field_type):
             l(f"    {field_name}: ?[*]const {as_zig_prim_type(util.extract_ptr_type(field_type))} = null,")
         elif util.is_func_ptr(field_type):
-            l(f"    {field_name}: ?*const fn ({funcptr_args_c(field_type, prefix)}) callconv(.C) {funcptr_result_c(field_type)} = null,")
+            l(f"    {field_name}: ?*const fn ({funcptr_args_c(field_type, prefix)}) callconv(.c) {funcptr_result_c(field_type)} = null,")
         elif util.is_1d_array_type(field_type):
             array_type = util.extract_array_type(field_type)
             array_sizes = util.extract_array_sizes(field_type)
@@ -490,10 +490,13 @@ def gen_helpers(inp):
         l('pub fn asRange(val: anytype) Range {')
         l('    const type_info = @typeInfo(@TypeOf(val));')
         l('    switch (type_info) {')
-        l('        .pointer => {')
-        l('            switch (type_info.pointer.size) {')
-        l('                .one => return .{ .ptr = val, .size = @sizeOf(type_info.pointer.child) },')
-        l('                .slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.pointer.child) * val.len },')
+        l('        .pointer => |pointer| {')
+        l('            switch (pointer.size) {')
+        l('                .one => switch (@typeInfo(pointer.child)) {')
+        l('                    .array => |array| return .{ .ptr = val, .size = array.len * @sizeOf(array.child) },')
+        l('                    else => return .{ .ptr = val, .size = @sizeOf(pointer.child) },')
+        l('                },')
+        l('                .slice => return .{ .ptr = val.ptr, .size = val.len * @sizeOf(pointer.child) },')
         l('                else => @compileError("FIXME: Pointer type!"),')
         l('            }')
         l('        },')
@@ -501,39 +504,19 @@ def gen_helpers(inp):
         l('            @compileError("Structs and arrays must be passed as pointers to asRange");')
         l('        },')
         l('        else => {')
-        l('            @compileError("Cannot convert to range!");')
+        l('            @compileError("Cannot convert to Range!");')
         l('        },')
         l('    }')
         l('}')
         l('')
     if inp['prefix'] == 'sdtx_':
-        l('// std.fmt compatible Writer')
-        l('pub const Writer = struct {')
-        l('    pub const Error = error{};')
-        l('    pub fn writeAll(self: Writer, bytes: []const u8) Error!void {')
-        l('        _ = self;')
-        l('        for (bytes) |byte| {')
-        l('            putc(byte);')
-        l('        }')
-        l('    }')
-        l('    pub fn writeByteNTimes(self: Writer, byte: u8, n: usize) Error!void {')
-        l('        _ = self;')
-        l('        var i: u64 = 0;')
-        l('        while (i < n) : (i += 1) {')
-        l('            putc(byte);')
-        l('        }')
-        l('    }')
-        l('    pub fn writeBytesNTimes(self: Writer, bytes: []const u8, n: usize) Error!void {')
-        l('        var i: usize = 0;')
-        l('        while (i < n) : (i += 1) {')
-        l('            try self.writeAll(bytes);')
-        l('        }')
-        l('    }')
-        l('};')
         l('// std.fmt-style formatted print')
         l('pub fn print(comptime fmt: anytype, args: anytype) void {')
-        l('    const writer: Writer = .{};')
-        l('    @import("std").fmt.format(writer, fmt, args) catch {};')
+        l('    const cbuf = getClearedFmtBuffer();')
+        l('    const p: [*]u8 = @constCast(@ptrCast(cbuf.ptr));')
+        l('    const buf = p[0..cbuf.size];')
+        l('    const out = @import("std").fmt.bufPrint(buf, fmt, args) catch "";')
+        l('    for (out) |c| putc(c);')
         l('}')
         l('')
 

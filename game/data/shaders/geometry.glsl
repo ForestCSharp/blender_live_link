@@ -41,16 +41,16 @@ void main() {
 @fs fs
 @include_block material
 
+layout(binding=0) uniform sampler smp;
+
 layout(binding=1) readonly buffer MaterialDataBuffer {
 	Material material_data_array[];
 };
 
-layout(binding=0) uniform sampler smp;
-
-layout(binding=0) uniform texture2D base_color_texture;
-layout(binding=1) uniform texture2D metallic_texture;
-layout(binding=2) uniform texture2D roughness_texture;
-layout(binding=3) uniform texture2D emission_texture;
+layout(binding=2) uniform texture2D base_color_texture;
+layout(binding=3) uniform texture2D metallic_texture;
+layout(binding=4) uniform texture2D roughness_texture;
+layout(binding=5) uniform texture2D emission_texture;
 
 in vec4 world_position;
 in vec4 world_normal;

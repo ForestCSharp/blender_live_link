@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+using std::optional;
+
 // Helper primarily used to pass between live link and main threads. 
 // We want to wait until our data is back on the main thread to create GPU resources.
 template<typename T> 
@@ -43,6 +45,25 @@ public:
 	, usage(in_desc.usage)
 	{
 		set_label(in_desc.label);
+	}
+
+	~GpuBuffer()
+	{
+		// TODO: move semantics
+		// cleanup()
+	}
+
+	void cleanup()
+	{
+		if (storage_view.has_value())
+		{
+			sg_destroy_view(storage_view.value());
+		}
+		
+		if (gpu_buffer.has_value())
+		{
+			sg_destroy_buffer(gpu_buffer.value());
+		}
 	}
 
 	bool is_gpu_buffer_valid()
@@ -117,6 +138,25 @@ public:
 
 	u64 length() const { return _length; }
 
+	sg_view get_storage_view()
+	{	
+		if (!storage_view.has_value())
+		{
+			printf("Making storage view for %s\n", label ? label->c_str() : "[NO LABEL]");
+
+			storage_view = sg_make_view((sg_view_desc) {
+				.storage_buffer = {
+					.buffer = get_gpu_buffer(),
+				}
+			});
+
+			static i32 storage_view_count = 0;
+			++storage_view_count;
+			printf("Storage View Count: %i\n", storage_view_count);
+		}
+		return storage_view.value();
+	}
+
 protected:
 	/* Underlying Buffer Data */
 	T* data;
@@ -131,8 +171,11 @@ protected:
 	sg_buffer_usage usage;
 
 	// Buffer used for gpu operations
-	std::optional<sg_buffer> gpu_buffer;
+	optional<sg_buffer> gpu_buffer;
+
+	// Lazily-allocated storage view
+	optional<sg_view> storage_view;
 
 	// Optional Label
-	std::optional<std::string> label;
+	optional<std::string> label;
 };

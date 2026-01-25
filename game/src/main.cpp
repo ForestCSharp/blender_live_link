@@ -837,8 +837,10 @@ void init(void)
 		.buffer_pool_size = 4096,
 		.image_pool_size = 4096,
 		//.sampler_pool_size = 1024,
-		.attachments_pool_size = 128,
-        .environment = sglue_environment(),
+		//.shader_pool_size = 
+		//.pipeline_pool_size = 
+		.view_pool_size = 8192,
+	   	.environment = sglue_environment(),
         .logger.func = slog_func,
     });
 
@@ -938,17 +940,14 @@ void init(void)
 			);
 		}
 
-		sg_image_desc ssao_noise_desc = {
+		GpuImageDesc ssao_noise_desc = {
 			.width = SSAO_TEXTURE_WIDTH,
 			.height = SSAO_TEXTURE_WIDTH,
 			.pixel_format = SG_PIXELFORMAT_RGBA32F,
-			.sample_count = 1, 
-			.data.subimage[0][0].ptr = &ssao_noise,
-			.data.subimage[0][0].size = SSAO_TEXTURE_SIZE * sizeof(HMM_Vec4),
+			.data = (u8*) &ssao_noise,
 			.label = "ssao_noise_texture"
 		};
-
-		state.ssao_noise_texture = sg_make_image(ssao_noise_desc);
+		state.ssao_noise_texture = GpuImage(ssao_noise_desc);
 
 		// Init ssao_fs_params
 		state.ssao_fs_params = {
@@ -1164,6 +1163,8 @@ void set_mouse_locked(bool in_locked)
 	app_state.is_mouse_locked = in_locked;
 	sapp_lock_mouse(app_state.is_mouse_locked);
 }
+
+static i32 g_i = 0;
 
 void frame(void)
 {
@@ -1706,17 +1707,15 @@ void frame(void)
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-								.images = {
-									[0] = base_color_image.get_gpu_image(),
-									[1] = metallic_image.get_gpu_image(),
-									[2] = roughness_image.get_gpu_image(),
-									[3] = emission_color_image.get_gpu_image(),
+								.views = {
+									[0] = object.storage_buffer.get_storage_view(),
+									[1] = get_materials_buffer().get_storage_view(), 
+									[2] = base_color_image.get_texture_view(),
+									[3] = metallic_image.get_texture_view(),
+									[4] = roughness_image.get_texture_view(),
+									[5] = emission_color_image.get_texture_view(),
 								},
 								.samplers[0] = state.sampler,
-								.storage_buffers = {
-									[0] = object.storage_buffer.get_gpu_buffer(),
-									[1] = get_materials_buffer().get_gpu_buffer(),
-								},
 							};
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
@@ -1740,8 +1739,8 @@ void frame(void)
 						sg_bindings bindings = {
 							.vertex_buffers[0] = cubemap_debug_sphere.vertex_buffer.get_gpu_buffer(),
 							.index_buffer = cubemap_debug_sphere.index_buffer.get_gpu_buffer(),
-							.images = {
-								[0] = cubemap_debug_capture.geometry_pass.color_outputs[0],
+							.views = {
+								[0] = cubemap_debug_capture.geometry_pass.color_outputs[0].get_texture_view(),
 							},
 							.samplers[0] = state.sampler,
 						};
@@ -1766,10 +1765,10 @@ void frame(void)
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 					sg_bindings bindings = (sg_bindings){
-						.images = {
-							[0] = geometry_pass.color_outputs[1],	// geometry pass position
-							[1] = geometry_pass.color_outputs[2],	// geometry pass normal
-							[2] = state.ssao_noise_texture,			// ssao noise texture
+						.views = {
+							[0] = geometry_pass.color_outputs[1].get_texture_view(),	// geometry pass position
+							[1] = geometry_pass.color_outputs[2].get_texture_view(),	// geometry pass normal
+							[2] = state.ssao_noise_texture.get_texture_view(),			// ssao noise texture
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1791,7 +1790,9 @@ void frame(void)
 					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = get_render_pass(ERenderPass::SSAO).color_outputs[0],
+						.views = {
+							[0] = get_render_pass(ERenderPass::SSAO).color_outputs[0].get_texture_view(), 
+						},
 						.samplers[0] = state.sampler,
 					};
 
@@ -1815,26 +1816,25 @@ void frame(void)
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 					RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
 
-					sg_image color_texture = geometry_pass.color_outputs[0];
-					sg_image position_texture = geometry_pass.color_outputs[1];
-					sg_image normal_texture = geometry_pass.color_outputs[2];
-					sg_image roughness_metallic_texture = geometry_pass.color_outputs[3];
-					sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
+					GpuImage& color_texture = geometry_pass.color_outputs[0];
+					GpuImage& position_texture = geometry_pass.color_outputs[1];
+					GpuImage& normal_texture = geometry_pass.color_outputs[2];
+					GpuImage& roughness_metallic_texture = geometry_pass.color_outputs[3];
+					GpuImage& blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
 
 					sg_bindings bindings = {
-						.images = {
-							[0] = color_texture,
-							[1] = position_texture,
-							[2] = normal_texture,
-							[3] = roughness_metallic_texture,
-							[4] = blurred_ssao_texture,
+						.views = {
+							[0] = color_texture.get_texture_view(),
+							[1] = position_texture.get_texture_view(), 
+							[2] = normal_texture.get_texture_view(),
+							[3] = roughness_metallic_texture.get_texture_view(),
+							[4] = blurred_ssao_texture.get_texture_view(),
+							[5] = state.point_lights_buffer.get_storage_view(),
+							[6] = state.spot_lights_buffer.get_storage_view(), 
+							[7] = state.sun_lights_buffer.get_storage_view(), 
+
 						},
 						.samplers[0] = state.sampler,
-						.storage_buffers = {
-							[0] = state.point_lights_buffer.get_gpu_buffer(),
-							[1] = state.spot_lights_buffer.get_gpu_buffer(),
-							[2] = state.sun_lights_buffer.get_gpu_buffer(),
-						},
 					};
 					sg_apply_bindings(&bindings);
 
@@ -1856,7 +1856,9 @@ void frame(void)
 					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = get_render_pass(ERenderPass::Lighting).color_outputs[0],
+						.views = {
+							[0] = get_render_pass(ERenderPass::Lighting).color_outputs[0].get_texture_view(), 
+						},
 						.samplers[0] = state.sampler,
 					};
 
@@ -1882,12 +1884,14 @@ void frame(void)
 					};
 					sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
-					sg_image position_texture = geometry_pass.color_outputs[1];
+					GpuImage& position_texture = geometry_pass.color_outputs[1];
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = lighting_pass.color_outputs[0], 
-						.images[1] = dof_blur_pass.color_outputs[0],
-						.images[2] = position_texture,
+						.views = {
+							[0] = lighting_pass.color_outputs[0].get_texture_view(), 
+							[1] = dof_blur_pass.color_outputs[0].get_texture_view(), 
+							[2] = position_texture.get_texture_view(), 
+						},
 						.samplers[0] = state.sampler,
 					};
 
@@ -1905,7 +1909,9 @@ void frame(void)
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = dof_combine_pass.color_outputs[0], 
+						.views = {
+							[0] = dof_combine_pass.color_outputs[0].get_texture_view(), 
+						},
 						.samplers[0] = state.sampler,
 					};
 
@@ -1954,7 +1960,7 @@ void frame(void)
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
 					// This can be overridden by the debug image viewer below
-					sg_image image_to_copy_to_swapchain = tonemapping_pass.color_outputs[0];
+					GpuImage& image_to_copy_to_swapchain = tonemapping_pass.color_outputs[0];
 
 					DEBUG_UI(
 						const i32 num_images = state.images.length();
@@ -1972,19 +1978,23 @@ void frame(void)
 
 								GpuImage& image = state.images[state.debug_image_index];
 								ImVec2 size = ImVec2(256, 256);
-								ImGui::Image(simgui_imtextureid(image.get_gpu_image()), size);
+
+								ImTextureID imtex_id = simgui_imtextureid(image.get_texture_view());
+								ImGui::Image(imtex_id, size);
 							}
 
 							if (state.enable_debug_image_fullscreen)
 							{
-								image_to_copy_to_swapchain = state.images[state.debug_image_index].get_gpu_image();		
+								image_to_copy_to_swapchain = state.images[state.debug_image_index];		
 							}
 						}
 					);	
 
 					sg_bindings bindings = (sg_bindings){
-						.images[0] = image_to_copy_to_swapchain, 
-						.images[1] = debug_text_pass.color_outputs[0],
+						.views = {
+							[0] = image_to_copy_to_swapchain.get_texture_view(), 
+							[1] = debug_text_pass.color_outputs[0].get_texture_view(), 
+						},
 						.samplers[0] = state.sampler,
 					};
 					sg_apply_bindings(&bindings);
@@ -2121,6 +2131,6 @@ sapp_desc sokol_main(int argc, char* argv[])
 			.sokol_default = true,
 		},
         .logger.func = slog_func,
-		.win32_console_attach = true,
+		.win32.console_attach = true,
     };
 }

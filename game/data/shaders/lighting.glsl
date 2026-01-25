@@ -40,12 +40,6 @@ struct SunLight {
 	vec3 direction;
 };
 
-layout(binding=0) uniform texture2D color_tex;
-layout(binding=1) uniform texture2D position_tex;
-layout(binding=2) uniform texture2D normal_tex;
-layout(binding=3) uniform texture2D roughness_metallic_emissive_tex;
-layout(binding=4) uniform texture2D ssao_tex;
-
 layout(binding=0) uniform sampler tex_sampler;
 
 layout(binding=0) uniform fs_params {
@@ -56,15 +50,22 @@ layout(binding=0) uniform fs_params {
 	int ssao_enable;
 };
 
-layout(binding=0) readonly buffer PointLightsBuffer {
+
+layout(binding=0) uniform texture2D color_tex;
+layout(binding=1) uniform texture2D position_tex;
+layout(binding=2) uniform texture2D normal_tex;
+layout(binding=3) uniform texture2D roughness_metallic_emissive_tex;
+layout(binding=4) uniform texture2D ssao_tex;
+
+layout(binding=5) readonly buffer PointLightsBuffer {
 	PointLight point_lights[];
 };
 
-layout(binding=1) readonly buffer SpotLightsBuffer {
+layout(binding=6) readonly buffer SpotLightsBuffer {
 	SpotLight spot_lights[];
 };
 
-layout(binding=2) readonly buffer SunLightsBuffer {
+layout(binding=7) readonly buffer SunLightsBuffer {
 	SunLight sun_lights[];
 };
 

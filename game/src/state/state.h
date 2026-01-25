@@ -49,7 +49,7 @@ struct State
 	bool dof_enable = true;
 
 	// SSAO Data 
-	sg_image ssao_noise_texture;
+	GpuImage ssao_noise_texture;
 	ssao_fs_params_t ssao_fs_params;
 
 	// Texture Sampler

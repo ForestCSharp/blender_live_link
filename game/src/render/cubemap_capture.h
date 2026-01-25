@@ -119,17 +119,15 @@ public:
 						sg_bindings bindings = {
 							.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 							.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-							.images = {
-								[0] = base_color_image.get_gpu_image(),
-								[1] = metallic_image.get_gpu_image(),
-								[2] = roughness_image.get_gpu_image(),
-								[3] = emission_color_image.get_gpu_image(),
+							.views = {
+								[0] = object.storage_buffer.get_storage_view(),
+								[1] = get_materials_buffer().get_storage_view(), 
+								[2] = base_color_image.get_texture_view(), 
+								[3] = metallic_image.get_texture_view(), 
+								[4] = roughness_image.get_texture_view(),
+								[5] = emission_color_image.get_texture_view(),
 							},
 							.samplers[0] = in_state.sampler,
-							.storage_buffers = {
-								[0] = object.storage_buffer.get_gpu_buffer(),
-								[1] = get_materials_buffer().get_gpu_buffer(),
-							},
 						};
 						sg_apply_bindings(&bindings);
 						sg_draw(0, mesh.index_count, 1);

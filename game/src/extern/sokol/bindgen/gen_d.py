@@ -13,7 +13,6 @@ import shutil
 import sys
 import textwrap
 import logging
-from datetime import datetime
 
 import gen_util as util
 
@@ -24,6 +23,7 @@ module_names = {
     'slog_':    'log',
     'sg_':      'gfx',
     'sapp_':    'app',
+    'sargs_':   'args',
     'stm_':     'time',
     'saudio_':  'audio',
     'sgl_':     'gl',
@@ -32,6 +32,8 @@ module_names = {
     'sglue_':   'glue',
     'sfetch_':  'fetch',
     'simgui_':  'imgui',
+    'sgimgui_': 'gfximgui',
+    'snk_':     'nuklear',
     'smemtrack_': 'memtrack',
 }
 
@@ -39,6 +41,7 @@ c_source_paths = {
     'slog_':    'sokol-d/src/sokol/c/sokol_log.c',
     'sg_':      'sokol-d/src/sokol/c/sokol_gfx.c',
     'sapp_':    'sokol-d/src/sokol/c/sokol_app.c',
+    'sargs_':   'sokol-d/src/sokol/c/sokol_args.c',
     'stm_':     'sokol-d/src/sokol/c/sokol_time.c',
     'saudio_':  'sokol-d/src/sokol/c/sokol_audio.c',
     'sgl_':     'sokol-d/src/sokol/c/sokol_gl.c',
@@ -47,6 +50,8 @@ c_source_paths = {
     'sglue_':   'sokol-d/src/sokol/c/sokol_glue.c',
     'sfetch_':  'sokol-d/src/sokol/c/sokol_fetch.c',
     'simgui_':  'sokol-d/src/sokol/c/sokol_imgui.c',
+    'sgimgui_': 'sokol-d/src/sokol/c/sokol_gfx_imgui.c',
+    'snk_':     'sokol-d/src/sokol/c/sokol_nuklear.c',
     'smemtrack_': 'sokol-d/src/sokol/c/sokol_memtrack.c',
 }
 
@@ -56,7 +61,8 @@ ignores = [
 ]
 
 c_callbacks = [
-    'slog_func'
+    'slog_func',
+    'nk_plugin_filter',
 ]
 
 overrides = {
@@ -77,6 +83,9 @@ overrides = {
     'sdtx_font.font_index':                 'uint32_t',
     'SGL_NO_ERROR':                         'SGL_ERROR_NO_ERROR',
     'sfetch_continue':                      'continue_fetching',
+    'struct nk_context':                    'NkContext',
+    'nk_handle':                            'NkHandle',
+    'nk_flags':                             'NkFlags',
 }
 
 prim_types = {
@@ -101,6 +110,7 @@ prim_types = {
 prim_defaults = {
     'int':          '0',
     'bool':         'false',
+    'char':         '0',
     'int8_t':       '0',
     'uint8_t':      '0',
     'int16_t':      '0',
@@ -123,9 +133,25 @@ class TypeConverter:
         self.enum_types = enum_types
 
     def as_d_type(self, c_type, is_param=False, decl_name=None):
+        c_type = c_type.strip()
+        # Check for override first
+        if c_type in overrides:
+            return overrides[c_type]
+
         d_to_c_types = {v: k for k, v in prim_types.items()}
         if c_type in d_to_c_types:
             c_type = d_to_c_types[c_type]
+
+        # Handle struct keyword in type (e.g., "struct nk_context *")
+        if c_type.startswith('struct '):
+            c_type = c_type[7:].strip()  # Remove 'struct' prefix
+            if c_type in overrides:
+                return overrides[c_type]
+            if c_type.endswith('*'):
+                # External struct pointer, treat as opaque
+                return 'void*' if is_param else 'void*'
+            # External struct by value, treat as named type if overridden
+            return overrides.get(c_type, c_type)
 
         if util.is_func_ptr(c_type):
             return self.as_func_ptr_type(c_type, decl_name)
@@ -167,12 +193,23 @@ class TypeConverter:
         if util.is_array_type(c_type):
             return self.as_array_type(c_type)
         
+        # Handle external types (e.g., nk_handle, nk_flags) not in struct_types or prim_types
+        if c_type not in self.struct_types and c_type not in prim_types:
+            if c_type.endswith('*'):
+                # Treat pointer to unknown type as void*
+                return 'void*' if is_param else 'void*'
+            # Treat unknown type by value as itself (assuming it's defined elsewhere)
+            return overrides.get(c_type, c_type)
+
         raise ValueError(f"Unsupported C type: {c_type} in declaration: {decl_name or 'unknown'}")
 
     def as_d_struct_type(self, s):
         parts = s.lower().split('_')
         outp = '' if s.startswith(self.prefix) else f'{parts[0]}.'
-        return outp + ''.join(part.capitalize() for part in parts[1:] if part != 't')
+        name = ''.join(part.capitalize() for part in parts[1:] if part != 't')
+        if not name:
+            name = parts[0].capitalize()
+        return outp + name
 
     def as_d_enum_type(self, s):
         return self.as_d_struct_type(s)
@@ -273,6 +310,17 @@ def pre_parse(inp):
             enum_name = decl['name']
             enum_types.append(enum_name)
             enum_items[enum_name] = [as_enum_item_name(item['name']) for item in decl['items']]
+
+def gen_nuklear_types():
+    """Generate type declarations for Nuklear external types."""
+    l("/++ Nuklear external type declarations +/")
+    l("extern(C) struct NkContext;")
+    l("extern(C) union NkHandle {")
+    l("    void* ptr;")
+    l("    int id;")
+    l("}")
+    l("alias NkFlags = uint;")
+    l("alias nk_plugin_filter = extern(C) int function(const(NkContext)*, NkHandle, int*, int) @system @nogc nothrow;")
 
 def gen_struct(decl, type_converter):
     struct_name = overrides.get(decl['name'], decl['name'])
@@ -405,9 +453,7 @@ def gen_module(inp, dep_prefixes, c_header_path):
     reset_globals()
     header_comment = f"""
     Machine generated D bindings for Sokol library.
-    
-    Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-    
+        
     Source header: {os.path.basename(c_header_path)}
     Module: sokol.{inp['module']}
     
@@ -417,6 +463,9 @@ def gen_module(inp, dep_prefixes, c_header_path):
     l(f'module sokol.{inp["module"]};')
     logging.info(f"Generating imports for module {inp['module']}")
     gen_imports(inp, dep_prefixes)
+    # Add Nuklear types for the nuklear module
+    if inp['module'] == 'nuklear':
+        gen_nuklear_types()
     pre_parse(inp)
     type_converter = TypeConverter(inp['prefix'], struct_types, enum_types)
     for decl in inp['decls']:

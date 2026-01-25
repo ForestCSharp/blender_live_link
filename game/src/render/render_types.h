@@ -16,3 +16,5 @@ struct SkinnedVertex
 	HMM_Vec4 joint_indices;
 	HMM_Vec4 joint_weights;
 };
+
+static constexpr i32 NUM_CUBE_FACES = 6;
