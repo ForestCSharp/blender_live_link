@@ -15,6 +15,7 @@ struct GpuImageDesc
 	sg_image_usage usage;
 	i32 width;
 	i32 height;
+	i32 num_slices = 1;
 	sg_pixel_format pixel_format;	
 	const u8* data = nullptr;
 	const char* label;
@@ -49,6 +50,7 @@ public:
 			.usage = desc.usage,
 			.width = desc.width,
 			.height = desc.height,
+			.num_slices = desc.num_slices,
 			.pixel_format = desc.pixel_format,
 			.sample_count = 1,
 			.data = {0},
@@ -68,9 +70,12 @@ public:
 
 	void cleanup()
 	{
-		if (texture_view.has_value())
+		for (i32 i = 0; i < NUM_CUBE_FACES; ++i)
 		{
-			sg_destroy_view(texture_view.value());
+			if (texture_views[i].has_value())
+			{
+				sg_destroy_view(texture_views[i].value());
+			}
 		}
 
 		for (i32 i = 0; i < NUM_CUBE_FACES; ++i)
@@ -89,23 +94,24 @@ public:
 
 	sg_image get_gpu_image() const { return gpu_image.value(); }
 
-	sg_view get_texture_view()
+	sg_view get_texture_view(const i32 slice_idx)
 	{
-		if (!texture_view.has_value())
-		{
-			printf("Making texture view for %s\n", desc.label);
-			texture_view = sg_make_view((sg_view_desc) {
-				.texture = {
-					.image = get_gpu_image(),
-				} 
-			});
+		assert(gpu_image.has_value() && gpu_image.value().id != SG_INVALID_ID);
 
-			static i32 texture_view_count = 0;
-			++texture_view_count;
-			printf("Texture View Count: %i\n", texture_view_count);
+		assert(slice_idx < NUM_CUBE_FACES);
+
+		if (!texture_views[slice_idx].has_value())
+		{
+			texture_views[slice_idx] = sg_make_view((sg_view_desc) {
+				.texture = {
+					.image = get_gpu_image(),	
+					.mip_levels = { .base = 0, .count = 0, },
+					.slices = { .base = slice_idx, .count = 1, },
+				},
+			});
 		}
 
-		return texture_view.value();
+		return texture_views[slice_idx].value();
 	}
 
 	sg_view get_attachment_view(const i32 slice_idx)
@@ -116,18 +122,27 @@ public:
 
 		if (!attachment_views[slice_idx].has_value())
 		{
-			printf("Making attachment view %i for %s\n", slice_idx, desc.label);
-			attachment_views[slice_idx] = sg_make_view((sg_view_desc) {
-				.color_attachment = {
-					.image = get_gpu_image(),	
-					.mip_level = 0,
-					.slice = slice_idx,
-				},
-			});
-
-			static i32 attachment_view_count = 0;
-			++attachment_view_count;
-			printf("Attachment View Count: %i\n", attachment_view_count);
+			if (	desc.pixel_format == SG_PIXELFORMAT_DEPTH 
+				||	desc.pixel_format == SG_PIXELFORMAT_DEPTH_STENCIL)
+			{
+				attachment_views[slice_idx] = sg_make_view((sg_view_desc) {
+					.depth_stencil_attachment = {
+						.image = get_gpu_image(),	
+						.mip_level = 0,
+						.slice = slice_idx,
+					},
+				});
+			}
+			else
+			{
+				attachment_views[slice_idx] = sg_make_view((sg_view_desc) {
+					.color_attachment = {
+						.image = get_gpu_image(),	
+						.mip_level = 0,
+						.slice = slice_idx,
+					},
+				});
+			}
 		}
 
 		return attachment_views[slice_idx].value();
@@ -138,7 +153,7 @@ protected:
 	optional<sg_image> gpu_image;
 
 	// Lazily-allocated texture view
-	optional<sg_view> texture_view;
+	optional<sg_view> texture_views[NUM_CUBE_FACES];
 
 	// Lazily-allocated attachment views, per slice idx
 	optional<sg_view> attachment_views[NUM_CUBE_FACES];

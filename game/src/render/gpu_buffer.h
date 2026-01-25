@@ -142,17 +142,11 @@ public:
 	{	
 		if (!storage_view.has_value())
 		{
-			printf("Making storage view for %s\n", label ? label->c_str() : "[NO LABEL]");
-
 			storage_view = sg_make_view((sg_view_desc) {
 				.storage_buffer = {
 					.buffer = get_gpu_buffer(),
 				}
 			});
-
-			static i32 storage_view_count = 0;
-			++storage_view_count;
-			printf("Storage View Count: %i\n", storage_view_count);
 		}
 		return storage_view.value();
 	}

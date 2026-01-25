@@ -21,7 +21,8 @@ struct RenderPassOutputDesc {
 
 enum class ERenderPassType
 {
-	Default,
+	Single,
+	Multi,
 	Cubemap,
 	Swapchain,
 };
@@ -29,24 +30,33 @@ enum class ERenderPassType
 struct RenderPassDesc {
 	i32 initial_width = -1;
 	i32 initial_height = -1;
+	i32 pass_count = 1;
 
 	optional<sg_pipeline_desc> pipeline_desc;
 	int num_outputs = 0;
 	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
 	RenderPassOutputDesc depth_output;
 
-	ERenderPassType type = ERenderPassType::Default;
+	ERenderPassType type = ERenderPassType::Single;
+};
+
+//FCS TODO: use this for depth as well...
+struct RenderPassOutput {
+	/*
+		single 2D image for Single
+		multiple 2D images for Multi
+		single Cubemap image for Cubemap
+	*/
+	StretchyBuffer<GpuImage> images;
 };
 
 struct RenderPass {
 public: // Variables
 	sg_pipeline pipeline = {};
 
-	//sg_image color_outputs[SG_MAX_COLOR_ATTACHMENTS] = {};
+	StretchyBuffer<RenderPassOutput> color_outputs;
 
-	GpuImage color_outputs[SG_MAX_COLOR_ATTACHMENTS] = {};
-
-	optional<GpuImage> depth_image;
+	optional<RenderPassOutput> depth_output;
 
 	StretchyBuffer<sg_attachments> attachments;
 
@@ -82,11 +92,55 @@ public: // Functions
 		}
 	}
 
+	// number of times the execute lambda is invoked on execute
 	const i32 get_pass_count() const
 	{	
-		const bool is_cubemap = desc.type == ERenderPassType::Cubemap;
-		const i32 pass_count = is_cubemap ? NUM_CUBE_FACES : 1;
-		return pass_count;
+		switch (desc.type)
+		{
+			case ERenderPassType::Single:		return 1;
+			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Cubemap:		return NUM_CUBE_FACES;
+			case ERenderPassType::Swapchain:	return 1;
+			default:
+				printf("invalid type: %i\n", desc.type);
+				assert(false);
+		}
+	}
+
+	// number of images we create per-color-attachment
+	const i32 get_attachment_image_count() const
+	{
+		switch (desc.type)
+		{
+			case ERenderPassType::Single:		return 1;
+			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Cubemap:		return 1;
+			case ERenderPassType::Swapchain:	return 1;
+			default:
+				printf("invalid type: %i\n", desc.type);
+				assert(false);
+		}
+	}
+
+	sg_image_type determine_image_type() const
+	{
+		switch (desc.type)
+		{
+			case ERenderPassType::Single:
+			case ERenderPassType::Multi:
+				return SG_IMAGETYPE_2D;
+			case ERenderPassType::Cubemap:
+				return SG_IMAGETYPE_CUBE;
+			default:
+				assert(false);
+		}
+	}
+
+	GpuImage& get_color_output(i32 color_output_idx, i32 pass_idx = 0)
+	{
+		assert(color_outputs.is_valid_index(color_output_idx));
+		assert(color_outputs[color_output_idx].images.is_valid_index(pass_idx));
+		return color_outputs[color_output_idx].images[pass_idx];
 	}
 
 	void handle_resize(i32 in_new_width, i32 in_new_height)
@@ -97,24 +151,44 @@ public: // Functions
 		// Create render target if we aren't rendering directly to swapchain
 		if (desc.type != ERenderPassType::Swapchain)
 		{
-			const bool is_cubemap = desc.type == ERenderPassType::Cubemap;
-			sg_image_type image_type	= is_cubemap
-										? SG_IMAGETYPE_CUBE
-										: SG_IMAGETYPE_2D;
+			const sg_image_type image_type = determine_image_type();
+			const i32 num_slices = (image_type != SG_IMAGETYPE_2D) ? NUM_CUBE_FACES : 1;
 
-			const i32 attachments_array_count = get_pass_count();
+			const i32 pass_count = get_pass_count();
+			const i32 attachment_image_count = get_attachment_image_count();
 
 			attachments.reset();
-			for (i32 i = 0; i < attachments_array_count; ++i)
+			for (i32 i = 0; i < pass_count; ++i)
 			{
 				sg_attachments new_attachments = {};	
 				attachments.add(new_attachments);
 			}
 
+			// Clean up old output data
+			for (RenderPassOutput& color_output : color_outputs)
+			{	
+				for (GpuImage& existing_image : color_output.images)
+				{
+					existing_image.cleanup();
+				}
+				color_output.images.reset();
+			}
+			color_outputs.reset();
+
+			if (depth_output.has_value())
+			{
+				for (GpuImage& existing_depth_image : depth_output.value().images)
+				{
+					existing_depth_image.cleanup();
+				}
+				depth_output.reset();
+			}
+
 			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 			{
 				const RenderPassOutputDesc& output_desc = desc.outputs[output_idx];
-				GpuImage& color_image = color_outputs[output_idx];
+
+				RenderPassOutput new_color_output;
 
 				GpuImageDesc image_desc = {
 					.type = image_type,
@@ -123,15 +197,45 @@ public: // Functions
 					},
 					.width = current_width,
 					.height = current_height,
+					.num_slices = num_slices,
 					.pixel_format = output_desc.pixel_format, 
 					.label = "color_image",
 				};
-
-				color_image.recreate(image_desc);
-
-				for (i32 i = 0; i < attachments_array_count; ++i)
+	
+				for (i32 image_idx = 0; image_idx < attachment_image_count; ++image_idx)
 				{
-					attachments[i].colors[output_idx] = color_image.get_attachment_view(i);
+					new_color_output.images.add(GpuImage(image_desc));
+				}
+
+				color_outputs.add(new_color_output);
+
+				switch (desc.type)
+				{
+					case ERenderPassType::Single:
+					{
+						// Only one attachment for single render passes
+						attachments[0].colors[output_idx] = get_color_output(output_idx,0).get_attachment_view(0);
+						break;
+					}
+					case ERenderPassType::Multi:
+					{
+						// One image per attachment for multi render passes
+						for (i32 i = 0; i < attachment_image_count; ++i)
+						{
+							attachments[i].colors[output_idx] = get_color_output(output_idx,i).get_attachment_view(0);
+						}
+						break;
+					}
+					case ERenderPassType::Cubemap:
+					{
+						// One cube-face/slice per attachment for Cubemap render passes
+						for (i32 i = 0; i < pass_count; ++i)
+						{
+							attachments[i].colors[output_idx] = get_color_output(output_idx,0).get_attachment_view(i);
+						}
+						break;
+					}
+					default: break;
 				}
 			}
 
@@ -144,30 +248,47 @@ public: // Functions
 					},
 					.width = current_width,
 					.height = current_height,
+					.num_slices = num_slices,
 					.pixel_format = desc.depth_output.pixel_format,
 					.label = "depth-image"
 				};
 
-				if (depth_image.has_value())
-				{
-					depth_image.value().recreate(depth_image_desc);
-				}
-				else
-				{
-					depth_image = GpuImage(depth_image_desc);
+				RenderPassOutput new_depth_output;
+				for (i32 image_idx = 0; image_idx < attachment_image_count; ++image_idx)
+				{	
+					new_depth_output.images.add(GpuImage(depth_image_desc));
 				}
 
-				for (i32 i = 0; i < attachments_array_count; ++i)
+				switch (desc.type)
 				{
-					sg_view_desc depth_view_desc = {
-						.depth_stencil_attachment = {
-							.image = depth_image.value().get_gpu_image(),	
-							.mip_level = 0,
-							.slice = i,
-						},
-					};
-					attachments[i].depth_stencil = sg_make_view(depth_view_desc);
+					case ERenderPassType::Single:
+					{
+						// Only one attachment for single render passes
+						attachments[0].depth_stencil = new_depth_output.images[0].get_attachment_view(0);
+						break;
+					}
+					case ERenderPassType::Multi:
+					{
+						// One image per attachment for multi render passes
+						for (i32 i = 0; i < attachment_image_count; ++i)
+						{
+							attachments[i].depth_stencil = new_depth_output.images[i].get_attachment_view(0);
+						}
+						break;
+					}
+					case ERenderPassType::Cubemap:
+					{
+						// One cube-face/slice per attachment for Cubemap render passes
+						for (i32 i = 0; i < pass_count; ++i)
+						{
+							attachments[i].depth_stencil = new_depth_output.images[0].get_attachment_view(i);
+						}
+						break;
+					}
+					default: break;
 				}
+
+				depth_output = new_depth_output;
 			}
 		}
 	}

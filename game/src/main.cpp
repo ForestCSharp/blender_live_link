@@ -1710,10 +1710,10 @@ void frame(void)
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
 									[1] = get_materials_buffer().get_storage_view(), 
-									[2] = base_color_image.get_texture_view(),
-									[3] = metallic_image.get_texture_view(),
-									[4] = roughness_image.get_texture_view(),
-									[5] = emission_color_image.get_texture_view(),
+									[2] = base_color_image.get_texture_view(0),
+									[3] = metallic_image.get_texture_view(0),
+									[4] = roughness_image.get_texture_view(0),
+									[5] = emission_color_image.get_texture_view(0),
 								},
 								.samplers[0] = state.sampler,
 							};
@@ -1740,7 +1740,7 @@ void frame(void)
 							.vertex_buffers[0] = cubemap_debug_sphere.vertex_buffer.get_gpu_buffer(),
 							.index_buffer = cubemap_debug_sphere.index_buffer.get_gpu_buffer(),
 							.views = {
-								[0] = cubemap_debug_capture.geometry_pass.color_outputs[0].get_texture_view(),
+								[0] = cubemap_debug_capture.lighting_pass.get_color_output(0).get_texture_view(0),
 							},
 							.samplers[0] = state.sampler,
 						};
@@ -1766,9 +1766,9 @@ void frame(void)
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = geometry_pass.color_outputs[1].get_texture_view(),	// geometry pass position
-							[1] = geometry_pass.color_outputs[2].get_texture_view(),	// geometry pass normal
-							[2] = state.ssao_noise_texture.get_texture_view(),			// ssao noise texture
+							[0] = geometry_pass.get_color_output(1).get_texture_view(0),	// geometry pass position
+							[1] = geometry_pass.get_color_output(2).get_texture_view(0),	// geometry pass normal
+							[2] = state.ssao_noise_texture.get_texture_view(0),			// ssao noise texture
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1791,7 +1791,7 @@ void frame(void)
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = get_render_pass(ERenderPass::SSAO).color_outputs[0].get_texture_view(), 
+							[0] = get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0), 
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1816,19 +1816,19 @@ void frame(void)
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 					RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
 
-					GpuImage& color_texture = geometry_pass.color_outputs[0];
-					GpuImage& position_texture = geometry_pass.color_outputs[1];
-					GpuImage& normal_texture = geometry_pass.color_outputs[2];
-					GpuImage& roughness_metallic_texture = geometry_pass.color_outputs[3];
-					GpuImage& blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
+					GpuImage& color_texture = geometry_pass.get_color_output(0);
+					GpuImage& position_texture = geometry_pass.get_color_output(1);
+					GpuImage& normal_texture = geometry_pass.get_color_output(2);
+					GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3);
+					GpuImage& blurred_ssao_texture = ssao_blur_pass.get_color_output(0);
 
 					sg_bindings bindings = {
 						.views = {
-							[0] = color_texture.get_texture_view(),
-							[1] = position_texture.get_texture_view(), 
-							[2] = normal_texture.get_texture_view(),
-							[3] = roughness_metallic_texture.get_texture_view(),
-							[4] = blurred_ssao_texture.get_texture_view(),
+							[0] = color_texture.get_texture_view(0),
+							[1] = position_texture.get_texture_view(0), 
+							[2] = normal_texture.get_texture_view(0),
+							[3] = roughness_metallic_texture.get_texture_view(0),
+							[4] = blurred_ssao_texture.get_texture_view(0),
 							[5] = state.point_lights_buffer.get_storage_view(),
 							[6] = state.spot_lights_buffer.get_storage_view(), 
 							[7] = state.sun_lights_buffer.get_storage_view(), 
@@ -1857,7 +1857,7 @@ void frame(void)
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = get_render_pass(ERenderPass::Lighting).color_outputs[0].get_texture_view(), 
+							[0] = get_render_pass(ERenderPass::Lighting).get_color_output(0).get_texture_view(0), 
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1884,13 +1884,13 @@ void frame(void)
 					};
 					sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
-					GpuImage& position_texture = geometry_pass.color_outputs[1];
+					GpuImage& position_texture = geometry_pass.get_color_output(1);
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = lighting_pass.color_outputs[0].get_texture_view(), 
-							[1] = dof_blur_pass.color_outputs[0].get_texture_view(), 
-							[2] = position_texture.get_texture_view(), 
+							[0] = lighting_pass.get_color_output(0).get_texture_view(0), 
+							[1] = dof_blur_pass.get_color_output(0).get_texture_view(0), 
+							[2] = position_texture.get_texture_view(0), 
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1910,7 +1910,7 @@ void frame(void)
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = dof_combine_pass.color_outputs[0].get_texture_view(), 
+							[0] = dof_combine_pass.get_color_output(0).get_texture_view(0), 
 						},
 						.samplers[0] = state.sampler,
 					};
@@ -1960,7 +1960,7 @@ void frame(void)
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
 					// This can be overridden by the debug image viewer below
-					GpuImage& image_to_copy_to_swapchain = tonemapping_pass.color_outputs[0];
+					GpuImage& image_to_copy_to_swapchain = tonemapping_pass.get_color_output(0);
 
 					DEBUG_UI(
 						const i32 num_images = state.images.length();
@@ -1979,7 +1979,7 @@ void frame(void)
 								GpuImage& image = state.images[state.debug_image_index];
 								ImVec2 size = ImVec2(256, 256);
 
-								ImTextureID imtex_id = simgui_imtextureid(image.get_texture_view());
+								ImTextureID imtex_id = simgui_imtextureid(image.get_texture_view(0));
 								ImGui::Image(imtex_id, size);
 							}
 
@@ -1992,8 +1992,8 @@ void frame(void)
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = image_to_copy_to_swapchain.get_texture_view(), 
-							[1] = debug_text_pass.color_outputs[0].get_texture_view(), 
+							[0] = image_to_copy_to_swapchain.get_texture_view(0), 
+							[1] = debug_text_pass.get_color_output(0).get_texture_view(0), 
 						},
 						.samplers[0] = state.sampler,
 					};
