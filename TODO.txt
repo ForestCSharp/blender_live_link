@@ -1,13 +1,10 @@
 TODO
-	- Cubemap rendering (for GI)
-		- need to add cubemap support to render_pass.h
-
 	- Don't run shaders on disabled render passes...
 	- Fix IsGrounded for Character Jumping
 
 Tasks:
-	- Skinned Animations
 	- GI/Reflection Captures
+	- Skinned Animations
 	- Shadows
 		- Cascaded Shadow Map on Sunlight
 		- Screen Space Shadows
@@ -22,7 +19,6 @@ Improvements:
 	- Consider option to wait until a move operation is done to send a live link update
 	- Make sure rigid body and character don't exist on same object
 	- replace optional ids for character and camera control with map of tagged IDs
-	- 
 
 Bugs:
 	- deleting a child by deleting its parent in blender doesn't delete the child in game
