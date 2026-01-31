@@ -857,10 +857,29 @@ void init(void)
 	};
 	state.default_image = GpuImage(default_image_desc);
 
+	HMM_Vec4 default_image_cube_data[6] =
+	{
+		HMM_V4(0,0,0,1),
+		HMM_V4(0,0,0,1),
+		HMM_V4(0,0,0,1),
+		HMM_V4(0,0,0,1),
+		HMM_V4(0,0,0,1),
+		HMM_V4(0,0,0,1),
+	};
+	GpuImageDesc default_image_cube_desc = {
+		.type = SG_IMAGETYPE_CUBE,
+		.width = 1,
+		.height = 1,
+		.num_slices = 6,
+		.pixel_format = SG_PIXELFORMAT_RGBA32F,
+		.data = (u8*) &default_image_cube_data,
+	};
+	state.default_image_cube = GpuImage(default_image_cube_desc);
+
 	// FCS TODO: BEGIN Testing Cubemap rendering
 	const CubemapCaptureDesc cubemap_capture_desc = {
-		.size = 1024,
-		.location = HMM_V3(4,-10,1.5),
+		.size = 128,
+		.location = HMM_V3(0,0,3.5),
 	};
 	cubemap_debug_capture = CubemapCapture(cubemap_capture_desc);
 	cubemap_debug_pipeline = sg_make_pipeline(CubemapDebugPass::make_pipeline_desc(swapchain.depth_format));
@@ -1290,7 +1309,10 @@ void frame(void)
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Checkbox("SSAO", &state.ssao_enable);
+			ImGui::Checkbox("GI", &state.gi_enable);
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
+
+			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
 		}
 	);
 
@@ -1809,6 +1831,7 @@ void frame(void)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
+					state.lighting_fs_params.gi_enable = state.gi_enable;
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -1832,6 +1855,7 @@ void frame(void)
 							[5] = state.point_lights_buffer.get_storage_view(),
 							[6] = state.spot_lights_buffer.get_storage_view(), 
 							[7] = state.sun_lights_buffer.get_storage_view(), 
+							[8] = cubemap_debug_capture.lighting_pass.get_color_output(0).get_texture_view(0),
 
 						},
 						.samplers[0] = state.sampler,
@@ -1907,6 +1931,8 @@ void frame(void)
 				[&](const i32 pass_idx)
 				{	
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
+
+					sg_apply_uniforms(0, SG_RANGE(state.tonemapping_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {

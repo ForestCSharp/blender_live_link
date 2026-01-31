@@ -48,6 +48,7 @@ layout(binding=0) uniform fs_params {
 	int num_spot_lights;
 	int num_sun_lights;
 	int ssao_enable;
+	int gi_enable;
 };
 
 
@@ -68,6 +69,8 @@ layout(binding=6) readonly buffer SpotLightsBuffer {
 layout(binding=7) readonly buffer SunLightsBuffer {
 	SunLight sun_lights[];
 };
+
+layout(binding=8) uniform textureCube cubemap_tex;
 
 float vec2_length_squared(vec2 v)
 {
@@ -304,6 +307,15 @@ void main()
 					metallic
 				);
 			}
+
+			//TODO: uniform var to enable/disable this
+			//TODO: sample cubemap
+			if (gi_enable != 0)
+			{
+				vec4 cubemap_color = texture(samplerCube(cubemap_tex,tex_sampler), sampled_normal.xyz);
+				final_color.xyz += cubemap_color.xyz * 0.25f;	
+			}
+			//TODO: 
 
 			// Apply ambient occlusion
 			final_color *= ambient_occlusion;

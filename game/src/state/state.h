@@ -46,6 +46,7 @@ struct State
 
 	// Rendering Feature Flags
 	bool ssao_enable = true;
+	bool gi_enable = true;
 	bool dof_enable = true;
 
 	// SSAO Data 
@@ -77,6 +78,9 @@ struct State
 
 	// Lighting fragment shader params
 	lighting_fs_params_t lighting_fs_params;
+	tonemapping_fs_params_t tonemapping_fs_params = {
+		.exposure_bias = 0.0,
+	};
 
 	// Contains Lights Data packed up for gpu usage
 	bool needs_light_data_update = true;	
@@ -102,6 +106,7 @@ struct State
 	map<i32,i32> image_id_to_index;
 	StretchyBuffer<GpuImage> images;
 	GpuImage default_image;
+	GpuImage default_image_cube;
 
 	bool enable_debug_image_fullscreen = false;
 	i32 debug_image_index = 0;

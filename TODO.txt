@@ -1,4 +1,8 @@
 TODO
+
+	- need to place a lot of GI probes
+		- evaluate cubemap, octahedral map, SH, SG
+
 	- Don't run shaders on disabled render passes...
 	- Fix IsGrounded for Character Jumping
 

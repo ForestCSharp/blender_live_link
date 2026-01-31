@@ -60,7 +60,8 @@ public:
 		const u8* initial_data = desc.data;
 		if (initial_data)
 		{
-			const size_t initial_data_size = initial_data ? static_cast<size_t>(desc.width * desc.height * bytes_per_pixel) : 0;
+			const size_t initial_data_size	= desc.width * desc.height * desc.num_slices * bytes_per_pixel;
+
 			sokol_image_desc.data.mip_levels[0].ptr = initial_data;		
 			sokol_image_desc.data.mip_levels[0].size = initial_data_size;
 		}

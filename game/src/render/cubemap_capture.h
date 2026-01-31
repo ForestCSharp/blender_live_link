@@ -143,10 +143,11 @@ public:
 		lighting_pass.execute(
 			[&](const i32 face_idx)
 	   		{
-				in_state.lighting_fs_params.view_position = get_active_camera().location;
+				in_state.lighting_fs_params.view_position = desc.location;
 
 				// FCS TODO: Get SSAO Working in Cubemap Captures...
 				in_state.lighting_fs_params.ssao_enable = false;
+				in_state.lighting_fs_params.gi_enable = false;
 
 				// Apply Fragment Uniforms
 				sg_apply_uniforms(0, SG_RANGE(in_state.lighting_fs_params));
@@ -171,6 +172,7 @@ public:
 						[5] = in_state.point_lights_buffer.get_storage_view(),
 						[6] = in_state.spot_lights_buffer.get_storage_view(), 
 						[7] = in_state.sun_lights_buffer.get_storage_view(), 
+						[8] = state.default_image_cube.get_texture_view(0),
 					},
 					.samplers[0] = in_state.sampler,
 				};

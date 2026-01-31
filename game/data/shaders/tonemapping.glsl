@@ -6,6 +6,10 @@
 
 @fs fs
 
+layout(binding=0) uniform fs_params {
+	float exposure_bias; 
+};
+
 layout(binding=0) uniform texture2D tex;
 
 layout(binding=0) uniform sampler smp;
@@ -13,6 +17,11 @@ layout(binding=0) uniform sampler smp;
 in vec2 uv;
 
 out vec4 frag_color;
+
+float get_exposure_multiplier()
+{
+	return pow(2.0, exposure_bias);
+}
 
 vec3 tonemap_filmic(vec3 x)
 {
@@ -46,12 +55,16 @@ vec3 gamma_correct(vec3 color)
 void main()
 {
 	// Input Color 
- 	vec4 color = texture(sampler2D(tex, smp), uv);
+ 	vec3 color = texture(sampler2D(tex, smp), uv).xyz;
+
+	// Exposure
+	vec3 exposed_color = color * get_exposure_multiplier();
 
 	// Tonemapping
-	vec3 final_color = tonemap_reinhard(color.xyz) * 1.25; 
+	vec3 tonemapped_color = tonemap_reinhard(exposed_color); 
 
-	frag_color = vec4(final_color,1);
+	// Write final color output
+	frag_color = vec4(tonemapped_color, 1.0);
 }
 
 @end
