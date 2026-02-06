@@ -6,6 +6,8 @@
 #define STB_DS_IMPLEMENTATION
 #include "core/stretchy_buffer.h"
 
+#include "render/gi.h"
+
 // C++ std lib Optional
 #include <optional>
 using std::optional;
@@ -45,9 +47,6 @@ using std::atomic;
 
 // Render Pass abstraction
 #include "render/render_pass.h"
-
-// Cubemap environment captures
-#include "render/cubemap_capture.h"
 
 // Ankerl's Segmented Vector and Fast Unordered Hash Math
 #include "ankerl/unordered_dense.h"
@@ -822,11 +821,7 @@ void handle_resize()
 	}
 }
 
-//FCS TODO: BEGIN Testing Cubemap
-CubemapCapture cubemap_debug_capture;
-sg_pipeline cubemap_debug_pipeline;
-Mesh cubemap_debug_sphere;
-//FCS TODO: END Testing Cubemap
+GI_Scene gi_scene = {};
 
 void init(void)
 {
@@ -876,15 +871,12 @@ void init(void)
 	};
 	state.default_image_cube = GpuImage(default_image_cube_desc);
 
-	// FCS TODO: BEGIN Testing Cubemap rendering
-	const CubemapCaptureDesc cubemap_capture_desc = {
-		.size = 128,
-		.location = HMM_V3(0,0,3.5),
-	};
-	cubemap_debug_capture = CubemapCapture(cubemap_capture_desc);
-	cubemap_debug_pipeline = sg_make_pipeline(CubemapDebugPass::make_pipeline_desc(swapchain.depth_format));
-	cubemap_debug_sphere = make_mesh(mesh_init_data_uv_sphere(1.0f,24,24));
-	// FCS TODO: END Testing Cubemap rendering
+	// GI Scene Setup
+	gi_scene_init(gi_scene);
+	printf("gi_scene num cells: %i num probes: %i\n",
+		gi_scene.cells.length(), 
+		gi_scene.probes.length()
+	);	
 
 	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
@@ -1194,7 +1186,6 @@ void frame(void)
 			.width = state.width,
 			.height = state.height, 
 			.delta_time = delta_time,
-			//.dpi_scale = ,
 		});
 	);
 
@@ -1313,6 +1304,11 @@ void frame(void)
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
 
 			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+
+			// Octahedral Atlas Visualization 
+			GpuImage& oct_image = gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0);
+			ImTextureID oct_imtex_id = simgui_imtextureid(oct_image.get_texture_view(0));
+			ImGui::Image(oct_imtex_id, ImVec2(256, 256));
 		}
 	);
 
@@ -1627,9 +1623,8 @@ void frame(void)
 			}
 		}
 
-		//FCS TODO: BEGIN Testing Cubemap
-		cubemap_debug_capture.render(state);
-		//FCS TODO: END Testing Cubemap
+		// Update our GI Scene
+		gi_scene_update(gi_scene, state);
 
 		// View + Projection matrix setup
 		const f32 w = sapp_widthf();
@@ -1742,34 +1737,11 @@ void frame(void)
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
 						}
-					}	
-
-					//FCS TODO: BEGIN Testing Cubemap
-					{
-						sg_apply_pipeline(cubemap_debug_pipeline);
-
-						cubemap_debug_vs_params_t vs_params;
-						vs_params.view = view_matrix;
-						vs_params.projection = projection_matrix;
-						vs_params.model = HMM_Translate(cubemap_debug_capture.desc.location);
-;
-						vs_params.rotation = HMM_M4D(1.0);
-
-						// Apply Vertex Uniforms
-						sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-						sg_bindings bindings = {
-							.vertex_buffers[0] = cubemap_debug_sphere.vertex_buffer.get_gpu_buffer(),
-							.index_buffer = cubemap_debug_sphere.index_buffer.get_gpu_buffer(),
-							.views = {
-								[0] = cubemap_debug_capture.lighting_pass.get_color_output(0).get_texture_view(0),
-							},
-							.samplers[0] = state.sampler,
-						};
-						sg_apply_bindings(&bindings);
-						sg_draw(0, cubemap_debug_sphere.index_count, 1);
 					}
-					//FCS TODO: BEGIN Testing Cubemap
+
+					{
+						gi_scene_render_debug(gi_scene, view_matrix, projection_matrix);
+					}
 				}
 			);
 		}
@@ -1831,7 +1803,7 @@ void frame(void)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
-					state.lighting_fs_params.gi_enable = state.gi_enable;
+					state.lighting_fs_params.gi_enable = false, //state.gi_enable;
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -1855,7 +1827,7 @@ void frame(void)
 							[5] = state.point_lights_buffer.get_storage_view(),
 							[6] = state.spot_lights_buffer.get_storage_view(), 
 							[7] = state.sun_lights_buffer.get_storage_view(), 
-							[8] = cubemap_debug_capture.lighting_pass.get_color_output(0).get_texture_view(0),
+							[8] = state.default_image_cube.get_texture_view(0),
 
 						},
 						.samplers[0] = state.sampler,
@@ -2003,7 +1975,7 @@ void frame(void)
 								);
 
 								GpuImage& image = state.images[state.debug_image_index];
-								ImVec2 size = ImVec2(256, 256);
+								const ImVec2 size = ImVec2(256, 256);
 
 								ImTextureID imtex_id = simgui_imtextureid(image.get_texture_view(0));
 								ImGui::Image(imtex_id, size);

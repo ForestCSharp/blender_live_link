@@ -79,7 +79,7 @@ struct State
 	// Lighting fragment shader params
 	lighting_fs_params_t lighting_fs_params;
 	tonemapping_fs_params_t tonemapping_fs_params = {
-		.exposure_bias = 0.0,
+		.exposure_bias = 1.5,
 	};
 
 	// Contains Lights Data packed up for gpu usage
@@ -123,7 +123,6 @@ struct State
 		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
 		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
 	};
-
 } state;
 
 //FCS TODO: member methods on state once it's not a global

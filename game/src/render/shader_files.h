@@ -8,3 +8,4 @@
 #include "lighting.compiled.h"
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
+#include "cubemap_to_octahedral.compiled.h"

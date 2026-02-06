@@ -11,6 +11,12 @@ TYPE_DEF(HMM_Vec3,vec3)
 TYPE_DEF(HMM_Vec4,vec4)
 TYPE_DEF(HMM_Mat4,mat4)
 
+#if !defined(__cplusplus) || !defined(__STDC__)
+#define HMM_V2 vec2
+#define HMM_V3 vec3
+#define HMM_V4 vec4
+#endif
+
 #if !defined(M_PI)
 #define M_PI 3.1415926535897932384626433832795
 #endif

@@ -42,6 +42,7 @@ if [[ $OS_ARG = Windows ]]; then
 		-o bin/game.exe \
 		-I src \
 		-I src/extern \
+		-I data \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
@@ -80,6 +81,7 @@ elif [[ $OS_ARG = Mac ]]; then
 		-o bin/game \
 		-I src \
 		-I src/extern \
+		-I data \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \

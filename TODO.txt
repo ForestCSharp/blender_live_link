@@ -1,10 +1,14 @@
 TODO
-
-	- need to place a lot of GI probes
-		- evaluate cubemap, octahedral map, SH, SG
-
-	- Don't run shaders on disabled render passes...
-	- Fix IsGrounded for Character Jumping
+	- GI Probes
+		- helper convert a cubemap to equirectangular map
+			- support copying result into layer of a 2D texture array
+		- helper to generate mips for a 2D texture
+		- GI grid setup
+			- grid initialization
+				- initialize NxNxN grid cells
+				- for each grid cell, initialize corner probes
+			- when rendering a pixel: 
+				- determine grid cell, which has reference to 8 corner probes
 
 Tasks:
 	- GI/Reflection Captures
@@ -15,17 +19,3 @@ Tasks:
 	- Temporal Anti Aliasing
 	- Sokol Compute Shaders
 		- [TODO] first use-case
-
-Improvements:
-	- On Updates, don't re-create all object functionality, determine what actually changed and just update that
-		- ex: If you didn't change geometry, don't recreate mesh
-		- ex: If you didn't change physics, don't recreate physics state
-	- Consider option to wait until a move operation is done to send a live link update
-	- Make sure rigid body and character don't exist on same object
-	- replace optional ids for character and camera control with map of tagged IDs
-
-Bugs:
-	- deleting a child by deleting its parent in blender doesn't delete the child in game
-	- deleting object representing our player character or camera control is currently invalid
-		- need to clean up the id's representing those entities
-

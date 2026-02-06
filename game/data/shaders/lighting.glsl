@@ -268,14 +268,18 @@ void main()
 		}
 		else
 		{
+			const vec3 position = sampled_position.xyz;
+			const vec3 normal = sampled_normal.xyz;
+			const vec3 color = sampled_color.xyz;
+
 			for (int i = 0; i < num_point_lights; ++i)
 			{
 				final_color.xyz += sample_point_light(
 					point_lights[i], 
 					view_position,
-					sampled_position.xyz, 
-					sampled_normal.xyz, 
-					sampled_color.xyz, 
+					position, 
+					normal, 
+					color, 
 					roughness, 
 					metallic
 				);
@@ -287,9 +291,9 @@ void main()
 				final_color.xyz += sample_spot_light(
 					spot_lights[i], 
 					view_position,
-					sampled_position.xyz, 
-					sampled_normal.xyz, 
-					sampled_color.xyz, 
+					position, 
+					normal, 
+					color, 
 					roughness, 
 					metallic
 				);
@@ -300,9 +304,9 @@ void main()
 				final_color.xyz += sample_sun_light(
 					sun_lights[i], 
 					view_position,
-					sampled_position.xyz, 
-					sampled_normal.xyz, 
-					sampled_color.xyz, 
+					position, 
+					normal, 
+					color, 
 					roughness, 
 					metallic
 				);
@@ -310,10 +314,52 @@ void main()
 
 			//TODO: uniform var to enable/disable this
 			//TODO: sample cubemap
+			//if (gi_enable != 0)
+			//{
+			//	vec4 cubemap_color = texture(samplerCube(cubemap_tex,tex_sampler), sampled_normal.xyz);
+			//	final_color.xyz += cubemap_color.xyz * 0.25f;	
+			//}
 			if (gi_enable != 0)
 			{
-				vec4 cubemap_color = texture(samplerCube(cubemap_tex,tex_sampler), sampled_normal.xyz);
-				final_color.xyz += cubemap_color.xyz * 0.25f;	
+				// 1. Setup Standard PBR vectors
+				vec3 N = normal;
+				vec3 V = normalize(view_position - position);
+				vec3 R = reflect(-V, N); 
+				
+				// clamp NdotV to avoid artifacts at edges
+				float NdotV = max(dot(N, V), 0.0);
+
+				// 2. Calculate F0 (Base Reflectivity)
+				// 0.04 is the standard base reflectivity for non-metals (dielectrics)
+				vec3 F0 = vec3(0.04); 
+				F0 = mix(F0, sampled_color.xyz, metallic);
+
+				// 3. Calculate Fresnel (kS) and Diffuse (kD) ratios
+				vec3 kS = fresnel_schlick_roughness(NdotV, F0, roughness);
+				vec3 kD = 1.0 - kS;
+				kD *= (1.0 - metallic); // Pure metals have no diffuse lighting
+
+				// 4. Sample Diffuse Irradiance
+				// We sample the cubemap with the Normal at a very high MIP level to blur it.
+				// If you have a dedicated pre-convoluted irradiance map, use that instead at LOD 0.
+				float max_lod = 8.0; // Adjust based on your texture's mip count
+				vec3 irradiance = textureLod(samplerCube(cubemap_tex, tex_sampler), N, max_lod).rgb;
+				vec3 diffuse = irradiance * sampled_color.rgb;
+
+				// 5. Sample Specular Reflection
+				// Sample along the reflection vector R. 
+				// Roughness determines which MIP level we read from (rougher = blurrier).
+				vec3 prefiltered_color = textureLod(samplerCube(cubemap_tex, tex_sampler), R, roughness * max_lod).rgb;
+
+				// 6. Scale Specular by BRDF (The "Split Sum" Approximation)
+				vec2 brdf  = env_brdf_approx(roughness, NdotV);
+				vec3 specular = prefiltered_color * (kS * brdf.x + brdf.y);
+
+				// 7. Combine and apply AO
+				// Note: Ideally AO affects specular differently (specular occlusion), but this is a safe baseline.
+				vec3 ambient = (kD * diffuse + specular);
+				
+				final_color.xyz += ambient; 
 			}
 			//TODO: 
 
