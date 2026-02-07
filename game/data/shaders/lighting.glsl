@@ -5,12 +5,20 @@
 // BRDF
 #include "brdf.h"
 
+// GI Helpers
+#include "gi_helpers.h"
+
+// Octahedral Helpers
+#include "octahedral_helpers.h"
+
 // Fullscreen Vertex Shader
 #include "fullscreen_vs.glslh"
 
 @fs fs
 
 @include_block brdf 
+@include_block gi_helpers
+@include_block octahedral_helpers
 
 struct PointLight {
 	vec4 location;
@@ -48,7 +56,11 @@ layout(binding=0) uniform fs_params {
 	int num_spot_lights;
 	int num_sun_lights;
 	int ssao_enable;
+
 	int gi_enable;
+	float gi_intensity;
+	int atlas_total_size;
+	int atlas_entry_size;
 };
 
 
@@ -70,7 +82,15 @@ layout(binding=7) readonly buffer SunLightsBuffer {
 	SunLight sun_lights[];
 };
 
-layout(binding=8) uniform textureCube cubemap_tex;
+layout(binding=8) readonly buffer GIProbesBuffer {
+	GI_Probe gi_probes[];
+};
+
+layout(binding=9) readonly buffer GICellsBuffer {
+	GI_Cell gi_cells[];
+};
+
+layout(binding=10) uniform texture2D octahedral_atlas_texture;
 
 float vec2_length_squared(vec2 v)
 {
@@ -253,7 +273,7 @@ void main()
 	}
 	else
 	{
-		vec4 sampled_position	= texture(sampler2D(position_tex, tex_sampler), uv);
+		vec4 sampled_position = texture(sampler2D(position_tex, tex_sampler), uv);
 		vec4 sampled_roughness_metallic_emissive = texture(sampler2D(roughness_metallic_emissive_tex, tex_sampler), uv);
 		float roughness = sampled_roughness_metallic_emissive.r;
 		float metallic = sampled_roughness_metallic_emissive.g;
@@ -312,56 +332,56 @@ void main()
 				);
 			}
 
-			//TODO: uniform var to enable/disable this
-			//TODO: sample cubemap
-			//if (gi_enable != 0)
-			//{
-			//	vec4 cubemap_color = texture(samplerCube(cubemap_tex,tex_sampler), sampled_normal.xyz);
-			//	final_color.xyz += cubemap_color.xyz * 0.25f;	
-			//}
 			if (gi_enable != 0)
 			{
-				// 1. Setup Standard PBR vectors
-				vec3 N = normal;
-				vec3 V = normalize(view_position - position);
-				vec3 R = reflect(-V, N); 
-				
-				// clamp NdotV to avoid artifacts at edges
-				float NdotV = max(dot(N, V), 0.0);
+				vec3 lookup_dir = normalize(normal);
+				GI_Coords cell_coords = gi_cell_coords_from_position(position);
+				int cell_index = gi_cell_index_from_coords(cell_coords);
+				GI_Cell cell = gi_cells[cell_index];
 
-				// 2. Calculate F0 (Base Reflectivity)
-				// 0.04 is the standard base reflectivity for non-metals (dielectrics)
-				vec3 F0 = vec3(0.04); 
-				F0 = mix(F0, sampled_color.xyz, metallic);
+				// 1. Find the "alpha" position of the pixel within this specific cell
+				// This requires the world position of the '0,0,0' corner probe of the cell
+				vec3 cell_min_pos = gi_probe_position_from_index(cell.probe_indices[0]);
+				vec3 alpha = clamp((position - cell_min_pos) / GI_CELL_EXTENT, 0.0, 1.0);
 
-				// 3. Calculate Fresnel (kS) and Diffuse (kD) ratios
-				vec3 kS = fresnel_schlick_roughness(NdotV, F0, roughness);
-				vec3 kD = 1.0 - kS;
-				kD *= (1.0 - metallic); // Pure metals have no diffuse lighting
+				vec3 accumulated_irradiance = vec3(0.0);
+				float accumulated_weight = 0.0;
 
-				// 4. Sample Diffuse Irradiance
-				// We sample the cubemap with the Normal at a very high MIP level to blur it.
-				// If you have a dedicated pre-convoluted irradiance map, use that instead at LOD 0.
-				float max_lod = 8.0; // Adjust based on your texture's mip count
-				vec3 irradiance = textureLod(samplerCube(cubemap_tex, tex_sampler), N, max_lod).rgb;
-				vec3 diffuse = irradiance * sampled_color.rgb;
+				for (int i = 0; i < 8; ++i)
+				{
+					int probe_index = cell.probe_indices[i];
+					if (probe_index == -1) continue;
 
-				// 5. Sample Specular Reflection
-				// Sample along the reflection vector R. 
-				// Roughness determines which MIP level we read from (rougher = blurrier).
-				vec3 prefiltered_color = textureLod(samplerCube(cubemap_tex, tex_sampler), R, roughness * max_lod).rgb;
+					GI_Probe probe = gi_probes[probe_index];
+					vec3 probe_position = gi_probe_position_from_index(probe_index);
+					vec3 dir_to_probe = normalize(probe_position - position);
 
-				// 6. Scale Specular by BRDF (The "Split Sum" Approximation)
-				vec2 brdf  = env_brdf_approx(roughness, NdotV);
-				vec3 specular = prefiltered_color * (kS * brdf.x + brdf.y);
+					// 2. Compute Trilinear Weight based on binary corner index (i)
+					// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
+					float x_side = float(i & 1);
+					float y_side = float((i >> 1) & 1);
+					float z_side = float((i >> 2) & 1);
 
-				// 7. Combine and apply AO
-				// Note: Ideally AO affects specular differently (specular occlusion), but this is a safe baseline.
-				vec3 ambient = (kD * diffuse + specular);
-				
-				final_color.xyz += ambient; 
-			}
-			//TODO: 
+					// Linear blend based on distance to the cell boundaries
+					float trilinear_weight = 
+						(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
+						(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
+						(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
+
+					// 3. Keep your Normal Weight to prevent light leaking
+					float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, lookup_dir));
+
+					const vec2 octahedral_coords = padded_atlas_uv_from_normal(lookup_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+					const vec3 probe_radiance = texture(sampler2D(octahedral_atlas_texture, tex_sampler), octahedral_coords).xyz;
+
+					accumulated_irradiance += probe_radiance * weight;
+					accumulated_weight += weight;
+				}
+
+				accumulated_weight = max(accumulated_weight, 0.0001);
+				vec3 final_gi = (accumulated_irradiance / accumulated_weight) * color * gi_intensity;
+				final_color.xyz += final_gi;
+			}	
 
 			// Apply ambient occlusion
 			final_color *= ambient_occlusion;

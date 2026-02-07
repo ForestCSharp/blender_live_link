@@ -18,6 +18,7 @@ struct GI_Scene
 	StretchyBuffer<GI_Probe> probes;
 
 	GpuBuffer<GI_Probe> probes_buffer;
+	GpuBuffer<GI_Cell> cells_buffer;
 
 	// Probe Update State
 	LightingCapture lighting_capture;
@@ -28,7 +29,15 @@ struct GI_Scene
 	Mesh debug_sphere;
 	sg_pipeline gi_debug_pipeline;
 
+	// Octahedral Atlas Size
+	static const int atlas_total_size = 2048;
+	static const int atlas_entry_size = 16;
+
+
 };
+
+#define GI_LOG_SCENE_INIT 0
+#define GI_LOG_SCENE_UPDATE 0
 
 void gi_scene_init(GI_Scene& out_gi_scene)
 {
@@ -38,15 +47,13 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.cells.add_uninitialized(GI_CELL_COUNT);
 	out_gi_scene.probes.add_uninitialized(GI_PROBE_COUNT);
 
-	const bool log_scene_init = true;
-
 	//FCS TODO: CHECK
 	for (i32 cell_idx = 0; cell_idx < GI_CELL_COUNT; ++cell_idx)
 	{
 		GI_Cell& cell = out_gi_scene.cells[cell_idx];
 		GI_Coords cell_coords = gi_cell_coords_from_index(cell_idx);
 
-		if (log_scene_init)
+		if (GI_LOG_SCENE_INIT)
 		{
 			printf("Cell Coords: %i, %i, %i\n", cell_coords.x, cell_coords.y, cell_coords.z);
 			HMM_Vec3 cell_center = gi_cell_center_from_coords(cell_coords);
@@ -66,7 +73,7 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 						.z = cell_coords.z + z,
 					};
 
-					if (log_scene_init)
+					if (GI_LOG_SCENE_INIT)
 					{
 						printf("\tProbe Coords: %i, %i, %i\n", probe_coords.x, probe_coords.y, probe_coords.z);
 						HMM_Vec3 probe_position = gi_probe_position_from_coords(probe_coords);
@@ -82,6 +89,23 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 					cell.probe_indices[corner_idx] = probe_idx;
 				}
 			}
+		}
+
+		for (i32 i = 0; i < 8; ++i) 
+		{
+			i32 p_idx = cell.probe_indices[i];
+			
+			// 1. Ensure the index is valid
+			assert(p_idx >= 0 && p_idx < GI_PROBE_COUNT);
+
+			// 2. Decode the index back into coordinates to verify order
+			GI_Coords test_coords = gi_probe_coords_from_index(p_idx);
+
+			// We verify that the relative position of the probe matches the bitmask 'i'
+			// This directly validates your shader's (i & 1), ((i >> 1) & 1), etc.
+			assert((test_coords.x - cell_coords.x) == (i & 1));
+			assert((test_coords.y - cell_coords.y) == ((i >> 1) & 1));
+			assert((test_coords.z - cell_coords.z) == ((i >> 2) & 1));
 		}
 	}
 
@@ -99,11 +123,27 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 		.label = "GI Probes Buffer",
 	};
 	out_gi_scene.probes_buffer = GpuBuffer<GI_Probe>(probes_buffer_desc);
+
+	GpuBufferDesc<GI_Cell> cells_buffer_desc = {
+		.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
+		.usage = {
+			.storage_buffer = true,
+			.stream_update = true,
+		},
+		.label = "GI Cells Buffer",
+	};
+	out_gi_scene.cells_buffer = GpuBuffer<GI_Cell>(cells_buffer_desc);
+	out_gi_scene.cells_buffer.update_gpu_buffer(
+		(sg_range){
+			.ptr = out_gi_scene.cells.data(), 
+			.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
+		}
+	);
 	
 	const LightingCaptureDesc lighting_capture_desc = {
 		.cubemap_render_size = 256,
-		.octahedral_total_size = 4096,
-		.octahedral_entry_size = 128,
+		.octahedral_total_size = GI_Scene::atlas_total_size,
+		.octahedral_entry_size = GI_Scene::atlas_entry_size,
 	};
 	out_gi_scene.lighting_capture.init(lighting_capture_desc);
 
@@ -138,8 +178,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 			probe_idx_to_update.atlas_idx
 	);
 
-	const bool log_update = false;
-	if (log_update)
+	if (GI_LOG_SCENE_UPDATE)
 	{
 		printf(
 			"Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
@@ -154,6 +193,11 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 
 	// Update probe_idx_to_update for next update call
 	in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
+}
+
+sg_view gi_scene_get_octahedral_atlas_view(GI_Scene& in_gi_scene)
+{
+	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0).get_texture_view(0);
 }
 
 void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix, const HMM_Mat4& in_projection_matrix)
@@ -175,13 +219,12 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	sg_apply_uniforms(1, SG_RANGE(fs_params));
 
 
-	GpuImage& octahedral_atlas = in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0);
 
 	sg_bindings bindings = {
 		.vertex_buffers[0] = in_gi_scene.debug_sphere.vertex_buffer.get_gpu_buffer(),
 		.index_buffer = in_gi_scene.debug_sphere.index_buffer.get_gpu_buffer(),
 		.views = {
-			[0] = octahedral_atlas.get_texture_view(0),
+			[0] = gi_scene_get_octahedral_atlas_view(in_gi_scene),
 			[1] = in_gi_scene.probes_buffer.get_storage_view(),
 		},
 		.samplers[0] = state.sampler,

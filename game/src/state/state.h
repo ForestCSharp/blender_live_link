@@ -47,7 +47,9 @@ struct State
 	// Rendering Feature Flags
 	bool ssao_enable = true;
 	bool gi_enable = true;
+	float gi_intensity = 1.0f;
 	bool dof_enable = true;
+	bool show_probes = true;
 
 	// SSAO Data 
 	GpuImage ssao_noise_texture;
@@ -107,6 +109,7 @@ struct State
 	StretchyBuffer<GpuImage> images;
 	GpuImage default_image;
 	GpuImage default_image_cube;
+	GpuBuffer<u8> default_buffer;
 
 	bool enable_debug_image_fullscreen = false;
 	i32 debug_image_index = 0;

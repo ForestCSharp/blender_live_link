@@ -871,6 +871,19 @@ void init(void)
 	};
 	state.default_image_cube = GpuImage(default_image_cube_desc);
 
+	printf("1\n");
+	u8 default_buffer_data[4] = { 0,0,0,0 };
+	GpuBufferDesc<u8> default_buffer_desc = {
+		.data = default_buffer_data,
+		.size = 4, 
+		.usage = {
+			.storage_buffer = true,
+		},
+		.label = "default_buffer",
+	};
+	state.default_buffer = GpuBuffer<u8>(default_buffer_desc);
+	printf("2\n");
+
 	// GI Scene Setup
 	gi_scene_init(gi_scene);
 	printf("gi_scene num cells: %i num probes: %i\n",
@@ -1300,10 +1313,13 @@ void frame(void)
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Checkbox("SSAO", &state.ssao_enable);
-			ImGui::Checkbox("GI", &state.gi_enable);
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
-
 			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+
+
+			ImGui::Checkbox("GI", &state.gi_enable);
+			ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
+			ImGui::Checkbox("Show Probes", &state.show_probes);
 
 			// Octahedral Atlas Visualization 
 			GpuImage& oct_image = gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0);
@@ -1739,6 +1755,7 @@ void frame(void)
 						}
 					}
 
+					if (state.show_probes)
 					{
 						gi_scene_render_debug(gi_scene, view_matrix, projection_matrix);
 					}
@@ -1803,7 +1820,10 @@ void frame(void)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
-					state.lighting_fs_params.gi_enable = false, //state.gi_enable;
+					state.lighting_fs_params.gi_enable = state.gi_enable;
+					state.lighting_fs_params.gi_intensity = state.gi_intensity;
+					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
+					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -1827,8 +1847,9 @@ void frame(void)
 							[5] = state.point_lights_buffer.get_storage_view(),
 							[6] = state.spot_lights_buffer.get_storage_view(), 
 							[7] = state.sun_lights_buffer.get_storage_view(), 
-							[8] = state.default_image_cube.get_texture_view(0),
-
+							[8] = gi_scene.probes_buffer.get_storage_view(),
+							[9] = gi_scene.cells_buffer.get_storage_view(),
+							[10] = gi_scene_get_octahedral_atlas_view(gi_scene),
 						},
 						.samplers[0] = state.sampler,
 					};

@@ -28,7 +28,7 @@ struct GpuBufferDesc
 	sg_buffer_usage usage;
 	
 	/* Debug Label */
-	const char* label;
+	const char* label = nullptr;
 };
 
 

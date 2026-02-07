@@ -64,7 +64,7 @@ namespace GeometryPass
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.25, 0.25, 0.25, 1.0},
+				.clear_value = {0.0, 0.0, 0.0, 1.0},
 			},
 			.outputs[1] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,

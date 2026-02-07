@@ -86,6 +86,7 @@ elif [[ $OS_ARG = Mac ]]; then
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
 		-D SOKOL_METAL \
+		-ftime-trace \
 		--std=c++20 \
 		-L./bin \
 		-lc++ \

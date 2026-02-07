@@ -18,7 +18,7 @@ struct GpuImageDesc
 	i32 num_slices = 1;
 	sg_pixel_format pixel_format;	
 	const u8* data = nullptr;
-	const char* label;
+	const char* label = nullptr;
 };
 
 struct GpuImage
