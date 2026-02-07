@@ -334,7 +334,8 @@ void main()
 
 			if (gi_enable != 0)
 			{
-				vec3 lookup_dir = normalize(normal);
+				const vec3 lookup_dir = normalize(normal);
+
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
 				GI_Cell cell = gi_cells[cell_index];
@@ -387,6 +388,8 @@ void main()
 			final_color *= ambient_occlusion;
 		}
 	}
+
+	final_color += dither_noise();
 
 	frag_color = final_color;
 }

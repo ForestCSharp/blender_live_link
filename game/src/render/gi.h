@@ -141,7 +141,9 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	);
 	
 	const LightingCaptureDesc lighting_capture_desc = {
-		.cubemap_render_size = 256,
+		// Cubemap Capture Setup
+		.cubemap_render_size = 256,	
+		// Octahedral Atlas Setup
 		.octahedral_total_size = GI_Scene::atlas_total_size,
 		.octahedral_entry_size = GI_Scene::atlas_entry_size,
 	};
