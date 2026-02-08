@@ -46,6 +46,7 @@ struct State
 
 	// Rendering Feature Flags
 	bool ssao_enable = true;
+	bool direct_lighting_enable = true;
 	bool gi_enable = true;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;

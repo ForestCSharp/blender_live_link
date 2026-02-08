@@ -6,7 +6,7 @@
 #include "octahedral_helpers.h"
 
 // Fullscreen Vertex Shader
-#include "fullscreen_vs.glslh"
+#include "fullscreen_vs.h"
 
 @fs fs
 

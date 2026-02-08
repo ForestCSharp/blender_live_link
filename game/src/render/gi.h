@@ -29,10 +29,11 @@ struct GI_Scene
 	Mesh debug_sphere;
 	sg_pipeline gi_debug_pipeline;
 
-	// Octahedral Atlas Size
-	static const int atlas_total_size = 2048;
+	// Static Parameters 
+	static const int cubemap_capture_size = 256;
+	static const int atlas_total_size = 512;
 	static const int atlas_entry_size = 16;
-
+	static const int probes_to_update_per_frame = 4;
 
 };
 
@@ -142,7 +143,7 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	
 	const LightingCaptureDesc lighting_capture_desc = {
 		// Cubemap Capture Setup
-		.cubemap_render_size = 256,	
+		.cubemap_render_size = GI_Scene::cubemap_capture_size,	
 		// Octahedral Atlas Setup
 		.octahedral_total_size = GI_Scene::atlas_total_size,
 		.octahedral_entry_size = GI_Scene::atlas_entry_size,
@@ -158,13 +159,43 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 {
 	assert(in_gi_scene.probes.is_valid_index(in_gi_scene.probe_idx_to_update));
 
-	GI_Probe& probe_idx_to_update = in_gi_scene.probes[in_gi_scene.probe_idx_to_update];
-
-	if (probe_idx_to_update.atlas_idx < 0)
+	bool needs_gpu_update = false;
+	for (i32 i = 0; i < GI_Scene::probes_to_update_per_frame; ++i)
 	{
-		probe_idx_to_update.atlas_idx = in_gi_scene.next_atlas_index;
-		in_gi_scene.next_atlas_index += 1;
+		GI_Probe& probe_idx_to_update = in_gi_scene.probes[in_gi_scene.probe_idx_to_update];
 
+		if (probe_idx_to_update.atlas_idx < 0)
+		{
+			probe_idx_to_update.atlas_idx = in_gi_scene.next_atlas_index;
+			in_gi_scene.next_atlas_index += 1;
+			needs_gpu_update = true;
+		}
+		
+		const HMM_Vec3 lighting_capture_position = gi_probe_position_from_index(in_gi_scene.probe_idx_to_update);
+		in_gi_scene.lighting_capture.render(
+				in_state, 
+				lighting_capture_position, 
+				probe_idx_to_update.atlas_idx
+		);
+
+		if (GI_LOG_SCENE_UPDATE)
+		{
+			printf(
+				"Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
+				in_gi_scene.probe_idx_to_update, 
+				in_gi_scene.probes.length(),
+				lighting_capture_position.X, 
+				lighting_capture_position.Y, 
+				lighting_capture_position.Z
+			);
+		}
+
+		// Update probe_idx_to_update for next update call
+		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
+	}
+
+	if (needs_gpu_update)
+	{
 		in_gi_scene.probes_buffer.update_gpu_buffer(
 			(sg_range){
 				.ptr = in_gi_scene.probes.data(), 
@@ -172,29 +203,6 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 			}
 		);
 	}
-	
-	const HMM_Vec3 lighting_capture_position = gi_probe_position_from_index(in_gi_scene.probe_idx_to_update);
-	in_gi_scene.lighting_capture.render(
-			in_state, 
-			lighting_capture_position, 
-			probe_idx_to_update.atlas_idx
-	);
-
-	if (GI_LOG_SCENE_UPDATE)
-	{
-		printf(
-			"Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
-			in_gi_scene.probe_idx_to_update, 
-			in_gi_scene.probes.length(),
-			lighting_capture_position.X, 
-			lighting_capture_position.Y, 
-			lighting_capture_position.Z
-		);
-	}
-
-
-	// Update probe_idx_to_update for next update call
-	in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
 }
 
 sg_view gi_scene_get_octahedral_atlas_view(GI_Scene& in_gi_scene)
@@ -219,8 +227,6 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	};
 	// Apply Fragment Uniforms
 	sg_apply_uniforms(1, SG_RANGE(fs_params));
-
-
 
 	sg_bindings bindings = {
 		.vertex_buffers[0] = in_gi_scene.debug_sphere.vertex_buffer.get_gpu_buffer(),

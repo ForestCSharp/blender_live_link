@@ -12,7 +12,7 @@
 #include "octahedral_helpers.h"
 
 // Fullscreen Vertex Shader
-#include "fullscreen_vs.glslh"
+#include "fullscreen_vs.h"
 
 @fs fs
 
@@ -57,6 +57,7 @@ layout(binding=0) uniform fs_params {
 	int num_sun_lights;
 	int ssao_enable;
 
+	int direct_lighting_enable;
 	int gi_enable;
 	float gi_intensity;
 	int atlas_total_size;
@@ -292,44 +293,47 @@ void main()
 			const vec3 normal = sampled_normal.xyz;
 			const vec3 color = sampled_color.xyz;
 
-			for (int i = 0; i < num_point_lights; ++i)
+			if (direct_lighting_enable != 0)
 			{
-				final_color.xyz += sample_point_light(
-					point_lights[i], 
-					view_position,
-					position, 
-					normal, 
-					color, 
-					roughness, 
-					metallic
-				);
+				for (int i = 0; i < num_point_lights; ++i)
+				{
+					final_color.xyz += sample_point_light(
+							point_lights[i], 
+							view_position,
+							position, 
+							normal, 
+							color, 
+							roughness, 
+							metallic
+							);
 
-			}
+				}
 
-			for (int i = 0; i < num_spot_lights; ++i)
-			{
-				final_color.xyz += sample_spot_light(
-					spot_lights[i], 
-					view_position,
-					position, 
-					normal, 
-					color, 
-					roughness, 
-					metallic
-				);
-			}
+				for (int i = 0; i < num_spot_lights; ++i)
+				{
+					final_color.xyz += sample_spot_light(
+							spot_lights[i], 
+							view_position,
+							position, 
+							normal, 
+							color, 
+							roughness, 
+							metallic
+							);
+				}
 
-			for (int i = 0; i < num_sun_lights; ++i)
-			{
-				final_color.xyz += sample_sun_light(
-					sun_lights[i], 
-					view_position,
-					position, 
-					normal, 
-					color, 
-					roughness, 
-					metallic
-				);
+				for (int i = 0; i < num_sun_lights; ++i)
+				{
+					final_color.xyz += sample_sun_light(
+							sun_lights[i], 
+							view_position,
+							position, 
+							normal, 
+							color, 
+							roughness, 
+							metallic
+							);
+				}
 			}
 
 			if (gi_enable != 0)
@@ -338,50 +342,53 @@ void main()
 
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
-				GI_Cell cell = gi_cells[cell_index];
-
-				// 1. Find the "alpha" position of the pixel within this specific cell
-				// This requires the world position of the '0,0,0' corner probe of the cell
-				vec3 cell_min_pos = gi_probe_position_from_index(cell.probe_indices[0]);
-				vec3 alpha = clamp((position - cell_min_pos) / GI_CELL_EXTENT, 0.0, 1.0);
-
-				vec3 accumulated_irradiance = vec3(0.0);
-				float accumulated_weight = 0.0;
-
-				for (int i = 0; i < 8; ++i)
+				if (cell_index > 0)
 				{
-					int probe_index = cell.probe_indices[i];
-					if (probe_index == -1) continue;
+					GI_Cell cell = gi_cells[cell_index];
 
-					GI_Probe probe = gi_probes[probe_index];
-					vec3 probe_position = gi_probe_position_from_index(probe_index);
-					vec3 dir_to_probe = normalize(probe_position - position);
+					// 1. Find the "alpha" position of the pixel within this specific cell
+					// This requires the world position of the '0,0,0' corner probe of the cell
+					vec3 cell_min_pos = gi_probe_position_from_index(cell.probe_indices[0]);
+					vec3 alpha = clamp((position - cell_min_pos) / GI_CELL_EXTENT, 0.0, 1.0);
 
-					// 2. Compute Trilinear Weight based on binary corner index (i)
-					// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
-					float x_side = float(i & 1);
-					float y_side = float((i >> 1) & 1);
-					float z_side = float((i >> 2) & 1);
+					vec3 accumulated_irradiance = vec3(0.0);
+					float accumulated_weight = 0.0;
 
-					// Linear blend based on distance to the cell boundaries
-					float trilinear_weight = 
-						(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
-						(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
-						(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
+					for (int i = 0; i < 8; ++i)
+					{
+						int probe_index = cell.probe_indices[i];
+						if (probe_index == -1) continue;
 
-					// 3. Keep your Normal Weight to prevent light leaking
-					float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, lookup_dir));
+						GI_Probe probe = gi_probes[probe_index];
+						vec3 probe_position = gi_probe_position_from_index(probe_index);
+						vec3 dir_to_probe = normalize(probe_position - position);
 
-					const vec2 octahedral_coords = padded_atlas_uv_from_normal(lookup_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-					const vec3 probe_radiance = texture(sampler2D(octahedral_atlas_texture, tex_sampler), octahedral_coords).xyz;
+						// 2. Compute Trilinear Weight based on binary corner index (i)
+						// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
+						float x_side = float(i & 1);
+						float y_side = float((i >> 1) & 1);
+						float z_side = float((i >> 2) & 1);
 
-					accumulated_irradiance += probe_radiance * weight;
-					accumulated_weight += weight;
+						// Linear blend based on distance to the cell boundaries
+						float trilinear_weight = 
+							(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
+							(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
+							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
+
+						// 3. Keep your Normal Weight to prevent light leaking
+						float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, lookup_dir));
+
+						const vec2 octahedral_coords = padded_atlas_uv_from_normal(lookup_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+						const vec3 probe_radiance = texture(sampler2D(octahedral_atlas_texture, tex_sampler), octahedral_coords).xyz;
+
+						accumulated_irradiance += probe_radiance * weight;
+						accumulated_weight += weight;
+					}
+
+					accumulated_weight = max(accumulated_weight, 0.0001);
+					vec3 final_gi = (accumulated_irradiance / accumulated_weight) * color * gi_intensity;
+					final_color.xyz += final_gi;
 				}
-
-				accumulated_weight = max(accumulated_weight, 0.0001);
-				vec3 final_gi = (accumulated_irradiance / accumulated_weight) * color * gi_intensity;
-				final_color.xyz += final_gi;
 			}	
 
 			// Apply ambient occlusion

@@ -1317,6 +1317,7 @@ void frame(void)
 			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
 
 
+			ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
 			ImGui::Checkbox("GI", &state.gi_enable);
 			ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
 			ImGui::Checkbox("Show Probes", &state.show_probes);
@@ -1820,6 +1821,7 @@ void frame(void)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
+					state.lighting_fs_params.direct_lighting_enable = state.direct_lighting_enable;
 					state.lighting_fs_params.gi_enable = state.gi_enable;
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;

@@ -7,19 +7,13 @@
 #endif
 
 #define GI_CELL_EXTENT 2.0
-
 #define GI_CELL_DIMENSIONS 8
 #define GI_CELL_DIMENSIONS_SQUARED (GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS)
-
 #define GI_PROBE_DIMENSIONS (GI_CELL_DIMENSIONS + 1)
 #define GI_PROBE_DIMENSIONS_SQUARED (GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS)
-
 #define GI_SCENE_EXTENT = GI_CELL_EXTENT * GI_CELL_DIMENSIONS
-
 #define GI_CELL_COUNT (GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS)
 #define GI_PROBE_COUNT (GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS)
-
-#define GI_PROBE_MAX_DIST (GI_CELL_EXTENT * 1.7320508)
 
 const vec3 GI_SCENE_CENTER = HMM_V3(0,0,0);
 const vec3 GI_SCENE_MIN = HMM_V3(
@@ -37,12 +31,23 @@ struct GI_Coords
 
 GI_Coords gi_cell_coords_from_position(const vec3 in_position)
 {
-	const vec3 adjusted_position = in_position - GI_SCENE_MIN;
-	GI_Coords out_coords;
-	out_coords.x = int(adjusted_position[0] / GI_CELL_EXTENT);
-	out_coords.y = int(adjusted_position[1] / GI_CELL_EXTENT);
-	out_coords.z = int(adjusted_position[2] / GI_CELL_EXTENT);
-	return out_coords;
+    const vec3 adjusted_position = in_position - GI_SCENE_MIN;
+
+    GI_Coords out_coords;
+    
+    // Ensure we aren't picking up probes exactly on or outside the min boundary
+    if (	adjusted_position[0] < 0.0 
+		||	adjusted_position[1] < 0.0
+		||	adjusted_position[2] < 0.0)
+	{
+		out_coords.x = out_coords.y = out_coords.z = -1;
+		return out_coords;
+    }
+
+    out_coords.x = int(floor(adjusted_position[0] / GI_CELL_EXTENT));
+    out_coords.y = int(floor(adjusted_position[1] / GI_CELL_EXTENT));
+    out_coords.z = int(floor(adjusted_position[2] / GI_CELL_EXTENT));
+    return out_coords;
 }
 
 GI_Coords gi_cell_coords_from_index(const int in_index)
@@ -54,6 +59,20 @@ GI_Coords gi_cell_coords_from_index(const int in_index)
 	return out_coords;
 }
 
+int gi_cell_index_from_coords(const GI_Coords in_coords)
+{
+    if (in_coords.x < 0 || in_coords.x >= GI_CELL_DIMENSIONS ||
+        in_coords.y < 0 || in_coords.y >= GI_CELL_DIMENSIONS ||
+        in_coords.z < 0 || in_coords.z >= GI_CELL_DIMENSIONS) 
+    {
+        return -1;
+    }
+    
+    return in_coords.x + 
+           in_coords.y * GI_CELL_DIMENSIONS + 
+           in_coords.z * GI_CELL_DIMENSIONS_SQUARED;
+}
+
 GI_Coords gi_probe_coords_from_index(const int in_index)
 {
 	GI_Coords out_coords;
@@ -63,9 +82,18 @@ GI_Coords gi_probe_coords_from_index(const int in_index)
 	return out_coords;
 }
 
-int gi_cell_index_from_coords(const GI_Coords in_coords)
+int gi_probe_index_from_coords(const GI_Coords in_coords)
 {
-	return in_coords.x + in_coords.y * GI_CELL_DIMENSIONS + in_coords.z * GI_CELL_DIMENSIONS_SQUARED;
+    if (in_coords.x < 0 || in_coords.x >= GI_PROBE_DIMENSIONS ||
+        in_coords.y < 0 || in_coords.y >= GI_PROBE_DIMENSIONS ||
+        in_coords.z < 0 || in_coords.z >= GI_PROBE_DIMENSIONS) 
+    {
+        return -1;
+    }
+    
+    return in_coords.x + 
+           in_coords.y * GI_PROBE_DIMENSIONS + 
+           in_coords.z * GI_PROBE_DIMENSIONS_SQUARED;
 }
 
 vec3 gi_cell_center_from_coords(const GI_Coords in_coords)

@@ -201,6 +201,7 @@ public:
 				lighting_fs_params_t fs_params = in_state.lighting_fs_params;
 				fs_params.view_position = in_location;
 				fs_params.ssao_enable = false;
+				fs_params.direct_lighting_enable = true;
 				fs_params.gi_enable = false;
 
 				// Apply Fragment Uniforms
