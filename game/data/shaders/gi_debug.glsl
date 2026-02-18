@@ -95,8 +95,9 @@ void main()
 	}
 	else if (probe_vis_mode == 1)
 	{
-		const vec3 radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).xxx;
-		out_color = vec4(radial_depth, 1.0);
+		const float radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).x;
+		const float adjusted_depth = remap_clamped(radial_depth, 0.0, 100.0, 0.0, 1.0);
+		out_color = vec4(vec3(adjusted_depth), 1.0);
 	}
 
 	//out_roughness_metallic_emissive = vec4(1,0,1,0);	

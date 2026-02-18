@@ -1300,21 +1300,13 @@ void frame(void)
 
 			const ImVec2 debug_texture_size(256,256);
 
-			ImGui::Text("Main Pass Color");
-			GpuImage& main_color_image = get_render_pass(ERenderPass::Geometry).get_color_output(0);
-			ImGui::Image(simgui_imtextureid(main_color_image.get_texture_view(0)), debug_texture_size);
+			//ImGui::Text("Main Pass Color");
+			//GpuImage& main_color_image = get_render_pass(ERenderPass::Geometry).get_color_output(0);
+			//ImGui::Image(simgui_imtextureid(main_color_image.get_texture_view(0)), debug_texture_size);
 
 			//ImGui::Text("Main Pass Depth");
 			//GpuImage& main_depth_image = get_render_pass(ERenderPass::Geometry).get_depth_output();
 			//ImGui::Image(simgui_imtextureid(main_depth_image.get_texture_view(0)), debug_texture_size);
-
-			//ImGui::Text("Lighitng Capture Depth");
-			//for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
-			//{	
-			//	GpuImage& depth_image = gi_scene.lighting_capture.geometry_pass.get_depth_output(face_idx);
-			//	ImTextureID imtex_id = simgui_imtextureid(depth_image.get_texture_view(0));
-			//	ImGui::Image(imtex_id, debug_texture_size);
-			//}
 
 			// Octahedral Atlas Visualization 
 			ImGui::Text("Octahedral Atlas: Lighting");

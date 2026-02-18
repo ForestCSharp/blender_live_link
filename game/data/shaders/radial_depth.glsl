@@ -54,7 +54,7 @@ vec3 world_pos_from_depth(vec2 in_uv, float in_depth) {
 
 void main()
 {
-	const float depth = texture(sampler2D(depth_texture, tex_sampler), uv).r;
+	const float depth = texture(sampler2D(depth_texture, tex_sampler), uv).x;
 
 	const vec3 world_position = world_pos_from_depth(uv, depth);
 
@@ -62,10 +62,7 @@ void main()
 	// FCS TODO: can probably just get this from depth buffer and view/proj...
 
     const float radial_depth = length(world_position - capture_location);
-
-	const float adjusted_depth = remap_clamped(radial_depth, 0.0, 10000.0, 0.0, 1.0);
-
-    frag_color = adjusted_depth; //radial_depth;
+    frag_color = radial_depth;
 }
 
 @end
