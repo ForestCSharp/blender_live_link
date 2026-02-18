@@ -82,25 +82,30 @@ void main()
 {
 	GI_Probe probe = gi_probes[probe_index];
 
-	out_color = vec4(1,1,1,1);
-	out_roughness_metallic_emissive = vec4(1,0,1,0);
-
 	const vec3 sample_dir = normalize(world_normal).xyz;
 	const vec2 octahedral_coords = padded_atlas_uv_from_normal(sample_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
 
-	// FCS TODO: Cast to enum for readability and use switch statement
-	if (probe_vis_mode == 0)
+	switch (probe_vis_mode)
 	{
-		out_color = texture(sampler2D(octahedral_atlas_texture,linear_sampler), octahedral_coords);
-	}
-	else if (probe_vis_mode == 1)
-	{
-		const float radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).x;
-		const float adjusted_depth = remap_clamped(radial_depth, 0.0, 100.0, 0.0, 1.0);
-		out_color = vec4(vec3(adjusted_depth), 1.0);
+		case 0:
+		{
+			out_color = texture(sampler2D(octahedral_atlas_texture,linear_sampler), octahedral_coords);
+			break;
+		}
+		case 1:
+		{
+			const float radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).x;
+			const float adjusted_depth = remap_clamped(radial_depth, 0.0, 1000.0, 0.0, 1.0);
+			out_color = vec4(vec3(adjusted_depth), 1.0);
+			break;
+		}
+		default:
+		{
+			out_color = vec4(0,0,0,0);
+		}
 	}
 
-	//out_roughness_metallic_emissive = vec4(1,0,1,0);	
+	out_roughness_metallic_emissive = vec4(1,0,1,0);
 	out_position = world_position; 
 	out_normal = normalize(world_normal);
 }
