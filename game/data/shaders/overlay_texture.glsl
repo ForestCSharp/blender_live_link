@@ -7,9 +7,13 @@
 
 @fs fs
 
+@image_sample_type input_texture_a unfilterable_float
 layout(binding=0) uniform texture2D input_texture_a;
+
+@image_sample_type input_texture_b unfilterable_float
 layout(binding=1) uniform texture2D input_texture_b;
 
+@sampler_type tex_sampler nonfiltering
 layout(binding=0) uniform sampler tex_sampler;
 
 in vec2 uv;

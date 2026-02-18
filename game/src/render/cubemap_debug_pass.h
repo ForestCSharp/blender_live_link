@@ -35,7 +35,7 @@ namespace CubemapDebugPass
 			.depth = {
 					.pixel_format = depth_format,
 					.write_enabled = true,
-					.compare = SG_COMPAREFUNC_LESS_EQUAL,
+					.compare = Render::DEPTH_COMPARE_FUNC,
 				},
 			.color_count = num_pass_outputs,
 			.colors[0] = {

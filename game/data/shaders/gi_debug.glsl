@@ -50,18 +50,21 @@ void main() {
 @include_block material
 @include_block octahedral_helpers
 @include_block gi_helpers
-
+@include_block remap
 
 layout(binding=1) uniform fs_params {
 	int atlas_total_size;
 	int atlas_entry_size;
+	int probe_vis_mode;
 };
 
-layout(binding=0) uniform sampler smp;
+layout(binding=0) uniform sampler linear_sampler;
+layout(binding=1) uniform sampler nearest_sampler;
 
 layout(binding=0) uniform texture2D octahedral_atlas_texture;
+layout(binding=1) uniform texture2D octahedral_depth_texture;
 
-layout(binding=1) readonly buffer ProbesBuffer {
+layout(binding=2) readonly buffer ProbesBuffer {
 	GI_Probe gi_probes[];
 };
 
@@ -82,15 +85,19 @@ void main()
 	out_color = vec4(1,1,1,1);
 	out_roughness_metallic_emissive = vec4(1,0,1,0);
 
-	vec3 sample_dir = normalize(world_normal).xyz;
-
-	// If we need this flip here, consider doing it when baking into the octahedral atlas instead
-	sample_dir.z = -sample_dir.z; // LH -> RH coordinate system
-
-	//const vec2 octahedral_coords = get_octahedral_atlas_uvs(sample_dir, atlas_total_size, atlas_entry_size, probe.atlas_idx);
+	const vec3 sample_dir = normalize(world_normal).xyz;
 	const vec2 octahedral_coords = padded_atlas_uv_from_normal(sample_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
 
-	out_color = texture(sampler2D(octahedral_atlas_texture,smp), octahedral_coords);
+	// FCS TODO: Cast to enum for readability and use switch statement
+	if (probe_vis_mode == 0)
+	{
+		out_color = texture(sampler2D(octahedral_atlas_texture,linear_sampler), octahedral_coords);
+	}
+	else if (probe_vis_mode == 1)
+	{
+		const vec3 radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).xxx;
+		out_color = vec4(radial_depth, 1.0);
+	}
 
 	//out_roughness_metallic_emissive = vec4(1,0,1,0);	
 	out_position = world_position; 

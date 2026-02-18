@@ -117,14 +117,17 @@ void main()
 		{
 			out_roughness_metallic_emissive.b = 0.0;
 		}
+
+		out_position = world_position; 
+		out_normal = normalize(world_normal);
 	}
 	else
 	{
 		out_color = vec4(1,0,1,1);
 		out_roughness_metallic_emissive = vec4(1,0,0,0);
+		out_position = vec4(0,0,0,0);
+		out_normal = vec4(0,0,0,0);
 	}
-	out_position = world_position; 
-	out_normal = normalize(world_normal);
 }
 @end
 

@@ -40,7 +40,6 @@ struct RenderPassDesc {
 	ERenderPassType type = ERenderPassType::Single;
 };
 
-//FCS TODO: use this for depth as well...
 struct RenderPassOutput {
 	/*
 		single 2D image for Single
@@ -141,6 +140,13 @@ public: // Functions
 		assert(color_outputs.is_valid_index(color_output_idx));
 		assert(color_outputs[color_output_idx].images.is_valid_index(pass_idx));
 		return color_outputs[color_output_idx].images[pass_idx];
+	}
+
+	GpuImage& get_depth_output(i32 pass_idx = 0)
+	{
+		assert(depth_output.has_value());
+		assert(depth_output.value().images.is_valid_index(pass_idx));
+		return depth_output.value().images[pass_idx];
 	}
 
 	void handle_resize(i32 in_new_width, i32 in_new_height)
@@ -316,6 +322,17 @@ public: // Functions
 					.load_action = output_desc.load_action,
 					.store_action = output_desc.store_action,
 					.clear_value = output_desc.clear_value,
+				};
+			}
+
+			if (depth_output.has_value())
+			{
+				const RenderPassOutputDesc& output_desc = desc.depth_output;
+
+				pass.action.depth = {
+					.load_action = output_desc.load_action,
+					.store_action = output_desc.store_action,
+					.clear_value = output_desc.clear_value.r,
 				};
 			}
 

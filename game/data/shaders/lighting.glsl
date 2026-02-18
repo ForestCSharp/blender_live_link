@@ -19,6 +19,7 @@
 @include_block brdf 
 @include_block gi_helpers
 @include_block octahedral_helpers
+@include_block dither_noise
 
 struct PointLight {
 	vec4 location;
@@ -59,6 +60,7 @@ layout(binding=0) uniform fs_params {
 
 	int direct_lighting_enable;
 	int gi_enable;
+	int gi_probe_occlusion;
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
@@ -91,7 +93,8 @@ layout(binding=9) readonly buffer GICellsBuffer {
 	GI_Cell gi_cells[];
 };
 
-layout(binding=10) uniform texture2D octahedral_atlas_texture;
+layout(binding=10) uniform texture2D octahedral_lighting_texture;
+layout(binding=11) uniform texture2D octahedral_depth_texture;
 
 float vec2_length_squared(vec2 v)
 {
@@ -122,29 +125,6 @@ float positive_cosine_angle(vec3 a, vec3 b)
 float mix_clamped(float a, float b, float alpha)
 {
 	return mix(a, b, clamp(alpha, 0.0, 1.0));
-}
-
-float remap(float value, float old_min, float old_max, float new_min, float new_max)
-{
-  return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min);
-}
-
-float remap_clamped(float value, float old_min, float old_max, float new_min, float new_max)
-{
-	float clamped_value = clamp(value, old_min, old_max);
-	return remap(clamped_value, old_min, old_max, new_min, new_max);
-}
-
-/* Gradient noise from Jorge Jimenez's presentation: */
-/* http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare */
-float gradient_noise(in vec2 uv)
-{
-	return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
-}
-
-vec4 dither_noise()
-{
-	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
 }
 
 vec3 sample_point_light(
@@ -290,7 +270,7 @@ void main()
 		else
 		{
 			const vec3 position = sampled_position.xyz;
-			const vec3 normal = sampled_normal.xyz;
+			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
 
 			if (direct_lighting_enable != 0)
@@ -338,8 +318,6 @@ void main()
 
 			if (gi_enable != 0)
 			{
-				const vec3 lookup_dir = normalize(normal);
-
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
 				if (cell_index > 0)
@@ -360,8 +338,10 @@ void main()
 						if (probe_index == -1) continue;
 
 						GI_Probe probe = gi_probes[probe_index];
-						vec3 probe_position = gi_probe_position_from_index(probe_index);
-						vec3 dir_to_probe = normalize(probe_position - position);
+						const vec3 probe_position = gi_probe_position_from_index(probe_index);
+						const vec3 position_to_probe = probe_position - position;
+						const vec3 dir_to_probe = normalize(position_to_probe);
+						vec3 dir_from_probe = -dir_to_probe;
 
 						// 2. Compute Trilinear Weight based on binary corner index (i)
 						// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
@@ -376,17 +356,31 @@ void main()
 							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
 
 						// 3. Keep your Normal Weight to prevent light leaking
-						float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, lookup_dir));
+						float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, normal));
 
-						const vec2 octahedral_coords = padded_atlas_uv_from_normal(lookup_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-						const vec3 probe_radiance = texture(sampler2D(octahedral_atlas_texture, tex_sampler), octahedral_coords).xyz;
+						const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+						const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
+						const vec3 probe_radiance = octahedral_lighting_data.rgb;
+
+						//FCS TODO:
+						//if (gi_probe_occlusion != 0)
+						//{
+						//	const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+						//	const float radial_depth = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).r;
+						//	if (length(position_to_probe) >= radial_depth)
+						//	{
+						//		continue;
+						//	}
+						//}
 
 						accumulated_irradiance += probe_radiance * weight;
 						accumulated_weight += weight;
 					}
 
+					const vec3 albedo = color * (1.0 - metallic); 
+
 					accumulated_weight = max(accumulated_weight, 0.0001);
-					vec3 final_gi = (accumulated_irradiance / accumulated_weight) * color * gi_intensity;
+					vec3 final_gi = (accumulated_irradiance / accumulated_weight) * albedo * gi_intensity;
 					final_color.xyz += final_gi;
 				}
 			}	

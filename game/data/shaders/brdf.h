@@ -85,6 +85,11 @@ vec3 cook_torrance_brdf(
     const float n_dot_h = saturate(dot(n,h));
     const float h_dot_v = saturate(dot(h,v));
 
+	if (n_dot_l <= 0.0 || n_dot_v <= 0.0)
+	{
+		return vec3(0.0, 0.0, 0.0);
+	}
+
     // Specular --------------------------------------------------------/
 
     const float	ndf	= distribution_ggx(n_dot_h, roughness);   

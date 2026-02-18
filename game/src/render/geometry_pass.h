@@ -36,20 +36,20 @@ namespace GeometryPass
 			.depth = {
 				.pixel_format = depth_format,
 				.write_enabled = true,
-				.compare = SG_COMPAREFUNC_LESS_EQUAL,
+				.compare = Render::DEPTH_COMPARE_FUNC, // Inverse Depth
 			},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // Color
 			},
 			.colors[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Position
 			},
 			.colors[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Normal
 			},
 			.colors[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // (Roughness, Metallic, Emissive, <Unused>)
 			},
 			.label = "geometry-pipeline"
 		};
@@ -61,31 +61,34 @@ namespace GeometryPass
 			.pipeline_desc = GeometryPass::make_pipeline_desc(depth_format),
 			.num_outputs = num_pass_outputs,
 			.outputs[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // Color
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = {0.0, 0.0, 0.0, 1.0},
 			},
 			.outputs[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Position
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = {0.0, 0.0, 0.0, 0.0},
 			},
 			.outputs[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Normal
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = {0.0, 0.0, 0.0, 0.0},
 			},
 			.outputs[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
+				.pixel_format = SG_PIXELFORMAT_RGBA32F, // (Roughness, Metallic, Emissive, <Unused>)
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = {0.0, 0.0, 0.0, 0.0},
 			},	
 			.depth_output = {
 				.pixel_format = depth_format,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+				.clear_value = Render::DEPTH_CLEAR_VALUE,
 			},
 		};
 	}

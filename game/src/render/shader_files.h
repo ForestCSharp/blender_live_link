@@ -9,3 +9,4 @@
 #include "tonemapping.compiled.h"
 #include "overlay_texture.compiled.h"
 #include "cubemap_to_octahedral.compiled.h"
+#include "radial_depth.compiled.h"

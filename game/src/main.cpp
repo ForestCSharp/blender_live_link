@@ -64,6 +64,7 @@ using ankerl::unordered_dense::map;
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_log.h"
 #include "sokol/sokol_glue.h"
+#include "sokol/sokol_time.h"
 
 // Sokol Debug Text
 #include "sokol/util/sokol_debugtext.h"
@@ -79,9 +80,7 @@ using ankerl::unordered_dense::map;
 // geometry pass
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
-
-// cubemap debug pass
-#include "render/cubemap_debug_pass.h"
+#include "render/sky_pass.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -560,6 +559,13 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						{
 							auto sun_light = object_light->sun_light();
 							assert(sun_light);
+
+							if (!state.primary_sun_id.has_value())
+							{
+								state.primary_sun_id = unique_id;
+								printf("Found Primary Sun ID: %i\n", unique_id);
+							}
+
 							game_object.light.sun = (SunLight) {
 								.power = sun_light->power(),
 								.cast_shadows = sun_light->cast_shadows(),
@@ -825,6 +831,8 @@ GI_Scene gi_scene = {};
 
 void init(void)
 {
+	stm_setup();
+
 	jolt_init();
 
 	// Init sokol graphics
@@ -841,52 +849,14 @@ void init(void)
 
 	sg_swapchain swapchain = sglue_swapchain();
 
-	// Create Default Image
-	HMM_Vec4 default_image_data[1] = { HMM_V4(0,0,0,1) };
-	GpuImageDesc default_image_desc = {
-		.type = SG_IMAGETYPE_2D,
-		.width = 1,
-		.height = 1,
-		.pixel_format = SG_PIXELFORMAT_RGBA32F,
-		.data = (u8*) &default_image_data,
-	};
-	state.default_image = GpuImage(default_image_desc);
+	state_init();
 
-	HMM_Vec4 default_image_cube_data[6] =
-	{
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-	};
-	GpuImageDesc default_image_cube_desc = {
-		.type = SG_IMAGETYPE_CUBE,
-		.width = 1,
-		.height = 1,
-		.num_slices = 6,
-		.pixel_format = SG_PIXELFORMAT_RGBA32F,
-		.data = (u8*) &default_image_cube_data,
-	};
-	state.default_image_cube = GpuImage(default_image_cube_desc);
-
-	printf("1\n");
-	u8 default_buffer_data[4] = { 0,0,0,0 };
-	GpuBufferDesc<u8> default_buffer_desc = {
-		.data = default_buffer_data,
-		.size = 4, 
-		.usage = {
-			.storage_buffer = true,
-		},
-		.label = "default_buffer",
-	};
-	state.default_buffer = GpuBuffer<u8>(default_buffer_desc);
-	printf("2\n");
+	// Spin up a thread that blocks until we receive our init event, and then listens for updates
+	state.live_link_thread = std::thread(live_link_thread_function);
 
 	// GI Scene Setup
 	gi_scene_init(gi_scene);
-	printf("gi_scene num cells: %i num probes: %i\n",
+	printf("gi_scene num cells: %zu num probes: %zu\n",
 		gi_scene.cells.length(), 
 		gi_scene.probes.length()
 	);	
@@ -904,9 +874,6 @@ void init(void)
 		printf("Sokol Gfx Error: Compute/Storage Buffers are Required\n");
 		exit(0);
 	}
-
-	// Spin up a thread that blocks until we receive our init event, and then listens for updates
-	state.live_link_thread = std::thread(live_link_thread_function);
 	
 	// setup sokol-debugtext
     sdtx_setup((sdtx_desc_t){
@@ -919,13 +886,6 @@ void init(void)
             [FONT_ORIC]  = sdtx_font_oric()
         },
         .logger.func = slog_func,
-    });
-
-	state.sampler = sg_make_sampler((sg_sampler_desc){
-        .min_filter = SG_FILTER_LINEAR,
-        .mag_filter = SG_FILTER_LINEAR,
-        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
-        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
     });
 
 	// Init main geometry pass
@@ -1188,11 +1148,12 @@ void set_mouse_locked(bool in_locked)
 	sapp_lock_mouse(app_state.is_mouse_locked);
 }
 
-static i32 g_i = 0;
-
 void frame(void)
 {
-	double delta_time = sapp_frame_duration();
+	// Delta Time Calculation
+	static u64 last_frame_time = 0;
+	const u64 lap_time = stm_laptime(&last_frame_time);	
+	const double delta_time = stm_sec(lap_time);
 
 	DEBUG_UI(
 		simgui_new_frame((simgui_frame_desc_t){
@@ -1265,9 +1226,11 @@ void frame(void)
 			object_cleanup_gpu_resources(object);
 		}
 
+		//FCS TODO: Should also reset these if they're equal to a removed object...
 		state.objects.clear();
 		state.camera_control_id.reset();
 		state.player_character_id.reset();
+		state.primary_sun_id.reset();
 
 		reset_materials();
 		reset_images();
@@ -1316,16 +1279,52 @@ void frame(void)
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
 			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
 
+			ImGui::Spacing();
 
+			ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
 			ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
 			ImGui::Checkbox("GI", &state.gi_enable);
+			ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
 			ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
-			ImGui::Checkbox("Show Probes", &state.show_probes);
+			if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
+			{
+				state.gi_is_updating = true;
+			}
+			if (state.gi_is_updating)
+			{
+				ImGui::SameLine();
+				ImGui::Text("Updating...");
+			}
+			ImGui::Checkbox("Show Probes", &state.show_probes);	
+			ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+
+			const ImVec2 debug_texture_size(256,256);
+
+			ImGui::Text("Main Pass Color");
+			GpuImage& main_color_image = get_render_pass(ERenderPass::Geometry).get_color_output(0);
+			ImGui::Image(simgui_imtextureid(main_color_image.get_texture_view(0)), debug_texture_size);
+
+			//ImGui::Text("Main Pass Depth");
+			//GpuImage& main_depth_image = get_render_pass(ERenderPass::Geometry).get_depth_output();
+			//ImGui::Image(simgui_imtextureid(main_depth_image.get_texture_view(0)), debug_texture_size);
+
+			//ImGui::Text("Lighitng Capture Depth");
+			//for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
+			//{	
+			//	GpuImage& depth_image = gi_scene.lighting_capture.geometry_pass.get_depth_output(face_idx);
+			//	ImTextureID imtex_id = simgui_imtextureid(depth_image.get_texture_view(0));
+			//	ImGui::Image(imtex_id, debug_texture_size);
+			//}
 
 			// Octahedral Atlas Visualization 
-			GpuImage& oct_image = gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0);
-			ImTextureID oct_imtex_id = simgui_imtextureid(oct_image.get_texture_view(0));
-			ImGui::Image(oct_imtex_id, ImVec2(256, 256));
+			ImGui::Text("Octahedral Atlas: Lighting");
+			ImGui::Image(simgui_imtextureid(gi_scene_get_octahedral_lighting_view(gi_scene)), debug_texture_size);
+			ImGui::Text("Octahedral Atlas: Depth");
+			ImGui::Image(simgui_imtextureid(gi_scene_get_octahedral_depth_view(gi_scene)), debug_texture_size);
+
+			// Baked Sky Visualization
+			//ImGui::Text("Baked Sky");
+			//ImGui::Image(simgui_imtextureid(SkyBakePass::get_baked_sky_image_view()), debug_texture_size);
 		}
 	);
 
@@ -1584,8 +1583,8 @@ void frame(void)
 								memcpy(&new_sun_light.color, &object.light.color, sizeof(f32) * 3);
 								new_sun_light.color[3] = 1.0; // Force alpha to 1.0
 
-								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(&new_sun_light.direction, &spot_light_dir, sizeof(f32) * 3);
+								HMM_Vec3 sun_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+								memcpy(&new_sun_light.direction, &sun_light_dir, sizeof(f32) * 3);
 
 								new_sun_light.power = object.light.sun.power;
 								new_sun_light.cast_shadows = object.light.sun.cast_shadows;
@@ -1640,16 +1639,21 @@ void frame(void)
 			}
 		}
 
+		// Bake Sky 
+		if (state.sky_rendering_enable)
+		{
+			SkyBakePass::render(state);
+		}
+
 		// Update our GI Scene
 		gi_scene_update(gi_scene, state);
 
 		// View + Projection matrix setup
 		const f32 w = sapp_widthf();
 		const f32 h = sapp_heightf();
-
-		const f32 projection_near = 0.01f;
-		const f32 projection_far = 10000.0f;
-		HMM_Mat4 projection_matrix = HMM_Perspective_RH_NO(HMM_AngleDeg(60.0f), w/h, projection_near, projection_far);
+		const f32 fov = HMM_AngleDeg(60.0f);
+		const f32 aspect_ratio = w/h;
+		HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
 
 		Camera& camera = get_active_camera();
 		HMM_Vec3 target = camera.location + camera.forward * 10;
@@ -1719,7 +1723,7 @@ void frame(void)
 						}
 					);
 
-					// Submit draw calls for culled objects
+					// Submit draw calls for objects after culling
 					for (auto& [unique_id, object_ptr] : cull_result.objects)
 					{
 						assert(object_ptr);
@@ -1749,7 +1753,7 @@ void frame(void)
 									[4] = roughness_image.get_texture_view(0),
 									[5] = emission_color_image.get_texture_view(0),
 								},
-								.samplers[0] = state.sampler,
+								.samplers[0] = state.linear_sampler,
 							};
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
@@ -1759,6 +1763,15 @@ void frame(void)
 					if (state.show_probes)
 					{
 						gi_scene_render_debug(gi_scene, view_matrix, projection_matrix);
+					}
+
+					if (state.sky_rendering_enable)
+					{
+						SkyPass::render(
+							view_projection_matrix, 
+							get_active_camera().location, 
+							sglue_swapchain().depth_format
+						);
 					}
 				}
 			);
@@ -1782,7 +1795,7 @@ void frame(void)
 							[1] = geometry_pass.get_color_output(2).get_texture_view(0),	// geometry pass normal
 							[2] = state.ssao_noise_texture.get_texture_view(0),			// ssao noise texture
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 					sg_apply_bindings(&bindings);
 
@@ -1805,7 +1818,7 @@ void frame(void)
 						.views = {
 							[0] = get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0), 
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 
 					sg_apply_bindings(&bindings);
@@ -1823,6 +1836,7 @@ void frame(void)
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
 					state.lighting_fs_params.direct_lighting_enable = state.direct_lighting_enable;
 					state.lighting_fs_params.gi_enable = state.gi_enable;
+					state.lighting_fs_params.gi_probe_occlusion = state.gi_probe_occlusion;
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
@@ -1851,9 +1865,10 @@ void frame(void)
 							[7] = state.sun_lights_buffer.get_storage_view(), 
 							[8] = gi_scene.probes_buffer.get_storage_view(),
 							[9] = gi_scene.cells_buffer.get_storage_view(),
-							[10] = gi_scene_get_octahedral_atlas_view(gi_scene),
+							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
+							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 					sg_apply_bindings(&bindings);
 
@@ -1878,7 +1893,7 @@ void frame(void)
 						.views = {
 							[0] = get_render_pass(ERenderPass::Lighting).get_color_output(0).get_texture_view(0), 
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 
 					sg_apply_bindings(&bindings);
@@ -1911,7 +1926,7 @@ void frame(void)
 							[1] = dof_blur_pass.get_color_output(0).get_texture_view(0), 
 							[2] = position_texture.get_texture_view(0), 
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 
 					sg_apply_bindings(&bindings);
@@ -1933,7 +1948,7 @@ void frame(void)
 						.views = {
 							[0] = dof_combine_pass.get_color_output(0).get_texture_view(0), 
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.linear_sampler,
 					};
 
 					sg_apply_bindings(&bindings);
@@ -2016,7 +2031,7 @@ void frame(void)
 							[0] = image_to_copy_to_swapchain.get_texture_view(0), 
 							[1] = debug_text_pass.get_color_output(0).get_texture_view(0), 
 						},
-						.samplers[0] = state.sampler,
+						.samplers[0] = state.nearest_sampler,
 					};
 					sg_apply_bindings(&bindings);
 

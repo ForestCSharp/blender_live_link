@@ -1,5 +1,10 @@
 #pragma once
 
+// Whether or not to enable inverse depth
+#define USE_INVERSE_DEPTH 1 
+#define MAX_DEPTH (USE_INVERSE_DEPTH != 0 ? 0.0 : 1.0)
+#define MIN_DEPTH (USE_INVERSE_DEPTH == 0 ? 1.0 : 0.0)
+
 #if !defined(__cplusplus) || !defined(__STDC__)
 #define TYPE_DEF(c_type, glsl_type) @ctype glsl_type c_type 
 #else
@@ -50,3 +55,37 @@ struct Material
 #if !defined(__cplusplus) || !defined(__STDC__)
 @end // @block material
 #endif
+
+
+#if !defined(__cplusplus) || !defined(__STDC__)
+@block dither_noise 
+
+/* Gradient noise from Jorge Jimenez's presentation: */
+/* http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare */
+float gradient_noise(in vec2 uv)
+{
+	return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
+}
+
+vec4 dither_noise()
+{
+	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
+}
+
+@end // @block dither_noise
+#endif //!defined(__cplusplus) || !defined(__STDC__)
+
+#if !defined(__cplusplus) || !defined(__STDC__)
+@block remap 
+float remap(float value, float old_min, float old_max, float new_min, float new_max)
+{
+  return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min);
+}
+
+float remap_clamped(float value, float old_min, float old_max, float new_min, float new_max)
+{
+	float clamped_value = clamp(value, old_min, old_max);
+	return remap(clamped_value, old_min, old_max, new_min, new_max);
+}
+@end 
+#endif //!defined(__cplusplus) || !defined(__STDC__)

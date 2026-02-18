@@ -19,12 +19,15 @@ layout(binding=0) uniform fs_params
 	int use_importance_sampling;
 };
 
-layout(binding=0) uniform textureCube cubemap_texture;
+layout(binding=0) uniform textureCube cubemap_lighting_texture;
+layout(binding=1) uniform textureCube cubemap_depth_texture;
+
 layout(binding=0) uniform sampler smp;
 
 in vec2 uv;
 
 out vec4 frag_color;
+out float radial_depth;
 
 float radical_inverse_vdc(uint bits)
 {
@@ -70,7 +73,6 @@ void main()
 	// Convert octahedral coords to 3d cubemap direction vector
 	vec3 cubemap_dir = octahedral_decode(octahedral_coords);
 
-	//FCS TODO: Make these toggleable options via uniforms
 	if (compute_irradiance != 0)
 	{
 		if (use_importance_sampling != 0)
@@ -84,7 +86,7 @@ void main()
 				vec2 u = hammersley(i, SAMPLE_COUNT);
 				vec3 sampleVec = importance_sample_diffuse(u, normal); 
 
-				irradiance += texture(samplerCube(cubemap_texture, smp), sampleVec).rgb * max(dot(normal, sampleVec), 0.0);
+				irradiance += texture(samplerCube(cubemap_lighting_texture, smp), sampleVec).rgb * max(dot(normal, sampleVec), 0.0);
 			}
 			irradiance = M_PI * irradiance * (1.0 / float(SAMPLE_COUNT));
 			frag_color = vec4(irradiance, 1.0);	
@@ -109,7 +111,7 @@ void main()
 					// tangent space to world
 					vec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal; 
 
-					irradiance += texture(samplerCube(cubemap_texture, smp), sampleVec).rgb * cos(theta) * sin(theta);
+					irradiance += texture(samplerCube(cubemap_lighting_texture, smp), sampleVec).rgb * cos(theta) * sin(theta);
 					nrSamples++;
 				}
 			}
@@ -120,11 +122,13 @@ void main()
 	else
 	{
 		// Sample our cubemap
-		vec3 sampled_color = texture(samplerCube(cubemap_texture, smp), cubemap_dir).xyz;
+		vec3 sampled_color = texture(samplerCube(cubemap_lighting_texture, smp), cubemap_dir).xyz;
 
 		// Write final color output
 		frag_color = vec4(sampled_color, 1.0);
 	}
+
+	radial_depth = texture(samplerCube(cubemap_depth_texture, smp), cubemap_dir).x;
 }
 
 @end

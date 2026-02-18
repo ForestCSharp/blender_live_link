@@ -35,7 +35,7 @@ namespace GIDebugPass
 			.depth = {
 					.pixel_format = depth_format,
 					.write_enabled = true,
-					.compare = SG_COMPAREFUNC_LESS_EQUAL,
+					.compare = Render::DEPTH_COMPARE_FUNC,
 				},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
@@ -84,6 +84,8 @@ namespace GIDebugPass
 				.clear_value = {0.0, 0.0, 0.0, 0.0},
 			},	
 			.depth_output = {
+				.load_action = SG_LOADACTION_LOAD,
+				.store_action = SG_STOREACTION_STORE,
 				.pixel_format = depth_format,
 			},
 		};

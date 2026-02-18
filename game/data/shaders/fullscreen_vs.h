@@ -24,6 +24,11 @@ void main()
 	FullscreenVertex vertex = vertices[indices[gl_VertexIndex]];
 
 	uv = vertex.uv;
-	gl_Position = vec4(vertex.position, 0, 1);
+
+#ifdef FULLSCREEN_MAX_DEPTH
+	gl_Position = vec4(vertex.position, MAX_DEPTH, 1.0);
+#else
+	gl_Position = vec4(vertex.position, MIN_DEPTH, 1.0);
+#endif
 }
 @end

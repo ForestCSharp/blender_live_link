@@ -38,6 +38,7 @@ if [[ $OS_ARG = Windows ]]; then
 
 	# Main Windows Build
 	clang src/main.cpp \
+		-v \
 		-g -O0 \
 		-o bin/game.exe \
 		-I src \

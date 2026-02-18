@@ -151,13 +151,19 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.lighting_capture.init(lighting_capture_desc);
 
 	// Setup Debug Data
-	out_gi_scene.debug_sphere = make_mesh(mesh_init_data_uv_sphere(0.1f,24,24));
+	const f32 debug_sphere_radius = GI_CELL_EXTENT * 0.1f; 
+	out_gi_scene.debug_sphere = make_mesh(mesh_init_data_uv_sphere(debug_sphere_radius,24,24));
 	out_gi_scene.gi_debug_pipeline = sg_make_pipeline(GIDebugPass::make_pipeline_desc(sglue_swapchain().depth_format));
 }
 
 void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 {
 	assert(in_gi_scene.probes.is_valid_index(in_gi_scene.probe_idx_to_update));
+
+	if (!in_state.gi_is_updating)
+	{
+		return;
+	}
 
 	bool needs_gpu_update = false;
 	for (i32 i = 0; i < GI_Scene::probes_to_update_per_frame; ++i)
@@ -192,6 +198,11 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 
 		// Update probe_idx_to_update for next update call
 		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
+
+		if (in_gi_scene.probe_idx_to_update == 0)
+		{
+			in_state.gi_is_updating = false;
+		}
 	}
 
 	if (needs_gpu_update)
@@ -205,9 +216,14 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 	}
 }
 
-sg_view gi_scene_get_octahedral_atlas_view(GI_Scene& in_gi_scene)
+sg_view gi_scene_get_octahedral_lighting_view(GI_Scene& in_gi_scene)
 {
 	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0).get_texture_view(0);
+}
+
+sg_view gi_scene_get_octahedral_depth_view(GI_Scene& in_gi_scene)
+{
+	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1).get_texture_view(0);
 }
 
 void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix, const HMM_Mat4& in_projection_matrix)
@@ -224,6 +240,7 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	gi_debug_fs_params_t fs_params = {
 		.atlas_total_size = in_gi_scene.lighting_capture.desc.octahedral_total_size,
 		.atlas_entry_size = in_gi_scene.lighting_capture.desc.octahedral_entry_size,
+		.probe_vis_mode = static_cast<i32>(state.probe_vis_mode),
 	};
 	// Apply Fragment Uniforms
 	sg_apply_uniforms(1, SG_RANGE(fs_params));
@@ -232,10 +249,14 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 		.vertex_buffers[0] = in_gi_scene.debug_sphere.vertex_buffer.get_gpu_buffer(),
 		.index_buffer = in_gi_scene.debug_sphere.index_buffer.get_gpu_buffer(),
 		.views = {
-			[0] = gi_scene_get_octahedral_atlas_view(in_gi_scene),
-			[1] = in_gi_scene.probes_buffer.get_storage_view(),
+			[0] = gi_scene_get_octahedral_lighting_view(in_gi_scene),
+			[1] = gi_scene_get_octahedral_depth_view(in_gi_scene),
+			[2] = in_gi_scene.probes_buffer.get_storage_view(),
 		},
-		.samplers[0] = state.sampler,
+		.samplers = {
+			[0] = state.linear_sampler,
+			[1] = state.nearest_sampler,
+		},
 	};
 	sg_apply_bindings(&bindings);
 	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.probes.length());
