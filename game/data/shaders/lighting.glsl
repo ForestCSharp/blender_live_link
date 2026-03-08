@@ -245,7 +245,7 @@ vec3 sample_sun_light(
 // Optional hard visibility gate on top of Chebyshev:
 // if receiver distance is far beyond mean + sigma*stddev, reject the probe.
 #define GI_PROBE_OCCLUSION_HARD_GATE 1
-#define GI_PROBE_OCCLUSION_HARD_GATE_SIGMA 2.5
+#define GI_PROBE_OCCLUSION_HARD_GATE_SIGMA 0.5
 
 in vec2 uv;
 
