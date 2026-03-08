@@ -48,6 +48,8 @@ void main()
 	vec2 octahedral_coords = octahedral_encode(view_dir) * 0.5 + 0.5;
 	const vec3 sky_color = texture(sampler2D(octahedral_sky_texture, tex_sampler), octahedral_coords).rgb;
     out_color = vec4(sky_color, 1.0);
+	// Mark sky/background as invalid geometry for passes that reconstruct depth from position.
+	out_position = vec4(0.0, 0.0, 0.0, 0.0);
 	out_normal = vec4(0,0,0,0);
 	out_roughness_metallic_emissive = vec4(0,0,1,0);
 }

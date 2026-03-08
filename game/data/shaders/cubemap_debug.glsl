@@ -52,8 +52,7 @@ void main()
 	cubemap_dir.z = -cubemap_dir.z; // LH -> RH coordinate system
 
 	out_color = texture(samplerCube(cubemap_color_texture,smp), cubemap_dir);
-	//TODO: out_roughness_metallic_emissive (need additional cubemap textures...)
-	
+	out_roughness_metallic_emissive = vec4(0,0,1,0);	
 	out_position = world_position; 
 	out_normal = normalize(world_normal);
 }

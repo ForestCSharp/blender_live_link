@@ -68,6 +68,7 @@ vec3 octahedral_decode(vec2 o)
 	{
         v.xy = (1.0 - abs(v.yx)) * signNotZero(v.xy);
     }
+
     return normalize(v);
 }
 

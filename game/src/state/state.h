@@ -37,12 +37,14 @@ enum class EProbeVisMode : i32
 {
 	Irradiance = 0,
 	RadialDepth = 1,
+	RadialDepthSquared = 2,
 	MAX,
 };
 
 const char* EProbeVisModeNames[(i32)EProbeVisMode::MAX] = {
 	"Irradiance",
 	"RadialDepth",
+	"RadialDepthSquared",
 };
 
 //FCS TODO: Make this not a global. Just init it early in main() but then pass it around
@@ -67,6 +69,9 @@ struct State
 	bool dof_enable = true;
 	bool show_probes = true;
 	EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
+
+	// Disable this to more easily debug probe captures
+	bool compute_irradiance = true;
 
 	// This is true when we are updating probes, and is set to false after all probes have been re-updated
 	bool gi_is_updating = true;

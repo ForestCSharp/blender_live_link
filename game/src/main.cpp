@@ -1290,11 +1290,15 @@ void frame(void)
 			{
 				state.gi_is_updating = true;
 			}
+			ImGui::SameLine();
+			ImGui::Checkbox("Compute Irradiance", &state.compute_irradiance);
+
 			if (state.gi_is_updating)
 			{
 				ImGui::SameLine();
 				ImGui::Text("Updating...");
 			}
+			
 			ImGui::Checkbox("Show Probes", &state.show_probes);	
 			ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
 
@@ -1315,8 +1319,8 @@ void frame(void)
 			ImGui::Image(simgui_imtextureid(gi_scene_get_octahedral_depth_view(gi_scene)), debug_texture_size);
 
 			// Baked Sky Visualization
-			//ImGui::Text("Baked Sky");
-			//ImGui::Image(simgui_imtextureid(SkyBakePass::get_baked_sky_image_view()), debug_texture_size);
+			ImGui::Text("Baked Sky");
+			ImGui::Image(simgui_imtextureid(SkyBakePass::get_baked_sky_image_view()), debug_texture_size);
 		}
 	);
 

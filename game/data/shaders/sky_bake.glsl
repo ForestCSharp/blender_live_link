@@ -23,6 +23,7 @@ out vec4 out_color;
 void main()
 {
 	const vec3 camera_position = vec3(0,0,0);
+	//FCS TODO: Is this right for all backends...
 	const vec2 oct_uv = uv * 2.0 - 1.0;
 	const vec3 view_dir = octahedral_decode(oct_uv);
 	const float ray_length = INFINITY;

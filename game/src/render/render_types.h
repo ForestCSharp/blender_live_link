@@ -52,4 +52,18 @@ namespace Render
 	constexpr sg_compare_func DEPTH_COMPARE_FUNC = SG_COMPAREFUNC_LESS_EQUAL;
 	constexpr sg_color DEPTH_CLEAR_VALUE = {1.0, 1.0, 1.0, 1.0};
 #endif
+
+#if defined(SOKOL_METAL) || defined(SOKOL_D3D11) || defined(SOKOL_WGPU)
+	HMM_Vec3 CUBE_FORWARD_AND_UP[NUM_CUBE_FACES][2] = {
+		{ {  1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } }, // +X (Right)  
+		{ { -1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } }, // -X (Left)   
+		{ {  0.0f,  1.0f,  0.0f }, {  0.0f,  0.0f,  1.0f } }, // +Y (Back)   
+		{ {  0.0f, -1.0f,  0.0f }, {  0.0f,  0.0f, -1.0f } }, // -Y (Front)
+		{ {  0.0f,  0.0f,  1.0f }, {  0.0f, -1.0f,  0.0f } }, // +Z (Top)    
+		{ {  0.0f,  0.0f, -1.0f }, {  0.0f, -1.0f,  0.0f } }, // -Z (Bottom) 
+	};
+#else // GL
+	#error generate proper cube face forward and up vectors for GL backend
+#endif
 }
+

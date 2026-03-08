@@ -78,6 +78,9 @@ out vec4 out_position;
 out vec4 out_normal;
 out vec4 out_roughness_metallic_emissive;
 
+const float depth_vis_dist = GI_MAX_RADIAL_DEPTH;
+const float depth_vis_dist_squared = depth_vis_dist * depth_vis_dist;
+
 void main()
 {
 	GI_Probe probe = gi_probes[probe_index];
@@ -95,8 +98,15 @@ void main()
 		case 1:
 		{
 			const float radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).x;
-			const float adjusted_depth = remap_clamped(radial_depth, 0.0, 1000.0, 0.0, 1.0);
+			const float adjusted_depth = remap_clamped(radial_depth, 0.0, depth_vis_dist, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth), 1.0);
+			break;
+		}
+		case 2:
+		{
+			const float radial_depth_squared = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).y;
+			const float adjusted_depth_squared = remap_clamped(radial_depth_squared, 0.0, depth_vis_dist_squared, 0.0, 1.0);
+			out_color = vec4(vec3(adjusted_depth_squared), 1.0);
 			break;
 		}
 		default:

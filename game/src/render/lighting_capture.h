@@ -88,7 +88,7 @@ public:
 		lighting_pass.init(lighting_pass_desc);
 
 		// Render radial depth into a cubemap (ERenderPassType::Cubemap)
-		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_R32F;
+		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_RG32F;
 		RenderPassDesc radial_depth_pass_desc = {
 			.initial_width = in_desc.cubemap_render_size,
 			.initial_height = in_desc.cubemap_render_size,
@@ -160,33 +160,18 @@ public:
 		const f32 fov = HMM_AngleDeg(90.0f);
 		const f32 aspect_ratio = 1.0f;
 		HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
+		projection_matrix[1][1] *= -1.0f;
 
-		const HMM_Vec3 direction_vectors[NUM_CUBE_FACES] =
-		{
-			HMM_V3(1,0,0),	// +X
-			HMM_V3(-1,0,0),	// -X
-			HMM_V3(0,1,0),  // +Y
-			HMM_V3(0,-1,0), // -Y
-			HMM_V3(0,0,1),	// +Z
-			HMM_V3(0,0,-1),	// -Z
-		};
-
-		const HMM_Vec3 up_vectors[NUM_CUBE_FACES] =
-		{
-			HMM_V3(0,1,0),	// +X
-			HMM_V3(0,1,0),	// -X
-			HMM_V3(0,0,1),	// +Y
-			HMM_V3(0,0,-1),	// -Y
-			HMM_V3(0,1,0),	// +Z
-			HMM_V3(0,1,0),	// -Z
-		};
 
 		HMM_Mat4 view_matrices[NUM_CUBE_FACES];
 		HMM_Mat4 view_projection_matrices[NUM_CUBE_FACES];
 		for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
 		{	
-			HMM_Vec3 target = in_location + direction_vectors[face_idx] * 10;
-			view_matrices[face_idx] = HMM_LookAt_RH(in_location, target, up_vectors[face_idx]);
+			HMM_Vec3 forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
+			HMM_Vec3 up = Render::CUBE_FORWARD_AND_UP[face_idx][1];
+
+			HMM_Vec3 target = in_location + forward * 10;
+			view_matrices[face_idx] = HMM_LookAt_RH(in_location, target, up);
 			view_projection_matrices[face_idx] = HMM_MulM4(projection_matrix, view_matrices[face_idx]);
 		}
 
@@ -304,10 +289,11 @@ public:
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
-				GpuImage& depth_texture = geometry_pass.get_depth_output(face_idx);
+				//GpuImage& depth_texture = geometry_pass.get_depth_output(face_idx);
+				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
 				sg_bindings bindings = {
 					.views = {
-						[0] = depth_texture.get_texture_view(0), 
+						[0] = position_texture.get_texture_view(0), 
 					},
 					.samplers[0] = in_state.nearest_sampler,
 				};
@@ -338,8 +324,9 @@ public:
 				}
 
 				cubemap_to_octahedral_fs_params_t fs_params = {
+					.cubemap_render_size = desc.cubemap_render_size,
 					.atlas_entry_size = desc.octahedral_entry_size,
-					.compute_irradiance = true,
+					.compute_irradiance = state.compute_irradiance,
 					.use_importance_sampling = true,
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
@@ -347,18 +334,20 @@ public:
 				GpuImage& lighting_cubemap_texture = lighting_pass.get_color_output(0);
 				GpuImage& depth_cubemap_texture = radial_depth_pass.get_color_output(0);
 
-				sg_bindings bindings = {
-					.views = {
-						[0] = lighting_cubemap_texture.get_texture_view(0),
-						[1] = depth_cubemap_texture.get_texture_view(0),
-					},
-					.samplers[0] = in_state.linear_sampler,
-				};
-				sg_apply_bindings(&bindings);
+					sg_bindings bindings = {
+						.views = {
+							[0] = lighting_cubemap_texture.get_texture_view(0),
+							[1] = depth_cubemap_texture.get_texture_view(0),
+						},
+						.samplers = {
+							[0] = in_state.linear_sampler,
+							[1] = in_state.nearest_sampler,
+						},
+					};
+					sg_apply_bindings(&bindings);
 
 				sg_draw(0,6,1);
 			}
 		);
 	}
 };
-

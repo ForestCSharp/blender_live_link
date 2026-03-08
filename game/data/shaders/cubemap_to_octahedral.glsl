@@ -14,6 +14,7 @@
 
 layout(binding=0) uniform fs_params
 {
+	int cubemap_render_size;
 	int atlas_entry_size;
 	int compute_irradiance;
 	int use_importance_sampling;
@@ -23,11 +24,12 @@ layout(binding=0) uniform textureCube cubemap_lighting_texture;
 layout(binding=1) uniform textureCube cubemap_depth_texture;
 
 layout(binding=0) uniform sampler smp;
+layout(binding=1) uniform sampler depth_smp;
 
 in vec2 uv;
 
 out vec4 frag_color;
-out float radial_depth;
+out vec2 radial_depth;
 
 float radical_inverse_vdc(uint bits)
 {
@@ -63,6 +65,56 @@ vec3 importance_sample_diffuse(vec2 u, vec3 N)
 
 	vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;
 	return normalize(sampleVec);
+}
+
+#define CUBE_MOMENT_BLUR_RADIUS 3
+#define CUBE_MOMENT_BLUR_TAP_STRIDE 0.5
+
+void build_orthonormal_basis(vec3 n, out vec3 tangent, out vec3 bitangent)
+{
+	// Branchless orthonormal basis (Frisvad-style) to avoid direction seam artifacts.
+	float s = signNotZero(n.z);
+	float a = -1.0 / (s + n.z);
+	float b = n.x * n.y * a;
+	tangent = normalize(vec3(1.0 + s * n.x * n.x * a, s * b, -s * n.x));
+	bitangent = normalize(vec3(b, s + n.y * n.y * a, -n.y));
+}
+
+vec2 compute_cube_moments(vec3 dir) {
+    vec2 sum_moments = vec2(0.0);
+    float total_weight = 0.0;
+    
+    // 1. Calculate the step size
+    float texelSize = 2.0 / cubemap_render_size;
+    int blur_radius = max(CUBE_MOMENT_BLUR_RADIUS, 0);
+    float tap_stride = max(CUBE_MOMENT_BLUR_TAP_STRIDE, 0.001);
+
+    // 2. Find orthogonal vectors to 'dir' to create a local coordinate system
+    // We use a helper vector (up or right) to find the tangent and bitangent
+    vec3 tangent;
+    vec3 bitangent;
+    build_orthonormal_basis(dir, tangent, bitangent);
+
+    // 3. Sample a weighted kernel on the surface of the cube
+    for (int i = -blur_radius; i <= blur_radius; ++i)
+	{
+        for (int j = -blur_radius; j <= blur_radius; ++j)
+		{
+            // Nudge the ray based on texel offsets
+            vec3 offsetDir = dir + (tangent * float(i) * tap_stride * texelSize) 
+                                 + (bitangent * float(j) * tap_stride * texelSize);
+            
+            // Sample and preserve both precomputed moments from the cubemap.
+			vec2 moments = texture(samplerCube(cubemap_depth_texture, depth_smp), normalize(offsetDir)).xy;
+            float wx = float(blur_radius + 1 - abs(i));
+            float wy = float(blur_radius + 1 - abs(j));
+            float weight = wx * wy;
+            sum_moments += moments * weight;
+            total_weight += weight;
+        }
+    }
+
+    return (total_weight > 0.0) ? (sum_moments / total_weight) : sum_moments;
 }
 
 void main()
@@ -128,7 +180,8 @@ void main()
 		frag_color = vec4(sampled_color, 1.0);
 	}
 
-	radial_depth = texture(samplerCube(cubemap_depth_texture, smp), cubemap_dir).x;
+	//radial_depth = texture(samplerCube(cubemap_depth_texture, smp), cubemap_dir).xy;
+	radial_depth = compute_cube_moments(cubemap_dir);
 }
 
 @end

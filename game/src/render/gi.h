@@ -8,7 +8,9 @@
 #include "core/stretchy_buffer.h"
 #include "game_object/game_object.h"
 #include "render/lighting_capture.h"
+
 #include "render/gi_debug_pass.h"
+#include "render/cubemap_debug_pass.h"
 
 #include "shaders/gi_helpers.h"
 
@@ -30,9 +32,9 @@ struct GI_Scene
 	sg_pipeline gi_debug_pipeline;
 
 	// Static Parameters 
-	static const int cubemap_capture_size = 256;
-	static const int atlas_total_size = 512;
-	static const int atlas_entry_size = 16;
+	static const int cubemap_capture_size = 128;
+	static const int atlas_total_size = 2048;
+	static const int atlas_entry_size = 32;
 	static const int probes_to_update_per_frame = 4;
 
 };
@@ -260,6 +262,5 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	};
 	sg_apply_bindings(&bindings);
 	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.probes.length());
-
 }
 

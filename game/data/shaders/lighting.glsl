@@ -127,6 +127,11 @@ float mix_clamped(float a, float b, float alpha)
 	return mix(a, b, clamp(alpha, 0.0, 1.0));
 }
 
+float reduce_light_bleeding(float p_max, float reduction_amount)
+{
+	return clamp((p_max - reduction_amount) / (1.0 - reduction_amount), 0.0, 1.0);
+}
+
 vec3 sample_point_light(
 	PointLight in_point_light, 
 	vec3 in_view_position,
@@ -237,6 +242,11 @@ vec3 sample_sun_light(
 	return cook_torrance_brdf(n,l,v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
+// Optional hard visibility gate on top of Chebyshev:
+// if receiver distance is far beyond mean + sigma*stddev, reject the probe.
+#define GI_PROBE_OCCLUSION_HARD_GATE 1
+#define GI_PROBE_OCCLUSION_HARD_GATE_SIGMA 2.5
+
 in vec2 uv;
 
 out vec4 frag_color;
@@ -320,7 +330,7 @@ void main()
 			{
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
-				if (cell_index > 0)
+				if (cell_index >= 0)
 				{
 					GI_Cell cell = gi_cells[cell_index];
 
@@ -335,11 +345,14 @@ void main()
 					for (int i = 0; i < 8; ++i)
 					{
 						int probe_index = cell.probe_indices[i];
-						if (probe_index == -1) continue;
+						if (probe_index == -1) { continue; }
 
 						GI_Probe probe = gi_probes[probe_index];
+						if (probe.atlas_idx < 0) { continue; }
 						const vec3 probe_position = gi_probe_position_from_index(probe_index);
 						const vec3 position_to_probe = probe_position - position;
+						const vec3 probe_to_pos = position - probe_position;
+						const float dist_to_pixel = length(probe_to_pos);
 						const vec3 dir_to_probe = normalize(position_to_probe);
 						vec3 dir_from_probe = -dir_to_probe;
 
@@ -356,22 +369,57 @@ void main()
 							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
 
 						// 3. Keep your Normal Weight to prevent light leaking
-						float weight = trilinear_weight * max(0.0001, dot(dir_to_probe, normal));
+						float weight = trilinear_weight * max(0.001, dot(dir_to_probe, normal));
 
 						const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
 						const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
 						const vec3 probe_radiance = octahedral_lighting_data.rgb;
 
-						//FCS TODO:
-						//if (gi_probe_occlusion != 0)
-						//{
-						//	const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-						//	const float radial_depth = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).r;
-						//	if (length(position_to_probe) >= radial_depth)
-						//	{
-						//		continue;
-						//	}
-						//}
+						// Occlusion (Chebychev)
+						if (gi_probe_occlusion != 0)
+						{
+							// Sample RG moments from the depth atlas
+							const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+							vec2 moments = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).rg;
+							
+							const float mean = moments.x;
+							const float mean_sq = moments.y;
+							const float moment_bias = 0.0002;
+							const float min_variance = 0.0005;
+							const float light_bleed_reduction = 0.2;
+							const float base_depth_bias = 0.15;
+
+							// Increase receiver bias at grazing angles where VSM acne is most visible.
+							const float n_dot_probe_ray = max(dot(normal, dir_from_probe), 0.0);
+							const float adaptive_depth_bias = base_depth_bias * mix(2.0, 1.0, n_dot_probe_ray);
+							const float biased_dist_to_pixel = max(dist_to_pixel - adaptive_depth_bias, 0.0);
+
+							float chebyshev_weight = 1.0;
+							// Force physically plausible moments and stable variance floor.
+							const float corrected_mean_sq = max(mean_sq, (mean * mean) + moment_bias);
+							const float variance = max(corrected_mean_sq - (mean * mean), min_variance);
+
+							#if GI_PROBE_OCCLUSION_HARD_GATE
+							const float visibility_limit = mean + GI_PROBE_OCCLUSION_HARD_GATE_SIGMA * sqrt(variance);
+							if (biased_dist_to_pixel > visibility_limit)
+							{
+								chebyshev_weight = 0.0;
+							}
+							else if (biased_dist_to_pixel > mean)
+							#else
+							if (biased_dist_to_pixel > mean)
+							#endif
+							{
+								const float d = biased_dist_to_pixel - mean;
+								float p_max = variance / (variance + (d * d));
+								p_max = reduce_light_bleeding(p_max, light_bleed_reduction);
+								chebyshev_weight = p_max;
+							}
+							weight *= clamp(chebyshev_weight, 0.0, 1.0);
+						}
+
+						// Small threshold to skip zero-contribution probes early
+						if (weight <= 0.001) { continue; }
 
 						accumulated_irradiance += probe_radiance * weight;
 						accumulated_weight += weight;

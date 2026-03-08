@@ -1,68 +1,73 @@
 // Common Shader Code
 #include "shader_common.h"
 
+// GI Helpers
+#include "gi_helpers.h"
+
 // Fullscreen Vertex Shader
 #include "fullscreen_vs.h"
 
 @fs fs
 
 @include_block remap
+@include_block gi_helpers
 
 layout(binding=0) uniform fs_params {
 	mat4 inverse_view_projection;
 	vec3 capture_location;
 };
 
-@image_sample_type depth_texture unfilterable_float
-layout(binding=0) uniform texture2D depth_texture;
-
-@sampler_type tex_sampler nonfiltering
+layout(binding=0) uniform texture2D world_position_texture;
 layout(binding=0) uniform sampler tex_sampler;
 
 in vec2 uv;
 
-out float frag_color;
+out vec2 frag_color;
 
-vec3 world_pos_from_depth(vec2 in_uv, float in_depth) {
-    vec2 xy = in_uv * 2.0 - 1.0;
+// Compile-time blur controls for Chebyshev moment prefiltering.
+#define RADIAL_DEPTH_BLUR 0
+#define RADIAL_DEPTH_BLUR_RADIUS 8
+#define RADIAL_DEPTH_BLUR_TAP_STRIDE 3
 
-    // 2. Convert Raw Depth to NDC Z
-    float z = in_depth;
-
-    #if USE_INVERSE_DEPTH
-        // If depth is inversed, we don't need to do anything special for 
-        // [0, 1] ranges other than ensuring the math below respects 1->0.
-        // However, if we are on GL, we still need to map [1, 0] to [1, -1]
-        #if defined(SOKOL_GLCORE33) || defined(SOKOL_GLES3)
-            z = in_depth * 2.0 - 1.0;
-        #endif
-    #else
-        // Standard depth mapping
-        #if defined(SOKOL_GLCORE33) || defined(SOKOL_GLES3)
-            z = in_depth * 2.0 - 1.0;
-        #endif
-    #endif
-
-    vec4 clip_pos = vec4(xy, z, 1.0);
-
-    // 4. Transform to World Space
-    vec4 world_pos_h = inverse_view_projection * clip_pos;
-
-    // 5. Perspective Divide
-    return world_pos_h.xyz / world_pos_h.w;
+float sample_radial_depth(vec2 sample_uv)
+{
+	const vec4 world_position = texture(sampler2D(world_position_texture, tex_sampler), sample_uv);
+	return world_position.w > 0.0
+		? min(length(world_position.xyz - capture_location), GI_MAX_RADIAL_DEPTH)
+		: GI_MAX_RADIAL_DEPTH;
 }
 
 void main()
 {
-	const float depth = texture(sampler2D(depth_texture, tex_sampler), uv).x;
+#if RADIAL_DEPTH_BLUR
+	const vec2 texel_size = 1.0 / vec2(textureSize(sampler2D(world_position_texture, tex_sampler), 0));
+	const int blur_radius = max(RADIAL_DEPTH_BLUR_RADIUS, 0);
+	const float tap_stride = max(float(RADIAL_DEPTH_BLUR_TAP_STRIDE), 1.0);
+	vec2 moments = vec2(0.0);
+	float total_weight = 0.0;
 
-	const vec3 world_position = world_pos_from_depth(uv, depth);
+	// Radius-driven tent kernel. Increase RADIAL_DEPTH_BLUR_RADIUS for more blur.
+	for (int y = -blur_radius; y <= blur_radius; ++y)
+	{
+		for (int x = -blur_radius; x <= blur_radius; ++x)
+		{
+			const float wx = float(blur_radius + 1 - abs(x));
+			const float wy = float(blur_radius + 1 - abs(y));
+			const float weight = wx * wy;
+			const vec2 offset = vec2(float(x), float(y)) * tap_stride * texel_size;
+			const vec2 sample_uv = clamp(uv + offset, vec2(0.0), vec2(1.0));
+			const float radial_depth = sample_radial_depth(sample_uv);
+			moments += vec2(radial_depth, radial_depth * radial_depth) * weight;
+			total_weight += weight;
+		}
+	}
 
-    // Calculate Radial Depth
-	// FCS TODO: can probably just get this from depth buffer and view/proj...
-
-    const float radial_depth = length(world_position - capture_location);
-    frag_color = radial_depth;
+	frag_color = total_weight > 0.0 ? (moments / total_weight) : moments;
+#else
+	const float radial_depth = sample_radial_depth(uv);
+	frag_color.x = radial_depth;
+	frag_color.y = radial_depth * radial_depth;
+#endif
 }
 
 @end

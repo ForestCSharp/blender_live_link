@@ -11,6 +11,11 @@ namespace CubemapDebugPass
 {
 	// this is lazily created the first time we request the GeometryPass desc
 	optional<sg_shader> shader;
+	optional<sg_pipeline> pipeline;
+
+	optional<RenderPass> pass;
+	optional<Mesh> debug_mesh;
+
 	const i32 num_pass_outputs = 4;
 
 	sg_pipeline_desc make_pipeline_desc(sg_pixel_format depth_format)
@@ -54,38 +59,18 @@ namespace CubemapDebugPass
 		};
 	}
 
-	RenderPassDesc make_render_pass_desc(sg_pixel_format depth_format)
+	sg_pipeline get_pipeline(sg_pixel_format depth_format)
 	{
-		return (RenderPassDesc) {
-			.pipeline_desc = CubemapDebugPass::make_pipeline_desc(depth_format),
-			.num_outputs = num_pass_outputs,
-			.outputs[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.25, 0.25, 0.25, 1.0},
-			},
-			.outputs[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},
-			.outputs[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},
-			.outputs[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},	
-			.depth_output = {
-				.pixel_format = depth_format,
-			},
-		};
+		if (!pipeline.has_value())
+		{
+			pipeline = sg_make_pipeline(make_pipeline_desc(depth_format));
+		}
+
+		return pipeline.value();
+	}
+
+	void render(HMM_Vec3 location, GpuImage& in_cubemap_image)
+	{
+		//get_pass().execute()
 	}
 }
