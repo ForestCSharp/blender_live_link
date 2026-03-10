@@ -80,12 +80,12 @@ vec3 cook_torrance_brdf(
     const vec3 h = normalize(v + l);
 
     //Dot products
-    const float n_dot_v = saturate(dot(n,v));   
+    const float n_dot_v = clamp_n_dot_v(saturate(dot(n,v)));   
     const float n_dot_l = saturate(dot(n,l));
     const float n_dot_h = saturate(dot(n,h));
     const float h_dot_v = saturate(dot(h,v));
 
-	if (n_dot_l <= 0.0 || n_dot_v <= 0.0)
+	if (n_dot_l <= 0.0)
 	{
 		return vec3(0.0, 0.0, 0.0);
 	}
