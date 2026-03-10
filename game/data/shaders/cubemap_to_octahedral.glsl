@@ -69,6 +69,9 @@ vec3 importance_sample_diffuse(vec2 u, vec3 N)
 
 #define CUBE_MOMENT_BLUR_RADIUS 3
 #define CUBE_MOMENT_BLUR_TAP_STRIDE 0.5
+#define CUBE_MOMENT_BLUR_USE_IMPORTANCE_SAMPLING 1
+#define CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT 64u
+#define CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT 8.0
 
 void build_orthonormal_basis(vec3 n, out vec3 tangent, out vec3 bitangent)
 {
@@ -80,7 +83,36 @@ void build_orthonormal_basis(vec3 n, out vec3 tangent, out vec3 bitangent)
 	bitangent = normalize(vec3(b, s + n.y * n.y * a, -n.y));
 }
 
-vec2 compute_cube_moments(vec3 dir) {
+vec3 importance_sample_radial_depth(vec2 u, vec3 N, float power_exponent)
+{
+	// Power-cosine hemisphere sampling around N.
+	float phi = 2.0 * M_PI * u.x;
+	float cosTheta = pow(1.0 - u.y, 1.0 / (power_exponent + 1.0));
+	float sinTheta = sqrt(max(0.0, 1.0 - (cosTheta * cosTheta)));
+
+	vec3 tangent;
+	vec3 bitangent;
+	build_orthonormal_basis(N, tangent, bitangent);
+
+	vec3 local = vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+	return normalize(tangent * local.x + bitangent * local.y + N * local.z);
+}
+
+vec2 compute_cube_moments(vec3 dir)
+{
+#if CUBE_MOMENT_BLUR_USE_IMPORTANCE_SAMPLING
+	vec2 sum_moments = vec2(0.0);
+	const uint sample_count = CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT;
+
+	for (uint i = 0u; i < sample_count; ++i)
+	{
+		vec2 u = hammersley(i, sample_count);
+		vec3 sample_dir = importance_sample_radial_depth(u, dir, CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT);
+		sum_moments += texture(samplerCube(cubemap_depth_texture, depth_smp), sample_dir).xy;
+	}
+
+	return sum_moments * (1.0 / float(sample_count));
+#else
     vec2 sum_moments = vec2(0.0);
     float total_weight = 0.0;
     
@@ -115,6 +147,7 @@ vec2 compute_cube_moments(vec3 dir) {
     }
 
     return (total_weight > 0.0) ? (sum_moments / total_weight) : sum_moments;
+#endif
 }
 
 void main()
@@ -180,7 +213,6 @@ void main()
 		frag_color = vec4(sampled_color, 1.0);
 	}
 
-	//radial_depth = texture(samplerCube(cubemap_depth_texture, smp), cubemap_dir).xy;
 	radial_depth = compute_cube_moments(cubemap_dir);
 }
 

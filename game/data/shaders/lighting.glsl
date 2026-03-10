@@ -242,14 +242,24 @@ vec3 sample_sun_light(
 	return cook_torrance_brdf(n,l,v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
-// Optional hard visibility gate on top of Chebyshev:
-// if receiver distance is far beyond mean + sigma*stddev, reject the probe.
-#define GI_PROBE_OCCLUSION_HARD_GATE 1
-#define GI_PROBE_OCCLUSION_HARD_GATE_SIGMA 0.5
-
 in vec2 uv;
 
 out vec4 frag_color;
+
+float square(float in_x)
+{
+	return in_x * in_x;
+}
+
+vec2 square(vec2 in_v2)
+{
+	return in_v2 * in_v2;
+}
+
+vec3 square(vec3 in_v3)
+{
+	return in_v3 * in_v3;
+}
 
 void main()
 {
@@ -339,6 +349,9 @@ void main()
 					vec3 cell_min_pos = gi_probe_position_from_index(cell.probe_indices[0]);
 					vec3 alpha = clamp((position - cell_min_pos) / GI_CELL_EXTENT, 0.0, 1.0);
 
+					vec3 accumulated_irradiance_no_cheb = vec3(0.0);
+					float accumulated_weight_no_cheb = 0.0;
+
 					vec3 accumulated_irradiance = vec3(0.0);
 					float accumulated_weight = 0.0;
 
@@ -348,6 +361,11 @@ void main()
 						if (probe_index == -1) { continue; }
 
 						GI_Probe probe = gi_probes[probe_index];
+
+						const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+						const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
+						const vec3 probe_radiance = octahedral_lighting_data.rgb;
+
 						if (probe.atlas_idx < 0) { continue; }
 						const vec3 probe_position = gi_probe_position_from_index(probe_index);
 						const vec3 position_to_probe = probe_position - position;
@@ -356,79 +374,65 @@ void main()
 						const vec3 dir_to_probe = normalize(position_to_probe);
 						vec3 dir_from_probe = -dir_to_probe;
 
-						// 2. Compute Trilinear Weight based on binary corner index (i)
-						// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
-						float x_side = float(i & 1);
-						float y_side = float((i >> 1) & 1);
-						float z_side = float((i >> 2) & 1);
+						// 1. Smooth Backface
+						float weight = (dot(dir_to_probe, normal) + 1.0) * 0.5;
 
-						// Linear blend based on distance to the cell boundaries
-						float trilinear_weight = 
-							(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
-							(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
-							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
-
-						// 3. Keep your Normal Weight to prevent light leaking
-						float weight = trilinear_weight * max(0.001, dot(dir_to_probe, normal));
-
-						const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-						const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
-						const vec3 probe_radiance = octahedral_lighting_data.rgb;
-
-						// Occlusion (Chebychev)
-						if (gi_probe_occlusion != 0)
+						// 2. Trilinear Weight 
 						{
-							// Sample RG moments from the depth atlas
-							const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-							vec2 moments = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).rg;
-							
-							const float mean = moments.x;
-							const float mean_sq = moments.y;
-							const float moment_bias = 0.0002;
-							const float min_variance = 0.0005;
-							const float light_bleed_reduction = 0.2;
-							const float base_depth_bias = 0.15;
+							// x_side is 1.0 if the probe is on the "high" side of X, 0.0 if "low"
+							float x_side = float(i & 1);
+							float y_side = float((i >> 1) & 1);
+							float z_side = float((i >> 2) & 1);
 
-							// Increase receiver bias at grazing angles where VSM acne is most visible.
-							const float n_dot_probe_ray = max(dot(normal, dir_from_probe), 0.0);
-							const float adaptive_depth_bias = base_depth_bias * mix(2.0, 1.0, n_dot_probe_ray);
-							const float biased_dist_to_pixel = max(dist_to_pixel - adaptive_depth_bias, 0.0);
+							// Linear blend based on distance to the cell boundaries
+							float trilinear_weight = 
+								(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
+								(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
+								(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
 
-							float chebyshev_weight = 1.0;
-							// Force physically plausible moments and stable variance floor.
-							const float corrected_mean_sq = max(mean_sq, (mean * mean) + moment_bias);
-							const float variance = max(corrected_mean_sq - (mean * mean), min_variance);
-
-							#if GI_PROBE_OCCLUSION_HARD_GATE
-							const float visibility_limit = mean + GI_PROBE_OCCLUSION_HARD_GATE_SIGMA * sqrt(variance);
-							if (biased_dist_to_pixel > visibility_limit)
-							{
-								chebyshev_weight = 0.0;
-							}
-							else if (biased_dist_to_pixel > mean)
-							#else
-							if (biased_dist_to_pixel > mean)
-							#endif
-							{
-								const float d = biased_dist_to_pixel - mean;
-								float p_max = variance / (variance + (d * d));
-								p_max = reduce_light_bleeding(p_max, light_bleed_reduction);
-								chebyshev_weight = p_max;
-							}
-							weight *= clamp(chebyshev_weight, 0.0, 1.0);
+							weight *= trilinear_weight + 0.001;	
 						}
 
-						// Small threshold to skip zero-contribution probes early
-						if (weight <= 0.001) { continue; }
+						// Store irradiance without chebyshev weighting
+						accumulated_irradiance_no_cheb += probe_radiance * weight;
+						accumulated_weight_no_cheb += weight;
+
+						// 3. Visibility (Chebyshev)
+						if (gi_probe_occlusion != 0)
+						{
+							const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+							vec2 moments = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).rg;
+
+							const float mean = moments.x;
+							const float mean_squared = moments.y;
+							if (dist_to_pixel > mean)
+							{
+								const float variance = abs(square(mean) - mean_squared);
+								weight *= variance / (variance + square(dist_to_pixel - mean));
+							}
+						}
+
+						const float threshold = 0.01f;
+						if (weight < threshold)
+						{
+							weight *= square(weight) / square(threshold);
+						}
+
+						//FCS TDOO: sqrt in accum, square before final apply
 
 						accumulated_irradiance += probe_radiance * weight;
 						accumulated_weight += weight;
 					}
 
+					const vec3 final_irradiance = mix(
+						accumulated_irradiance_no_cheb * (1.0 / accumulated_weight_no_cheb),
+						accumulated_irradiance * (1.0 / accumulated_weight),
+						saturate(accumulated_weight)
+					);
+
 					const vec3 albedo = color * (1.0 - metallic); 
 
-					accumulated_weight = max(accumulated_weight, 0.0001);
-					vec3 final_gi = (accumulated_irradiance / accumulated_weight) * albedo * gi_intensity;
+					vec3 final_gi = final_irradiance * albedo * gi_intensity;
 					final_color.xyz += final_gi;
 				}
 			}	

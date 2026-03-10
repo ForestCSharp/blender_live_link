@@ -32,9 +32,9 @@ struct GI_Scene
 	sg_pipeline gi_debug_pipeline;
 
 	// Static Parameters 
-	static const int cubemap_capture_size = 128;
+	static const int cubemap_capture_size = 256;
 	static const int atlas_total_size = 2048;
-	static const int atlas_entry_size = 32;
+	static const int atlas_entry_size = 16;
 	static const int probes_to_update_per_frame = 4;
 
 };

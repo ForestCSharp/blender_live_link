@@ -92,19 +92,19 @@ void main()
 	{
 		case 0:
 		{
-			out_color = texture(sampler2D(octahedral_atlas_texture,linear_sampler), octahedral_coords);
+			out_color = texture(sampler2D(octahedral_atlas_texture, linear_sampler), octahedral_coords);
 			break;
 		}
 		case 1:
 		{
-			const float radial_depth = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).x;
+			const float radial_depth = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).x;
 			const float adjusted_depth = remap_clamped(radial_depth, 0.0, depth_vis_dist, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth), 1.0);
 			break;
 		}
 		case 2:
 		{
-			const float radial_depth_squared = texture(sampler2D(octahedral_depth_texture, nearest_sampler), octahedral_coords).y;
+			const float radial_depth_squared = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).y;
 			const float adjusted_depth_squared = remap_clamped(radial_depth_squared, 0.0, depth_vis_dist_squared, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth_squared), 1.0);
 			break;
