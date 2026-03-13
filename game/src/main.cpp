@@ -1301,16 +1301,35 @@ void frame(void)
 			
 			ImGui::Checkbox("Show Probes", &state.show_probes);	
 			ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+		}
+
+		if (ImGui::CollapsingHeader("Render Texture Viewer", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			if (ImGui::TreeNode("Main Pass"))
+			{		
+				RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+				for (i32 i = 0; i < geometry_pass.get_num_color_outputs(); ++i)
+				{	
+					GpuImage& image = get_render_pass(ERenderPass::Geometry).get_color_output(i);
+					const GpuImageDesc& desc = image.get_desc();
+					const ImVec2 image_size = ImVec2(desc.width / 4.0, desc.height / 4.0);
+
+					// Use a solid background color (e.g., Black) to hide transparency		
+					const ImVec4 bg_col = ImVec4(0.0f, 0.0f, 0.0f, 1.0f); 
+					const ImVec4 tint_col = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // Pure white tint
+
+					ImGui::ImageWithBg(
+						simgui_imtextureid(image.get_texture_view(0)), 
+						image_size, 
+						ImVec2(0,0), ImVec2(1,1), 
+						bg_col, tint_col
+					);
+				}
+
+				ImGui::TreePop(); // Remember to pop!
+			}
 
 			const ImVec2 debug_texture_size(256,256);
-
-			//ImGui::Text("Main Pass Color");
-			//GpuImage& main_color_image = get_render_pass(ERenderPass::Geometry).get_color_output(0);
-			//ImGui::Image(simgui_imtextureid(main_color_image.get_texture_view(0)), debug_texture_size);
-
-			//ImGui::Text("Main Pass Depth");
-			//GpuImage& main_depth_image = get_render_pass(ERenderPass::Geometry).get_depth_output();
-			//ImGui::Image(simgui_imtextureid(main_depth_image.get_texture_view(0)), debug_texture_size);
 
 			// Octahedral Atlas Visualization 
 			ImGui::Text("Octahedral Atlas: Lighting");

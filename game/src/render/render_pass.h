@@ -107,7 +107,7 @@ public: // Functions
 	}
 
 	// number of images we create per-color-attachment
-	const i32 get_attachment_image_count() const
+	i32 get_attachment_image_count() const
 	{
 		switch (desc.type)
 		{
@@ -133,6 +133,11 @@ public: // Functions
 			default:
 				assert(false);
 		}
+	}
+
+	i32 get_num_color_outputs() const
+	{
+		return color_outputs.length();
 	}
 
 	GpuImage& get_color_output(i32 color_output_idx, i32 pass_idx = 0)

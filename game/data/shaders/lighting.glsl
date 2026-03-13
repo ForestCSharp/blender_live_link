@@ -390,7 +390,7 @@ void main()
 								(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
 								(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
 
-							weight *= trilinear_weight + 0.001;	
+							weight *= trilinear_weight + 0.001;
 						}
 
 						// Store irradiance without chebyshev weighting

@@ -67,11 +67,8 @@ vec3 importance_sample_diffuse(vec2 u, vec3 N)
 	return normalize(sampleVec);
 }
 
-#define CUBE_MOMENT_BLUR_RADIUS 3
-#define CUBE_MOMENT_BLUR_TAP_STRIDE 0.5
-#define CUBE_MOMENT_BLUR_USE_IMPORTANCE_SAMPLING 1
 #define CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT 64u
-#define CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT 8.0
+#define CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT 32.0
 
 void build_orthonormal_basis(vec3 n, out vec3 tangent, out vec3 bitangent)
 {
@@ -100,7 +97,6 @@ vec3 importance_sample_radial_depth(vec2 u, vec3 N, float power_exponent)
 
 vec2 compute_cube_moments(vec3 dir)
 {
-#if CUBE_MOMENT_BLUR_USE_IMPORTANCE_SAMPLING
 	vec2 sum_moments = vec2(0.0);
 	const uint sample_count = CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT;
 
@@ -112,42 +108,6 @@ vec2 compute_cube_moments(vec3 dir)
 	}
 
 	return sum_moments * (1.0 / float(sample_count));
-#else
-    vec2 sum_moments = vec2(0.0);
-    float total_weight = 0.0;
-    
-    // 1. Calculate the step size
-    float texelSize = 2.0 / cubemap_render_size;
-    int blur_radius = max(CUBE_MOMENT_BLUR_RADIUS, 0);
-    float tap_stride = max(CUBE_MOMENT_BLUR_TAP_STRIDE, 0.001);
-
-    // 2. Find orthogonal vectors to 'dir' to create a local coordinate system
-    // We use a helper vector (up or right) to find the tangent and bitangent
-    vec3 tangent;
-    vec3 bitangent;
-    build_orthonormal_basis(dir, tangent, bitangent);
-
-    // 3. Sample a weighted kernel on the surface of the cube
-    for (int i = -blur_radius; i <= blur_radius; ++i)
-	{
-        for (int j = -blur_radius; j <= blur_radius; ++j)
-		{
-            // Nudge the ray based on texel offsets
-            vec3 offsetDir = dir + (tangent * float(i) * tap_stride * texelSize) 
-                                 + (bitangent * float(j) * tap_stride * texelSize);
-            
-            // Sample and preserve both precomputed moments from the cubemap.
-			vec2 moments = texture(samplerCube(cubemap_depth_texture, depth_smp), normalize(offsetDir)).xy;
-            float wx = float(blur_radius + 1 - abs(i));
-            float wy = float(blur_radius + 1 - abs(j));
-            float weight = wx * wy;
-            sum_moments += moments * weight;
-            total_weight += weight;
-        }
-    }
-
-    return (total_weight > 0.0) ? (sum_moments / total_weight) : sum_moments;
-#endif
 }
 
 void main()

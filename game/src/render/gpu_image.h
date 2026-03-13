@@ -149,6 +149,8 @@ public:
 		return attachment_views[slice_idx].value();
 	}
 
+	const GpuImageDesc& get_desc() const { return desc; }
+
 protected:
 	GpuImageDesc desc = {};
 	optional<sg_image> gpu_image;
