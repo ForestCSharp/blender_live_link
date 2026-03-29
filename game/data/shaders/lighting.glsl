@@ -66,7 +66,6 @@ layout(binding=0) uniform fs_params {
 	int atlas_entry_size;
 };
 
-
 layout(binding=0) uniform texture2D color_tex;
 layout(binding=1) uniform texture2D position_tex;
 layout(binding=2) uniform texture2D normal_tex;
@@ -340,7 +339,21 @@ void main()
 			{
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
-				if (cell_index >= 0)
+
+				if (cell_index < 0)
+				{
+					// Fallback probe is at end of probes array
+					GI_Probe probe = gi_probes[GI_FALLBACK_PROBE_IDX];
+					const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+					const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
+					const vec3 probe_radiance = octahedral_lighting_data.rgb;
+					
+					const vec3 final_irradiance = probe_radiance;		
+					const vec3 albedo = color * (1.0 - metallic); 
+					vec3 final_gi = final_irradiance * albedo * gi_intensity;
+					final_color.xyz += final_gi;
+				}
+				else
 				{
 					GI_Cell cell = gi_cells[cell_index];
 

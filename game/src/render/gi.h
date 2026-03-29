@@ -26,6 +26,7 @@ struct GI_Scene
 	LightingCapture lighting_capture;
 	i32 probe_idx_to_update = 0;
 	i32 next_atlas_index = 0;
+	bool has_rendered_default_probe = false;
 
 	// Debug Data
 	Mesh debug_sphere;
@@ -48,7 +49,7 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.probes.reset();
 
 	out_gi_scene.cells.add_uninitialized(GI_CELL_COUNT);
-	out_gi_scene.probes.add_uninitialized(GI_PROBE_COUNT);
+	out_gi_scene.probes.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK);
 
 	//FCS TODO: CHECK
 	for (i32 cell_idx = 0; cell_idx < GI_CELL_COUNT; ++cell_idx)
@@ -180,10 +181,12 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 		}
 		
 		const HMM_Vec3 lighting_capture_position = gi_probe_position_from_index(in_gi_scene.probe_idx_to_update);
+		const bool should_render_geometry = (i != GI_FALLBACK_PROBE_IDX);
 		in_gi_scene.lighting_capture.render(
 				in_state, 
 				lighting_capture_position, 
-				probe_idx_to_update.atlas_idx
+				probe_idx_to_update.atlas_idx,
+				should_render_geometry
 		);
 
 		if (GI_LOG_SCENE_UPDATE)

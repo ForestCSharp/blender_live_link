@@ -152,7 +152,7 @@ public:
 		is_initialized = true;
 	}
 
-	void render(State& in_state, const HMM_Vec3 in_location, const i32 in_atlas_idx)
+	void render(State& in_state, const HMM_Vec3 in_location, const i32 in_atlas_idx, const bool should_render_geometry)
 	{
 		assert_msgf(is_initialized, "Cubemap should be initialized with a LightingCaptureDesc passed to its constructor");
 
@@ -192,39 +192,42 @@ public:
 				CullResult cull_result = cull_objects(in_state.objects, view_projection_matrix);
 
 				// Submit draw calls for objects after culling
-				for (auto& [unique_id, object_ptr] : cull_result.objects)
+				if (should_render_geometry)
 				{
-					assert(object_ptr);
-					Object& object = *object_ptr;
-
-					if (object.has_mesh)
+					for (auto& [unique_id, object_ptr] : cull_result.objects)
 					{
-						Mesh& mesh = object.mesh;
+						assert(object_ptr);
+						Object& object = *object_ptr;
 
-						int mesh_material_idx = mesh.material_indices[0];
-						assert(mesh_material_idx >= 0);
-						const geometry_Material_t& material = in_state.materials[mesh_material_idx]; 
+						if (object.has_mesh)
+						{
+							Mesh& mesh = object.mesh;
 
-						GpuImage& base_color_image = material.base_color_image_index >= 0 ? in_state.images[material.base_color_image_index] : in_state.default_image;
-						GpuImage& metallic_image = material.metallic_image_index >= 0 ? in_state.images[material.metallic_image_index] : in_state.default_image;
-						GpuImage& roughness_image = material.roughness_image_index >= 0 ? in_state.images[material.roughness_image_index] : in_state.default_image;
-						GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images[material.emission_color_image_index] : in_state.default_image;
+							int mesh_material_idx = mesh.material_indices[0];
+							assert(mesh_material_idx >= 0);
+							const geometry_Material_t& material = in_state.materials[mesh_material_idx]; 
 
-						sg_bindings bindings = {
-							.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-							.index_buffer = mesh.index_buffer.get_gpu_buffer(),
-							.views = {
-								[0] = object.storage_buffer.get_storage_view(),
-								[1] = get_materials_buffer().get_storage_view(), 
-								[2] = base_color_image.get_texture_view(0), 
-								[3] = metallic_image.get_texture_view(0), 
-								[4] = roughness_image.get_texture_view(0),
-								[5] = emission_color_image.get_texture_view(0),
-							},
-							.samplers[0] = in_state.linear_sampler,
-						};
-						sg_apply_bindings(&bindings);
-						sg_draw(0, mesh.index_count, 1);
+							GpuImage& base_color_image = material.base_color_image_index >= 0 ? in_state.images[material.base_color_image_index] : in_state.default_image;
+							GpuImage& metallic_image = material.metallic_image_index >= 0 ? in_state.images[material.metallic_image_index] : in_state.default_image;
+							GpuImage& roughness_image = material.roughness_image_index >= 0 ? in_state.images[material.roughness_image_index] : in_state.default_image;
+							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images[material.emission_color_image_index] : in_state.default_image;
+
+							sg_bindings bindings = {
+								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
+								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+								.views = {
+									[0] = object.storage_buffer.get_storage_view(),
+									[1] = get_materials_buffer().get_storage_view(), 
+									[2] = base_color_image.get_texture_view(0), 
+									[3] = metallic_image.get_texture_view(0), 
+									[4] = roughness_image.get_texture_view(0),
+									[5] = emission_color_image.get_texture_view(0),
+								},
+								.samplers[0] = in_state.linear_sampler,
+							};
+							sg_apply_bindings(&bindings);
+							sg_draw(0, mesh.index_count, 1);
+						}
 					}
 				}
 
