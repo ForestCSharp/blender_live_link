@@ -1154,12 +1154,14 @@ void frame(void)
 	static u64 last_frame_time = 0;
 	const u64 lap_time = stm_laptime(&last_frame_time);	
 	const double delta_time = stm_sec(lap_time);
+    const float ui_dpi_scale = sapp_dpi_scale();
 
 	DEBUG_UI(
 		simgui_new_frame((simgui_frame_desc_t){
 			.width = state.width,
 			.height = state.height, 
 			.delta_time = delta_time,
+			.dpi_scale = ui_dpi_scale,
 		});
 	);
 
@@ -1266,8 +1268,9 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
-		if (ImGui::CollapsingHeader("FPS", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
+			ImGui::Text("Resolution: %d x %d", state.width, state.height);
 			ImGui::Text("frame time: %f ms", delta_time * 1000.f);
 			ImGui::Text("FPS: %f", 1.0 / delta_time);
 			ImGui::Spacing();
@@ -1709,7 +1712,7 @@ void frame(void)
 					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
 
 					DEBUG_UI(
-						if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
+						if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
 						{
 							ImGui::Text("Total Objects: %zu", state.objects.size());
 
@@ -2176,6 +2179,7 @@ sapp_desc sokol_main(int argc, char* argv[])
 		.event_cb = event,
         .width = 1920,
         .height = 1080,
+		.high_dpi = true,
         .sample_count = 1,
         .window_title = "Blender Game",
         .icon = {
