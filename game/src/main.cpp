@@ -1747,6 +1747,7 @@ void frame(void)
 
 		if (state.shadow_rendering_enable)
 		{
+            // Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
 			const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map;
 			if (should_update_shadow_depth)
 			{
