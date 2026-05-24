@@ -25,14 +25,17 @@ public:
 
     StretchyBuffer& operator=(const StretchyBuffer& other) 
 	{
-		_data = nullptr;
-		if (other._data != nullptr)
+		if (this == &other)
 		{
-			// Allocate space for the new array
-			arrsetlen(_data, arrlen(other._data));
-			// Copy the data
-			memcpy(_data, other._data, arrlen(other._data) * sizeof(T));
+			return *this;
 		}
+
+		reset();
+		for (const T& value : other)
+		{
+			add(value);
+		}
+
 		return *this;
 	};
 
@@ -56,4 +59,3 @@ public:
 protected:
 	mutable T* _data = nullptr;
 };
-

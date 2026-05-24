@@ -6,10 +6,11 @@ BASE_DIR="${SCRIPT_DIR##*/}"
 cd $SCRIPT_DIR
 
 #rm -rf bin
-mkdir bin
-mkdir bin/shaders
+mkdir -p bin
+mkdir -p bin/shaders
 
 OS_ARG=$1
+GAME_WARNING_FLAGS="-Wno-c99-designator"
 
 ./compile_shaders.sh $OS_ARG
 
@@ -40,6 +41,7 @@ if [[ $OS_ARG = Windows ]]; then
 	clang src/main.cpp \
 		-v \
 		-g -O0 \
+		$GAME_WARNING_FLAGS \
 		-o bin/game.exe \
 		-I src \
 		-I src/extern \
@@ -79,6 +81,7 @@ elif [[ $OS_ARG = Mac ]]; then
 	# Main Mac Build
 	clang src/main.cpp \
 		-g -O0 \
+		$GAME_WARNING_FLAGS \
 		-o bin/game \
 		-I src \
 		-I src/extern \
@@ -105,4 +108,3 @@ elif [[ $OS_ARG = Linux ]]; then
 else
 	echo "Invalid OS Passed to game/build.sh"
 fi
-

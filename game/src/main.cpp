@@ -260,9 +260,9 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 		.roughness = in_material.roughness(),
 		.emission_strength = in_material.emission_strength(),
 		.base_color_image_index = -1,
+		.emission_color_image_index = -1,
 		.metallic_image_index = -1,
 		.roughness_image_index = -1,
-		.emission_color_image_index = -1,
 	};
 
 	int base_color_image_id = in_material.base_color_image_id();
@@ -867,8 +867,8 @@ void init(void)
 		//.shader_pool_size = 
 		//.pipeline_pool_size = 
 		.view_pool_size = 8192,
-	   	.environment = sglue_environment(),
         .logger.func = slog_func,
+	   	.environment = sglue_environment(),
     });
 
 	sg_swapchain swapchain = sglue_swapchain();
@@ -921,10 +921,10 @@ void init(void)
 	RenderPassDesc ssao_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "ssao-pipeline",
 		},
 		.num_outputs = 1,
@@ -988,10 +988,10 @@ void init(void)
 	RenderPassDesc ssao_blur_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "blur-pipeline",
 		},
 		.num_outputs = 1,
@@ -1006,10 +1006,10 @@ void init(void)
 	RenderPassDesc lighting_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "lighting-pipeline",
 		},
 		.num_outputs = 1,
@@ -1025,10 +1025,10 @@ void init(void)
 	RenderPassDesc dof_blur_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "dof-blur-pipeline",
 		},
 		.num_outputs = 1,
@@ -1043,10 +1043,10 @@ void init(void)
 	RenderPassDesc dof_combine_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(dof_combine_dof_combine_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "dof-combine-pipeline",
 		},
 		.num_outputs = 1,
@@ -1061,10 +1061,10 @@ void init(void)
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "tonemapping-pipeline",
 		},
 		.num_outputs = 1,
@@ -1094,12 +1094,12 @@ void init(void)
 	RenderPassDesc copy_to_swapchain_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(overlay_texture_overlay_texture_shader_desc(sg_query_backend())),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = swapchain.depth_format,
 				.compare = SG_COMPAREFUNC_ALWAYS,
 				.write_enabled = false,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "copy-to-swapchain-pipeline",
 		},
 		.depth_output = {
@@ -2255,8 +2255,8 @@ sapp_desc sokol_main(int argc, char* argv[])
 		.event_cb = event,
         .width = 1920,
         .height = 1080,
-		.high_dpi = true,
         .sample_count = 1,
+		.high_dpi = true,
         .window_title = "Blender Game",
         .icon = {
 			.sokol_default = true,

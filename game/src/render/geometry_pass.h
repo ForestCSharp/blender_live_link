@@ -22,6 +22,7 @@ namespace GeometryPass
 		}
 
 		return (sg_pipeline_desc) {
+			.shader = shader.value(),
 			.layout = {
 				.buffers[0].stride = sizeof(Vertex),
 				.attrs = {
@@ -30,13 +31,10 @@ namespace GeometryPass
 					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
 				}
 			},
-			.shader = shader.value(),
-			.index_type = SG_INDEXTYPE_UINT32,
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = depth_format,
-				.write_enabled = true,
 				.compare = Render::DEPTH_COMPARE_FUNC, // Inverse Depth
+				.write_enabled = true,
 			},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
@@ -51,6 +49,8 @@ namespace GeometryPass
 			.colors[3] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F, // (Roughness, Metallic, Emissive, <Unused>)
 			},
+			.index_type = SG_INDEXTYPE_UINT32,
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "geometry-pipeline"
 		};
 	}

@@ -94,14 +94,14 @@ public:
 			.initial_height = in_desc.cubemap_render_size,
 			.pipeline_desc = (sg_pipeline_desc) {
 				.shader = sg_make_shader(radial_depth_radial_depth_shader_desc(sg_query_backend())),
-				.cull_mode = SG_CULLMODE_NONE,
-				.color_count = 1,
 				.depth = {
 					.pixel_format = SG_PIXELFORMAT_NONE,
 				},
+				.color_count = 1,
 				.colors[0] = {
 					.pixel_format = radial_depth_format,
 				},
+				.cull_mode = SG_CULLMODE_NONE,
 				.label = "radial-depth-pipeline",
 			},
 			.num_outputs = 1,
@@ -121,17 +121,17 @@ public:
 			.initial_height = in_desc.octahedral_total_size,
 			.pipeline_desc = (sg_pipeline_desc) {
 				.shader = sg_make_shader(cubemap_to_octahedral_cubemap_to_octahedral_shader_desc(sg_query_backend())),
-				.cull_mode = SG_CULLMODE_NONE,
 				.depth = {
 					.pixel_format = SG_PIXELFORMAT_NONE,
 				},
-				.color_count = 2,		
+				.color_count = 2,
 				.colors[0] = {
 					.pixel_format = color_format,
 				},
 				.colors[1] = {
 					.pixel_format = radial_depth_format,
 				},
+				.cull_mode = SG_CULLMODE_NONE,
 				.label = "cubemap-to-octahedral-pipeline",
 			},
 			.num_outputs = 2,

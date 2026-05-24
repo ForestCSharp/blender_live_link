@@ -21,6 +21,7 @@ namespace GIDebugPass
 		}
 
 		return (sg_pipeline_desc) {
+			.shader = shader.value(),
 			.layout = {
 				.buffers[0].stride = sizeof(Vertex),
 				.attrs = {
@@ -29,13 +30,10 @@ namespace GIDebugPass
 					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
 				},
 			},
-			.shader = shader.value(),
-			.index_type = SG_INDEXTYPE_UINT32,
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 					.pixel_format = depth_format,
-					.write_enabled = true,
 					.compare = Render::DEPTH_COMPARE_FUNC,
+					.write_enabled = true,
 				},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
@@ -50,6 +48,8 @@ namespace GIDebugPass
 			.colors[3] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
+			.index_type = SG_INDEXTYPE_UINT32,
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "cubemap-debug-pipeline"
 		};
 	}
@@ -84,9 +84,9 @@ namespace GIDebugPass
 				.clear_value = {0.0, 0.0, 0.0, 0.0},
 			},	
 			.depth_output = {
+				.pixel_format = depth_format,
 				.load_action = SG_LOADACTION_LOAD,
 				.store_action = SG_STOREACTION_STORE,
-				.pixel_format = depth_format,
 			},
 		};
 	}

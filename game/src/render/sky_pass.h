@@ -31,14 +31,14 @@ namespace SkyBakePass
 		{
 			pipeline_desc = (sg_pipeline_desc) {
 				.shader = shader.value(),
-				.cull_mode = SG_CULLMODE_NONE,
+				.depth = {
+					.pixel_format = SG_PIXELFORMAT_NONE,
+				},
 				.color_count = num_pass_outputs,
 				.colors[0] = {
 					.pixel_format = SG_PIXELFORMAT_RGBA32F,
 				},
-				.depth = {
-					.pixel_format = SG_PIXELFORMAT_NONE,
-				},
+				.cull_mode = SG_CULLMODE_NONE,
 				.label = "sky-bake-pipeline"
 			};
 		}
@@ -132,11 +132,10 @@ namespace SkyPass
 
 		pipelines[depth_format] = sg_make_pipeline((sg_pipeline_desc) {
 			.shader = shader.value(),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = depth_format,
-				.write_enabled = true,
 				.compare = Render::DEPTH_COMPARE_FUNC,
+				.write_enabled = true,
 			},
 			.color_count = num_pass_outputs,
 			.colors[0] = {
@@ -151,6 +150,7 @@ namespace SkyPass
 			.colors[3] = {
 				.pixel_format = SG_PIXELFORMAT_RGBA32F,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "sky-pipeline"
 		});
 		return pipelines[depth_format];

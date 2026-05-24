@@ -23,16 +23,16 @@ namespace LightingPass
 
 		return (sg_pipeline_desc) {
 			.shader = shader.value(),
-			.cull_mode = SG_CULLMODE_NONE,
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
-			.color_count = num_pass_outputs,		
+			.color_count = num_pass_outputs,
 			.colors[0] = {
 				.pixel_format = color_format,
 			},
+			.cull_mode = SG_CULLMODE_NONE,
 			.label = "lighting-pipeline",
-		};	
+		};
 	}
 
 	RenderPassDesc make_render_pass_desc(sg_pixel_format color_format)
