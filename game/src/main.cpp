@@ -1314,6 +1314,7 @@ void frame(void)
 			ImGui::Spacing();
 
             ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
+            ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
 
 			ImGui::Spacing();
 
@@ -1746,12 +1747,16 @@ void frame(void)
 
 		if (state.shadow_rendering_enable)
 		{
-			get_render_pass(ERenderPass::ShadowDepth).execute(
-				[&](const i32 pass_idx)
-				{
-					ShadowDepthPass::render(state);
-				}
-			);
+			const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map;
+			if (should_update_shadow_depth)
+			{
+				get_render_pass(ERenderPass::ShadowDepth).execute(
+					[&](const i32 pass_idx)
+					{
+						ShadowDepthPass::render(state);
+					}
+				);
+			}
 		}
 		else
 		{

@@ -63,13 +63,14 @@ struct State
 	// Rendering Feature Flags
 	bool ssao_enable = true;
 	bool shadow_rendering_enable = true;
+	bool shadow_depth_freeze = false;
 	bool sky_rendering_enable = true;
 	bool direct_lighting_enable = true;
 	bool gi_enable = true;
 	bool gi_probe_occlusion = true;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;
-	bool show_probes = true;
+	bool show_probes = false;
 	EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
 
 	// Disable this to more easily debug probe captures
