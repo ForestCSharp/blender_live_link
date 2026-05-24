@@ -28,7 +28,7 @@ namespace ShadowDepthPass
 	optional<sg_shader> shader;		
 
 	const i32 num_pass_outputs = 0;
-	const i32 ShadowMapResolution = 2048;
+	const i32 ShadowMapResolution = 4096;
 	bool has_valid_shadow_map = false;
 	HMM_Mat4 shadow_view_projection = HMM_M4D(1.0f);
 
@@ -104,8 +104,8 @@ namespace ShadowDepthPass
 		HMM_Vec3 light_pos = active_camera.location - sun_dir * 50.0f;
 		HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, active_camera.location, light_up);
 
-		f32 half_width = 30.0f;
-		f32 half_height = 30.0f;
+		f32 half_width = 100.0f;
+		f32 half_height = 100.0f;
 		f32 near_plane = 0.1f;
 		f32 far_plane = 100.0f;
 		HMM_Mat4 light_proj = mat4_orthographic(-half_width, half_width, -half_height, half_height, near_plane, far_plane);

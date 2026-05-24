@@ -62,6 +62,7 @@ struct State
 
 	// Rendering Feature Flags
 	bool ssao_enable = true;
+	bool shadow_rendering_enable = true;
 	bool sky_rendering_enable = true;
 	bool direct_lighting_enable = true;
 	bool gi_enable = true;

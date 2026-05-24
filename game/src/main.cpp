@@ -1313,10 +1313,15 @@ void frame(void)
 
 			ImGui::Spacing();
 
+            ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
+
+			ImGui::Spacing();
+
 			ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
 			ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
 			ImGui::Checkbox("GI", &state.gi_enable);
 			ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
+			ImGui::Checkbox("Show Probes", &state.show_probes);	
 			ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
 			if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
 			{
@@ -1331,7 +1336,6 @@ void frame(void)
 				ImGui::Text("Updating...");
 			}
 			
-			ImGui::Checkbox("Show Probes", &state.show_probes);	
 			ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
 		}
 
@@ -1740,13 +1744,18 @@ void frame(void)
 			}
 		}
 
-		{ // Shadow Depth Pass
+		if (state.shadow_rendering_enable)
+		{
 			get_render_pass(ERenderPass::ShadowDepth).execute(
 				[&](const i32 pass_idx)
 				{
 					ShadowDepthPass::render(state);
 				}
 			);
+		}
+		else
+		{
+			ShadowDepthPass::has_valid_shadow_map = false;
 		}
 
 		{ // Geometry Pass 	
@@ -1913,7 +1922,7 @@ void frame(void)
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
-					state.lighting_fs_params.shadow_map_enable = ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
+					state.lighting_fs_params.shadow_map_enable = state.shadow_rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
 					state.lighting_fs_params.shadow_bias = 0.001f;
 					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
