@@ -8,16 +8,7 @@ layout(binding=0) uniform vs_params {
 	mat4 projection;
 };
 
-struct ObjectData
-{
-	mat4 model_matrix;
-	mat4 rotation_matrix;
-	int material_index;
-};
-
-layout(binding=0) readonly buffer ObjectDataBuffer {
-	ObjectData object_data_array[];
-};
+@include_block object_data
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec4 normal;

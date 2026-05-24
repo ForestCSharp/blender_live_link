@@ -37,6 +37,7 @@ struct RenderPassDesc {
 	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
 	RenderPassOutputDesc depth_output;
 
+	bool resize_with_window = true;
 	ERenderPassType type = ERenderPassType::Single;
 };
 
@@ -67,7 +68,7 @@ public: // Variables
 public: // Functions
 	void init(const RenderPassDesc& in_desc)
 	{	
-		assert(in_desc.num_outputs > 0 || in_desc.type == ERenderPassType::Swapchain);
+		assert(in_desc.num_outputs > 0 || in_desc.depth_output.pixel_format != SG_PIXELFORMAT_NONE || in_desc.type == ERenderPassType::Swapchain);
 
 		desc = in_desc;
 		if (desc.pipeline_desc)
@@ -156,6 +157,18 @@ public: // Functions
 
 	void handle_resize(i32 in_new_width, i32 in_new_height)
 	{
+		if (!desc.resize_with_window)
+		{
+			if (current_width > 0 && current_height > 0)
+			{
+				return;
+			}
+
+			assert(desc.initial_width > 0 && desc.initial_height > 0);
+			in_new_width = desc.initial_width;
+			in_new_height = desc.initial_height;
+		}
+
 		current_width = in_new_width;
 		current_height = in_new_height;
 
@@ -319,7 +332,7 @@ public: // Functions
 				.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
 			};
 
-			for (int i = 0; i < SG_MAX_COLOR_ATTACHMENTS; ++i)
+			for (int i = 0; i < desc.num_outputs; ++i)
 			{
 				const RenderPassOutputDesc& output_desc = desc.outputs[i];
 

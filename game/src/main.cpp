@@ -81,6 +81,7 @@ using ankerl::unordered_dense::map;
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
 #include "render/sky_pass.h"
+#include "render/shadow_depth_pass.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -312,6 +313,35 @@ void reset_materials()
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
 	return state.render_passes[static_cast<int>(in_pass_id)];
+}
+
+bool object_is_sun_light(const Object& in_object)
+{
+	return in_object.has_light && in_object.light.type == LightType::Sun;
+}
+
+void refresh_primary_sun_id()
+{
+	if (state.primary_sun_id.has_value())
+	{
+		const i32 primary_sun_id = state.primary_sun_id.value();
+		if (state.objects.contains(primary_sun_id) && object_is_sun_light(state.objects[primary_sun_id]))
+		{
+			return;
+		}
+
+		state.primary_sun_id.reset();
+	}
+
+	for (auto const& [unique_id, object] : state.objects)
+	{
+		if (object_is_sun_light(object))
+		{
+			state.primary_sun_id = unique_id;
+			printf("Found Primary Sun ID: %i\n", unique_id);
+			return;
+		}
+	}
 }
 
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
@@ -559,12 +589,6 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						{
 							auto sun_light = object_light->sun_light();
 							assert(sun_light);
-
-							if (!state.primary_sun_id.has_value())
-							{
-								state.primary_sun_id = unique_id;
-								printf("Found Primary Sun ID: %i\n", unique_id);
-							}
 
 							game_object.light.sun = (SunLight) {
 								.power = sun_light->power(),
@@ -887,6 +911,9 @@ void init(void)
         },
         .logger.func = slog_func,
     });
+
+	// Init shadow depth pass
+	get_render_pass(ERenderPass::ShadowDepth).init(ShadowDepthPass::make_render_pass_desc(SG_PIXELFORMAT_DEPTH));
 
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
@@ -1238,6 +1265,8 @@ void frame(void)
 		reset_images();
 	}
 
+	refresh_primary_sun_id();
+
 	// Space Bar + Left Control Starts/Stops simulation 
 	DEFINE_TOGGLE_TWO_KEYS(state.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
@@ -1308,6 +1337,23 @@ void frame(void)
 
 		if (ImGui::CollapsingHeader("Render Texture Viewer", ImGuiTreeNodeFlags_DefaultOpen))
 		{
+			{
+				RenderPass& depth_pass = get_render_pass(ERenderPass::ShadowDepth);
+				GpuImage& image = depth_pass.get_depth_output();
+				const GpuImageDesc& desc = image.get_desc();
+				const f32 max_debug_size = 256.0f;
+				const f32 aspect_ratio = (f32)desc.width / (f32)desc.height;
+				const ImVec2 image_size = aspect_ratio >= 1.0f
+					? ImVec2(max_debug_size, max_debug_size / aspect_ratio)
+					: ImVec2(max_debug_size * aspect_ratio, max_debug_size);
+
+				ImGui::Text("Shadow Depth");
+				ImGui::Text("%d x %d", desc.width, desc.height);
+				ImGui::Image(simgui_imtextureid(image.get_texture_view(0)), image_size);
+			}
+
+			ImGui::Separator();
+
 			if (ImGui::TreeNode("Main Pass"))
 			{		
 				RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
@@ -1694,6 +1740,15 @@ void frame(void)
 			}
 		}
 
+		{ // Shadow Depth Pass
+			get_render_pass(ERenderPass::ShadowDepth).execute(
+				[&](const i32 pass_idx)
+				{
+					ShadowDepthPass::render(state);
+				}
+			);
+		}
+
 		{ // Geometry Pass 	
 			get_render_pass(ERenderPass::Geometry).execute(
 				[&](const i32 pass_idx)
@@ -1858,6 +1913,13 @@ void frame(void)
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
+					state.lighting_fs_params.shadow_map_enable = ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
+					state.lighting_fs_params.shadow_bias = 0.001f;
+					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
+						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
+						1.0f / (f32)ShadowDepthPass::ShadowMapResolution
+					);
+					state.lighting_fs_params.shadow_view_projection = ShadowDepthPass::shadow_view_projection;
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -1870,6 +1932,7 @@ void frame(void)
 					GpuImage& normal_texture = geometry_pass.get_color_output(2);
 					GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3);
 					GpuImage& blurred_ssao_texture = ssao_blur_pass.get_color_output(0);
+					GpuImage& shadow_depth_texture = get_render_pass(ERenderPass::ShadowDepth).get_depth_output(0);
 
 					sg_bindings bindings = {
 						.views = {
@@ -1885,8 +1948,12 @@ void frame(void)
 							[9] = gi_scene.cells_buffer.get_storage_view(),
 							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
 							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
+							[12] = shadow_depth_texture.get_texture_view(0),
 						},
-						.samplers[0] = state.linear_sampler,
+						.samplers = {
+							[0] = state.linear_sampler,
+							[1] = state.nearest_sampler,
+						},
 					};
 					sg_apply_bindings(&bindings);
 

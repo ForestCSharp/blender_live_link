@@ -50,6 +50,8 @@ struct SunLight {
 };
 
 layout(binding=0) uniform sampler tex_sampler;
+@sampler_type shadow_depth_sampler nonfiltering
+layout(binding=1) uniform sampler shadow_depth_sampler;
 
 layout(binding=0) uniform fs_params {
 	vec3 view_position;
@@ -64,6 +66,10 @@ layout(binding=0) uniform fs_params {
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
+	int shadow_map_enable;
+	float shadow_bias;
+	vec2 shadow_map_texel_size;
+	mat4 shadow_view_projection;
 };
 
 layout(binding=0) uniform texture2D color_tex;
@@ -94,6 +100,8 @@ layout(binding=9) readonly buffer GICellsBuffer {
 
 layout(binding=10) uniform texture2D octahedral_lighting_texture;
 layout(binding=11) uniform texture2D octahedral_depth_texture;
+@image_sample_type shadow_depth_texture unfilterable_float
+layout(binding=12) uniform texture2D shadow_depth_texture;
 
 float vec2_length_squared(vec2 v)
 {
@@ -241,6 +249,82 @@ vec3 sample_sun_light(
 	return cook_torrance_brdf(n,l,v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
+float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
+{
+	vec3 n = normalize(in_surface_normal);
+	vec3 l = normalize(-in_light_direction);
+	float normal_light = saturate(dot(n, l));
+	float slope_factor = 1.0 - normal_light;
+	return max(shadow_bias, shadow_bias * (1.0 + 8.0 * slope_factor));
+}
+
+float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal, vec3 in_light_direction)
+{
+	if (shadow_map_enable == 0)
+	{
+		return 1.0;
+	}
+
+	vec4 shadow_clip_position = shadow_view_projection * vec4(in_surface_position, 1.0);
+	if (shadow_clip_position.w <= 0.0)
+	{
+		return 1.0;
+	}
+
+	vec3 shadow_ndc = shadow_clip_position.xyz / shadow_clip_position.w;
+	vec2 shadow_uv = shadow_ndc.xy * 0.5 + 0.5;
+	shadow_uv.y = 1.0 - shadow_uv.y;
+	if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0)
+	{
+		return 1.0;
+	}
+
+#if USE_INVERSE_DEPTH
+	if (shadow_ndc.z < 0.0 || shadow_ndc.z > 1.0)
+	{
+		return 1.0;
+	}
+#else
+	if (shadow_ndc.z < -1.0 || shadow_ndc.z > 1.0)
+	{
+		return 1.0;
+	}
+#endif
+
+	float effective_shadow_bias = slope_scaled_shadow_bias(in_surface_normal, in_light_direction);
+	float visibility = 0.0;
+	for (int y = -1; y <= 1; ++y)
+	{
+		for (int x = -1; x <= 1; ++x)
+		{
+			float shadow_depth = texture(sampler2D(shadow_depth_texture, shadow_depth_sampler), shadow_uv + vec2(x, y) * shadow_map_texel_size).r;
+#if USE_INVERSE_DEPTH
+			visibility += (shadow_ndc.z + effective_shadow_bias >= shadow_depth) ? 1.0 : 0.0;
+#else
+			float current_depth = shadow_ndc.z * 0.5 + 0.5;
+			visibility += (current_depth - effective_shadow_bias <= shadow_depth) ? 1.0 : 0.0;
+#endif
+		}
+	}
+
+	return visibility / 9.0;
+}
+
+float sample_gi_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal)
+{
+	for (int i = 0; i < num_sun_lights; ++i)
+	{
+		if (sun_lights[i].cast_shadows != 0)
+		{
+			float shadow_visibility = sample_shadow_visibility(in_surface_position, in_surface_normal, sun_lights[i].direction);
+			float normal_light = saturate(dot(normalize(in_surface_normal), normalize(-sun_lights[i].direction)));
+			return shadow_visibility * normal_light;
+		}
+	}
+
+	return 1.0;
+}
+
 in vec2 uv;
 
 out vec4 frag_color;
@@ -291,6 +375,7 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
+			const float gi_shadow_multiplier = mix(0.5, 1.0, sample_gi_shadow_visibility(position, normal));
 
 			if (direct_lighting_enable != 0)
 			{
@@ -323,7 +408,11 @@ void main()
 
 				for (int i = 0; i < num_sun_lights; ++i)
 				{
-					final_color.xyz += sample_sun_light(
+					float sun_shadow_visibility = sun_lights[i].cast_shadows != 0
+						? sample_shadow_visibility(position, normal, sun_lights[i].direction)
+						: 1.0;
+
+					final_color.xyz += sun_shadow_visibility * sample_sun_light(
 							sun_lights[i], 
 							view_position,
 							position, 
@@ -350,7 +439,7 @@ void main()
 					
 					const vec3 final_irradiance = probe_radiance;		
 					const vec3 albedo = color * (1.0 - metallic); 
-					vec3 final_gi = final_irradiance * albedo * gi_intensity;
+					vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
 					final_color.xyz += final_gi;
 				}
 				else
@@ -445,7 +534,7 @@ void main()
 
 					const vec3 albedo = color * (1.0 - metallic); 
 
-					vec3 final_gi = final_irradiance * albedo * gi_intensity;
+					vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
 					final_color.xyz += final_gi;
 				}
 			}	

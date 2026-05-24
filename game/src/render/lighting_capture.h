@@ -246,6 +246,7 @@ public:
 				fs_params.ssao_enable = false;
 				fs_params.direct_lighting_enable = true;
 				fs_params.gi_enable = false;
+				fs_params.shadow_map_enable = false;
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
 				GpuImage& color_texture = geometry_pass.get_color_output(0, face_idx);
@@ -272,8 +273,12 @@ public:
 						[9] = in_state.default_buffer.get_storage_view(),
 						[10] = in_state.default_image.get_texture_view(0),
 						[11] = in_state.default_image.get_texture_view(0),
+						[12] = in_state.default_image.get_texture_view(0),
 					},
-					.samplers[0] = in_state.linear_sampler,
+					.samplers = {
+						[0] = in_state.linear_sampler,
+						[1] = in_state.nearest_sampler,
+					},
 				};
 				sg_apply_bindings(&bindings);
 

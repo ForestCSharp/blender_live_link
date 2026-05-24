@@ -20,6 +20,7 @@ using std::optional;
 
 enum class ERenderPass : int
 {
+	ShadowDepth,
 	Geometry,
 	SSAO,
 	SSAO_Blur,

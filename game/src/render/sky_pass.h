@@ -79,10 +79,15 @@ namespace SkyBakePass
 				if (in_state.primary_sun_id.has_value())
 				{
 					i32 primary_sun_id = in_state.primary_sun_id.value();
-					assert(in_state.objects.contains(primary_sun_id));
-
-					Transform transform = in_state.objects[primary_sun_id].current_transform;
-					sun_dir = -HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+					if (in_state.objects.contains(primary_sun_id))
+					{
+						Object& sun_object = in_state.objects[primary_sun_id];
+						if (sun_object.has_light && sun_object.light.type == LightType::Sun)
+						{
+							Transform transform = sun_object.current_transform;
+							sun_dir = -HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+						}
+					}
 				}
 
 				sky_bake_fs_params_t sky_bake_params = {
@@ -173,4 +178,3 @@ namespace SkyPass
 		sg_draw(0,6,1);
 	}
 }
-

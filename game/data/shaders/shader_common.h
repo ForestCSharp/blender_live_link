@@ -56,6 +56,22 @@ struct Material
 @end // @block material
 #endif
 
+#if !defined(__cplusplus) || !defined(__STDC__)
+@block object_data
+
+struct ObjectData
+{
+	mat4 model_matrix;
+	mat4 rotation_matrix;
+	int material_index;
+};
+
+layout(binding=0) readonly buffer ObjectDataBuffer {
+	ObjectData object_data_array[];
+};
+
+@end // @block object_data
+#endif
 
 #if !defined(__cplusplus) || !defined(__STDC__)
 @block dither_noise 
