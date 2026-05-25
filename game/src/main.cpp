@@ -1311,12 +1311,12 @@ void frame(void)
 			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
 			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
 
-			ImGui::Spacing();
+			ImGui::Separator();
 
-            ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
-            ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
+			ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
+			ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
 
-			ImGui::Spacing();
+			ImGui::Separator();
 
 			ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
 			ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
