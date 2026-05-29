@@ -16,6 +16,7 @@ layout(binding=0) uniform fs_params {
 	mat4 inverse_view_projection;
 	vec3 capture_location;
 	int probe_occlusion_mode;
+	int force_fully_visible;
 };
 
 layout(binding=0) uniform texture2D world_position_texture;
@@ -44,7 +45,9 @@ void main()
 {
 	// Variance Shadow Map second-moment stabilization term from GPU Gems:
 	// m2 += 0.25 * (ddx(d)^2 + ddy(d)^2)
-	const float center_depth = sample_radial_depth(uv);
+	const float center_depth = force_fully_visible != 0
+		? GI_MAX_RADIAL_DEPTH
+		: sample_radial_depth(uv);
 	if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
 	{
 		const float normalized_depth = clamp(center_depth / GI_MAX_RADIAL_DEPTH, 0.0, 1.0);

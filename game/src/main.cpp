@@ -1399,11 +1399,11 @@ void frame(void)
 				{
 					ImGui::Checkbox("GI", &state.gi_enable);
 					ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
-					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.probe_occlusion_mode, EProbeOcclusionModeNames, IM_ARRAYSIZE(EProbeOcclusionModeNames)))
+					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
 					{
 						state.gi_is_updating = true;
 					}
-					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
+					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.probe_occlusion_mode, EProbeOcclusionModeNames, IM_ARRAYSIZE(EProbeOcclusionModeNames)))
 					{
 						state.gi_is_updating = true;
 					}
@@ -1427,6 +1427,10 @@ void frame(void)
 					}
 					
 					ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi_debug_constant_white_probes))
+					{
+						state.gi_is_updating = true;
+					}
 				}
 				ImGui::Unindent();
 			}

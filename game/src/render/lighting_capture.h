@@ -311,6 +311,7 @@ public:
 					.inverse_view_projection = HMM_InvGeneralM4(view_projection_matrix),
 					.capture_location = in_location,
 					.probe_occlusion_mode = static_cast<i32>(in_state.probe_occlusion_mode),
+					.force_fully_visible = in_state.gi_debug_constant_white_probes ? 1 : 0,
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
@@ -356,7 +357,9 @@ public:
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
-				GpuImage& lighting_cubemap_texture = lighting_pass.get_color_output(0);
+				GpuImage& lighting_cubemap_texture = in_state.gi_debug_constant_white_probes
+					? in_state.white_image_cube
+					: lighting_pass.get_color_output(0);
 				GpuImage& depth_cubemap_texture = radial_depth_pass.get_color_output(0);
 
 					sg_bindings bindings = {
@@ -383,7 +386,9 @@ public:
 				.sample_count = 1024,
 			};
 
-			GpuImage& lighting_cubemap_texture = lighting_pass.get_color_output(0);
+			GpuImage& lighting_cubemap_texture = in_state.gi_debug_constant_white_probes
+				? in_state.white_image_cube
+				: lighting_pass.get_color_output(0);
 
 			sg_begin_pass((sg_pass) {
 				.compute = true,

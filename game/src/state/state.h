@@ -105,6 +105,7 @@ struct State
 	EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
 	EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
 	bool gi_render_sky_to_probes = true;
+	bool gi_debug_constant_white_probes = false;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;
 	bool show_probes = false;
@@ -178,6 +179,7 @@ struct State
 	StretchyBuffer<GpuImage> images;
 	GpuImage default_image;
 	GpuImage default_image_cube;
+	GpuImage white_image_cube;
 	GpuBuffer<u8> default_buffer;
 
 	bool enable_debug_image_fullscreen = false;
@@ -228,6 +230,25 @@ void state_init()
 		.data = (u8*) &default_image_cube_data,
 	};
 	state.default_image_cube = GpuImage(default_image_cube_desc);
+
+	HMM_Vec4 white_image_cube_data[6] =
+	{
+		HMM_V4(1,1,1,1),
+		HMM_V4(1,1,1,1),
+		HMM_V4(1,1,1,1),
+		HMM_V4(1,1,1,1),
+		HMM_V4(1,1,1,1),
+		HMM_V4(1,1,1,1),
+	};
+	GpuImageDesc white_image_cube_desc = {
+		.type = SG_IMAGETYPE_CUBE,
+		.width = 1,
+		.height = 1,
+		.num_slices = 6,
+		.pixel_format = SG_PIXELFORMAT_RGBA32F,
+		.data = (u8*) &white_image_cube_data,
+	};
+	state.white_image_cube = GpuImage(white_image_cube_desc);
 
 	u8 default_buffer_data[4] = { 0,0,0,0 };
 	GpuBufferDesc<u8> default_buffer_desc = {

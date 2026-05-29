@@ -104,12 +104,15 @@ vec3 sample_sh9_irradiance(int in_probe_index, vec3 normal)
 vec3 sample_sg9_irradiance(int in_probe_index, vec3 normal)
 {
 	vec3 irradiance = vec3(0.0);
+	float weight_sum = 0.0;
 	int coefficient_offset = in_probe_index * 9;
 	for (int i = 0; i < 9; ++i)
 	{
-		irradiance += sg9_coefficients[coefficient_offset + i].value.rgb * sg9_basis(i, normal);
+		float weight = sg9_basis(i, normal);
+		irradiance += sg9_coefficients[coefficient_offset + i].value.rgb * weight;
+		weight_sum += weight;
 	}
-	return max(irradiance, vec3(0.0));
+	return max((irradiance / max(weight_sum, 0.00001)) * M_PI, vec3(0.0));
 }
 
 void main()
