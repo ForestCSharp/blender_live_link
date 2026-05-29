@@ -36,6 +36,8 @@ struct RenderPassDesc {
 	int num_outputs = 0;
 	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
 	RenderPassOutputDesc depth_output;
+	int num_scratch_outputs = 0;
+	RenderPassOutputDesc scratch_outputs[SG_MAX_COLOR_ATTACHMENTS];
 
 	bool resize_with_window = true;
 	ERenderPassType type = ERenderPassType::Single;
@@ -59,6 +61,7 @@ public: // Variables
 	optional<RenderPassOutput> depth_output;
 
 	StretchyBuffer<sg_attachments> attachments;
+	StretchyBuffer<RenderPassOutput> scratch_outputs;
 
 	RenderPassDesc desc = {};
 
@@ -155,6 +158,13 @@ public: // Functions
 		return depth_output.value().images[pass_idx];
 	}
 
+	GpuImage& get_scratch_color_output(i32 scratch_output_idx, i32 pass_idx = 0)
+	{
+		assert(scratch_outputs.is_valid_index(scratch_output_idx));
+		assert(scratch_outputs[scratch_output_idx].images.is_valid_index(pass_idx));
+		return scratch_outputs[scratch_output_idx].images[pass_idx];
+	}
+
 	void handle_resize(i32 in_new_width, i32 in_new_height)
 	{
 		if (!desc.resize_with_window)
@@ -207,6 +217,16 @@ public: // Functions
 				}
 				depth_output.reset();
 			}
+
+			for (RenderPassOutput& scratch_output : scratch_outputs)
+			{
+				for (GpuImage& existing_scratch_image : scratch_output.images)
+				{
+					existing_scratch_image.cleanup();
+				}
+				scratch_output.images.reset();
+			}
+			scratch_outputs.reset();
 
 			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 			{
@@ -314,6 +334,39 @@ public: // Functions
 
 				depth_output = new_depth_output;
 			}
+
+			if (desc.num_scratch_outputs > 0)
+			{
+				assert(desc.type == ERenderPassType::Single);
+				assert(desc.num_scratch_outputs <= SG_MAX_COLOR_ATTACHMENTS);
+
+				for (int scratch_output_idx = 0; scratch_output_idx < desc.num_scratch_outputs; ++scratch_output_idx)
+				{
+					const RenderPassOutputDesc& output_desc = desc.scratch_outputs[scratch_output_idx];
+					assert(output_desc.pixel_format != SG_PIXELFORMAT_NONE);
+
+					RenderPassOutput new_scratch_output;
+					GpuImageDesc image_desc = {
+						.type = image_type,
+						.usage = {
+							.color_attachment = true,
+						},
+						.width = current_width,
+						.height = current_height,
+						.num_slices = num_slices,
+						.pixel_format = output_desc.pixel_format,
+						.label = "scratch-color-image",
+					};
+
+					for (i32 image_idx = 0; image_idx < attachment_image_count; ++image_idx)
+					{
+						new_scratch_output.images.add(GpuImage(image_desc));
+					}
+
+					scratch_outputs.add(new_scratch_output);
+				}
+
+			}
 		}
 	}
 
@@ -353,6 +406,39 @@ public: // Functions
 					.clear_value = output_desc.clear_value.r,
 				};
 			}
+
+			sg_begin_pass(pass);
+
+			if (pipeline.id != SG_INVALID_ID)
+			{
+				sg_apply_pipeline(pipeline);
+			}
+
+			in_callback(pass_idx);
+
+			sg_end_pass();
+		}
+	}
+
+	void execute_scratch(i32 scratch_output_idx, std::function<void(const i32 pass_idx)> in_callback)
+	{
+		assert(current_width > 0 && current_height > 0);
+		assert(scratch_outputs.is_valid_index(scratch_output_idx));
+
+		const i32 pass_count = get_pass_count();
+		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
+		{
+			sg_attachments scratch_attachment = {};
+			scratch_attachment.colors[0] = get_scratch_color_output(scratch_output_idx, pass_idx).get_attachment_view(0);
+
+			sg_pass pass = {
+				.attachments = scratch_attachment,
+			};
+			pass.action.colors[0] = {
+				.load_action = desc.scratch_outputs[scratch_output_idx].load_action,
+				.store_action = desc.scratch_outputs[scratch_output_idx].store_action,
+				.clear_value = desc.scratch_outputs[scratch_output_idx].clear_value,
+			};
 
 			sg_begin_pass(pass);
 

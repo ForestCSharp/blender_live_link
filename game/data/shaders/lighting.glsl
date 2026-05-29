@@ -50,8 +50,8 @@ struct SunLight {
 };
 
 layout(binding=0) uniform sampler tex_sampler;
-@sampler_type shadow_depth_sampler nonfiltering
-layout(binding=1) uniform sampler shadow_depth_sampler;
+@sampler_type shadow_moments_sampler filtering
+layout(binding=1) uniform sampler shadow_moments_sampler;
 
 layout(binding=0) uniform fs_params {
 	vec3 view_position;
@@ -100,8 +100,8 @@ layout(binding=9) readonly buffer GICellsBuffer {
 
 layout(binding=10) uniform texture2D octahedral_lighting_texture;
 layout(binding=11) uniform texture2D octahedral_depth_texture;
-@image_sample_type shadow_depth_texture unfilterable_float
-layout(binding=12) uniform texture2D shadow_depth_texture;
+@image_sample_type shadow_moments_texture float
+layout(binding=12) uniform texture2D shadow_moments_texture;
 
 float vec2_length_squared(vec2 v)
 {
@@ -137,6 +137,39 @@ float mix_clamped(float a, float b, float alpha)
 float reduce_light_bleeding(float p_max, float reduction_amount)
 {
 	return clamp((p_max - reduction_amount) / (1.0 - reduction_amount), 0.0, 1.0);
+}
+
+float normalized_shadow_depth(vec3 in_shadow_ndc)
+{
+#if USE_INVERSE_DEPTH
+	return 1.0 - in_shadow_ndc.z;
+#else
+	return in_shadow_ndc.z * 0.5 + 0.5;
+#endif
+}
+
+const float EVSM_POSITIVE_EXPONENT = 5.0;
+const float EVSM_NEGATIVE_EXPONENT = 5.0;
+
+vec2 evsm_warp_depth(float depth)
+{
+	float centered_depth = depth * 2.0 - 1.0;
+	return vec2(
+		exp(EVSM_POSITIVE_EXPONENT * centered_depth),
+		-exp(-EVSM_NEGATIVE_EXPONENT * centered_depth)
+	);
+}
+
+float chebyshev_upper_bound(float mean, float mean_squared, float receiver_depth, float min_variance)
+{
+	if (receiver_depth <= mean)
+	{
+		return 1.0;
+	}
+
+	float variance = max(mean_squared - mean * mean, min_variance);
+	float depth_delta = receiver_depth - mean;
+	return variance / (variance + depth_delta * depth_delta);
 }
 
 vec3 sample_point_light(
@@ -265,7 +298,9 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 		return 1.0;
 	}
 
-	vec4 shadow_clip_position = shadow_view_projection * vec4(in_surface_position, 1.0);
+	const float normal_offset_bias = 0.02;
+	vec3 shadow_sample_position = in_surface_position + normalize(in_surface_normal) * normal_offset_bias;
+	vec4 shadow_clip_position = shadow_view_projection * vec4(shadow_sample_position, 1.0);
 	if (shadow_clip_position.w <= 0.0)
 	{
 		return 1.0;
@@ -291,23 +326,19 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 	}
 #endif
 
+	float receiver_depth = normalized_shadow_depth(shadow_ndc);
 	float effective_shadow_bias = slope_scaled_shadow_bias(in_surface_normal, in_light_direction);
-	float visibility = 0.0;
-	for (int y = -1; y <= 1; ++y)
-	{
-		for (int x = -1; x <= 1; ++x)
-		{
-			float shadow_depth = texture(sampler2D(shadow_depth_texture, shadow_depth_sampler), shadow_uv + vec2(x, y) * shadow_map_texel_size).r;
-#if USE_INVERSE_DEPTH
-			visibility += (shadow_ndc.z + effective_shadow_bias >= shadow_depth) ? 1.0 : 0.0;
-#else
-			float current_depth = shadow_ndc.z * 0.5 + 0.5;
-			visibility += (current_depth - effective_shadow_bias <= shadow_depth) ? 1.0 : 0.0;
-#endif
-		}
-	}
+	receiver_depth -= effective_shadow_bias;
 
-	return visibility / 9.0;
+	vec4 moments = texture(sampler2D(shadow_moments_texture, shadow_moments_sampler), shadow_uv);
+	vec2 warped_receiver_depth = evsm_warp_depth(receiver_depth);
+
+	const float min_variance = 0.00001;
+	const float light_bleed_reduction = 0.2;
+	float positive_visibility = chebyshev_upper_bound(moments.x, moments.y, warped_receiver_depth.x, min_variance);
+	float negative_visibility = chebyshev_upper_bound(moments.z, moments.w, warped_receiver_depth.y, min_variance);
+	float p_max = min(positive_visibility, negative_visibility);
+	return reduce_light_bleeding(p_max, light_bleed_reduction);
 }
 
 float sample_gi_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal)

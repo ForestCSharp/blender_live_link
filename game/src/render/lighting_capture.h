@@ -231,7 +231,7 @@ public:
 					}
 				}
 
-				if (in_state.sky_rendering_enable)
+				if (in_state.gi_render_sky_to_probes)
 				{	
 					SkyPass::render(view_projection_matrix, in_location, depth_format);
 				}

@@ -21,6 +21,7 @@ using std::optional;
 enum class ERenderPass : int
 {
 	ShadowDepth,
+	ShadowVSMBlur,
 	Geometry,
 	SSAO,
 	SSAO_Blur,
@@ -63,11 +64,13 @@ struct State
 	// Rendering Feature Flags
 	bool ssao_enable = true;
 	bool shadow_rendering_enable = true;
+	bool shadow_blur_enable = true;
 	bool shadow_depth_freeze = false;
 	bool sky_rendering_enable = true;
 	bool direct_lighting_enable = true;
 	bool gi_enable = true;
 	bool gi_probe_occlusion = true;
+	bool gi_render_sky_to_probes = true;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;
 	bool show_probes = false;

@@ -80,6 +80,7 @@ using ankerl::unordered_dense::map;
 // geometry pass
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
+#include "render/blur_pass.h"
 #include "render/sky_pass.h"
 #include "render/shadow_depth_pass.h"
 
@@ -915,6 +916,46 @@ void init(void)
 	// Init shadow depth pass
 	get_render_pass(ERenderPass::ShadowDepth).init(ShadowDepthPass::make_render_pass_desc(SG_PIXELFORMAT_DEPTH));
 
+	// Init shadow VSM blur pass
+	RenderPassDesc shadow_vsm_blur_pass_desc = {
+		.initial_width = ShadowDepthPass::ShadowMapResolution,
+		.initial_height = ShadowDepthPass::ShadowMapResolution,
+		.pipeline_desc = (sg_pipeline_desc) {
+			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
+			.depth = {
+				.pixel_format = SG_PIXELFORMAT_NONE,
+			},
+			.color_count = 1,
+			.colors = {
+				[0] = {
+					.pixel_format = SG_PIXELFORMAT_RGBA16F,
+				},
+			},
+			.cull_mode = SG_CULLMODE_NONE,
+			.label = "shadow-vsm-blur-pipeline",
+		},
+		.num_outputs = 1,
+		.outputs = {
+			[0] = {
+				.pixel_format = SG_PIXELFORMAT_RGBA16F,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+				.clear_value = {1.0f, 1.0f, 0.0f, 0.0f},
+			},
+		},
+		.num_scratch_outputs = 1,
+		.scratch_outputs = {
+			[0] = {
+				.pixel_format = SG_PIXELFORMAT_RGBA16F,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+				.clear_value = {1.0f, 1.0f, 0.0f, 0.0f},
+			},
+		},
+		.resize_with_window = false,
+	};
+	get_render_pass(ERenderPass::ShadowVSMBlur).init(shadow_vsm_blur_pass_desc);
+
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
 	
@@ -1000,6 +1041,14 @@ void init(void)
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
 		},
+		.num_scratch_outputs = 1,
+		.scratch_outputs = {
+			[0] = {
+				.pixel_format = swapchain.color_format,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+			},
+		},
 	};
 	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
@@ -1036,6 +1085,14 @@ void init(void)
 			.pixel_format = swapchain.color_format,
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
+		},
+		.num_scratch_outputs = 1,
+		.scratch_outputs = {
+			[0] = {
+				.pixel_format = swapchain.color_format,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+			},
 		},
 	};
 	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
@@ -1307,37 +1364,62 @@ void frame(void)
 	
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			ImGui::Checkbox("SSAO", &state.ssao_enable);
-			ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
-			ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+			ImGui::Indent();
+			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Checkbox("SSAO", &state.ssao_enable);
+				ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
+				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+			}
+			ImGui::Unindent();
 
 			ImGui::Separator();
 
-			ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
-			ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
+			ImGui::Indent();
+			if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
+				ImGui::Checkbox("Shadow Blur", &state.shadow_blur_enable);
+				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
+			}
+			ImGui::Unindent();
 
 			ImGui::Separator();
 
-			ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
-			ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
-			ImGui::Checkbox("GI", &state.gi_enable);
-			ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
-			ImGui::Checkbox("Show Probes", &state.show_probes);	
-			ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
-			if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
+			ImGui::Indent();
+			if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				state.gi_is_updating = true;
-			}
-			ImGui::SameLine();
-			ImGui::Checkbox("Compute Irradiance", &state.compute_irradiance);
+				ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
+				ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
 
-			if (state.gi_is_updating)
-			{
-				ImGui::SameLine();
-				ImGui::Text("Updating...");
+				ImGui::Separator();
+
+				ImGui::Indent();
+				if (ImGui::CollapsingHeader("Global Illumination", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("GI", &state.gi_enable);
+					ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
+					ImGui::Checkbox("render sky to probes", &state.gi_render_sky_to_probes);
+					ImGui::Checkbox("Show Probes", &state.show_probes);	
+					ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
+					if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
+					{
+						state.gi_is_updating = true;
+					}
+					ImGui::SameLine();
+					ImGui::Checkbox("Compute Irradiance", &state.compute_irradiance);
+
+					if (state.gi_is_updating)
+					{
+						ImGui::SameLine();
+						ImGui::Text("Updating...");
+					}
+					
+					ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+				}
+				ImGui::Unindent();
 			}
-			
-			ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+			ImGui::Unindent();
 		}
 
 		if (ImGui::CollapsingHeader("Render Texture Viewer", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1709,7 +1791,7 @@ void frame(void)
 		}
 
 		// Bake Sky 
-		if (state.sky_rendering_enable)
+		if (state.sky_rendering_enable || state.gi_render_sky_to_probes)
 		{
 			SkyBakePass::render(state);
 		}
@@ -1747,21 +1829,50 @@ void frame(void)
 
 		if (state.shadow_rendering_enable)
 		{
-            // Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
-			const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map;
-			if (should_update_shadow_depth)
+			if (!ShadowDepthPass::get_valid_shadow_sun(state))
 			{
-				get_render_pass(ERenderPass::ShadowDepth).execute(
-					[&](const i32 pass_idx)
-					{
-						ShadowDepthPass::render(state);
-					}
-				);
+				ShadowDepthPass::has_valid_shadow_map = false;
+				ShadowDepthPass::has_valid_shadow_blur = false;
+			}
+			else
+			{
+				// Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
+				const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map;
+				if (should_update_shadow_depth)
+				{
+					get_render_pass(ERenderPass::ShadowDepth).execute(
+						[&](const i32 pass_idx)
+						{
+							ShadowDepthPass::render(state);
+						}
+					);
+					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+
+				if (state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
+				{
+					BlurPass::execute_separable(
+						get_render_pass(ERenderPass::ShadowVSMBlur),
+						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_view(0),
+						state.linear_sampler,
+						HMM_V2(
+							(f32)ShadowDepthPass::ShadowMapResolution,
+							(f32)ShadowDepthPass::ShadowMapResolution
+						),
+						21
+					);
+					ShadowDepthPass::has_valid_shadow_blur = true;
+				}
+				else if (!state.shadow_blur_enable)
+				{
+					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
 			}
 		}
 		else
 		{
 			ShadowDepthPass::has_valid_shadow_map = false;
+			ShadowDepthPass::has_valid_shadow_blur = false;
 		}
 
 		{ // Geometry Pass 	
@@ -1893,26 +2004,12 @@ void frame(void)
 		}
 
 		{ // SSAO Blur
-			get_render_pass(ERenderPass::SSAO_Blur).execute(
-				[&](const i32 pass_idx)
-				{	
-					const blur_fs_params_t blur_fs_params = {
-						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
-						.blur_size = 4,
-					};
-					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
-
-					sg_bindings bindings = (sg_bindings){
-						.views = {
-							[0] = get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0), 
-						},
-						.samplers[0] = state.linear_sampler,
-					};
-
-					sg_apply_bindings(&bindings);
-
-					sg_draw(0,6,1);
-				}
+			BlurPass::execute_separable(
+				get_render_pass(ERenderPass::SSAO_Blur),
+				get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0),
+				state.linear_sampler,
+				HMM_V2(sapp_widthf(), sapp_heightf()),
+				4
 			);
 		}
 
@@ -1947,7 +2044,9 @@ void frame(void)
 					GpuImage& normal_texture = geometry_pass.get_color_output(2);
 					GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3);
 					GpuImage& blurred_ssao_texture = ssao_blur_pass.get_color_output(0);
-					GpuImage& shadow_depth_texture = get_render_pass(ERenderPass::ShadowDepth).get_depth_output(0);
+					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
+						? get_render_pass(ERenderPass::ShadowVSMBlur).get_color_output(0)
+						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
 
 					sg_bindings bindings = {
 						.views = {
@@ -1963,11 +2062,11 @@ void frame(void)
 							[9] = gi_scene.cells_buffer.get_storage_view(),
 							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
 							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
-							[12] = shadow_depth_texture.get_texture_view(0),
+							[12] = shadow_moments_texture.get_texture_view(0),
 						},
 						.samplers = {
 							[0] = state.linear_sampler,
-							[1] = state.nearest_sampler,
+							[1] = state.linear_sampler,
 						},
 					};
 					sg_apply_bindings(&bindings);
@@ -1980,26 +2079,12 @@ void frame(void)
 		{ // DOF
 
 			// Blurred lighting texture
-			get_render_pass(ERenderPass::DOF_Blur).execute(
-				[&](const i32 pass_idx)
-				{	
-					const blur_fs_params_t blur_fs_params = {
-						.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
-						.blur_size = 8,
-					};
-					sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
-
-					sg_bindings bindings = (sg_bindings){
-						.views = {
-							[0] = get_render_pass(ERenderPass::Lighting).get_color_output(0).get_texture_view(0), 
-						},
-						.samplers[0] = state.linear_sampler,
-					};
-
-					sg_apply_bindings(&bindings);
-
-					sg_draw(0,6,1);
-				}
+			BlurPass::execute_separable(
+				get_render_pass(ERenderPass::DOF_Blur),
+				get_render_pass(ERenderPass::Lighting).get_color_output(0).get_texture_view(0),
+				state.linear_sampler,
+				HMM_V2(sapp_widthf(), sapp_heightf()),
+				8
 			);
 
 			// Mix blurred and unblurred texture based on camera distance

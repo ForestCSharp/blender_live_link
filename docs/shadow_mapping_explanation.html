@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Depth Shadows, VSM, and EVSM4</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --good: #0b7f56;
+      --warn: #a15c00;
+      --bad: #a32929;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.2rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 850px;
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 18px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .grid .card {
+      margin: 0;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 18px 0;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+
+    th {
+      background: #f1f4f9;
+      font-weight: 650;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 0.1em 0.35em;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 14px 0 20px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+      line-height: 1.48;
+    }
+
+    .good { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+    .bad { color: var(--bad); font-weight: 650; }
+
+    @media (max-width: 850px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 32px 18px 56px;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Depth Shadow Maps vs VSM vs EVSM4</h1>
+    <p class="subtitle">
+      A technical comparison of the three shadowing approaches we have touched in the renderer:
+      classic depth comparison, Variance Shadow Maps, and 4-component Exponential Variance Shadow Maps.
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>Executive Summary</h2>
+    <p>
+      All three techniques start with the same basic idea: render the scene from the light's point of view,
+      then use that light-space information later while shading the camera view. They differ in what the shadow
+      texture stores and how lighting decides whether a receiver is blocked.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Depth Shadow Map</h3>
+        <p><span class="tag">stores depth</span><span class="tag">hard compare</span></p>
+        <p>Stores the closest depth seen by the light. Lighting compares receiver depth against that stored depth.</p>
+      </div>
+      <div class="card">
+        <h3>VSM</h3>
+        <p><span class="tag">stores moments</span><span class="tag">blur-friendly</span></p>
+        <p>Stores mean depth and mean squared depth. Lighting estimates shadow probability using Chebyshev's inequality.</p>
+      </div>
+      <div class="card">
+        <h3>EVSM4</h3>
+        <p><span class="tag">warped moments</span><span class="tag">filterable</span></p>
+        <p>Stores positive and negative exponential depth moments to make filtered moments separate blockers better.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Shared Setup: Light-Space Rendering</h2>
+    <p>
+      Before comparing the techniques, it helps to name the shared coordinate spaces. A sun shadow pass builds an
+      orthographic light camera and renders visible scene geometry from the sun direction. The output texture is a
+      shadow map. During the lighting pass, a world-space receiver position is transformed by the same
+      <code>shadow_view_projection</code> matrix.
+    </p>
+
+    <pre><code class="language-glsl">vec4 shadow_clip_position = shadow_view_projection * vec4(world_position, 1.0);
+vec3 shadow_ndc = shadow_clip_position.xyz / shadow_clip_position.w;
+vec2 shadow_uv = shadow_ndc.xy * 0.5 + 0.5;
+shadow_uv.y = 1.0 - shadow_uv.y;</code></pre>
+
+    <p>
+      Our renderer uses inverse depth for normal rendering. For the shadow-map math, we normalize depth so it increases
+      as the point moves away from the light:
+    </p>
+
+    <pre><code class="language-glsl">float normalized_shadow_depth(vec3 shadow_ndc)
+{
+#if USE_INVERSE_DEPTH
+    return 1.0 - shadow_ndc.z;
+#else
+    return shadow_ndc.z * 0.5 + 0.5;
+#endif
+}</code></pre>
+
+    <div class="note">
+      The important convention: after normalization, smaller depth means closer to the light, larger depth means farther
+      from the light. Bias usually moves the receiver depth slightly toward the light.
+    </div>
+  </section>
+
+  <section>
+    <h2>1. Classic Depth-Based Shadow Mapping</h2>
+    <p>
+      Classic shadow mapping stores one value per texel: the nearest depth seen by the light. In lighting, the receiver
+      is shadowed if its light-space depth is greater than the stored light-space depth, after bias.
+    </p>
+
+    <h3>Shadow Pass Output</h3>
+    <pre><code class="language-glsl">// Fragment shader writes no color target in the simplest version.
+// Hardware depth stores the nearest surface from the light.
+void main()
+{
+    // Depth-only pass.
+}</code></pre>
+
+    <h3>Lighting Comparison</h3>
+    <pre><code class="language-glsl">float receiver_depth = normalized_shadow_depth(shadow_ndc);
+float stored_depth = texture(shadow_depth_texture, shadow_uv).r;
+float biased_receiver = receiver_depth - shadow_bias;
+
+float visibility = (biased_receiver <= stored_depth) ? 1.0 : 0.0;</code></pre>
+
+    <p>
+      With a single lookup, this creates a hard binary edge. A common improvement is PCF: sample several nearby depth
+      texels, compare each one, and average the results.
+    </p>
+
+    <pre><code class="language-glsl">float visibility = 0.0;
+for (int y = -1; y <= 1; ++y)
+{
+    for (int x = -1; x <= 1; ++x)
+    {
+        float d = texture(shadow_depth_texture, shadow_uv + vec2(x, y) * texel_size).r;
+        visibility += (biased_receiver <= d) ? 1.0 : 0.0;
+    }
+}
+visibility /= 9.0;</code></pre>
+
+    <h3>Properties</h3>
+    <table>
+      <tr><th>Strength</th><th>Weakness</th><th>Typical Fix</th></tr>
+      <tr>
+        <td>Conceptually simple and precise at contact points.</td>
+        <td>Hard edges and visible shadow texels unless PCF is used.</td>
+        <td>PCF, cascades, stable texel snapping, slope-scaled bias.</td>
+      </tr>
+      <tr>
+        <td>Stores only one depth value, so memory cost is low.</td>
+        <td>Not directly blur-friendly: blurring depths gives invalid comparisons.</td>
+        <td>Use percentage-closer filtering, not regular texture blur.</td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>2. Variance Shadow Maps</h2>
+    <p>
+      VSM changes the stored data. Instead of storing only one depth, it stores the first two statistical moments of
+      depth: <code>E[x]</code> and <code>E[x²]</code>. After blurring, the texture approximates a distribution of depths
+      inside the filter footprint.
+    </p>
+
+    <h3>Shadow Pass Output</h3>
+    <pre><code class="language-glsl">float depth = normalized_light_depth;
+float dx = dFdx(depth);
+float dy = dFdy(depth);
+
+float moment1 = depth;
+float moment2 = depth * depth + 0.25 * (dx * dx + dy * dy) + moment_bias;
+
+out_color = vec2(moment1, moment2);</code></pre>
+
+    <p>
+      From those two values, lighting reconstructs variance:
+    </p>
+
+    <pre><code class="language-glsl">float mean = moments.x;
+float mean_squared = moments.y;
+float variance = max(mean_squared - mean * mean, min_variance);</code></pre>
+
+    <h3>Chebyshev Visibility</h3>
+    <p>
+      If the receiver is in front of the average blocker depth, it is considered fully lit. Otherwise VSM estimates an
+      upper bound for how likely the receiver is to be lit.
+    </p>
+
+    <pre><code class="language-glsl">float chebyshev_upper_bound(float mean, float mean_squared, float receiver_depth)
+{
+    if (receiver_depth <= mean)
+    {
+        return 1.0;
+    }
+
+    float variance = max(mean_squared - mean * mean, min_variance);
+    float d = receiver_depth - mean;
+    return variance / (variance + d * d);
+}</code></pre>
+
+    <p>
+      Since Chebyshev gives an upper bound, it tends to overestimate light. That is why VSM commonly needs a light
+      bleeding reduction step:
+    </p>
+
+    <pre><code class="language-glsl">float reduce_light_bleeding(float p_max, float amount)
+{
+    return clamp((p_max - amount) / (1.0 - amount), 0.0, 1.0);
+}</code></pre>
+
+    <h3>Why VSM Is Blur-Friendly</h3>
+    <p>
+      A regular Gaussian or box blur over depth values breaks classic shadow comparison. A Gaussian blur over moments,
+      however, still gives meaningful local estimates of mean and variance.
+    </p>
+
+    <pre><code class="language-glsl">// Separable Gaussian blur can be used directly on VSM/EVSM moments.
+result += texture(moment_texture, uv + direction * offset * texel_size) * weight;</code></pre>
+
+    <h3>Properties</h3>
+    <table>
+      <tr><th>Strength</th><th>Weakness</th><th>Typical Fix</th></tr>
+      <tr>
+        <td>Supports normal texture filtering and separable blur.</td>
+        <td>Can leak light when depth distribution is complex.</td>
+        <td>Light-bleed reduction, min variance, EVSM.</td>
+      </tr>
+      <tr>
+        <td>Soft shadows are cheaper than large PCF kernels.</td>
+        <td>Can become splotchy or unstable with low precision.</td>
+        <td>Higher precision, moment bias, tuned variance floor.</td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>3. EVSM4</h2>
+    <p>
+      EVSM keeps the same statistical idea as VSM but changes the depth domain. Instead of storing moments of linear
+      depth, it stores moments of exponentially warped depth. EVSM4 stores two distributions: one for positive warp and
+      one for negative warp.
+    </p>
+
+    <h3>Depth Warp</h3>
+    <pre><code class="language-glsl">const float EVSM_POSITIVE_EXPONENT = 5.0;
+const float EVSM_NEGATIVE_EXPONENT = 5.0;
+
+vec2 evsm_warp_depth(float depth)
+{
+    float centered_depth = depth * 2.0 - 1.0;
+    return vec2(
+        exp(EVSM_POSITIVE_EXPONENT * centered_depth),
+        -exp(-EVSM_NEGATIVE_EXPONENT * centered_depth)
+    );
+}</code></pre>
+
+    <p>
+      The positive warp improves separation on one side of the distribution. The negative warp improves separation on
+      the other side. Using both lets lighting take the stricter result.
+    </p>
+
+    <h3>Shadow Pass Output</h3>
+    <pre><code class="language-glsl">vec2 warped_depth = evsm_warp_depth(depth);
+vec2 dx = dFdx(warped_depth);
+vec2 dy = dFdy(warped_depth);
+
+vec2 second_moments =
+    warped_depth * warped_depth +
+    0.25 * (dx * dx + dy * dy) +
+    vec2(moment_bias);
+
+// EVSM4 layout:
+// R = positive warped depth
+// G = positive second moment
+// B = negative warped depth
+// A = negative second moment
+out_color = vec4(
+    warped_depth.x,
+    second_moments.x,
+    warped_depth.y,
+    second_moments.y
+);</code></pre>
+
+    <h3>Lighting Visibility</h3>
+    <pre><code class="language-glsl">vec4 moments = texture(shadow_moments_texture, shadow_uv);
+vec2 warped_receiver = evsm_warp_depth(receiver_depth);
+
+float positive_visibility = chebyshev_upper_bound(
+    moments.x,
+    moments.y,
+    warped_receiver.x,
+    min_variance
+);
+
+float negative_visibility = chebyshev_upper_bound(
+    moments.z,
+    moments.w,
+    warped_receiver.y,
+    min_variance
+);
+
+float visibility = min(positive_visibility, negative_visibility);
+visibility = reduce_light_bleeding(visibility, light_bleed_reduction);</code></pre>
+
+    <h3>Why EVSM4 Can Improve VSM</h3>
+    <p>
+      Plain VSM uses a linear depth distribution, which can be too weak when blocker and receiver depths are close or
+      when the filter footprint contains multiple surfaces. EVSM's exponential warp spreads depth values apart, making
+      the Chebyshev test more decisive after blur.
+    </p>
+
+    <div class="note">
+      EVSM is not magic. It trades one tuning problem for a better one. Exponents, moment bias, min variance, light
+      bleeding reduction, precision, and normal/depth bias all matter.
+    </div>
+
+    <h3>Half Float Exponent Constraint</h3>
+    <p>
+      With <code>RGBA16F</code>, exponent choice must keep both the warped value and its squared moment finite.
+      A large exponent such as <code>40.0</code> can overflow half floats:
+    </p>
+
+    <pre><code class="language-text">exp(40) ≈ 2.35e17
+half float max ≈ 65504
+
+exp(40) is far too large for RGBA16F.
+Even exp(6)^2 ≈ 162754 can overflow a second moment.</code></pre>
+
+    <p>
+      That is why a conservative first pass uses exponents around <code>5.0</code>. If we later move to
+      <code>RGBA32F</code>, larger exponents become possible, but at much higher bandwidth cost and often without
+      filterability.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Renderer Data Flow</h2>
+    <table>
+      <tr><th>Stage</th><th>Classic Depth</th><th>VSM</th><th>EVSM4</th></tr>
+      <tr>
+        <td>Shadow pass color output</td>
+        <td>None</td>
+        <td><code>RG</code>: mean, second moment</td>
+        <td><code>RGBA</code>: positive and negative warped moments</td>
+      </tr>
+      <tr>
+        <td>Depth attachment</td>
+        <td>Required</td>
+        <td>Required</td>
+        <td>Required</td>
+      </tr>
+      <tr>
+        <td>Blur support</td>
+        <td>Not regular blur-friendly</td>
+        <td>Yes</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Lighting sample</td>
+        <td>Compare receiver depth vs stored depth</td>
+        <td>Chebyshev from linear moments</td>
+        <td>Chebyshev from warped moments</td>
+      </tr>
+      <tr>
+        <td>Main artifacts</td>
+        <td>Acne, peter-panning, aliasing</td>
+        <td>Light bleeding, splotches, precision issues</td>
+        <td>Exponent overflow, bias sensitivity, light bleeding if mistuned</td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Biases And Tuning Knobs</h2>
+    <h3>Receiver Depth Bias</h3>
+    <p>
+      Bias moves the receiver toward the light, reducing self-shadowing.
+    </p>
+    <pre><code class="language-glsl">float receiver_depth = normalized_shadow_depth(shadow_ndc);
+float bias = slope_scaled_shadow_bias(normal, light_direction);
+receiver_depth -= bias;</code></pre>
+
+    <h3>Normal Offset Bias</h3>
+    <p>
+      This moves the sampled world position along the receiver normal before projection.
+    </p>
+    <pre><code class="language-glsl">vec3 shadow_sample_position =
+    world_position + normalize(world_normal) * normal_offset_bias;</code></pre>
+
+    <h3>Moment Bias</h3>
+    <p>
+      Moment bias increases stored variance before blur. It can tame splotches but may increase light bleeding.
+    </p>
+    <pre><code class="language-glsl">second_moment = warped_depth * warped_depth + derivative_variance + moment_bias;</code></pre>
+
+    <h3>Minimum Variance</h3>
+    <p>
+      This clamps variance at sample time. It prevents overconfident distributions.
+    </p>
+    <pre><code class="language-glsl">float variance = max(mean_squared - mean * mean, min_variance);</code></pre>
+
+    <h3>Light Bleed Reduction</h3>
+    <p>
+      This suppresses weak probabilities that would otherwise leak light through blockers.
+    </p>
+    <pre><code class="language-glsl">visibility = clamp(
+    (visibility - light_bleed_reduction) / (1.0 - light_bleed_reduction),
+    0.0,
+    1.0
+);</code></pre>
+  </section>
+
+  <section>
+    <h2>Practical Guidance</h2>
+    <table>
+      <tr><th>Symptom</th><th>Likely Cause</th><th>First Thing To Try</th></tr>
+      <tr>
+        <td class="bad">Speckly acne near contacts</td>
+        <td>Insufficient receiver bias or unstable variance</td>
+        <td>Increase normal offset or depth bias slightly</td>
+      </tr>
+      <tr>
+        <td class="bad">Light leaks behind blockers</td>
+        <td>Variance too high or bleed reduction too low</td>
+        <td>Increase light bleed reduction or lower moment/min variance</td>
+      </tr>
+      <tr>
+        <td class="warn">Washed-out shadows</td>
+        <td>Too much variance, blur, or bias</td>
+        <td>Reduce blur radius, moment bias, or min variance</td>
+      </tr>
+      <tr>
+        <td class="warn">Banding along diagonal edges</td>
+        <td>Shadow texel footprint visible</td>
+        <td>Tighter shadow coverage, cascades, or more stable shadow projection</td>
+      </tr>
+      <tr>
+        <td class="good">Soft shadows with stable contacts</td>
+        <td>EVSM constants are balanced</td>
+        <td>Lock constants, then improve shadow coverage/cascades</td>
+      </tr>
+    </table>
+  </section>
+</main>
+</body>
+</html>

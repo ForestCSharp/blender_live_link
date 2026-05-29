@@ -27,10 +27,33 @@ namespace ShadowDepthPass
 
 	optional<sg_shader> shader;		
 
-	const i32 num_pass_outputs = 0;
+	const i32 num_pass_outputs = 1;
 	const i32 ShadowMapResolution = 4096;
 	bool has_valid_shadow_map = false;
+	bool has_valid_shadow_blur = false;
 	HMM_Mat4 shadow_view_projection = HMM_M4D(1.0f);
+
+	Object* get_valid_shadow_sun(State& in_state)
+	{
+		if (!in_state.primary_sun_id.has_value())
+		{
+			return nullptr;
+		}
+
+		i32 primary_sun_id = in_state.primary_sun_id.value();
+		if (!in_state.objects.contains(primary_sun_id))
+		{
+			return nullptr;
+		}
+
+		Object& sun_object = in_state.objects[primary_sun_id];
+		if (!sun_object.visibility || !sun_object.has_light || sun_object.light.type != LightType::Sun || !sun_object.light.sun.cast_shadows)
+		{
+			return nullptr;
+		}
+
+		return &sun_object;
+	}
 
 	sg_pipeline_desc make_pipeline_desc(sg_pixel_format depth_format)
 	{
@@ -48,7 +71,8 @@ namespace ShadowDepthPass
 		desc.depth.pixel_format = depth_format;
 		desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
 		desc.depth.write_enabled = true;
-		desc.colors[0].pixel_format = SG_PIXELFORMAT_NONE;
+		desc.color_count = num_pass_outputs;
+		desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
 		desc.index_type = SG_INDEXTYPE_UINT32;
 		desc.cull_mode = SG_CULLMODE_NONE;
 		desc.label = "shadow-depth-pipeline";
@@ -62,6 +86,10 @@ namespace ShadowDepthPass
 		desc.initial_height = ShadowMapResolution;
 		desc.pipeline_desc = ShadowDepthPass::make_pipeline_desc(depth_format);
 		desc.num_outputs = num_pass_outputs;
+		desc.outputs[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
+		desc.outputs[0].load_action = SG_LOADACTION_CLEAR;
+		desc.outputs[0].store_action = SG_STOREACTION_STORE;
+		desc.outputs[0].clear_value = {1.0f, 1.0f, 0.0f, 0.0f};
 		desc.depth_output.pixel_format = depth_format;
 		desc.depth_output.load_action = SG_LOADACTION_CLEAR;
 		desc.depth_output.store_action = SG_STOREACTION_STORE;
@@ -74,24 +102,13 @@ namespace ShadowDepthPass
 	{
 		has_valid_shadow_map = false;
 
-		if (!in_state.primary_sun_id.has_value())
+		Object* sun_object = get_valid_shadow_sun(in_state);
+		if (!sun_object)
 		{
 			return;
 		}
 
-		i32 primary_sun_id = in_state.primary_sun_id.value();
-		if (!in_state.objects.contains(primary_sun_id))
-		{
-			return;
-		}
-
-		Object& sun_object = in_state.objects[primary_sun_id];
-		if (!sun_object.visibility || !sun_object.has_light || sun_object.light.type != LightType::Sun || !sun_object.light.sun.cast_shadows)
-		{
-			return;
-		}
-
-		Transform transform = sun_object.current_transform;
+		Transform transform = sun_object->current_transform;
 		HMM_Vec3 sun_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
 
 		Camera& active_camera = get_active_camera();
@@ -106,7 +123,7 @@ namespace ShadowDepthPass
 
 		f32 half_width = 100.0f;
 		f32 half_height = 100.0f;
-		f32 near_plane = 0.1f;
+		f32 near_plane = 0.01f;
 		f32 far_plane = 100.0f;
 		HMM_Mat4 light_proj = mat4_orthographic(-half_width, half_width, -half_height, half_height, near_plane, far_plane);
 		HMM_Mat4 light_view_proj = HMM_MulM4(light_proj, light_view);
