@@ -63,6 +63,7 @@ layout(binding=0) uniform fs_params {
 	int direct_lighting_enable;
 	int gi_enable;
 	int gi_probe_occlusion;
+	int probe_occlusion_mode;
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
@@ -170,6 +171,20 @@ float chebyshev_upper_bound(float mean, float mean_squared, float receiver_depth
 	float variance = max(mean_squared - mean * mean, min_variance);
 	float depth_delta = receiver_depth - mean;
 	return variance / (variance + depth_delta * depth_delta);
+}
+
+const int PROBE_OCCLUSION_MODE_CHEBYSHEV = 0;
+const int PROBE_OCCLUSION_MODE_EVRP4 = 1;
+
+const float EVRP_POSITIVE_EXPONENT = 5.0;
+const float EVRP_NEGATIVE_EXPONENT = 5.0;
+
+vec2 evrp_warp_depth(float normalized_depth)
+{
+	return vec2(
+		exp(EVRP_POSITIVE_EXPONENT * normalized_depth),
+		-exp(-EVRP_NEGATIVE_EXPONENT * normalized_depth)
+	);
 }
 
 vec3 sample_point_light(
@@ -534,14 +549,29 @@ void main()
 						if (gi_probe_occlusion != 0)
 						{
 							const vec2 octahedral_depth_coords = padded_atlas_uv_from_normal(dir_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-							vec2 moments = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords).rg;
+							vec4 moments = texture(sampler2D(octahedral_depth_texture, tex_sampler), octahedral_depth_coords);
 
-							const float mean = moments.x;
-							const float mean_squared = moments.y;
-							if (dist_to_pixel > mean)
+							if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
 							{
-								const float variance = abs(square(mean) - mean_squared);
-								weight *= variance / (variance + square(dist_to_pixel - mean));
+								const float normalized_depth = clamp(dist_to_pixel / GI_MAX_RADIAL_DEPTH, 0.0, 1.0);
+								const vec2 warped_receiver_depth = evrp_warp_depth(normalized_depth);
+								const float min_variance = 0.00001;
+								const float light_bleed_reduction = 0.2;
+								float positive_visibility = chebyshev_upper_bound(moments.x, moments.y, warped_receiver_depth.x, min_variance);
+								float negative_visibility = chebyshev_upper_bound(moments.z, moments.w, warped_receiver_depth.y, min_variance);
+								float visibility = min(positive_visibility, negative_visibility);
+								visibility = reduce_light_bleeding(visibility, light_bleed_reduction);
+								weight *= visibility;
+							}
+							else
+							{
+								const float mean = moments.x;
+								const float mean_squared = moments.y;
+								if (dist_to_pixel > mean)
+								{
+									const float variance = abs(square(mean) - mean_squared);
+									weight *= variance / (variance + square(dist_to_pixel - mean));
+								}
 							}
 						}
 

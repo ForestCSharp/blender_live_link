@@ -88,7 +88,7 @@ public:
 		lighting_pass.init(lighting_pass_desc);
 
 		// Render radial depth into a cubemap (ERenderPassType::Cubemap)
-		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_RG32F;
+		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_RGBA32F;
 		RenderPassDesc radial_depth_pass_desc = {
 			.initial_width = in_desc.cubemap_render_size,
 			.initial_height = in_desc.cubemap_render_size,
@@ -294,6 +294,7 @@ public:
 				radial_depth_fs_params_t fs_params = {
 					.inverse_view_projection = HMM_InvGeneralM4(view_projection_matrix),
 					.capture_location = in_location,
+					.probe_occlusion_mode = static_cast<i32>(in_state.probe_occlusion_mode),
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 

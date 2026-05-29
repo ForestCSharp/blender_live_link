@@ -109,6 +109,13 @@ void main()
 			out_color = vec4(vec3(adjusted_depth_squared), 1.0);
 			break;
 		}
+		case 3:
+		{
+			const float evrp_positive_moment = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).x;
+			const float adjusted_evrp_moment = remap_clamped(evrp_positive_moment, 1.0, exp(5.0), 0.0, 1.0);
+			out_color = vec4(vec3(adjusted_evrp_moment), 1.0);
+			break;
+		}
 		default:
 		{
 			out_color = vec4(0,0,0,0);

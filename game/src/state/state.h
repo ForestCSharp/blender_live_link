@@ -40,6 +40,7 @@ enum class EProbeVisMode : i32
 	Irradiance = 0,
 	RadialDepth = 1,
 	RadialDepthSquared = 2,
+	EVRPPositiveMoment = 3,
 	MAX,
 };
 
@@ -47,6 +48,19 @@ const char* EProbeVisModeNames[(i32)EProbeVisMode::MAX] = {
 	"Irradiance",
 	"RadialDepth",
 	"RadialDepthSquared",
+	"EVRP Positive Moment",
+};
+
+enum class EProbeOcclusionMode : i32
+{
+	Chebyshev = 0,
+	EVRP4 = 1,
+	MAX,
+};
+
+const char* EProbeOcclusionModeNames[(i32)EProbeOcclusionMode::MAX] = {
+	"Chebyshev",
+	"EVRP4",
 };
 
 //FCS TODO: Make this not a global. Just init it early in main() but then pass it around
@@ -70,6 +84,7 @@ struct State
 	bool direct_lighting_enable = true;
 	bool gi_enable = true;
 	bool gi_probe_occlusion = true;
+	EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
 	bool gi_render_sky_to_probes = true;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;

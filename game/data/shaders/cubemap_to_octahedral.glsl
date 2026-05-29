@@ -29,7 +29,7 @@ layout(binding=1) uniform sampler depth_smp;
 in vec2 uv;
 
 out vec4 frag_color;
-out vec2 radial_depth;
+out vec4 radial_depth;
 
 float radical_inverse_vdc(uint bits)
 {
@@ -95,16 +95,16 @@ vec3 importance_sample_radial_depth(vec2 u, vec3 N, float power_exponent)
 	return normalize(tangent * local.x + bitangent * local.y + N * local.z);
 }
 
-vec2 compute_cube_moments(vec3 dir)
+vec4 compute_cube_moments(vec3 dir)
 {
-	vec2 sum_moments = vec2(0.0);
+	vec4 sum_moments = vec4(0.0);
 	const uint sample_count = CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT;
 
 	for (uint i = 0u; i < sample_count; ++i)
 	{
 		vec2 u = hammersley(i, sample_count);
 		vec3 sample_dir = importance_sample_radial_depth(u, dir, CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT);
-		sum_moments += texture(samplerCube(cubemap_depth_texture, depth_smp), sample_dir).xy;
+		sum_moments += texture(samplerCube(cubemap_depth_texture, depth_smp), sample_dir);
 	}
 
 	return sum_moments * (1.0 / float(sample_count));

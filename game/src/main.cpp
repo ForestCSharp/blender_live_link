@@ -1399,7 +1399,14 @@ void frame(void)
 				{
 					ImGui::Checkbox("GI", &state.gi_enable);
 					ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
-					ImGui::Checkbox("render sky to probes", &state.gi_render_sky_to_probes);
+					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.probe_occlusion_mode, EProbeOcclusionModeNames, IM_ARRAYSIZE(EProbeOcclusionModeNames)))
+					{
+						state.gi_is_updating = true;
+					}
+					if (ImGui::Checkbox("render sky to probes", &state.gi_render_sky_to_probes))
+					{
+						state.gi_is_updating = true;
+					}
 					ImGui::Checkbox("Show Probes", &state.show_probes);	
 					ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
 					if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
@@ -2022,6 +2029,7 @@ void frame(void)
 					state.lighting_fs_params.direct_lighting_enable = state.direct_lighting_enable;
 					state.lighting_fs_params.gi_enable = state.gi_enable;
 					state.lighting_fs_params.gi_probe_occlusion = state.gi_probe_occlusion;
+					state.lighting_fs_params.probe_occlusion_mode = static_cast<i32>(state.probe_occlusion_mode);
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
