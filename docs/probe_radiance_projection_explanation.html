@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>probe_radiance_projection.glsl Explained</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --good: #0b7f56;
+      --warn: #a15c00;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.15rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p { margin: 0 0 14px; }
+
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 14px 0 20px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 860px;
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 18px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 18px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .grid .card { margin: 0; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f8;
+      font-weight: 650;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .ok { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+
+    @media (max-width: 760px) {
+      main { padding: 32px 18px 56px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 1.75rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><code>probe_radiance_projection.glsl</code> Explained</h1>
+    <p class="subtitle">
+      This compute shader projects one captured probe lighting cubemap into a compact coefficient representation.
+      It writes either SH9 coefficients or SG9 lobe amplitudes, which the lighting shader can later evaluate instead
+      of sampling the octahedral irradiance atlas.
+    </p>
+  </header>
+
+  <section class="card">
+    <span class="tag">Input</span>
+    <span class="tag">Compute</span>
+    <span class="tag">Output</span>
+    <p>
+      The shader runs after a GI probe has rendered its six-face lighting cubemap. Each dispatch processes one probe.
+      The workgroup has 32 lanes, but only lanes <code>0..8</code> do useful work: one lane per coefficient.
+    </p>
+    <pre><code>layout(local_size_x=32, local_size_y=1, local_size_z=1) in;
+
+uint coefficient_index = gl_GlobalInvocationID.x;
+if (coefficient_index &gt;= 9u)
+{
+    return;
+}</code></pre>
+    <p>
+      The 32-wide workgroup is mostly a GPU/backend requirement. Sokol's shader compiler requires the compute
+      workgroup size to be a multiple of 32 for this target, so the shader launches 32 threads and discards the extras.
+    </p>
+  </section>
+
+  <h2>Shared Probe Radiance Helpers</h2>
+  <p>
+    The shader includes <code>shader_common.h</code> and then imports the shared <code>probe_radiance</code> block.
+    That block defines the coefficient struct and the math for SH and SG basis evaluation.
+  </p>
+  <pre><code>#include "shader_common.h"
+
+@cs cs
+
+@include_block probe_radiance</code></pre>
+  <p>
+    The important shared type is intentionally tiny: one <code>vec4</code> per coefficient. RGB stores radiance data;
+    alpha is currently unused.
+  </p>
+  <pre><code>struct ProbeRadianceCoefficient
+{
+    vec4 value;
+};</code></pre>
+
+  <h2>Inputs And Outputs</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Binding</th>
+        <th>Resource</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>uniform binding 0</code></td>
+        <td><code>cs_params</code></td>
+        <td>Identifies the probe, selected radiance mode, and projection sample count.</td>
+      </tr>
+      <tr>
+        <td><code>texture binding 2</code></td>
+        <td><code>cubemap_lighting_texture</code></td>
+        <td>The just-rendered probe lighting cubemap.</td>
+      </tr>
+      <tr>
+        <td><code>sampler binding 0</code></td>
+        <td><code>smp</code></td>
+        <td>Sampler used to read the lighting cubemap.</td>
+      </tr>
+      <tr>
+        <td><code>storage binding 0</code></td>
+        <td><code>SH9CoefficientsBuffer</code></td>
+        <td>Writable buffer for 9 SH coefficients per probe.</td>
+      </tr>
+      <tr>
+        <td><code>storage binding 1</code></td>
+        <td><code>SG9CoefficientsBuffer</code></td>
+        <td>Writable buffer for 9 SG amplitudes per probe.</td>
+      </tr>
+    </tbody>
+  </table>
+  <pre><code>layout(binding=0) uniform cs_params {
+    int probe_index;
+    int radiance_mode;
+    int sample_count;
+    int _padding0;
+};
+
+layout(binding=2) uniform textureCube cubemap_lighting_texture;
+layout(binding=0) uniform sampler smp;
+
+layout(binding=0) buffer SH9CoefficientsBuffer {
+    ProbeRadianceCoefficient sh9_coefficients[];
+};
+
+layout(binding=1) buffer SG9CoefficientsBuffer {
+    ProbeRadianceCoefficient sg9_coefficients[];
+};</code></pre>
+
+  <div class="note">
+    <strong>Why the buffers are flat:</strong>
+    coefficients are addressed as <code>probe_index * 9 + coefficient_index</code>.
+    This keeps GPU storage simple and lets the lighting shader use the same indexing convention.
+  </div>
+
+  <h2>Sampling The Sphere</h2>
+  <p>
+    Both projection paths need a repeatable set of directions over the sphere. The shader uses a Hammersley sequence:
+    one dimension is linear, the other uses the Van der Corput radical inverse. This gives a low-discrepancy pattern
+    that converges more evenly than pure random sampling.
+  </p>
+  <pre><code>float radical_inverse_vdc(uint bits)
+{
+    bits = (bits &lt;&lt; 16u) | (bits &gt;&gt; 16u);
+    bits = ((bits &amp; 0x55555555u) &lt;&lt; 1u) | ((bits &amp; 0xAAAAAAAAu) &gt;&gt; 1u);
+    bits = ((bits &amp; 0x33333333u) &lt;&lt; 2u) | ((bits &amp; 0xCCCCCCCCu) &gt;&gt; 2u);
+    bits = ((bits &amp; 0x0F0F0F0Fu) &lt;&lt; 4u) | ((bits &amp; 0xF0F0F0F0u) &gt;&gt; 4u);
+    bits = ((bits &amp; 0x00FF00FFu) &lt;&lt; 8u) | ((bits &amp; 0xFF00FF00u) &gt;&gt; 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+
+vec2 hammersley(uint i, uint N)
+{
+    return vec2(float(i) / float(N), radical_inverse_vdc(i));
+}</code></pre>
+  <p>
+    The 2D Hammersley point is mapped to a direction on the unit sphere. The mapping uses <code>z = 1 - 2u.x</code>,
+    which covers the full range from the north pole to the south pole.
+  </p>
+  <pre><code>vec3 sample_sphere(vec2 u)
+{
+    float z = 1.0 - 2.0 * u.x;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    float phi = 2.0 * M_PI * u.y;
+    return vec3(r * cos(phi), r * sin(phi), z);
+}</code></pre>
+
+  <h2>Main Dispatch Flow</h2>
+  <p>
+    Each active thread computes one coefficient for the selected probe. The offset into the coefficient buffer is:
+  </p>
+  <pre><code>int coefficient_offset = probe_index * 9 + int(coefficient_index);
+uint num_samples = uint(max(sample_count, 1));</code></pre>
+  <p>
+    This means dispatching once for <code>probe_index = 17</code> writes coefficients
+    <code>153..161</code> in the corresponding coefficient buffer.
+  </p>
+
+  <h2>SH9 Projection</h2>
+  <p>
+    In SH9 mode, each thread projects the cubemap radiance onto one real spherical-harmonic basis function. For
+    coefficient <code>k</code>, it repeatedly samples a sphere direction <code>dir</code>, reads the cubemap radiance
+    in that direction, multiplies by <code>sh9_basis(k, dir)</code>, and accumulates.
+  </p>
+  <pre><code>if (radiance_mode == PROBE_RADIANCE_MODE_SH9)
+{
+    vec3 accumulated = vec3(0.0);
+    for (uint i = 0u; i &lt; num_samples; ++i)
+    {
+        vec3 dir = sample_sphere(hammersley(i, num_samples));
+        vec3 radiance = texture(samplerCube(cubemap_lighting_texture, smp), dir).rgb;
+        accumulated += radiance * sh9_basis(int(coefficient_index), dir);
+    }
+
+    float integral_weight = (4.0 * M_PI) / float(num_samples);
+    sh9_coefficients[coefficient_offset].value = vec4(accumulated * integral_weight, 0.0);
+}</code></pre>
+  <p>
+    The <code>4π / sample_count</code> factor converts the average sample sum into an approximation of an integral
+    over the sphere. Later, the lighting shader evaluates those coefficients with diffuse convolution factors.
+  </p>
+
+  <section class="card">
+    <h3>What SH9 Stores</h3>
+    <p>
+      SH9 is a low-frequency representation. It is good for smooth irradiance and broad directional color changes,
+      but it cannot represent sharp lighting details.
+    </p>
+    <p>
+      Each probe gets nine RGB coefficients: one constant term, three first-order directional terms, and five
+      second-order terms.
+    </p>
+  </section>
+
+  <h2>SG9 Projection</h2>
+  <p>
+    In SG9 mode, each coefficient corresponds to a fixed spherical-Gaussian lobe. The shader estimates the lobe's
+    color amplitude by weighted averaging: samples near the lobe axis contribute strongly, samples far away contribute
+    weakly.
+  </p>
+  <pre><code>else if (radiance_mode == PROBE_RADIANCE_MODE_SG9)
+{
+    vec3 accumulated = vec3(0.0);
+    float accumulated_weight = 0.0;
+    for (uint i = 0u; i &lt; num_samples; ++i)
+    {
+        vec3 dir = sample_sphere(hammersley(i, num_samples));
+        vec3 radiance = texture(samplerCube(cubemap_lighting_texture, smp), dir).rgb;
+        float weight = sg9_basis(int(coefficient_index), dir);
+        accumulated += radiance * weight;
+        accumulated_weight += weight;
+    }
+
+    sg9_coefficients[coefficient_offset].value =
+        vec4(accumulated / max(accumulated_weight, 0.00001), 0.0);
+}</code></pre>
+  <p>
+    The denominator normalizes the weighted average. The <code>max(..., 0.00001)</code> guard prevents division by zero,
+    though the current fixed SG basis should always accumulate some positive weight.
+  </p>
+
+  <section class="card">
+    <h3>What SG9 Stores</h3>
+    <p>
+      SG9 stores nine lobe amplitudes. The lobe axes and sharpness are shared constants in the
+      <code>probe_radiance</code> block, not per-probe data.
+    </p>
+    <p>
+      This first pass uses a simple normalized weighted projection rather than a full least-squares fit, so it is
+      intentionally inexpensive and easy to reason about.
+    </p>
+  </section>
+
+  <h2>What This Shader Does Not Do</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>No Visibility</h3>
+      <p>
+        Probe visibility remains in the octahedral depth/visibility atlas. Chebyshev and EVRP are handled elsewhere.
+      </p>
+    </div>
+    <div class="card">
+      <h3>No Octahedral Radiance</h3>
+      <p>
+        The octahedral irradiance atlas path is still generated by <code>cubemap_to_octahedral.glsl</code>.
+        This shader only writes SH9/SG9 coefficient buffers.
+      </p>
+    </div>
+    <div class="card">
+      <h3>No Runtime Shading</h3>
+      <p>
+        Final surface GI is evaluated in <code>lighting.glsl</code>, which reads the coefficients written here.
+      </p>
+    </div>
+  </div>
+
+  <h2>End-To-End Data Flow</h2>
+  <pre><code>LightingCapture::render(...)
+    - render probe geometry cubemap
+    - render probe lighting cubemap
+    - render radial visibility cubemap
+    - update octahedral visibility atlas
+    - if mode is SH9 or SG9:
+        dispatch probe_radiance_projection.glsl
+        write 9 coefficients for this probe
+
+lighting.glsl
+    - Octahedral mode: sample octahedral irradiance atlas
+    - SH9 mode: evaluate SH9 coefficient buffer
+    - SG9 mode: evaluate SG9 coefficient buffer
+    - all modes: use octahedral visibility atlas for probe occlusion</code></pre>
+
+  <h2>Tuning Knobs</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Knob</th>
+        <th>Where</th>
+        <th>Effect</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>sample_count</code></td>
+        <td>C++ dispatch params</td>
+        <td>Higher values reduce projection noise but make probe updates slower.</td>
+      </tr>
+      <tr>
+        <td><code>SG9_SHARPNESS</code></td>
+        <td><code>shader_common.h</code></td>
+        <td>Higher values make SG lobes narrower and more directional.</td>
+      </tr>
+      <tr>
+        <td><code>sg9_axis()</code></td>
+        <td><code>shader_common.h</code></td>
+        <td>Changes which directions the nine SG lobes represent.</td>
+      </tr>
+      <tr>
+        <td>SH basis constants</td>
+        <td><code>shader_common.h</code></td>
+        <td>Defines the real SH convention used by both projection and lighting evaluation.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <section class="note">
+    <strong>Debug tip:</strong>
+    after switching <code>Probe Radiance Mode</code> to <code>SH9</code> or <code>SG9</code>, wait for probe updating
+    to finish, then use <code>Probe Vis Mode</code> values <code>SH9 Irradiance</code> or <code>SG9 Irradiance</code>
+    to inspect what these coefficient buffers reconstruct on the probe spheres.
+  </section>
+</main>
+</body>
+</html>

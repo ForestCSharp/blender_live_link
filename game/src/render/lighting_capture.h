@@ -61,6 +61,7 @@ public:
 	RenderPass lighting_pass;
 	RenderPass radial_depth_pass;
 	RenderPass cube_to_oct_pass;
+	sg_pipeline radiance_projection_pipeline;
 
 	bool is_initialized = false;
 
@@ -149,10 +150,23 @@ public:
 		};
 		cube_to_oct_pass.init(cube_to_oct_pass_desc);
 
+		radiance_projection_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = sg_make_shader(probe_radiance_projection_probe_radiance_projection_shader_desc(sg_query_backend())),
+			.label = "probe-radiance-projection-pipeline",
+		});
+
 		is_initialized = true;
 	}
 
-	void render(State& in_state, const HMM_Vec3 in_location, const i32 in_atlas_idx, const bool should_render_geometry)
+	void render(
+		State& in_state,
+		const HMM_Vec3 in_location,
+		const i32 in_atlas_idx,
+		const bool should_render_geometry,
+		const i32 in_probe_idx,
+		const sg_view in_sh9_coefficients_view,
+		const sg_view in_sg9_coefficients_view)
 	{
 		assert_msgf(is_initialized, "Cubemap should be initialized with a LightingCaptureDesc passed to its constructor");
 
@@ -274,6 +288,8 @@ public:
 						[10] = in_state.default_image.get_texture_view(0),
 						[11] = in_state.default_image.get_texture_view(0),
 						[12] = in_state.default_image.get_texture_view(0),
+						[13] = in_state.default_buffer.get_storage_view(),
+						[14] = in_state.default_buffer.get_storage_view(),
 					},
 					.samplers = {
 						[0] = in_state.linear_sampler,
@@ -358,5 +374,33 @@ public:
 				sg_draw(0,6,1);
 			}
 		);
+
+		if (in_state.probe_radiance_mode != EProbeRadianceMode::Octahedral)
+		{
+			probe_radiance_projection_cs_params_t cs_params = {
+				.probe_index = in_probe_idx,
+				.radiance_mode = static_cast<i32>(in_state.probe_radiance_mode),
+				.sample_count = 1024,
+			};
+
+			GpuImage& lighting_cubemap_texture = lighting_pass.get_color_output(0);
+
+			sg_begin_pass((sg_pass) {
+				.compute = true,
+			});
+			sg_apply_pipeline(radiance_projection_pipeline);
+			sg_apply_uniforms(0, SG_RANGE(cs_params));
+			sg_bindings bindings = {
+				.views = {
+					[0] = in_sh9_coefficients_view,
+					[1] = in_sg9_coefficients_view,
+					[2] = lighting_cubemap_texture.get_texture_view(0),
+				},
+				.samplers[0] = in_state.linear_sampler,
+			};
+			sg_apply_bindings(&bindings);
+			sg_dispatch(1, 1, 1);
+			sg_end_pass();
+		}
 	}
 };

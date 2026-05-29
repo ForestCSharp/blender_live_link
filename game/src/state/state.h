@@ -38,14 +38,18 @@ enum class ERenderPass : int
 enum class EProbeVisMode : i32
 {
 	Irradiance = 0,
-	RadialDepth = 1,
-	RadialDepthSquared = 2,
-	EVRPPositiveMoment = 3,
+	SH9Irradiance = 1,
+	SG9Irradiance = 2,
+	RadialDepth = 3,
+	RadialDepthSquared = 4,
+	EVRPPositiveMoment = 5,
 	MAX,
 };
 
 const char* EProbeVisModeNames[(i32)EProbeVisMode::MAX] = {
 	"Irradiance",
+	"SH9 Irradiance",
+	"SG9 Irradiance",
 	"RadialDepth",
 	"RadialDepthSquared",
 	"EVRP Positive Moment",
@@ -61,6 +65,20 @@ enum class EProbeOcclusionMode : i32
 const char* EProbeOcclusionModeNames[(i32)EProbeOcclusionMode::MAX] = {
 	"Chebyshev",
 	"EVRP4",
+};
+
+enum class EProbeRadianceMode : i32
+{
+	Octahedral = 0,
+	SH9 = 1,
+	SG9 = 2,
+	MAX,
+};
+
+const char* EProbeRadianceModeNames[(i32)EProbeRadianceMode::MAX] = {
+	"Octahedral",
+	"SH9",
+	"SG9",
 };
 
 //FCS TODO: Make this not a global. Just init it early in main() but then pass it around
@@ -85,6 +103,7 @@ struct State
 	bool gi_enable = true;
 	bool gi_probe_occlusion = true;
 	EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
+	EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
 	bool gi_render_sky_to_probes = true;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;

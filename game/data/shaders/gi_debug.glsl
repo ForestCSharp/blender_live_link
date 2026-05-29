@@ -51,6 +51,7 @@ void main() {
 @include_block octahedral_helpers
 @include_block gi_helpers
 @include_block remap
+@include_block probe_radiance
 
 layout(binding=1) uniform fs_params {
 	int atlas_total_size;
@@ -68,6 +69,14 @@ layout(binding=2) readonly buffer ProbesBuffer {
 	GI_Probe gi_probes[];
 };
 
+layout(binding=3) readonly buffer SH9CoefficientsBuffer {
+	ProbeRadianceCoefficient sh9_coefficients[];
+};
+
+layout(binding=4) readonly buffer SG9CoefficientsBuffer {
+	ProbeRadianceCoefficient sg9_coefficients[];
+};
+
 in vec4 world_position;
 in vec4 world_normal;
 in vec2 pixel_texcoord;
@@ -80,6 +89,28 @@ out vec4 out_roughness_metallic_emissive;
 
 const float depth_vis_dist = GI_MAX_RADIAL_DEPTH;
 const float depth_vis_dist_squared = depth_vis_dist * depth_vis_dist;
+
+vec3 sample_sh9_irradiance(int in_probe_index, vec3 normal)
+{
+	vec3 irradiance = vec3(0.0);
+	int coefficient_offset = in_probe_index * 9;
+	for (int i = 0; i < 9; ++i)
+	{
+		irradiance += sh9_coefficients[coefficient_offset + i].value.rgb * sh9_basis(i, normal) * sh9_diffuse_convolution_factor(i);
+	}
+	return max(irradiance, vec3(0.0));
+}
+
+vec3 sample_sg9_irradiance(int in_probe_index, vec3 normal)
+{
+	vec3 irradiance = vec3(0.0);
+	int coefficient_offset = in_probe_index * 9;
+	for (int i = 0; i < 9; ++i)
+	{
+		irradiance += sg9_coefficients[coefficient_offset + i].value.rgb * sg9_basis(i, normal);
+	}
+	return max(irradiance, vec3(0.0));
+}
 
 void main()
 {
@@ -97,19 +128,29 @@ void main()
 		}
 		case 1:
 		{
+			out_color = vec4(sample_sh9_irradiance(probe_index, sample_dir), 1.0);
+			break;
+		}
+		case 2:
+		{
+			out_color = vec4(sample_sg9_irradiance(probe_index, sample_dir), 1.0);
+			break;
+		}
+		case 3:
+		{
 			const float radial_depth = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).x;
 			const float adjusted_depth = remap_clamped(radial_depth, 0.0, depth_vis_dist, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth), 1.0);
 			break;
 		}
-		case 2:
+		case 4:
 		{
 			const float radial_depth_squared = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).y;
 			const float adjusted_depth_squared = remap_clamped(radial_depth_squared, 0.0, depth_vis_dist_squared, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth_squared), 1.0);
 			break;
 		}
-		case 3:
+		case 5:
 		{
 			const float evrp_positive_moment = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).x;
 			const float adjusted_evrp_moment = remap_clamped(evrp_positive_moment, 1.0, exp(5.0), 0.0, 1.0);

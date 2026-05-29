@@ -18,9 +18,13 @@ struct GI_Scene
 {
 	StretchyBuffer<GI_Cell> cells;
 	StretchyBuffer<GI_Probe> probes;
+	StretchyBuffer<HMM_Vec4> sh9_coefficients;
+	StretchyBuffer<HMM_Vec4> sg9_coefficients;
 
 	GpuBuffer<GI_Probe> probes_buffer;
 	GpuBuffer<GI_Cell> cells_buffer;
+	GpuBuffer<HMM_Vec4> sh9_coefficients_buffer;
+	GpuBuffer<HMM_Vec4> sg9_coefficients_buffer;
 
 	// Probe Update State
 	LightingCapture lighting_capture;
@@ -47,9 +51,13 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 {
 	out_gi_scene.cells.reset();
 	out_gi_scene.probes.reset();
+	out_gi_scene.sh9_coefficients.reset();
+	out_gi_scene.sg9_coefficients.reset();
 
 	out_gi_scene.cells.add_uninitialized(GI_CELL_COUNT);
 	out_gi_scene.probes.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK);
+	out_gi_scene.sh9_coefficients.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK * 9);
+	out_gi_scene.sg9_coefficients.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK * 9);
 
 	//FCS TODO: CHECK
 	for (i32 cell_idx = 0; cell_idx < GI_CELL_COUNT; ++cell_idx)
@@ -118,6 +126,16 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 		probe.atlas_idx = -1;
 	}
 
+	for (HMM_Vec4& coefficient : out_gi_scene.sh9_coefficients)
+	{
+		coefficient = HMM_V4(0,0,0,0);
+	}
+
+	for (HMM_Vec4& coefficient : out_gi_scene.sg9_coefficients)
+	{
+		coefficient = HMM_V4(0,0,0,0);
+	}
+
 	GpuBufferDesc<GI_Probe> probes_buffer_desc = {
 		.size = sizeof(GI_Probe) * out_gi_scene.probes.length(),
 		.usage = {
@@ -143,6 +161,26 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 			.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
 		}
 	);
+
+	GpuBufferDesc<HMM_Vec4> sh9_coefficients_buffer_desc = {
+		.data = out_gi_scene.sh9_coefficients.data(),
+		.size = sizeof(HMM_Vec4) * out_gi_scene.sh9_coefficients.length(),
+		.usage = {
+			.storage_buffer = true,
+		},
+		.label = "GI SH9 Coefficients Buffer",
+	};
+	out_gi_scene.sh9_coefficients_buffer = GpuBuffer<HMM_Vec4>(sh9_coefficients_buffer_desc);
+
+	GpuBufferDesc<HMM_Vec4> sg9_coefficients_buffer_desc = {
+		.data = out_gi_scene.sg9_coefficients.data(),
+		.size = sizeof(HMM_Vec4) * out_gi_scene.sg9_coefficients.length(),
+		.usage = {
+			.storage_buffer = true,
+		},
+		.label = "GI SG9 Coefficients Buffer",
+	};
+	out_gi_scene.sg9_coefficients_buffer = GpuBuffer<HMM_Vec4>(sg9_coefficients_buffer_desc);
 	
 	const LightingCaptureDesc lighting_capture_desc = {
 		// Cubemap Capture Setup
@@ -186,7 +224,10 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 				in_state, 
 				lighting_capture_position, 
 				probe_idx_to_update.atlas_idx,
-				should_render_geometry
+				should_render_geometry,
+				in_gi_scene.probe_idx_to_update,
+				in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
+				in_gi_scene.sg9_coefficients_buffer.get_storage_view()
 		);
 
 		if (GI_LOG_SCENE_UPDATE)
@@ -257,6 +298,8 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 			[0] = gi_scene_get_octahedral_lighting_view(in_gi_scene),
 			[1] = gi_scene_get_octahedral_depth_view(in_gi_scene),
 			[2] = in_gi_scene.probes_buffer.get_storage_view(),
+			[3] = in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
+			[4] = in_gi_scene.sg9_coefficients_buffer.get_storage_view(),
 		},
 		.samplers = {
 			[0] = state.linear_sampler,
@@ -266,4 +309,3 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	sg_apply_bindings(&bindings);
 	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.probes.length());
 }
-

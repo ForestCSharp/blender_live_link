@@ -10,3 +10,4 @@
 #include "overlay_texture.compiled.h"
 #include "cubemap_to_octahedral.compiled.h"
 #include "radial_depth.compiled.h"
+#include "probe_radiance_projection.compiled.h"

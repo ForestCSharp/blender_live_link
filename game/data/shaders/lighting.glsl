@@ -20,6 +20,7 @@
 @include_block gi_helpers
 @include_block octahedral_helpers
 @include_block dither_noise
+@include_block probe_radiance
 
 struct PointLight {
 	vec4 location;
@@ -64,6 +65,7 @@ layout(binding=0) uniform fs_params {
 	int gi_enable;
 	int gi_probe_occlusion;
 	int probe_occlusion_mode;
+	int probe_radiance_mode;
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
@@ -103,6 +105,14 @@ layout(binding=10) uniform texture2D octahedral_lighting_texture;
 layout(binding=11) uniform texture2D octahedral_depth_texture;
 @image_sample_type shadow_moments_texture float
 layout(binding=12) uniform texture2D shadow_moments_texture;
+
+layout(binding=13) readonly buffer SH9CoefficientsBuffer {
+	ProbeRadianceCoefficient sh9_coefficients[];
+};
+
+layout(binding=14) readonly buffer SG9CoefficientsBuffer {
+	ProbeRadianceCoefficient sg9_coefficients[];
+};
 
 float vec2_length_squared(vec2 v)
 {
@@ -176,6 +186,10 @@ float chebyshev_upper_bound(float mean, float mean_squared, float receiver_depth
 const int PROBE_OCCLUSION_MODE_CHEBYSHEV = 0;
 const int PROBE_OCCLUSION_MODE_EVRP4 = 1;
 
+const int PROBE_RADIANCE_MODE_OCTAHEDRAL = 0;
+const int PROBE_RADIANCE_MODE_SH9 = 1;
+const int PROBE_RADIANCE_MODE_SG9 = 2;
+
 const float EVRP_POSITIVE_EXPONENT = 5.0;
 const float EVRP_NEGATIVE_EXPONENT = 5.0;
 
@@ -185,6 +199,34 @@ vec2 evrp_warp_depth(float normalized_depth)
 		exp(EVRP_POSITIVE_EXPONENT * normalized_depth),
 		-exp(-EVRP_NEGATIVE_EXPONENT * normalized_depth)
 	);
+}
+
+vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
+{
+	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SH9)
+	{
+		vec3 irradiance = vec3(0.0);
+		int coefficient_offset = probe_index * 9;
+		for (int i = 0; i < 9; ++i)
+		{
+			irradiance += sh9_coefficients[coefficient_offset + i].value.rgb * sh9_basis(i, normal) * sh9_diffuse_convolution_factor(i);
+		}
+		return max(irradiance, vec3(0.0));
+	}
+
+	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SG9)
+	{
+		vec3 irradiance = vec3(0.0);
+		int coefficient_offset = probe_index * 9;
+		for (int i = 0; i < 9; ++i)
+		{
+			irradiance += sg9_coefficients[coefficient_offset + i].value.rgb * sg9_basis(i, normal);
+		}
+		return max(irradiance, vec3(0.0));
+	}
+
+	const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+	return texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords).rgb;
 }
 
 vec3 sample_point_light(
@@ -479,9 +521,7 @@ void main()
 				{
 					// Fallback probe is at end of probes array
 					GI_Probe probe = gi_probes[GI_FALLBACK_PROBE_IDX];
-					const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-					const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
-					const vec3 probe_radiance = octahedral_lighting_data.rgb;
+					const vec3 probe_radiance = sample_probe_radiance(probe, GI_FALLBACK_PROBE_IDX, normal);
 					
 					const vec3 final_irradiance = probe_radiance;		
 					const vec3 albedo = color * (1.0 - metallic); 
@@ -510,11 +550,8 @@ void main()
 
 						GI_Probe probe = gi_probes[probe_index];
 
-						const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-						const vec4 octahedral_lighting_data = texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords);
-						const vec3 probe_radiance = octahedral_lighting_data.rgb;
-
 						if (probe.atlas_idx < 0) { continue; }
+						const vec3 probe_radiance = sample_probe_radiance(probe, probe_index, normal);
 						const vec3 probe_position = gi_probe_position_from_index(probe_index);
 						const vec3 position_to_probe = probe_position - position;
 						const vec3 probe_to_pos = position - probe_position;

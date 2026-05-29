@@ -1403,6 +1403,10 @@ void frame(void)
 					{
 						state.gi_is_updating = true;
 					}
+					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
+					{
+						state.gi_is_updating = true;
+					}
 					if (ImGui::Checkbox("render sky to probes", &state.gi_render_sky_to_probes))
 					{
 						state.gi_is_updating = true;
@@ -2030,6 +2034,7 @@ void frame(void)
 					state.lighting_fs_params.gi_enable = state.gi_enable;
 					state.lighting_fs_params.gi_probe_occlusion = state.gi_probe_occlusion;
 					state.lighting_fs_params.probe_occlusion_mode = static_cast<i32>(state.probe_occlusion_mode);
+					state.lighting_fs_params.probe_radiance_mode = static_cast<i32>(state.probe_radiance_mode);
 					state.lighting_fs_params.gi_intensity = state.gi_intensity;
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
@@ -2071,6 +2076,8 @@ void frame(void)
 							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
 							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
 							[12] = shadow_moments_texture.get_texture_view(0),
+							[13] = gi_scene.sh9_coefficients_buffer.get_storage_view(),
+							[14] = gi_scene.sg9_coefficients_buffer.get_storage_view(),
 						},
 						.samplers = {
 							[0] = state.linear_sampler,
