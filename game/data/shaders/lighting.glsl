@@ -51,6 +51,8 @@ struct SunLight {
 };
 
 const int MAX_SHADOW_CASCADES = 4;
+const int SHADOW_CASCADE_PLACEMENT_FRUSTUM = 0;
+const int SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES = 1;
 
 layout(binding=0) uniform sampler tex_sampler;
 @sampler_type shadow_moments_sampler filtering
@@ -74,6 +76,7 @@ layout(binding=0) uniform fs_params {
 	int atlas_entry_size;
 	int shadow_map_enable;
 	int shadow_num_cascades;
+	int shadow_cascade_placement_mode;
 	int shadow_debug_show_cascade_selection;
 	float shadow_bias;
 	vec2 shadow_map_texel_size;
@@ -360,6 +363,33 @@ float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
 
 int select_shadow_cascade(vec3 in_surface_position)
 {
+	if (shadow_cascade_placement_mode == SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES)
+	{
+		for (int i = 0; i < MAX_SHADOW_CASCADES; ++i)
+		{
+			if (i >= shadow_num_cascades)
+			{
+				break;
+			}
+
+			vec4 shadow_clip_position = shadow_view_projections[i] * vec4(in_surface_position, 1.0);
+			if (shadow_clip_position.w <= 0.0)
+			{
+				continue;
+			}
+
+			vec3 shadow_ndc = shadow_clip_position.xyz / shadow_clip_position.w;
+			vec2 shadow_uv = shadow_ndc.xy * 0.5 + 0.5;
+			shadow_uv.y = 1.0 - shadow_uv.y;
+			if (shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0)
+			{
+				return i;
+			}
+		}
+
+		return -1;
+	}
+
 	float receiver_camera_distance = dot(in_surface_position - view_position, normalize(view_forward));
 	for (int i = 0; i < MAX_SHADOW_CASCADES; ++i)
 	{

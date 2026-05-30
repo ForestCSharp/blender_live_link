@@ -51,7 +51,10 @@ namespace ShadowDepthPass
 
 	f32 get_cascade_distance(const State& in_state, i32 cascade_idx)
 	{
-		const f32 scale = fmaxf(0.01f, in_state.shadow_cascade_distance_scale);
+		const f32 active_scale = in_state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+			? in_state.shadow_centered_square_cascade_distance_scale
+			: in_state.shadow_frustum_cascade_distance_scale;
+		const f32 scale = fmaxf(0.01f, active_scale);
 		if (get_active_cascade_count(in_state) == 1)
 		{
 			return BaselineCascadeDistance * scale;
@@ -59,6 +62,11 @@ namespace ShadowDepthPass
 
 		const f32 exponent = (f32)cascade_idx - 1.0f;
 		return BaselineCascadeDistance * scale * powf(2.0f, exponent);
+	}
+
+	f32 get_largest_active_cascade_distance(const State& in_state)
+	{
+		return get_cascade_distance(in_state, get_active_cascade_count(in_state) - 1);
 	}
 
 	void get_frustum_slice_corners(
@@ -191,6 +199,60 @@ namespace ShadowDepthPass
 		if (fabsf(HMM_DotV3(sun_dir, light_up)) > 0.99f)
 		{
 			light_up = HMM_V3(0.0f, 1.0f, 0.0f);
+		}
+
+		if (in_state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+		{
+			const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
+			const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
+			const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
+			HMM_Vec3 light_pos = in_state.shadow_centered_square_center - sun_dir * (light_depth_range * 0.5f);
+			HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow_centered_square_center, light_up);
+			f32 near_plane = 0.01f;
+			f32 far_plane = light_depth_range;
+			HMM_Mat4 light_proj = mat4_orthographic(
+				-cascade_half_extent,
+				cascade_half_extent,
+				-cascade_half_extent,
+				cascade_half_extent,
+				near_plane,
+				far_plane
+			);
+			HMM_Mat4 light_view_proj = HMM_MulM4(light_proj, light_view);
+			shadow_view_projections[cascade_idx] = light_view_proj;
+			cascade_distances[cascade_idx] = cascade_half_extent;
+			has_valid_shadow_map = true;
+
+			shadow_depth_vs_params_t vs_params;
+			vs_params.view = light_view;
+			vs_params.projection = light_proj;
+
+			// Apply Vertex Uniforms
+			sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+			// Cull objects
+			CullResult cull_result = cull_objects(in_state.objects, light_view_proj);
+
+			// Submit draw calls for objects after culling
+			for (auto& [unique_id, object_ptr] : cull_result.objects)
+			{
+				assert(object_ptr);
+				Object& object = *object_ptr;
+
+				if (object.has_mesh)
+				{
+					Mesh& mesh = object.mesh;
+
+					sg_bindings bindings = {};
+					bindings.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer();
+					bindings.index_buffer = mesh.index_buffer.get_gpu_buffer();
+					bindings.views[0] = object.storage_buffer.get_storage_view();
+					sg_apply_bindings(&bindings);
+					sg_draw(0, mesh.index_count, 1);
+				}
+			}
+
+			return;
 		}
 
 		const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);

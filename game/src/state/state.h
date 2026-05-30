@@ -21,7 +21,7 @@ using std::optional;
 enum class ERenderPass : int
 {
 	ShadowDepth,
-	ShadowVSMBlur,
+	ShadowBlur,
 	ShadowCascadeDebug,
 	Geometry,
 	SSAO,
@@ -84,6 +84,18 @@ const char* EProbeRadianceModeNames[(i32)EProbeRadianceMode::MAX] = {
 
 static constexpr i32 MAX_SHADOW_CASCADES = 4;
 
+enum class EShadowCascadePlacementMode : i32
+{
+	Frustum = 0,
+	CenteredSquares = 1,
+	MAX,
+};
+
+const char* EShadowCascadePlacementModeNames[(i32)EShadowCascadePlacementMode::MAX] = {
+	"Frustum",
+	"Centered Squares",
+};
+
 //FCS TODO: Make this not a global. Just init it early in main() but then pass it around
 
 struct State 
@@ -102,7 +114,12 @@ struct State
 	bool shadow_blur_enable = true;
 	bool shadow_depth_freeze = false;
 	i32 shadow_num_cascades = 3;
-	f32 shadow_cascade_distance_scale = 1.0f;
+	f32 shadow_frustum_cascade_distance_scale = 1.0f;
+	f32 shadow_centered_square_cascade_distance_scale = 0.25f;
+	EShadowCascadePlacementMode shadow_cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
+	HMM_Vec3 shadow_centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);
+	f32 shadow_centered_square_lookahead_distance = 50.0f;
+	bool shadow_force_recapture = false;
 	i32 shadow_debug_cascade_index = 0;
 	i32 shadow_debug_view_mode = 0;
 	bool shadow_debug_show_cascade_selection = false;

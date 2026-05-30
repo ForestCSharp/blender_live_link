@@ -919,7 +919,7 @@ void init(void)
 	get_render_pass(ERenderPass::ShadowDepth).init(ShadowDepthPass::make_render_pass_desc(SG_PIXELFORMAT_DEPTH));
 
 	// Init shadow VSM blur pass
-	get_render_pass(ERenderPass::ShadowVSMBlur).init(ShadowBlurPass::make_render_pass_desc());
+	get_render_pass(ERenderPass::ShadowBlur).init(ShadowBlurPass::make_render_pass_desc());
 
 	// Init shadow cascade debug pass
 	get_render_pass(ERenderPass::ShadowCascadeDebug).init(ShadowCascadeDebugPass::make_render_pass_desc());
@@ -1354,10 +1354,39 @@ void frame(void)
 					ShadowDepthPass::has_valid_shadow_map = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
-				if (ImGui::SliderFloat("Cascade Distance Scale", &state.shadow_cascade_distance_scale, 0.25f, 4.0f, "%.2f"))
+				f32& active_cascade_distance_scale = state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+					? state.shadow_centered_square_cascade_distance_scale
+					: state.shadow_frustum_cascade_distance_scale;
+				if (ImGui::SliderFloat("Cascade Distance Scale", &active_cascade_distance_scale, 0.25f, 4.0f, "%.2f"))
 				{
 					ShadowDepthPass::has_valid_shadow_map = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+				if (ImGui::Combo("Cascade Placement", (i32*) &state.shadow_cascade_placement_mode, EShadowCascadePlacementModeNames, IM_ARRAYSIZE(EShadowCascadePlacementModeNames)))
+				{
+					ShadowDepthPass::has_valid_shadow_map = false;
+					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+				if (state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+				{
+					if (ImGui::SliderFloat("Centered Square Lookahead", &state.shadow_centered_square_lookahead_distance, 0.0f, 1000.0f, "%.2f"))
+					{
+						if (!state.shadow_depth_freeze)
+						{
+							ShadowDepthPass::has_valid_shadow_map = false;
+							ShadowDepthPass::has_valid_shadow_blur = false;
+						}
+					}
+					bool center_changed = false;
+					ImGui::BeginDisabled(!state.shadow_depth_freeze);
+					center_changed = ImGui::DragFloat3("Centered Square Center", &state.shadow_centered_square_center.X, 0.25f, -10000.0f, 10000.0f, "%.2f");
+					ImGui::EndDisabled();
+					if (center_changed)
+					{
+						state.shadow_force_recapture = true;
+						ShadowDepthPass::has_valid_shadow_map = false;
+						ShadowDepthPass::has_valid_shadow_blur = false;
+					}
 				}
 				ImGui::Checkbox("Show Cascade Selection", &state.shadow_debug_show_cascade_selection);
 			}
@@ -1430,7 +1459,10 @@ void frame(void)
 				const GpuImageDesc& desc = image.get_desc();
 				ImGui::Text("Shadow Cascades");
 				ImGui::Text("%d x %d x %d", desc.width, desc.height, ShadowDepthPass::get_active_cascade_count(state));
-				ImGui::Text("Distance Scale: %.2f", state.shadow_cascade_distance_scale);
+				const f32 active_cascade_distance_scale = state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+					? state.shadow_centered_square_cascade_distance_scale
+					: state.shadow_frustum_cascade_distance_scale;
+				ImGui::Text("Distance Scale: %.2f", active_cascade_distance_scale);
 				for (i32 cascade_idx = 0; cascade_idx < ShadowDepthPass::get_active_cascade_count(state); ++cascade_idx)
 				{
 					ImGui::Text("Cascade %d: %.2f", cascade_idx, ShadowDepthPass::cascade_distances[cascade_idx]);
@@ -1825,6 +1857,10 @@ void frame(void)
 		HMM_Vec3 target = camera.location + camera.forward * 10;
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+		if (!state.shadow_depth_freeze)
+		{
+			state.shadow_centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow_centered_square_lookahead_distance;
+		}
 
 		// Get our jolt body interface
 		JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
@@ -1852,7 +1888,7 @@ void frame(void)
 			else
 			{
 				// Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
-				const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map;
+				const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map || state.shadow_force_recapture;
 				if (should_update_shadow_depth)
 				{
 					get_render_pass(ERenderPass::ShadowDepth).execute(
@@ -1861,13 +1897,14 @@ void frame(void)
 							ShadowDepthPass::render(state, pass_idx);
 						}
 					);
+					state.shadow_force_recapture = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
 
 				if (state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
 				{
 					ShadowBlurPass::execute_separable(
-						get_render_pass(ERenderPass::ShadowVSMBlur),
+						get_render_pass(ERenderPass::ShadowBlur),
 						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_array_view(),
 						state.linear_sampler,
 						HMM_V2(
@@ -1886,7 +1923,7 @@ void frame(void)
 				if (ShadowDepthPass::has_valid_shadow_map)
 				{
 					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
-						? get_render_pass(ERenderPass::ShadowVSMBlur).get_color_output(0)
+						? get_render_pass(ERenderPass::ShadowBlur).get_color_output(0)
 						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
 					const i32 active_cascade_count = ShadowDepthPass::get_active_cascade_count(state);
 					if (state.shadow_debug_cascade_index >= active_cascade_count)
@@ -2064,6 +2101,7 @@ void frame(void)
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
 					state.lighting_fs_params.shadow_map_enable = state.shadow_rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
 					state.lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
+					state.lighting_fs_params.shadow_cascade_placement_mode = (i32) state.shadow_cascade_placement_mode;
 					state.lighting_fs_params.shadow_debug_show_cascade_selection = state.shadow_debug_show_cascade_selection ? 1 : 0;
 					state.lighting_fs_params.shadow_bias = 0.001f;
 					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
@@ -2093,7 +2131,7 @@ void frame(void)
 					GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3);
 					GpuImage& blurred_ssao_texture = ssao_blur_pass.get_color_output(0);
 					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
-						? get_render_pass(ERenderPass::ShadowVSMBlur).get_color_output(0)
+						? get_render_pass(ERenderPass::ShadowBlur).get_color_output(0)
 						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
 
 					sg_bindings bindings = {
