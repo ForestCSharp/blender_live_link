@@ -1426,7 +1426,13 @@ void frame(void)
 						ImGui::Text("Updating...");
 					}
 					
-					ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames));
+					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames)))
+					{
+						if (state.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.probe_vis_mode == EProbeVisMode::SG9Irradiance)
+						{
+							state.gi_is_updating = true;
+						}
+					}
 					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi_debug_constant_white_probes))
 					{
 						state.gi_is_updating = true;
@@ -2081,7 +2087,7 @@ void frame(void)
 							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
 							[12] = shadow_moments_texture.get_texture_view(0),
 							[13] = gi_scene.sh9_coefficients_buffer.get_storage_view(),
-							[14] = gi_scene.sg9_coefficients_buffer.get_storage_view(),
+							[14] = gi_scene.sg9_lobes_buffer.get_storage_view(),
 						},
 						.samplers = {
 							[0] = state.linear_sampler,

@@ -166,7 +166,7 @@ public:
 		const bool should_render_geometry,
 		const i32 in_probe_idx,
 		const sg_view in_sh9_coefficients_view,
-		const sg_view in_sg9_coefficients_view)
+		const sg_view in_sg9_lobes_view)
 	{
 		assert_msgf(is_initialized, "Cubemap should be initialized with a LightingCaptureDesc passed to its constructor");
 
@@ -378,11 +378,18 @@ public:
 			}
 		);
 
-		if (in_state.probe_radiance_mode != EProbeRadianceMode::Octahedral)
+		const bool should_project_sh9 =
+			in_state.probe_radiance_mode == EProbeRadianceMode::SH9 ||
+			in_state.probe_vis_mode == EProbeVisMode::SH9Irradiance;
+		const bool should_project_sg9 =
+			in_state.probe_radiance_mode == EProbeRadianceMode::SG9 ||
+			in_state.probe_vis_mode == EProbeVisMode::SG9Irradiance;
+
+		auto project_probe_radiance = [&](const EProbeRadianceMode radiance_mode)
 		{
 			probe_radiance_projection_cs_params_t cs_params = {
 				.probe_index = in_probe_idx,
-				.radiance_mode = static_cast<i32>(in_state.probe_radiance_mode),
+				.radiance_mode = static_cast<i32>(radiance_mode),
 				.sample_count = 1024,
 			};
 
@@ -398,7 +405,7 @@ public:
 			sg_bindings bindings = {
 				.views = {
 					[0] = in_sh9_coefficients_view,
-					[1] = in_sg9_coefficients_view,
+					[1] = in_sg9_lobes_view,
 					[2] = lighting_cubemap_texture.get_texture_view(0),
 				},
 				.samplers[0] = in_state.linear_sampler,
@@ -406,6 +413,16 @@ public:
 			sg_apply_bindings(&bindings);
 			sg_dispatch(1, 1, 1);
 			sg_end_pass();
+		};
+
+		if (should_project_sh9)
+		{
+			project_probe_radiance(EProbeRadianceMode::SH9);
+		}
+
+		if (should_project_sg9)
+		{
+			project_probe_radiance(EProbeRadianceMode::SG9);
 		}
 	}
 };

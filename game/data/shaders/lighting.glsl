@@ -110,8 +110,8 @@ layout(binding=13) readonly buffer SH9CoefficientsBuffer {
 	ProbeRadianceCoefficient sh9_coefficients[];
 };
 
-layout(binding=14) readonly buffer SG9CoefficientsBuffer {
-	ProbeRadianceCoefficient sg9_coefficients[];
+layout(binding=14) readonly buffer SG9LobesBuffer {
+	ProbeSGLobe sg9_lobes[];
 };
 
 float vec2_length_squared(vec2 v)
@@ -216,16 +216,17 @@ vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 
 	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SG9)
 	{
-		vec3 irradiance = vec3(0.0);
+		vec3 reconstructed_radiance = vec3(0.0);
 		float weight_sum = 0.0;
 		int coefficient_offset = probe_index * 9;
 		for (int i = 0; i < 9; ++i)
 		{
-			float weight = sg9_basis(i, normal);
-			irradiance += sg9_coefficients[coefficient_offset + i].value.rgb * weight;
-			weight_sum += weight;
+			vec4 lobe = sg9_lobes[coefficient_offset + i].params;
+			float response = sg_lobe_diffuse_response(normalize(lobe.xyz), lobe.w, normal);
+			reconstructed_radiance += sg9_lobes[coefficient_offset + i].amplitude.rgb * response;
+			weight_sum += response;
 		}
-		return max((irradiance / max(weight_sum, 0.00001)) * M_PI, vec3(0.0));
+		return max(reconstructed_radiance / max(weight_sum, 0.00001), vec3(0.0));
 	}
 
 	const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);

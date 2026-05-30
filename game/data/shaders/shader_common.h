@@ -99,7 +99,16 @@ struct ProbeRadianceCoefficient
 	vec4 value;
 };
 
-const float SG9_SHARPNESS = 4.0;
+struct ProbeSGLobe
+{
+	vec4 params;
+	vec4 amplitude;
+};
+
+const float SG9_SHARPNESS = 1.0;
+const float SG9_MIN_SHARPNESS = 1.0;
+const float SG9_MAX_SHARPNESS = 32.0;
+const float SG9_DIFFUSE_SHARPNESS_SCALE = 0.5;
 
 float sh9_basis(int index, vec3 dir)
 {
@@ -129,7 +138,7 @@ float sh9_diffuse_convolution_factor(int index)
 	return M_PI / 4.0;
 }
 
-vec3 sg9_axis(int index)
+vec3 sg9_initial_axis(int index)
 {
 	switch (index)
 	{
@@ -140,15 +149,20 @@ vec3 sg9_axis(int index)
 		case 4: return vec3(0.0, 0.0, 1.0);
 		case 5: return vec3(0.0, 0.0, -1.0);
 		case 6: return normalize(vec3(1.0, 1.0, 1.0));
-		case 7: return normalize(vec3(-1.0, 1.0, 1.0));
-		case 8: return normalize(vec3(1.0, -1.0, 1.0));
+		case 7: return normalize(vec3(-1.0, 1.0, -1.0));
+		case 8: return normalize(vec3(1.0, -1.0, -1.0));
 		default: return vec3(0.0, 0.0, 1.0);
 	}
 }
 
-float sg9_basis(int index, vec3 dir)
+float sg_lobe_response(vec3 axis, float sharpness, vec3 dir)
 {
-	return exp(SG9_SHARPNESS * (dot(sg9_axis(index), dir) - 1.0));
+	return exp(sharpness * (dot(axis, dir) - 1.0));
+}
+
+float sg_lobe_diffuse_response(vec3 axis, float sharpness, vec3 dir)
+{
+	return sg_lobe_response(axis, sharpness * SG9_DIFFUSE_SHARPNESS_SCALE, dir);
 }
 
 @end // @block probe_radiance

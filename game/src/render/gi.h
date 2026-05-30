@@ -14,17 +14,23 @@
 
 #include "shaders/gi_helpers.h"
 
+struct GI_SG9_Lobe
+{
+	HMM_Vec4 params;
+	HMM_Vec4 amplitude;
+};
+
 struct GI_Scene
 {
 	StretchyBuffer<GI_Cell> cells;
 	StretchyBuffer<GI_Probe> probes;
 	StretchyBuffer<HMM_Vec4> sh9_coefficients;
-	StretchyBuffer<HMM_Vec4> sg9_coefficients;
+	StretchyBuffer<GI_SG9_Lobe> sg9_lobes;
 
 	GpuBuffer<GI_Probe> probes_buffer;
 	GpuBuffer<GI_Cell> cells_buffer;
 	GpuBuffer<HMM_Vec4> sh9_coefficients_buffer;
-	GpuBuffer<HMM_Vec4> sg9_coefficients_buffer;
+	GpuBuffer<GI_SG9_Lobe> sg9_lobes_buffer;
 
 	// Probe Update State
 	LightingCapture lighting_capture;
@@ -52,12 +58,12 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.cells.reset();
 	out_gi_scene.probes.reset();
 	out_gi_scene.sh9_coefficients.reset();
-	out_gi_scene.sg9_coefficients.reset();
+	out_gi_scene.sg9_lobes.reset();
 
 	out_gi_scene.cells.add_uninitialized(GI_CELL_COUNT);
 	out_gi_scene.probes.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK);
 	out_gi_scene.sh9_coefficients.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK * 9);
-	out_gi_scene.sg9_coefficients.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK * 9);
+	out_gi_scene.sg9_lobes.add_uninitialized(GI_PROBE_COUNT_WITH_FALLBACK * 9);
 
 	//FCS TODO: CHECK
 	for (i32 cell_idx = 0; cell_idx < GI_CELL_COUNT; ++cell_idx)
@@ -131,9 +137,10 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 		coefficient = HMM_V4(0,0,0,0);
 	}
 
-	for (HMM_Vec4& coefficient : out_gi_scene.sg9_coefficients)
+	for (GI_SG9_Lobe& lobe : out_gi_scene.sg9_lobes)
 	{
-		coefficient = HMM_V4(0,0,0,0);
+		lobe.params = HMM_V4(0,0,1,1);
+		lobe.amplitude = HMM_V4(0,0,0,0);
 	}
 
 	GpuBufferDesc<GI_Probe> probes_buffer_desc = {
@@ -172,15 +179,15 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	};
 	out_gi_scene.sh9_coefficients_buffer = GpuBuffer<HMM_Vec4>(sh9_coefficients_buffer_desc);
 
-	GpuBufferDesc<HMM_Vec4> sg9_coefficients_buffer_desc = {
-		.data = out_gi_scene.sg9_coefficients.data(),
-		.size = sizeof(HMM_Vec4) * out_gi_scene.sg9_coefficients.length(),
+	GpuBufferDesc<GI_SG9_Lobe> sg9_lobes_buffer_desc = {
+		.data = out_gi_scene.sg9_lobes.data(),
+		.size = sizeof(GI_SG9_Lobe) * out_gi_scene.sg9_lobes.length(),
 		.usage = {
 			.storage_buffer = true,
 		},
-		.label = "GI SG9 Coefficients Buffer",
+		.label = "GI SG9 Lobes Buffer",
 	};
-	out_gi_scene.sg9_coefficients_buffer = GpuBuffer<HMM_Vec4>(sg9_coefficients_buffer_desc);
+	out_gi_scene.sg9_lobes_buffer = GpuBuffer<GI_SG9_Lobe>(sg9_lobes_buffer_desc);
 	
 	const LightingCaptureDesc lighting_capture_desc = {
 		// Cubemap Capture Setup
@@ -227,7 +234,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 				should_render_geometry,
 				in_gi_scene.probe_idx_to_update,
 				in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
-				in_gi_scene.sg9_coefficients_buffer.get_storage_view()
+				in_gi_scene.sg9_lobes_buffer.get_storage_view()
 		);
 
 		if (GI_LOG_SCENE_UPDATE)
@@ -299,7 +306,7 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 			[1] = gi_scene_get_octahedral_depth_view(in_gi_scene),
 			[2] = in_gi_scene.probes_buffer.get_storage_view(),
 			[3] = in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
-			[4] = in_gi_scene.sg9_coefficients_buffer.get_storage_view(),
+			[4] = in_gi_scene.sg9_lobes_buffer.get_storage_view(),
 		},
 		.samplers = {
 			[0] = state.linear_sampler,
