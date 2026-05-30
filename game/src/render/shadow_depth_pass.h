@@ -29,7 +29,7 @@ namespace ShadowDepthPass
 	optional<sg_shader> shader;		
 
 	const i32 num_pass_outputs = 1;
-	const i32 ShadowMapResolution = 4096;
+	const i32 ShadowMapResolution = 2048;
 	const f32 BaselineCascadeDistance = 100.0f;
 	bool has_valid_shadow_map = false;
 	bool has_valid_shadow_blur = false;
