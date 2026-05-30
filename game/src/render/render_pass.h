@@ -23,6 +23,7 @@ enum class ERenderPassType
 {
 	Single,
 	Multi,
+	Array,
 	Cubemap,
 	Swapchain,
 };
@@ -45,9 +46,10 @@ struct RenderPassDesc {
 
 struct RenderPassOutput {
 	/*
-		single 2D image for Single
-		multiple 2D images for Multi
-		single Cubemap image for Cubemap
+			single 2D image for Single
+			multiple 2D images for Multi
+			single 2D array image for Array
+			single Cubemap image for Cubemap
 	*/
 	StretchyBuffer<GpuImage> images;
 };
@@ -102,6 +104,7 @@ public: // Functions
 		{
 			case ERenderPassType::Single:		return 1;
 			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Array:		return desc.pass_count;
 			case ERenderPassType::Cubemap:		return NUM_CUBE_FACES;
 			case ERenderPassType::Swapchain:	return 1;
 			default:
@@ -117,6 +120,7 @@ public: // Functions
 		{
 			case ERenderPassType::Single:		return 1;
 			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Array:		return 1;
 			case ERenderPassType::Cubemap:		return 1;
 			case ERenderPassType::Swapchain:	return 1;
 			default:
@@ -132,6 +136,8 @@ public: // Functions
 			case ERenderPassType::Single:
 			case ERenderPassType::Multi:
 				return SG_IMAGETYPE_2D;
+			case ERenderPassType::Array:
+				return SG_IMAGETYPE_ARRAY;
 			case ERenderPassType::Cubemap:
 				return SG_IMAGETYPE_CUBE;
 			default:
@@ -186,7 +192,9 @@ public: // Functions
 		if (desc.type != ERenderPassType::Swapchain)
 		{
 			const sg_image_type image_type = determine_image_type();
-			const i32 num_slices = (image_type != SG_IMAGETYPE_2D) ? NUM_CUBE_FACES : 1;
+			const i32 num_slices = (image_type == SG_IMAGETYPE_CUBE) ? NUM_CUBE_FACES
+				: (image_type == SG_IMAGETYPE_ARRAY) ? desc.pass_count
+				: 1;
 
 			const i32 pass_count = get_pass_count();
 			const i32 attachment_image_count = get_attachment_image_count();
@@ -270,6 +278,15 @@ public: // Functions
 						}
 						break;
 					}
+					case ERenderPassType::Array:
+					{
+						// One array slice per attachment for array render passes
+						for (i32 i = 0; i < pass_count; ++i)
+						{
+							attachments[i].colors[output_idx] = get_color_output(output_idx,0).get_attachment_view(i);
+						}
+						break;
+					}
 					case ERenderPassType::Cubemap:
 					{
 						// One cube-face/slice per attachment for Cubemap render passes
@@ -320,6 +337,15 @@ public: // Functions
 						}
 						break;
 					}
+					case ERenderPassType::Array:
+					{
+						// One array slice per attachment for array render passes
+						for (i32 i = 0; i < pass_count; ++i)
+						{
+							attachments[i].depth_stencil = new_depth_output.images[0].get_attachment_view(i);
+						}
+						break;
+					}
 					case ERenderPassType::Cubemap:
 					{
 						// One cube-face/slice per attachment for Cubemap render passes
@@ -337,7 +363,7 @@ public: // Functions
 
 			if (desc.num_scratch_outputs > 0)
 			{
-				assert(desc.type == ERenderPassType::Single);
+				assert(desc.type == ERenderPassType::Single || desc.type == ERenderPassType::Array);
 				assert(desc.num_scratch_outputs <= SG_MAX_COLOR_ATTACHMENTS);
 
 				for (int scratch_output_idx = 0; scratch_output_idx < desc.num_scratch_outputs; ++scratch_output_idx)
@@ -429,7 +455,14 @@ public: // Functions
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
 			sg_attachments scratch_attachment = {};
-			scratch_attachment.colors[0] = get_scratch_color_output(scratch_output_idx, pass_idx).get_attachment_view(0);
+			if (desc.type == ERenderPassType::Array)
+			{
+				scratch_attachment.colors[0] = get_scratch_color_output(scratch_output_idx, 0).get_attachment_view(pass_idx);
+			}
+			else
+			{
+				scratch_attachment.colors[0] = get_scratch_color_output(scratch_output_idx, pass_idx).get_attachment_view(0);
+			}
 
 			sg_pass pass = {
 				.attachments = scratch_attachment,

@@ -50,12 +50,15 @@ struct SunLight {
 	vec3 direction;
 };
 
+const int MAX_SHADOW_CASCADES = 4;
+
 layout(binding=0) uniform sampler tex_sampler;
 @sampler_type shadow_moments_sampler filtering
 layout(binding=1) uniform sampler shadow_moments_sampler;
 
 layout(binding=0) uniform fs_params {
 	vec3 view_position;
+	vec3 view_forward;
     int num_point_lights;
 	int num_spot_lights;
 	int num_sun_lights;
@@ -70,9 +73,12 @@ layout(binding=0) uniform fs_params {
 	int atlas_total_size;
 	int atlas_entry_size;
 	int shadow_map_enable;
+	int shadow_num_cascades;
+	int shadow_debug_show_cascade_selection;
 	float shadow_bias;
 	vec2 shadow_map_texel_size;
-	mat4 shadow_view_projection;
+	vec4 shadow_cascade_distances;
+	mat4 shadow_view_projections[MAX_SHADOW_CASCADES];
 };
 
 layout(binding=0) uniform texture2D color_tex;
@@ -104,7 +110,7 @@ layout(binding=9) readonly buffer GICellsBuffer {
 layout(binding=10) uniform texture2D octahedral_lighting_texture;
 layout(binding=11) uniform texture2D octahedral_depth_texture;
 @image_sample_type shadow_moments_texture float
-layout(binding=12) uniform texture2D shadow_moments_texture;
+layout(binding=12) uniform texture2DArray shadow_moments_texture;
 
 layout(binding=13) readonly buffer SH9CoefficientsBuffer {
 	ProbeRadianceCoefficient sh9_coefficients[];
@@ -352,6 +358,35 @@ float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
 	return max(shadow_bias, shadow_bias * (1.0 + 8.0 * slope_factor));
 }
 
+int select_shadow_cascade(vec3 in_surface_position)
+{
+	float receiver_camera_distance = dot(in_surface_position - view_position, normalize(view_forward));
+	for (int i = 0; i < MAX_SHADOW_CASCADES; ++i)
+	{
+		if (i >= shadow_num_cascades)
+		{
+			break;
+		}
+
+		if (receiver_camera_distance <= shadow_cascade_distances[i])
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+vec3 debug_shadow_cascade_color(vec3 in_surface_position)
+{
+	int cascade_idx = select_shadow_cascade(in_surface_position);
+	if (cascade_idx == 0) { return vec3(1.0, 0.0, 0.0); }
+	if (cascade_idx == 1) { return vec3(0.0, 1.0, 0.0); }
+	if (cascade_idx == 2) { return vec3(0.0, 0.0, 1.0); }
+	if (cascade_idx == 3) { return vec3(1.0, 1.0, 0.0); }
+	return vec3(0.0);
+}
+
 float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal, vec3 in_light_direction)
 {
 	if (shadow_map_enable == 0)
@@ -359,9 +394,16 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 		return 1.0;
 	}
 
+	int cascade_idx = select_shadow_cascade(in_surface_position);
+
+	if (cascade_idx < 0)
+	{
+		return 1.0;
+	}
+
 	const float normal_offset_bias = 0.02;
 	vec3 shadow_sample_position = in_surface_position + normalize(in_surface_normal) * normal_offset_bias;
-	vec4 shadow_clip_position = shadow_view_projection * vec4(shadow_sample_position, 1.0);
+	vec4 shadow_clip_position = shadow_view_projections[cascade_idx] * vec4(shadow_sample_position, 1.0);
 	if (shadow_clip_position.w <= 0.0)
 	{
 		return 1.0;
@@ -391,7 +433,7 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 	float effective_shadow_bias = slope_scaled_shadow_bias(in_surface_normal, in_light_direction);
 	receiver_depth -= effective_shadow_bias;
 
-	vec4 moments = texture(sampler2D(shadow_moments_texture, shadow_moments_sampler), shadow_uv);
+	vec4 moments = texture(sampler2DArray(shadow_moments_texture, shadow_moments_sampler), vec3(shadow_uv, float(cascade_idx)));
 	vec2 warped_receiver_depth = evsm_warp_depth(receiver_depth);
 
 	const float min_variance = 0.00001;
@@ -467,6 +509,14 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
+
+			if (shadow_debug_show_cascade_selection != 0)
+			{
+				final_color = vec4(debug_shadow_cascade_color(position), 1.0);
+				frag_color = final_color;
+				return;
+			}
+
 			const float gi_shadow_multiplier = mix(0.5, 1.0, sample_gi_shadow_visibility(position, normal));
 
 			if (direct_lighting_enable != 0)

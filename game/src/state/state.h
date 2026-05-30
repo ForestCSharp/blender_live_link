@@ -22,6 +22,7 @@ enum class ERenderPass : int
 {
 	ShadowDepth,
 	ShadowVSMBlur,
+	ShadowCascadeDebug,
 	Geometry,
 	SSAO,
 	SSAO_Blur,
@@ -81,6 +82,8 @@ const char* EProbeRadianceModeNames[(i32)EProbeRadianceMode::MAX] = {
 	"SG9",
 };
 
+static constexpr i32 MAX_SHADOW_CASCADES = 4;
+
 //FCS TODO: Make this not a global. Just init it early in main() but then pass it around
 
 struct State 
@@ -98,6 +101,11 @@ struct State
 	bool shadow_rendering_enable = true;
 	bool shadow_blur_enable = true;
 	bool shadow_depth_freeze = false;
+	i32 shadow_num_cascades = 3;
+	f32 shadow_cascade_distance_scale = 1.0f;
+	i32 shadow_debug_cascade_index = 0;
+	i32 shadow_debug_view_mode = 0;
+	bool shadow_debug_show_cascade_selection = false;
 	bool sky_rendering_enable = true;
 	bool direct_lighting_enable = true;
 	bool gi_enable = true;
@@ -178,6 +186,7 @@ struct State
 	map<i32,i32> image_id_to_index;
 	StretchyBuffer<GpuImage> images;
 	GpuImage default_image;
+	GpuImage default_image_array;
 	GpuImage default_image_cube;
 	GpuImage white_image_cube;
 	GpuBuffer<u8> default_buffer;
@@ -211,6 +220,21 @@ void state_init()
 		.data = (u8*) &default_image_data,
 	};
 	state.default_image = GpuImage(default_image_desc);
+
+	HMM_Vec4 default_image_array_data[MAX_SHADOW_CASCADES] = {};
+	for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
+	{
+		default_image_array_data[i] = HMM_V4(0,0,0,1);
+	}
+	GpuImageDesc default_image_array_desc = {
+		.type = SG_IMAGETYPE_ARRAY,
+		.width = 1,
+		.height = 1,
+		.num_slices = MAX_SHADOW_CASCADES,
+		.pixel_format = SG_PIXELFORMAT_RGBA32F,
+		.data = (u8*) &default_image_array_data,
+	};
+	state.default_image_array = GpuImage(default_image_array_desc);
 
 	HMM_Vec4 default_image_cube_data[6] =
 	{

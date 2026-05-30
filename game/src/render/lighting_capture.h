@@ -257,6 +257,7 @@ public:
 	   		{
 				lighting_fs_params_t fs_params = in_state.lighting_fs_params;
 				fs_params.view_position = in_location;
+				fs_params.view_forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
 				fs_params.ssao_enable = false;
 				fs_params.direct_lighting_enable = true;
 				fs_params.gi_enable = false;
@@ -287,7 +288,7 @@ public:
 						[9] = in_state.default_buffer.get_storage_view(),
 						[10] = in_state.default_image.get_texture_view(0),
 						[11] = in_state.default_image.get_texture_view(0),
-						[12] = in_state.default_image.get_texture_view(0),
+						[12] = in_state.default_image_array.get_texture_array_view(),
 						[13] = in_state.default_buffer.get_storage_view(),
 						[14] = in_state.default_buffer.get_storage_view(),
 					},

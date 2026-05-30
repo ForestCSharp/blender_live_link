@@ -78,6 +78,11 @@ public:
 				sg_destroy_view(texture_views[i].value());
 			}
 		}
+		if (texture_array_view.has_value())
+		{
+			sg_destroy_view(texture_array_view.value());
+			texture_array_view.reset();
+		}
 
 		for (i32 i = 0; i < NUM_CUBE_FACES; ++i)
 		{
@@ -113,6 +118,25 @@ public:
 		}
 
 		return texture_views[slice_idx].value();
+	}
+
+	sg_view get_texture_array_view()
+	{
+		assert(gpu_image.has_value() && gpu_image.value().id != SG_INVALID_ID);
+		assert(desc.type == SG_IMAGETYPE_ARRAY);
+
+		if (!texture_array_view.has_value())
+		{
+			texture_array_view = sg_make_view((sg_view_desc) {
+				.texture = {
+					.image = get_gpu_image(),
+					.mip_levels = { .base = 0, .count = 0, },
+					.slices = { .base = 0, .count = desc.num_slices, },
+				},
+			});
+		}
+
+		return texture_array_view.value();
 	}
 
 	sg_view get_attachment_view(const i32 slice_idx)
@@ -157,8 +181,8 @@ protected:
 
 	// Lazily-allocated texture view
 	optional<sg_view> texture_views[NUM_CUBE_FACES];
+	optional<sg_view> texture_array_view;
 
 	// Lazily-allocated attachment views, per slice idx
 	optional<sg_view> attachment_views[NUM_CUBE_FACES];
 };
-

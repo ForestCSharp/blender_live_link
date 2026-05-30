@@ -83,6 +83,8 @@ using ankerl::unordered_dense::map;
 #include "render/blur_pass.h"
 #include "render/sky_pass.h"
 #include "render/shadow_depth_pass.h"
+#include "render/shadow_blur_pass.h"
+#include "render/shadow_cascade_debug_pass.h"
 
 // Wrapper for sockets 
 #include "network/socket_wrapper.h"
@@ -917,44 +919,10 @@ void init(void)
 	get_render_pass(ERenderPass::ShadowDepth).init(ShadowDepthPass::make_render_pass_desc(SG_PIXELFORMAT_DEPTH));
 
 	// Init shadow VSM blur pass
-	RenderPassDesc shadow_vsm_blur_pass_desc = {
-		.initial_width = ShadowDepthPass::ShadowMapResolution,
-		.initial_height = ShadowDepthPass::ShadowMapResolution,
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
-			.depth = {
-				.pixel_format = SG_PIXELFORMAT_NONE,
-			},
-			.color_count = 1,
-			.colors = {
-				[0] = {
-					.pixel_format = SG_PIXELFORMAT_RGBA16F,
-				},
-			},
-			.cull_mode = SG_CULLMODE_NONE,
-			.label = "shadow-vsm-blur-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs = {
-			[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA16F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {1.0f, 1.0f, 0.0f, 0.0f},
-			},
-		},
-		.num_scratch_outputs = 1,
-		.scratch_outputs = {
-			[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA16F,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {1.0f, 1.0f, 0.0f, 0.0f},
-			},
-		},
-		.resize_with_window = false,
-	};
-	get_render_pass(ERenderPass::ShadowVSMBlur).init(shadow_vsm_blur_pass_desc);
+	get_render_pass(ERenderPass::ShadowVSMBlur).init(ShadowBlurPass::make_render_pass_desc());
+
+	// Init shadow cascade debug pass
+	get_render_pass(ERenderPass::ShadowCascadeDebug).init(ShadowCascadeDebugPass::make_render_pass_desc());
 
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
@@ -1381,6 +1349,17 @@ void frame(void)
 				ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
 				ImGui::Checkbox("Shadow Blur", &state.shadow_blur_enable);
 				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
+				if (ImGui::SliderInt("Num Cascades", &state.shadow_num_cascades, 1, MAX_SHADOW_CASCADES))
+				{
+					ShadowDepthPass::has_valid_shadow_map = false;
+					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+				if (ImGui::SliderFloat("Cascade Distance Scale", &state.shadow_cascade_distance_scale, 0.25f, 4.0f, "%.2f"))
+				{
+					ShadowDepthPass::has_valid_shadow_map = false;
+					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+				ImGui::Checkbox("Show Cascade Selection", &state.shadow_debug_show_cascade_selection);
 			}
 			ImGui::Unindent();
 
@@ -1449,15 +1428,30 @@ void frame(void)
 				RenderPass& depth_pass = get_render_pass(ERenderPass::ShadowDepth);
 				GpuImage& image = depth_pass.get_depth_output();
 				const GpuImageDesc& desc = image.get_desc();
+				ImGui::Text("Shadow Cascades");
+				ImGui::Text("%d x %d x %d", desc.width, desc.height, ShadowDepthPass::get_active_cascade_count(state));
+				ImGui::Text("Distance Scale: %.2f", state.shadow_cascade_distance_scale);
+				for (i32 cascade_idx = 0; cascade_idx < ShadowDepthPass::get_active_cascade_count(state); ++cascade_idx)
+				{
+					ImGui::Text("Cascade %d: %.2f", cascade_idx, ShadowDepthPass::cascade_distances[cascade_idx]);
+				}
+				const i32 active_cascade_count = ShadowDepthPass::get_active_cascade_count(state);
+				if (state.shadow_debug_cascade_index >= active_cascade_count)
+				{
+					state.shadow_debug_cascade_index = active_cascade_count - 1;
+				}
+				ImGui::SliderInt("Debug Cascade", &state.shadow_debug_cascade_index, 0, active_cascade_count - 1);
+				const char* shadow_debug_modes[] = { "Moments", "Depth" };
+				ImGui::Combo("Debug View", &state.shadow_debug_view_mode, shadow_debug_modes, IM_ARRAYSIZE(shadow_debug_modes));
+
+				GpuImage& debug_image = get_render_pass(ERenderPass::ShadowCascadeDebug).get_color_output(0);
+				const GpuImageDesc& debug_desc = debug_image.get_desc();
 				const f32 max_debug_size = 256.0f;
-				const f32 aspect_ratio = (f32)desc.width / (f32)desc.height;
+				const f32 aspect_ratio = (f32)debug_desc.width / (f32)debug_desc.height;
 				const ImVec2 image_size = aspect_ratio >= 1.0f
 					? ImVec2(max_debug_size, max_debug_size / aspect_ratio)
 					: ImVec2(max_debug_size * aspect_ratio, max_debug_size);
-
-				ImGui::Text("Shadow Depth");
-				ImGui::Text("%d x %d", desc.width, desc.height);
-				ImGui::Image(simgui_imtextureid(image.get_texture_view(0)), image_size);
+				ImGui::Image(simgui_imtextureid(debug_image.get_texture_view(0)), image_size);
 			}
 
 			ImGui::Separator();
@@ -1864,7 +1858,7 @@ void frame(void)
 					get_render_pass(ERenderPass::ShadowDepth).execute(
 						[&](const i32 pass_idx)
 						{
-							ShadowDepthPass::render(state);
+							ShadowDepthPass::render(state, pass_idx);
 						}
 					);
 					ShadowDepthPass::has_valid_shadow_blur = false;
@@ -1872,9 +1866,9 @@ void frame(void)
 
 				if (state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
 				{
-					BlurPass::execute_separable(
+					ShadowBlurPass::execute_separable(
 						get_render_pass(ERenderPass::ShadowVSMBlur),
-						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_view(0),
+						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_array_view(),
 						state.linear_sampler,
 						HMM_V2(
 							(f32)ShadowDepthPass::ShadowMapResolution,
@@ -1887,6 +1881,25 @@ void frame(void)
 				else if (!state.shadow_blur_enable)
 				{
 					ShadowDepthPass::has_valid_shadow_blur = false;
+				}
+
+				if (ShadowDepthPass::has_valid_shadow_map)
+				{
+					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
+						? get_render_pass(ERenderPass::ShadowVSMBlur).get_color_output(0)
+						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
+					const i32 active_cascade_count = ShadowDepthPass::get_active_cascade_count(state);
+					if (state.shadow_debug_cascade_index >= active_cascade_count)
+					{
+						state.shadow_debug_cascade_index = active_cascade_count - 1;
+					}
+					ShadowCascadeDebugPass::render(
+						get_render_pass(ERenderPass::ShadowCascadeDebug),
+						shadow_moments_texture.get_texture_array_view(),
+						state.linear_sampler,
+						state.shadow_debug_cascade_index,
+						state.shadow_debug_view_mode
+					);
 				}
 			}
 		}
@@ -2039,6 +2052,7 @@ void frame(void)
 				[&](const i32 pass_idx)
 				{	
 					state.lighting_fs_params.view_position = get_active_camera().location;
+					state.lighting_fs_params.view_forward = get_active_camera().forward;
 					state.lighting_fs_params.ssao_enable = state.ssao_enable;
 					state.lighting_fs_params.direct_lighting_enable = state.direct_lighting_enable;
 					state.lighting_fs_params.gi_enable = state.gi_enable;
@@ -2049,12 +2063,23 @@ void frame(void)
 					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
 					state.lighting_fs_params.shadow_map_enable = state.shadow_rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
+					state.lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
+					state.lighting_fs_params.shadow_debug_show_cascade_selection = state.shadow_debug_show_cascade_selection ? 1 : 0;
 					state.lighting_fs_params.shadow_bias = 0.001f;
 					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution
 					);
-					state.lighting_fs_params.shadow_view_projection = ShadowDepthPass::shadow_view_projection;
+					state.lighting_fs_params.shadow_cascade_distances = HMM_V4(
+						ShadowDepthPass::cascade_distances[0],
+						ShadowDepthPass::cascade_distances[1],
+						ShadowDepthPass::cascade_distances[2],
+						ShadowDepthPass::cascade_distances[3]
+					);
+					for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
+					{
+						state.lighting_fs_params.shadow_view_projections[i] = ShadowDepthPass::shadow_view_projections[i];
+					}
 
 					// Apply Fragment Uniforms
 					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
@@ -2085,7 +2110,7 @@ void frame(void)
 							[9] = gi_scene.cells_buffer.get_storage_view(),
 							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
 							[11] = gi_scene_get_octahedral_depth_view(gi_scene),
-							[12] = shadow_moments_texture.get_texture_view(0),
+							[12] = shadow_moments_texture.get_texture_array_view(),
 							[13] = gi_scene.sh9_coefficients_buffer.get_storage_view(),
 							[14] = gi_scene.sg9_lobes_buffer.get_storage_view(),
 						},
