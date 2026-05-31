@@ -1497,8 +1497,7 @@ void frame(void)
 					ImGui::SliderFloat("Max CoC Radius", &state.dof.max_coc_radius, 0.0f, 32.0f, "%.1f px");
 					ImGui::SliderFloat("Foreground Scale", &state.dof.foreground_blur_scale, 0.0f, 4.0f, "%.2f");
 					ImGui::SliderFloat("Background Scale", &state.dof.background_blur_scale, 0.0f, 4.0f, "%.2f");
-					const char* dof_debug_modes[] = { "Final", "CoC" };
-					ImGui::Combo("Debug", &state.dof.debug_mode, dof_debug_modes, IM_ARRAYSIZE(dof_debug_modes));
+					ImGui::Checkbox("Show CoC Debug", &state.dof.debug_show_coc);
 					ImGui::EndDisabled();
 				}
 			}
@@ -2380,7 +2379,7 @@ void frame(void)
 							.max_coc_radius = state.dof.max_coc_radius,
 							.foreground_blur_scale = state.dof.foreground_blur_scale,
 							.background_blur_scale = state.dof.background_blur_scale,
-							.debug_mode = state.dof.debug_mode,
+							.debug_mode = state.dof.debug_show_coc ? 1 : 0,
 						};
 						sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 

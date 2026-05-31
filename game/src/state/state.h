@@ -236,7 +236,7 @@ struct State
 		f32 max_coc_radius = 8.0f;
 		f32 foreground_blur_scale = 1.0f;
 		f32 background_blur_scale = 1.0f;
-		i32 debug_mode = 0;
+		bool debug_show_coc = false;
 	} dof;
 
 	struct TonemappingState
