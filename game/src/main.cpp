@@ -25,6 +25,9 @@ using std::atomic;
 // C++ std lib string
 #include <string>
 
+// C++ std lib numeric limits
+#include <limits>
+
 // For C++ std::function
 #include <functional>
 
@@ -1162,6 +1165,7 @@ struct AppState {
 	static const i32 num_mouse_buttons = 3;
 	bool mouse_buttons[num_mouse_buttons];
 
+	HMM_Vec2 mouse_position;
 	HMM_Vec2 mouse_delta;
 
 	bool is_mouse_locked = false;
@@ -1198,6 +1202,85 @@ void set_mouse_locked(bool in_locked)
 {
 	app_state.is_mouse_locked = in_locked;
 	sapp_lock_mouse(app_state.is_mouse_locked);
+}
+
+bool ray_sphere_intersect(
+	const HMM_Vec3& in_ray_origin,
+	const HMM_Vec3& in_ray_direction,
+	const HMM_Vec3& in_sphere_center,
+	const f32 in_sphere_radius,
+	f32& out_t
+)
+{
+	const HMM_Vec3 oc = in_ray_origin - in_sphere_center;
+	const f32 b = HMM_DotV3(oc, in_ray_direction);
+	const f32 c = HMM_DotV3(oc, oc) - in_sphere_radius * in_sphere_radius;
+	const f32 discriminant = b * b - c;
+	if (discriminant < 0.0f)
+	{
+		return false;
+	}
+
+	const f32 sqrt_discriminant = HMM_SqrtF(discriminant);
+	f32 t = -b - sqrt_discriminant;
+	if (t < 0.0f)
+	{
+		t = -b + sqrt_discriminant;
+	}
+	if (t < 0.0f)
+	{
+		return false;
+	}
+
+	out_t = t;
+	return true;
+}
+
+void pick_isolated_gi_probe()
+{
+	const f32 w = sapp_widthf();
+	const f32 h = sapp_heightf();
+	if (w <= 0.0f || h <= 0.0f)
+	{
+		return;
+	}
+
+	const f32 fov = HMM_AngleDeg(60.0f);
+	const f32 aspect_ratio = w / h;
+
+	Camera& camera = get_active_camera();
+	const f32 ndc_x = (2.0f * app_state.mouse_position.X / w) - 1.0f;
+	const f32 ndc_y = 1.0f - (2.0f * app_state.mouse_position.Y / h);
+
+	const f32 tan_half_fov = HMM_TanF(fov * 0.5f);
+	const HMM_Vec3 camera_forward = HMM_NormV3(camera.forward);
+	const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera_forward, camera.up));
+	const HMM_Vec3 camera_up = HMM_NormV3(HMM_Cross(camera_right, camera_forward));
+	const HMM_Vec3 ray_origin = camera.location;
+	const HMM_Vec3 ray_direction = HMM_NormV3(
+		camera_forward +
+		camera_right * (ndc_x * aspect_ratio * tan_half_fov) +
+		camera_up * (ndc_y * tan_half_fov)
+	);
+	const f32 probe_radius = GI_CELL_EXTENT * 0.1f;
+
+	i32 closest_probe_index = -1;
+	f32 closest_t = std::numeric_limits<f32>::max();
+	for (i32 probe_index = 0; probe_index < GI_PROBE_COUNT; ++probe_index)
+	{
+		f32 t = 0.0f;
+		const HMM_Vec3 probe_position = gi_probe_position_from_index(probe_index);
+		if (ray_sphere_intersect(ray_origin, ray_direction, probe_position, probe_radius, t) && t < closest_t)
+		{
+			closest_t = t;
+			closest_probe_index = probe_index;
+		}
+	}
+
+	if (closest_probe_index >= 0)
+	{
+		state.gi_isolated_probe_index = closest_probe_index;
+	}
 }
 
 void frame(void)
@@ -1420,6 +1503,37 @@ void frame(void)
 						state.gi_is_updating = true;
 					}
 					ImGui::Checkbox("Show Probes", &state.show_probes);	
+					if (ImGui::Checkbox("Probe Isolation", &state.gi_probe_isolation_enable))
+					{
+						if (state.gi_probe_isolation_enable)
+						{
+							state.show_probes = true;
+							set_mouse_locked(false);
+						}
+						else
+						{
+							state.gi_isolated_probe_index = -1;
+						}
+					}
+					if (state.gi_probe_isolation_enable)
+					{
+						state.show_probes = true;
+
+						ImGui::SameLine();
+						if (ImGui::SmallButton("Clear"))
+						{
+							state.gi_isolated_probe_index = -1;
+						}
+
+						if (state.gi_isolated_probe_index >= 0)
+						{
+							ImGui::Text("Isolated Probe: %d", state.gi_isolated_probe_index);
+						}
+						else
+						{
+							ImGui::Text("Isolated Probe: None");
+						}
+					}
 					ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
 					if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
 					{
@@ -2103,6 +2217,9 @@ void frame(void)
 					state.lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
 					state.lighting_fs_params.shadow_cascade_placement_mode = (i32) state.shadow_cascade_placement_mode;
 					state.lighting_fs_params.shadow_debug_show_cascade_selection = state.shadow_debug_show_cascade_selection ? 1 : 0;
+					state.lighting_fs_params.isolated_probe_index = state.gi_probe_isolation_enable
+						? (state.gi_isolated_probe_index >= 0 ? state.gi_isolated_probe_index : -2)
+						: -1;
 					state.lighting_fs_params.shadow_bias = 0.001f;
 					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
@@ -2342,10 +2459,11 @@ void cleanup(void)
 void event(const sapp_event* event)
 {
 	#if WITH_DEBUG_UI
+	const bool imgui_wants_mouse_capture = g_show_imgui ? ImGui::GetIO().WantCaptureMouse : false;
 	// Pass events to sokol_imgui
-	const bool simgui_wants_keyboard_capture = simgui_handle_event(event);
+	simgui_handle_event(event);
 	#else
-	const bool simgui_wants_keyboard_capture = false;
+	const bool imgui_wants_mouse_capture = false;
 	#endif // WITH_DEBUG_UI
 
 	switch(event->type)
@@ -2376,9 +2494,16 @@ void event(const sapp_event* event)
 		case SAPP_EVENTTYPE_MOUSE_DOWN:
 		{
 			app_state.mouse_buttons[event->mouse_button] = true;
+			app_state.mouse_position = HMM_V2(event->mouse_x, event->mouse_y);
+
+			if (!imgui_wants_mouse_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT && state.gi_probe_isolation_enable && state.show_probes)
+			{
+				pick_isolated_gi_probe();
+				break;
+			}
 
 			// Lock Mouse on left click into game space
-			if (!simgui_wants_keyboard_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT)
+			if (!imgui_wants_mouse_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT)
 			{
 				if (!is_mouse_locked())
 				{
@@ -2395,6 +2520,8 @@ void event(const sapp_event* event)
 		}
 		case SAPP_EVENTTYPE_MOUSE_MOVE:
 		{
+			app_state.mouse_position.X = event->mouse_x;
+			app_state.mouse_position.Y = event->mouse_y;
 			app_state.mouse_delta.X = event->mouse_dx;
 			app_state.mouse_delta.Y = event->mouse_dy;
 			break;

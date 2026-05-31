@@ -78,6 +78,7 @@ layout(binding=0) uniform fs_params {
 	int shadow_num_cascades;
 	int shadow_cascade_placement_mode;
 	int shadow_debug_show_cascade_selection;
+	int isolated_probe_index;
 	float shadow_bias;
 	vec2 shadow_map_texel_size;
 	vec4 shadow_cascade_distances;
@@ -600,9 +601,16 @@ void main()
 			{
 				GI_Coords cell_coords = gi_cell_coords_from_position(position);
 				int cell_index = gi_cell_index_from_coords(cell_coords);
+				const bool probe_isolation_active = isolated_probe_index != -1;
 
 				if (cell_index < 0)
 				{
+					if (probe_isolation_active)
+					{
+						frag_color = final_color * ambient_occlusion + dither_noise();
+						return;
+					}
+
 					// Fallback probe is at end of probes array
 					GI_Probe probe = gi_probes[GI_FALLBACK_PROBE_IDX];
 					const vec3 probe_radiance = sample_probe_radiance(probe, GI_FALLBACK_PROBE_IDX, normal);
@@ -631,6 +639,7 @@ void main()
 					{
 						int probe_index = cell.probe_indices[i];
 						if (probe_index == -1) { continue; }
+						if (probe_isolation_active && probe_index != isolated_probe_index) { continue; }
 
 						GI_Probe probe = gi_probes[probe_index];
 
@@ -708,16 +717,19 @@ void main()
 						accumulated_weight += weight;
 					}
 
-					const vec3 final_irradiance = mix(
-						accumulated_irradiance_no_cheb * (1.0 / accumulated_weight_no_cheb),
-						accumulated_irradiance * (1.0 / accumulated_weight),
-						saturate(accumulated_weight)
-					);
+					if (accumulated_weight_no_cheb > 0.0 && accumulated_weight > 0.0)
+					{
+						const vec3 final_irradiance = mix(
+							accumulated_irradiance_no_cheb * (1.0 / accumulated_weight_no_cheb),
+							accumulated_irradiance * (1.0 / accumulated_weight),
+							saturate(accumulated_weight)
+						);
 
-					const vec3 albedo = color * (1.0 - metallic); 
+						const vec3 albedo = color * (1.0 - metallic); 
 
-					vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
-					final_color.xyz += final_gi;
+						vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
+						final_color.xyz += final_gi;
+					}
 				}
 			}	
 

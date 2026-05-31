@@ -135,6 +135,8 @@ struct State
 	bool dof_enable = true;
 	bool show_probes = false;
 	EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
+	bool gi_probe_isolation_enable = false;
+	i32 gi_isolated_probe_index = -1;
 
 	// Disable this to more easily debug probe captures
 	bool compute_irradiance = true;

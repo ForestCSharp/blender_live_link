@@ -286,6 +286,7 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	gi_debug_vs_params_t vs_params = {
 		.view = in_view_matrix,
 		.projection = in_projection_matrix,
+		.debug_probe_start_index = 0,
 	};
 	// Apply Vertex Uniforms
 	sg_apply_uniforms(0, SG_RANGE(vs_params));
@@ -294,6 +295,7 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 		.atlas_total_size = in_gi_scene.lighting_capture.desc.octahedral_total_size,
 		.atlas_entry_size = in_gi_scene.lighting_capture.desc.octahedral_entry_size,
 		.probe_vis_mode = static_cast<i32>(state.probe_vis_mode),
+		.isolated_probe_index = state.gi_isolated_probe_index,
 	};
 	// Apply Fragment Uniforms
 	sg_apply_uniforms(1, SG_RANGE(fs_params));
@@ -314,5 +316,6 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 		},
 	};
 	sg_apply_bindings(&bindings);
+
 	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.probes.length());
 }

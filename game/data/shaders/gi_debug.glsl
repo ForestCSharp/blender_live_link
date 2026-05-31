@@ -10,6 +10,7 @@
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int debug_probe_start_index;
 };
 
 layout(location = 0) in vec4 position;
@@ -32,14 +33,14 @@ mat4 mat4_translate(vec3 offset) {
 
 void main() {
 
-	vec3 probe_position = gi_probe_position_from_index(gl_InstanceIndex);
+	probe_index = debug_probe_start_index + gl_InstanceIndex;
+
+	vec3 probe_position = gi_probe_position_from_index(probe_index);
 	mat4 model = mat4_translate(probe_position);
 
 	world_position = model * position;
 	world_normal = normal;
 	pixel_texcoord = texcoord;
-
-	probe_index = gl_InstanceIndex;
 
     gl_Position = projection * view * world_position;
 }
@@ -57,6 +58,7 @@ layout(binding=1) uniform fs_params {
 	int atlas_total_size;
 	int atlas_entry_size;
 	int probe_vis_mode;
+	int isolated_probe_index;
 };
 
 layout(binding=0) uniform sampler linear_sampler;
@@ -119,6 +121,15 @@ vec3 sample_sg9_irradiance(int in_probe_index, vec3 normal)
 void main()
 {
 	GI_Probe probe = gi_probes[probe_index];
+
+	if (isolated_probe_index >= 0 && probe_index != isolated_probe_index)
+	{
+		out_color = vec4(1.0, 0.0, 0.0, 1.0);
+		out_roughness_metallic_emissive = vec4(1,0,1,0);
+		out_position = world_position; 
+		out_normal = normalize(world_normal);
+		return;
+	}
 
 	const vec3 sample_dir = normalize(world_normal).xyz;
 	const vec2 octahedral_coords = padded_atlas_uv_from_normal(sample_dir, probe.atlas_idx, atlas_total_size, atlas_entry_size);
