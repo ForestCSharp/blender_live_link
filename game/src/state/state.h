@@ -237,6 +237,14 @@ struct State
 		};
 	} tonemapping;
 
+	struct DebugUiState
+	{
+		double stats_sample_elapsed = 0.0;
+		i32 stats_sample_count = 0;
+		f32 frame_time_ms = 0.0f;
+		f32 fps = 0.0f;
+	} debug_ui;
+
 	struct DebugCameraState
 	{
 		bool active = true;

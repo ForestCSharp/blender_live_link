@@ -1265,6 +1265,22 @@ void frame(void)
 	const double delta_time = stm_sec(lap_time);
     const float ui_dpi_scale = sapp_dpi_scale();
 
+	state.debug_ui.stats_sample_elapsed += delta_time;
+	state.debug_ui.stats_sample_count += 1;
+	if (state.debug_ui.fps == 0.0f && delta_time > 0.0)
+	{
+		state.debug_ui.frame_time_ms = delta_time * 1000.0;
+		state.debug_ui.fps = 1.0 / delta_time;
+	}
+	if (state.debug_ui.stats_sample_elapsed >= 0.25)
+	{
+		const double average_delta_time = state.debug_ui.stats_sample_elapsed / state.debug_ui.stats_sample_count;
+		state.debug_ui.frame_time_ms = average_delta_time * 1000.0;
+		state.debug_ui.fps = state.debug_ui.stats_sample_count / state.debug_ui.stats_sample_elapsed;
+		state.debug_ui.stats_sample_elapsed = 0.0;
+		state.debug_ui.stats_sample_count = 0;
+	}
+
 	DEBUG_UI(
 		simgui_new_frame((simgui_frame_desc_t){
 			.width = state.window.width,
@@ -1382,8 +1398,8 @@ void frame(void)
 		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Text("Resolution: %d x %d", state.window.width, state.window.height);
-			ImGui::Text("frame time: %f ms", delta_time * 1000.f);
-			ImGui::Text("FPS: %f", 1.0 / delta_time);
+			ImGui::Text("frame time: %.2f ms", state.debug_ui.frame_time_ms);
+			ImGui::Text("FPS: %.1f", state.debug_ui.fps);
 			ImGui::Spacing();
 		}
 
