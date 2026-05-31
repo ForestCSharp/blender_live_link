@@ -45,7 +45,7 @@ AtlasViewport get_atlas_viewport(int atlas_size, int render_size, int idx)
 }
 
 struct LightingCaptureDesc
-{	
+{
 	i32 cubemap_render_size = 256;
 
 	i32 octahedral_total_size = 1024;
@@ -70,7 +70,7 @@ public:
 
 public:
 	void init(const LightingCaptureDesc& in_desc)
-	{		
+	{
 		desc = in_desc;
 
 		// Render geometry pass for 6 cube faces (separate textures, ERenderPassType::Multi)
@@ -180,7 +180,7 @@ public:
 		HMM_Mat4 view_matrices[NUM_CUBE_FACES];
 		HMM_Mat4 view_projection_matrices[NUM_CUBE_FACES];
 		for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
-		{	
+		{
 			HMM_Vec3 forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
 			HMM_Vec3 up = Render::CUBE_FORWARD_AND_UP[face_idx][1];
 
@@ -203,7 +203,7 @@ public:
 				sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 				// Cull objects
-				CullResult cull_result = cull_objects(in_state.objects, view_projection_matrix);
+				CullResult cull_result = cull_objects(in_state.scene.objects, view_projection_matrix);
 
 				// Submit draw calls for objects after culling
 				if (should_render_geometry)
@@ -219,25 +219,25 @@ public:
 
 							int mesh_material_idx = mesh.material_indices[0];
 							assert(mesh_material_idx >= 0);
-							const geometry_Material_t& material = in_state.materials[mesh_material_idx]; 
+							const geometry_Material_t& material = in_state.materials.items[mesh_material_idx];
 
-							GpuImage& base_color_image = material.base_color_image_index >= 0 ? in_state.images[material.base_color_image_index] : in_state.default_image;
-							GpuImage& metallic_image = material.metallic_image_index >= 0 ? in_state.images[material.metallic_image_index] : in_state.default_image;
-							GpuImage& roughness_image = material.roughness_image_index >= 0 ? in_state.images[material.roughness_image_index] : in_state.default_image;
-							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images[material.emission_color_image_index] : in_state.default_image;
+							GpuImage& base_color_image = material.base_color_image_index >= 0 ? in_state.images.items[material.base_color_image_index] : in_state.gpu.default_image;
+							GpuImage& metallic_image = material.metallic_image_index >= 0 ? in_state.images.items[material.metallic_image_index] : in_state.gpu.default_image;
+							GpuImage& roughness_image = material.roughness_image_index >= 0 ? in_state.images.items[material.roughness_image_index] : in_state.gpu.default_image;
+							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images.items[material.emission_color_image_index] : in_state.gpu.default_image;
 
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
-									[1] = get_materials_buffer().get_storage_view(), 
-									[2] = base_color_image.get_texture_view(0), 
-									[3] = metallic_image.get_texture_view(0), 
+									[1] = get_materials_buffer().get_storage_view(),
+									[2] = base_color_image.get_texture_view(0),
+									[3] = metallic_image.get_texture_view(0),
 									[4] = roughness_image.get_texture_view(0),
 									[5] = emission_color_image.get_texture_view(0),
 								},
-								.samplers[0] = in_state.linear_sampler,
+								.samplers[0] = in_state.gpu.linear_sampler,
 							};
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
@@ -245,8 +245,8 @@ public:
 					}
 				}
 
-				if (in_state.gi_render_sky_to_probes)
-				{	
+				if (in_state.gi.render_sky_to_probes)
+				{
 					SkyPass::render(view_projection_matrix, in_location, depth_format);
 				}
 			}
@@ -255,7 +255,7 @@ public:
 		lighting_pass.execute(
 			[&](const i32 face_idx)
 	   		{
-				lighting_fs_params_t fs_params = in_state.lighting_fs_params;
+				lighting_fs_params_t fs_params = in_state.lighting.fs_params;
 				fs_params.view_position = in_location;
 				fs_params.view_forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
 				fs_params.ssao_enable = false;
@@ -269,32 +269,32 @@ public:
 				GpuImage& normal_texture = geometry_pass.get_color_output(2, face_idx);
 				GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3, face_idx);
 
-				//RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);		
-				//sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];	
+				//RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
+				//sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
 				// From below...
 				//[4] = blurred_ssao_texture.get_texture_view(0),
 
 				sg_bindings bindings = {
 					.views = {
 						[0] = color_texture.get_texture_view(0),
-						[1] = position_texture.get_texture_view(0), 
+						[1] = position_texture.get_texture_view(0),
 						[2] = normal_texture.get_texture_view(0),
 						[3] = roughness_metallic_texture.get_texture_view(0),
-						[4] = in_state.default_image.get_texture_view(0),		//FCS TODO: Need SSAO
-						[5] = in_state.point_lights_buffer.get_storage_view(),
-						[6] = in_state.spot_lights_buffer.get_storage_view(), 
-						[7] = in_state.sun_lights_buffer.get_storage_view(), 
-						[8] = in_state.default_buffer.get_storage_view(),
-						[9] = in_state.default_buffer.get_storage_view(),
-						[10] = in_state.default_image.get_texture_view(0),
-						[11] = in_state.default_image.get_texture_view(0),
-						[12] = in_state.default_image_array.get_texture_array_view(),
-						[13] = in_state.default_buffer.get_storage_view(),
-						[14] = in_state.default_buffer.get_storage_view(),
+						[4] = in_state.gpu.default_image.get_texture_view(0),		//FCS TODO: Need SSAO
+						[5] = in_state.lighting.point_lights_buffer.get_storage_view(),
+						[6] = in_state.lighting.spot_lights_buffer.get_storage_view(),
+						[7] = in_state.lighting.sun_lights_buffer.get_storage_view(),
+						[8] = in_state.gpu.default_buffer.get_storage_view(),
+						[9] = in_state.gpu.default_buffer.get_storage_view(),
+						[10] = in_state.gpu.default_image.get_texture_view(0),
+						[11] = in_state.gpu.default_image.get_texture_view(0),
+						[12] = in_state.gpu.default_image_array.get_texture_array_view(),
+						[13] = in_state.gpu.default_buffer.get_storage_view(),
+						[14] = in_state.gpu.default_buffer.get_storage_view(),
 					},
 					.samplers = {
-						[0] = in_state.linear_sampler,
-						[1] = in_state.nearest_sampler,
+						[0] = in_state.gpu.linear_sampler,
+						[1] = in_state.gpu.nearest_sampler,
 					},
 				};
 				sg_apply_bindings(&bindings);
@@ -311,8 +311,8 @@ public:
 				radial_depth_fs_params_t fs_params = {
 					.inverse_view_projection = HMM_InvGeneralM4(view_projection_matrix),
 					.capture_location = in_location,
-					.probe_occlusion_mode = static_cast<i32>(in_state.probe_occlusion_mode),
-					.force_fully_visible = in_state.gi_debug_constant_white_probes ? 1 : 0,
+					.probe_occlusion_mode = static_cast<i32>(in_state.gi.probe_occlusion_mode),
+					.force_fully_visible = in_state.gi.debug_constant_white_probes ? 1 : 0,
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
@@ -320,9 +320,9 @@ public:
 				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
 				sg_bindings bindings = {
 					.views = {
-						[0] = position_texture.get_texture_view(0), 
+						[0] = position_texture.get_texture_view(0),
 					},
-					.samplers[0] = in_state.nearest_sampler,
+					.samplers[0] = in_state.gpu.nearest_sampler,
 				};
 				sg_apply_bindings(&bindings);
 
@@ -336,8 +336,8 @@ public:
 				// Determine current atlas location to render into
 				{
 					AtlasViewport viewport = get_atlas_viewport(
-						desc.octahedral_total_size, 
-						desc.octahedral_entry_size, 
+						desc.octahedral_total_size,
+						desc.octahedral_entry_size,
 						in_atlas_idx
 					);
 
@@ -353,13 +353,13 @@ public:
 				cubemap_to_octahedral_fs_params_t fs_params = {
 					.cubemap_render_size = desc.cubemap_render_size,
 					.atlas_entry_size = desc.octahedral_entry_size,
-					.compute_irradiance = state.compute_irradiance,
+					.compute_irradiance = in_state.gi.compute_irradiance,
 					.use_importance_sampling = true,
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
-				GpuImage& lighting_cubemap_texture = in_state.gi_debug_constant_white_probes
-					? in_state.white_image_cube
+				GpuImage& lighting_cubemap_texture = in_state.gi.debug_constant_white_probes
+					? in_state.gpu.white_image_cube
 					: lighting_pass.get_color_output(0);
 				GpuImage& depth_cubemap_texture = radial_depth_pass.get_color_output(0);
 
@@ -369,8 +369,8 @@ public:
 							[1] = depth_cubemap_texture.get_texture_view(0),
 						},
 						.samplers = {
-							[0] = in_state.linear_sampler,
-							[1] = in_state.nearest_sampler,
+							[0] = in_state.gpu.linear_sampler,
+							[1] = in_state.gpu.nearest_sampler,
 						},
 					};
 					sg_apply_bindings(&bindings);
@@ -380,11 +380,11 @@ public:
 		);
 
 		const bool should_project_sh9 =
-			in_state.probe_radiance_mode == EProbeRadianceMode::SH9 ||
-			in_state.probe_vis_mode == EProbeVisMode::SH9Irradiance;
+			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SH9 ||
+			in_state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance;
 		const bool should_project_sg9 =
-			in_state.probe_radiance_mode == EProbeRadianceMode::SG9 ||
-			in_state.probe_vis_mode == EProbeVisMode::SG9Irradiance;
+			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SG9 ||
+			in_state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance;
 
 		auto project_probe_radiance = [&](const EProbeRadianceMode radiance_mode)
 		{
@@ -394,8 +394,8 @@ public:
 				.sample_count = 1024,
 			};
 
-			GpuImage& lighting_cubemap_texture = in_state.gi_debug_constant_white_probes
-				? in_state.white_image_cube
+			GpuImage& lighting_cubemap_texture = in_state.gi.debug_constant_white_probes
+				? in_state.gpu.white_image_cube
 				: lighting_pass.get_color_output(0);
 
 			sg_begin_pass((sg_pass) {
@@ -409,7 +409,7 @@ public:
 					[1] = in_sg9_lobes_view,
 					[2] = lighting_cubemap_texture.get_texture_view(0),
 				},
-				.samplers[0] = in_state.linear_sampler,
+				.samplers[0] = in_state.gpu.linear_sampler,
 			};
 			sg_apply_bindings(&bindings);
 			sg_dispatch(1, 1, 1);

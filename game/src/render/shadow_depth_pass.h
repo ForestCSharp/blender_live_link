@@ -26,7 +26,7 @@ namespace ShadowDepthPass
 	#endif
 	}
 
-	optional<sg_shader> shader;		
+	optional<sg_shader> shader;
 
 	const i32 num_pass_outputs = 1;
 	const i32 ShadowMapResolution = 2048;
@@ -38,22 +38,22 @@ namespace ShadowDepthPass
 
 	i32 get_active_cascade_count(const State& in_state)
 	{
-		if (in_state.shadow_num_cascades < 1)
+		if (in_state.shadow.num_cascades < 1)
 		{
 			return 1;
 		}
-		if (in_state.shadow_num_cascades > MAX_SHADOW_CASCADES)
+		if (in_state.shadow.num_cascades > MAX_SHADOW_CASCADES)
 		{
 			return MAX_SHADOW_CASCADES;
 		}
-		return in_state.shadow_num_cascades;
+		return in_state.shadow.num_cascades;
 	}
 
 	f32 get_cascade_distance(const State& in_state, i32 cascade_idx)
 	{
-		const f32 active_scale = in_state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
-			? in_state.shadow_centered_square_cascade_distance_scale
-			: in_state.shadow_frustum_cascade_distance_scale;
+		const f32 active_scale = in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+			? in_state.shadow.centered_square_cascade_distance_scale
+			: in_state.shadow.frustum_cascade_distance_scale;
 		const f32 scale = fmaxf(0.01f, active_scale);
 		if (get_active_cascade_count(in_state) == 1)
 		{
@@ -103,18 +103,18 @@ namespace ShadowDepthPass
 
 	Object* get_valid_shadow_sun(State& in_state)
 	{
-		if (!in_state.primary_sun_id.has_value())
+		if (!in_state.scene.primary_sun_id.has_value())
 		{
 			return nullptr;
 		}
 
-		i32 primary_sun_id = in_state.primary_sun_id.value();
-		if (!in_state.objects.contains(primary_sun_id))
+		i32 primary_sun_id = in_state.scene.primary_sun_id.value();
+		if (!in_state.scene.objects.contains(primary_sun_id))
 		{
 			return nullptr;
 		}
 
-		Object& sun_object = in_state.objects[primary_sun_id];
+		Object& sun_object = in_state.scene.objects[primary_sun_id];
 		if (!sun_object.visibility || !sun_object.has_light || sun_object.light.type != LightType::Sun || !sun_object.light.sun.cast_shadows)
 		{
 			return nullptr;
@@ -201,13 +201,13 @@ namespace ShadowDepthPass
 			light_up = HMM_V3(0.0f, 1.0f, 0.0f);
 		}
 
-		if (in_state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+		if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 		{
 			const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
 			const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
 			const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
-			HMM_Vec3 light_pos = in_state.shadow_centered_square_center - sun_dir * (light_depth_range * 0.5f);
-			HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow_centered_square_center, light_up);
+			HMM_Vec3 light_pos = in_state.shadow.centered_square_center - sun_dir * (light_depth_range * 0.5f);
+			HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow.centered_square_center, light_up);
 			f32 near_plane = 0.01f;
 			f32 far_plane = light_depth_range;
 			HMM_Mat4 light_proj = mat4_orthographic(
@@ -231,7 +231,7 @@ namespace ShadowDepthPass
 			sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 			// Cull objects
-			CullResult cull_result = cull_objects(in_state.objects, light_view_proj);
+			CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj);
 
 			// Submit draw calls for objects after culling
 			for (auto& [unique_id, object_ptr] : cull_result.objects)
@@ -312,7 +312,7 @@ namespace ShadowDepthPass
 		sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 		// Cull objects
-		CullResult cull_result = cull_objects(in_state.objects, light_view_proj);
+		CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj);
 
 		// Submit draw calls for objects after culling
 		for (auto& [unique_id, object_ptr] : cull_result.objects)

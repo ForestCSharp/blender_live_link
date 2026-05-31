@@ -95,141 +95,157 @@ const char* EShadowCascadePlacementModeNames[(i32)EShadowCascadePlacementMode::M
 	"Centered Squares",
 };
 
-//FCS TODO: Make this not a global. Just init it early in main() but then pass it around
-
-struct State 
+struct State
 {
-	optional<std::string> init_file;
+	struct RuntimeState
+	{
+		optional<std::string> init_file;
+		atomic<bool> game_running = true;
+		atomic<bool> blender_data_loaded = false;
+		bool is_simulating = true;
+	} runtime;
 
-	int width;
-	int height;
+	struct WindowState
+	{
+		int width;
+		int height;
+	} window;
 
-	// Render Passes
-	RenderPass render_passes[(int)ERenderPass::COUNT];
+	struct RenderPassState
+	{
+		RenderPass passes[(int)ERenderPass::COUNT];
+	} render_passes;
 
-	// Rendering Feature Flags
-	bool ssao_enable = true;
-	bool shadow_rendering_enable = true;
-	bool shadow_blur_enable = true;
-	bool shadow_depth_freeze = false;
-	i32 shadow_num_cascades = 3;
-	f32 shadow_frustum_cascade_distance_scale = 1.0f;
-	f32 shadow_centered_square_cascade_distance_scale = 0.25f;
-	EShadowCascadePlacementMode shadow_cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
-	HMM_Vec3 shadow_centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);
-	f32 shadow_centered_square_lookahead_distance = 50.0f;
-	bool shadow_force_recapture = false;
-	i32 shadow_debug_cascade_index = 0;
-	i32 shadow_debug_view_mode = 0;
-	bool shadow_debug_show_cascade_selection = false;
-	bool sky_rendering_enable = true;
-	bool direct_lighting_enable = true;
-	bool gi_enable = true;
-	bool gi_probe_occlusion = true;
-	EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
-	EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
-	bool gi_render_sky_to_probes = true;
-	bool gi_debug_constant_white_probes = false;
-	float gi_intensity = 1.0f;
-	bool dof_enable = true;
-	f32 dof_focus_distance = 50.0f;
-	f32 dof_focus_range = 70.0f;
-	f32 dof_max_coc_radius = 8.0f;
-	f32 dof_foreground_blur_scale = 1.0f;
-	f32 dof_background_blur_scale = 1.0f;
-	i32 dof_debug_mode = 0;
-	bool show_probes = false;
-	EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
-	bool gi_probe_isolation_enable = false;
-	i32 gi_isolated_probe_index = -1;
+	struct SceneState
+	{
+		map<i32, Object> objects;
+		optional<i32> player_character_id;
+		optional<i32> camera_control_id;
+		optional<i32> primary_sun_id;
+	} scene;
 
-	// Disable this to more easily debug probe captures
-	bool compute_irradiance = true;
+	struct LiveLinkState
+	{
+		Channel<Object> updated_objects;
+		Channel<i32> deleted_objects;
+		Channel<bool> reset;
+		std::thread thread;
+		SOCKET blender_socket = socket_invalid();
+		SOCKET connection_socket = socket_invalid();
+	} live_link;
 
-	// This is true when we are updating probes, and is set to false after all probes have been re-updated
-	bool gi_is_updating = true;
+	struct GpuResourceState
+	{
+		sg_sampler linear_sampler;
+		sg_sampler nearest_sampler;
+		GpuImage default_image;
+		GpuImage default_image_array;
+		GpuImage default_image_cube;
+		GpuImage white_image_cube;
+		GpuBuffer<u8> default_buffer;
+	} gpu;
 
-	// SSAO Data 
-	GpuImage ssao_noise_texture;
-	ssao_fs_params_t ssao_fs_params;
+	struct MaterialState
+	{
+		map<i32,i32> id_to_index;
+		StretchyBuffer<geometry_Material_t> items;
+		GpuBuffer<geometry_Material_t> buffer;
+	} materials;
 
-	// Texture Sampler
-	sg_sampler linear_sampler;
-	sg_sampler nearest_sampler;
+	struct ImageState
+	{
+		map<i32,i32> id_to_index;
+		StretchyBuffer<GpuImage> items;
+		bool enable_debug_fullscreen = false;
+		i32 debug_index = 0;
+	} images;
 
-	atomic<bool> game_running = true;
-	atomic<bool> blender_data_loaded = false;
+	struct LightingState
+	{
+		bool direct_enable = true;
+		lighting_fs_params_t fs_params;
+		bool needs_data_update = true;
+		StretchyBuffer<lighting_PointLight_t> point_lights;
+		GpuBuffer<lighting_PointLight_t> point_lights_buffer;
+		StretchyBuffer<lighting_SpotLight_t> spot_lights;
+		GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
+		StretchyBuffer<lighting_SunLight_t> sun_lights;
+		GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
+	} lighting;
 
-	// Active game objects
-	map<i32, Object> objects;
+	struct SsaoState
+	{
+		bool enable = true;
+		GpuImage noise_texture;
+		ssao_fs_params_t fs_params;
+	} ssao;
 
-	// ID of player character
-	optional<i32> player_character_id;
+	struct ShadowState
+	{
+		bool rendering_enable = true;
+		bool blur_enable = true;
+		bool depth_freeze = false;
+		i32 num_cascades = 3;
+		f32 frustum_cascade_distance_scale = 1.0f;
+		f32 centered_square_cascade_distance_scale = 0.25f;
+		EShadowCascadePlacementMode cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
+		HMM_Vec3 centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);
+		f32 centered_square_lookahead_distance = 50.0f;
+		bool force_recapture = false;
+		i32 debug_cascade_index = 0;
+		i32 debug_view_mode = 0;
+		bool debug_show_cascade_selection = false;
+	} shadow;
 
-	// ID of camera controller
-	optional<i32> camera_control_id;
+	struct SkyState
+	{
+		bool rendering_enable = true;
+	} sky;
 
-	// ID of primary sun light
-	optional<i32> primary_sun_id;
+	struct GiState
+	{
+		bool enable = true;
+		bool probe_occlusion = true;
+		EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
+		EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
+		bool render_sky_to_probes = true;
+		bool debug_constant_white_probes = false;
+		float intensity = 1.0f;
+		bool show_probes = false;
+		EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
+		bool probe_isolation_enable = false;
+		i32 isolated_probe_index = -1;
+		bool compute_irradiance = true;
+		bool is_updating = true;
+	} gi;
 
-	// Are we currently simulating
-	bool is_simulating = true;
+	struct DofState
+	{
+		bool enable = true;
+		f32 focus_distance = 50.0f;
+		f32 focus_range = 70.0f;
+		f32 max_coc_radius = 8.0f;
+		f32 foreground_blur_scale = 1.0f;
+		f32 background_blur_scale = 1.0f;
+		i32 debug_mode = 0;
+	} dof;
 
-	// These channels are how we pass our data from our live-link thread to the main thread
-	Channel<Object> updated_objects;
-	Channel<i32> deleted_objects;
-	Channel<bool> reset;
+	struct TonemappingState
+	{
+		tonemapping_fs_params_t fs_params = {
+			.exposure_bias = 1.5,
+		};
+	} tonemapping;
 
-	// Lighting fragment shader params
-	lighting_fs_params_t lighting_fs_params;
-	tonemapping_fs_params_t tonemapping_fs_params = {
-		.exposure_bias = 1.5,
-	};
-
-	// Contains Lights Data packed up for gpu usage
-	bool needs_light_data_update = true;	
-
-	// Point Lights
-	StretchyBuffer<lighting_PointLight_t> point_lights;
-	GpuBuffer<lighting_PointLight_t> point_lights_buffer;
-
-	// Spot Lights
-	StretchyBuffer<lighting_SpotLight_t> spot_lights;
-	GpuBuffer<lighting_SpotLight_t> spot_lights_buffer;
-
-	// Sun (Directional) Lights
-	StretchyBuffer<lighting_SunLight_t> sun_lights;
-	GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
-
-	// Materials
-	map<i32,i32> material_id_to_index;
-	StretchyBuffer<geometry_Material_t> materials;
-	GpuBuffer<geometry_Material_t> materials_buffer;
-
-	// Images
-	map<i32,i32> image_id_to_index;
-	StretchyBuffer<GpuImage> images;
-	GpuImage default_image;
-	GpuImage default_image_array;
-	GpuImage default_image_cube;
-	GpuImage white_image_cube;
-	GpuBuffer<u8> default_buffer;
-
-	bool enable_debug_image_fullscreen = false;
-	i32 debug_image_index = 0;
-	
-	// Thread that listens for updates from Blender
-	std::thread live_link_thread;
-
-	SOCKET blender_socket = socket_invalid();
-	SOCKET connection_socket = socket_invalid();
-
-	bool debug_camera_active = true;
-	Camera debug_camera = {
-		.location = HMM_V3(2.5f, -15.0f, 3.0f),
-		.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
-		.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
-	};
+	struct DebugCameraState
+	{
+		bool active = true;
+		Camera camera = {
+			.location = HMM_V3(2.5f, -15.0f, 3.0f),
+			.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
+			.up = HMM_NormV3(HMM_V3(0.0f, 0.0f, 1.0f)),
+		};
+	} debug_camera;
 } state;
 
 void state_init()
@@ -243,7 +259,7 @@ void state_init()
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = (u8*) &default_image_data,
 	};
-	state.default_image = GpuImage(default_image_desc);
+	state.gpu.default_image = GpuImage(default_image_desc);
 
 	HMM_Vec4 default_image_array_data[MAX_SHADOW_CASCADES] = {};
 	for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
@@ -258,7 +274,7 @@ void state_init()
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = (u8*) &default_image_array_data,
 	};
-	state.default_image_array = GpuImage(default_image_array_desc);
+	state.gpu.default_image_array = GpuImage(default_image_array_desc);
 
 	HMM_Vec4 default_image_cube_data[6] =
 	{
@@ -277,7 +293,7 @@ void state_init()
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = (u8*) &default_image_cube_data,
 	};
-	state.default_image_cube = GpuImage(default_image_cube_desc);
+	state.gpu.default_image_cube = GpuImage(default_image_cube_desc);
 
 	HMM_Vec4 white_image_cube_data[6] =
 	{
@@ -296,27 +312,27 @@ void state_init()
 		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = (u8*) &white_image_cube_data,
 	};
-	state.white_image_cube = GpuImage(white_image_cube_desc);
+	state.gpu.white_image_cube = GpuImage(white_image_cube_desc);
 
 	u8 default_buffer_data[4] = { 0,0,0,0 };
 	GpuBufferDesc<u8> default_buffer_desc = {
 		.data = default_buffer_data,
-		.size = 4, 
+		.size = 4,
 		.usage = {
 			.storage_buffer = true,
 		},
 		.label = "default_buffer",
 	};
-	state.default_buffer = GpuBuffer<u8>(default_buffer_desc);
+	state.gpu.default_buffer = GpuBuffer<u8>(default_buffer_desc);
 
-	state.linear_sampler = sg_make_sampler((sg_sampler_desc){
+	state.gpu.linear_sampler = sg_make_sampler((sg_sampler_desc){
         .min_filter = SG_FILTER_LINEAR,
         .mag_filter = SG_FILTER_LINEAR,
         .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
     });
 
-	state.nearest_sampler = sg_make_sampler((sg_sampler_desc){
+	state.gpu.nearest_sampler = sg_make_sampler((sg_sampler_desc){
         .min_filter = SG_FILTER_NEAREST,
         .mag_filter = SG_FILTER_NEAREST,
 		.mipmap_filter = SG_FILTER_NEAREST,
@@ -329,9 +345,9 @@ void state_init()
 const i32 MAX_MATERIALS = 1024;
 void init_materials_buffer()
 {
-	if (!state.materials_buffer.is_gpu_buffer_valid())
+	if (!state.materials.buffer.is_gpu_buffer_valid())
 	{
-		state.materials_buffer = GpuBuffer((GpuBufferDesc<geometry_Material_t>){
+		state.materials.buffer = GpuBuffer((GpuBufferDesc<geometry_Material_t>){
 			.data = nullptr,
 			.size = sizeof(geometry_Material_t) * MAX_MATERIALS,
 			.usage = {
@@ -346,7 +362,7 @@ void init_materials_buffer()
 GpuBuffer<geometry_Material_t>& get_materials_buffer()
 {
 	init_materials_buffer();
-	return state.materials_buffer;
+	return state.materials.buffer;
 }
 
 void update_materials_buffer()
@@ -354,20 +370,20 @@ void update_materials_buffer()
 	// Write update to materials buffer
 	get_materials_buffer().update_gpu_buffer(
 		(sg_range){
-			.ptr = state.materials.data(),
-			.size = sizeof(geometry_Material_t) * state.materials.length(),
+			.ptr = state.materials.items.data(),
+			.size = sizeof(geometry_Material_t) * state.materials.items.length(),
 		}
-	);	
+	);
 }
 
 Camera& get_active_camera()
 {
-	if (state.camera_control_id && !state.debug_camera_active)
-	{	
-		Object& camera_control_target = state.objects[*state.camera_control_id];
+	if (state.scene.camera_control_id && !state.debug_camera.active)
+	{
+		Object& camera_control_target = state.scene.objects[*state.scene.camera_control_id];
 		assert(camera_control_target.has_camera_control);
 		return camera_control_target.camera_control.camera;
 	}
 
-	return state.debug_camera;
+	return state.debug_camera.camera;
 }

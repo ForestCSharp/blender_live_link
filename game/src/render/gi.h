@@ -42,7 +42,7 @@ struct GI_Scene
 	Mesh debug_sphere;
 	sg_pipeline gi_debug_pipeline;
 
-	// Static Parameters 
+	// Static Parameters
 	static const int cubemap_capture_size = 256;
 	static const int atlas_total_size = 2048;
 	static const int atlas_entry_size = 16;
@@ -98,9 +98,9 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 						printf("\tProbe Position: %f, %f, %f\n", probe_position.X, probe_position.Y, probe_position.Z);
 					}
 
-					i32 probe_idx = 
-						probe_coords.x + 
-						probe_coords.y * GI_PROBE_DIMENSIONS + 
+					i32 probe_idx =
+						probe_coords.x +
+						probe_coords.y * GI_PROBE_DIMENSIONS +
 						probe_coords.z * GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS;
 
 					i32 corner_idx = x + y * 2 + z * 4;
@@ -109,10 +109,10 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 			}
 		}
 
-		for (i32 i = 0; i < 8; ++i) 
+		for (i32 i = 0; i < 8; ++i)
 		{
 			i32 p_idx = cell.probe_indices[i];
-			
+
 			// 1. Ensure the index is valid
 			assert(p_idx >= 0 && p_idx < GI_PROBE_COUNT);
 
@@ -164,7 +164,7 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.cells_buffer = GpuBuffer<GI_Cell>(cells_buffer_desc);
 	out_gi_scene.cells_buffer.update_gpu_buffer(
 		(sg_range){
-			.ptr = out_gi_scene.cells.data(), 
+			.ptr = out_gi_scene.cells.data(),
 			.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
 		}
 	);
@@ -188,10 +188,10 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 		.label = "GI SG9 Lobes Buffer",
 	};
 	out_gi_scene.sg9_lobes_buffer = GpuBuffer<GI_SG9_Lobe>(sg9_lobes_buffer_desc);
-	
+
 	const LightingCaptureDesc lighting_capture_desc = {
 		// Cubemap Capture Setup
-		.cubemap_render_size = GI_Scene::cubemap_capture_size,	
+		.cubemap_render_size = GI_Scene::cubemap_capture_size,
 		// Octahedral Atlas Setup
 		.octahedral_total_size = GI_Scene::atlas_total_size,
 		.octahedral_entry_size = GI_Scene::atlas_entry_size,
@@ -199,7 +199,7 @@ void gi_scene_init(GI_Scene& out_gi_scene)
 	out_gi_scene.lighting_capture.init(lighting_capture_desc);
 
 	// Setup Debug Data
-	const f32 debug_sphere_radius = GI_CELL_EXTENT * 0.1f; 
+	const f32 debug_sphere_radius = GI_CELL_EXTENT * 0.1f;
 	out_gi_scene.debug_sphere = make_mesh(mesh_init_data_uv_sphere(debug_sphere_radius,24,24));
 	out_gi_scene.gi_debug_pipeline = sg_make_pipeline(GIDebugPass::make_pipeline_desc(sglue_swapchain().depth_format));
 }
@@ -208,7 +208,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 {
 	assert(in_gi_scene.probes.is_valid_index(in_gi_scene.probe_idx_to_update));
 
-	if (!in_state.gi_is_updating)
+	if (!in_state.gi.is_updating)
 	{
 		return;
 	}
@@ -224,12 +224,12 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 			in_gi_scene.next_atlas_index += 1;
 			needs_gpu_update = true;
 		}
-		
+
 		const HMM_Vec3 lighting_capture_position = gi_probe_position_from_index(in_gi_scene.probe_idx_to_update);
 		const bool should_render_geometry = (i != GI_FALLBACK_PROBE_IDX);
 		in_gi_scene.lighting_capture.render(
-				in_state, 
-				lighting_capture_position, 
+				in_state,
+				lighting_capture_position,
 				probe_idx_to_update.atlas_idx,
 				should_render_geometry,
 				in_gi_scene.probe_idx_to_update,
@@ -241,10 +241,10 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 		{
 			printf(
 				"Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
-				in_gi_scene.probe_idx_to_update, 
+				in_gi_scene.probe_idx_to_update,
 				in_gi_scene.probes.length(),
-				lighting_capture_position.X, 
-				lighting_capture_position.Y, 
+				lighting_capture_position.X,
+				lighting_capture_position.Y,
 				lighting_capture_position.Z
 			);
 		}
@@ -254,7 +254,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 
 		if (in_gi_scene.probe_idx_to_update == 0)
 		{
-			in_state.gi_is_updating = false;
+			in_state.gi.is_updating = false;
 		}
 	}
 
@@ -262,7 +262,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 	{
 		in_gi_scene.probes_buffer.update_gpu_buffer(
 			(sg_range){
-				.ptr = in_gi_scene.probes.data(), 
+				.ptr = in_gi_scene.probes.data(),
 				.size = sizeof(GI_Probe) * in_gi_scene.probes.length(),
 			}
 		);
@@ -294,8 +294,8 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 	gi_debug_fs_params_t fs_params = {
 		.atlas_total_size = in_gi_scene.lighting_capture.desc.octahedral_total_size,
 		.atlas_entry_size = in_gi_scene.lighting_capture.desc.octahedral_entry_size,
-		.probe_vis_mode = static_cast<i32>(state.probe_vis_mode),
-		.isolated_probe_index = state.gi_isolated_probe_index,
+		.probe_vis_mode = static_cast<i32>(state.gi.probe_vis_mode),
+		.isolated_probe_index = state.gi.isolated_probe_index,
 	};
 	// Apply Fragment Uniforms
 	sg_apply_uniforms(1, SG_RANGE(fs_params));
@@ -311,8 +311,8 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 			[4] = in_gi_scene.sg9_lobes_buffer.get_storage_view(),
 		},
 		.samplers = {
-			[0] = state.linear_sampler,
-			[1] = state.nearest_sampler,
+			[0] = state.gpu.linear_sampler,
+			[1] = state.gpu.nearest_sampler,
 		},
 	};
 	sg_apply_bindings(&bindings);

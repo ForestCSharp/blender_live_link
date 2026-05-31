@@ -89,7 +89,7 @@ using ankerl::unordered_dense::map;
 #include "render/shadow_blur_pass.h"
 #include "render/shadow_cascade_debug_pass.h"
 
-// Wrapper for sockets 
+// Wrapper for sockets
 #include "network/socket_wrapper.h"
 
 // Thread-Safe Channel
@@ -160,8 +160,8 @@ namespace flatbuffer_helpers
 	{
 		assert(in_flatbuffers_vector);
 		return HMM_V3(
-			in_flatbuffers_vector->x(), 
-			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->x(),
+			in_flatbuffers_vector->y(),
 			in_flatbuffers_vector->z()
 		);
 	}
@@ -170,8 +170,8 @@ namespace flatbuffer_helpers
 	{
 		assert(in_flatbuffers_vector);
 		return HMM_V4(
-			in_flatbuffers_vector->x(), 
-			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->x(),
+			in_flatbuffers_vector->y(),
 			in_flatbuffers_vector->z(),
 			in_flatbuffers_vector->w()
 		);
@@ -181,8 +181,8 @@ namespace flatbuffer_helpers
 	{
 		assert(in_flatbuffers_vector);
 		return HMM_V4(
-			in_flatbuffers_vector->x(), 
-			in_flatbuffers_vector->y(), 
+			in_flatbuffers_vector->x(),
+			in_flatbuffers_vector->y(),
 			in_flatbuffers_vector->z(),
 			in_w
 		);
@@ -212,7 +212,7 @@ bool register_image(const Blender::LiveLink::Image& in_image)
 {
 	int image_id = in_image.unique_id();
 
-	if (state.image_id_to_index.contains(image_id))
+	if (state.images.id_to_index.contains(image_id))
 	{
 		return false;
 	}
@@ -224,35 +224,35 @@ bool register_image(const Blender::LiveLink::Image& in_image)
 		.type = SG_IMAGETYPE_2D,
 		.width = in_image.width(),
 		.height = in_image.height(),
-		.pixel_format = SG_PIXELFORMAT_RGBA32F, 
+		.pixel_format = SG_PIXELFORMAT_RGBA32F,
 		.data = data_vec->data(),
 	};
 
-	const i32 array_index = state.images.length();
-	state.images.add(GpuImage(image_desc));
-	state.image_id_to_index[image_id] = array_index;
+	const i32 array_index = state.images.items.length();
+	state.images.items.add(GpuImage(image_desc));
+	state.images.id_to_index[image_id] = array_index;
 	return true;
 }
 
 void reset_images()
 {
-	state.image_id_to_index.clear();
-	state.images.reset();
-	state.enable_debug_image_fullscreen = false;
-	state.debug_image_index = 0;
+	state.images.id_to_index.clear();
+	state.images.items.reset();
+	state.images.enable_debug_fullscreen = false;
+	state.images.debug_index = 0;
 }
 
 // Registers a material and adds it to our gpu buffer
 bool register_material(const Blender::LiveLink::Material& in_material)
 {
 	int material_id = in_material.unique_id();
-	if (state.material_id_to_index.contains(material_id))
+	if (state.materials.id_to_index.contains(material_id))
 	{
 		return false;
 	}
 
 	printf("Registering material with ID: %i\n", material_id);
-	if (state.materials.length() >= MAX_MATERIALS)
+	if (state.materials.items.length() >= MAX_MATERIALS)
 	{
 		printf("Error Material Limit Reached: %i\n", MAX_MATERIALS);
 		exit(0);
@@ -275,50 +275,50 @@ bool register_material(const Blender::LiveLink::Material& in_material)
 	if (base_color_image_id > 0)
 	{
 		printf("Found base color image id: %i\n", base_color_image_id);
-		assert(state.image_id_to_index.contains(base_color_image_id));
-		new_material.base_color_image_index = state.image_id_to_index[base_color_image_id];
+		assert(state.images.id_to_index.contains(base_color_image_id));
+		new_material.base_color_image_index = state.images.id_to_index[base_color_image_id];
 	}
 
 	int metallic_image_id = in_material.metallic_image_id();
 	if (metallic_image_id > 0)
 	{
 		printf("Found metallic image id: %i\n", metallic_image_id);
-		assert(state.image_id_to_index.contains(metallic_image_id));
-		new_material.metallic_image_index = state.image_id_to_index[metallic_image_id];
+		assert(state.images.id_to_index.contains(metallic_image_id));
+		new_material.metallic_image_index = state.images.id_to_index[metallic_image_id];
 	}
 
 	int roughness_image_id = in_material.roughness_image_id();
 	if (roughness_image_id > 0)
 	{
 		printf("Found roughness image id: %i\n", roughness_image_id);
-		assert(state.image_id_to_index.contains(roughness_image_id));
-		new_material.roughness_image_index = state.image_id_to_index[roughness_image_id];
+		assert(state.images.id_to_index.contains(roughness_image_id));
+		new_material.roughness_image_index = state.images.id_to_index[roughness_image_id];
 	}
 
 	int emission_color_image_id = in_material.emission_color_image_id();
 	if (emission_color_image_id > 0)
 	{
 		printf("Found roughness image id: %i\n", emission_color_image_id);
-		assert(state.image_id_to_index.contains(emission_color_image_id));
-		new_material.emission_color_image_index = state.image_id_to_index[emission_color_image_id];
+		assert(state.images.id_to_index.contains(emission_color_image_id));
+		new_material.emission_color_image_index = state.images.id_to_index[emission_color_image_id];
 	}
 
-	const i32 array_index = state.materials.length();
-	state.materials.add(new_material);
-	state.material_id_to_index[material_id] = array_index;
-	return true;	
+	const i32 array_index = state.materials.items.length();
+	state.materials.items.add(new_material);
+	state.materials.id_to_index[material_id] = array_index;
+	return true;
 }
 
 void reset_materials()
 {
-	state.material_id_to_index.clear();
-	state.materials.reset();
-	state.materials_buffer.destroy_gpu_buffer();
+	state.materials.id_to_index.clear();
+	state.materials.items.reset();
+	state.materials.buffer.destroy_gpu_buffer();
 }
 
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
-	return state.render_passes[static_cast<int>(in_pass_id)];
+	return state.render_passes.passes[static_cast<int>(in_pass_id)];
 }
 
 bool object_is_sun_light(const Object& in_object)
@@ -328,22 +328,22 @@ bool object_is_sun_light(const Object& in_object)
 
 void refresh_primary_sun_id()
 {
-	if (state.primary_sun_id.has_value())
+	if (state.scene.primary_sun_id.has_value())
 	{
-		const i32 primary_sun_id = state.primary_sun_id.value();
-		if (state.objects.contains(primary_sun_id) && object_is_sun_light(state.objects[primary_sun_id]))
+		const i32 primary_sun_id = state.scene.primary_sun_id.value();
+		if (state.scene.objects.contains(primary_sun_id) && object_is_sun_light(state.scene.objects[primary_sun_id]))
 		{
 			return;
 		}
 
-		state.primary_sun_id.reset();
+		state.scene.primary_sun_id.reset();
 	}
 
-	for (auto const& [unique_id, object] : state.objects)
+	for (auto const& [unique_id, object] : state.scene.objects)
 	{
 		if (object_is_sun_light(object))
 		{
-			state.primary_sun_id = unique_id;
+			state.scene.primary_sun_id = unique_id;
 			printf("Found Primary Sun ID: %i\n", unique_id);
 			return;
 		}
@@ -372,7 +372,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 		// process materials from update
 		if (auto materials = update->materials())
-		{	
+		{
 			bool needs_buffer_update = false;
 			for (i32 idx = 0; idx < materials->size(); ++idx)
 			{
@@ -383,7 +383,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 			if (needs_buffer_update)
 			{
-				update_materials_buffer();	
+				update_materials_buffer();
 			}
 		}
 
@@ -424,9 +424,9 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				HMM_Quat rotation 	= flatbuffer_helpers::to_hmm_quat(object_rotation);
 
 				Object game_object = object_create(
-					unique_id, 
-					visibility, 
-					location, 
+					unique_id,
+					visibility,
+					location,
 					rotation,
 					scale
 				);
@@ -478,7 +478,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					{
 						// Make sure we already set up regular vertices and the skinned data matches that count
 						assert(num_vertices > 0);
-						
+
 						const u32 num_joint_indices = flatbuffer_joint_indices->size();
 						const u32 num_joint_weights = flatbuffer_joint_weights->size();
 						assert(num_joint_indices == num_joint_weights);
@@ -492,7 +492,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 						{
 							skinned_vertices[vertex_idx] = {
-								.joint_indices = {	
+								.joint_indices = {
 									.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
 									.Y = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 1),
 									.Z = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 2),
@@ -531,12 +531,12 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						for (i32 material_id_idx = 0; material_id_idx < num_material_indices; ++material_id_idx)
 						{
 		   					const int material_id = flatbuffer_material_ids->Get(material_id_idx);
-							if (!state.material_id_to_index.contains(material_id))
+							if (!state.materials.id_to_index.contains(material_id))
 							{
 								printf("\tFailed to find material with id: %i\n", material_id);
 								continue;
 							}
-							material_indices[material_id_idx] = state.material_id_to_index[material_id];
+							material_indices[material_id_idx] = state.materials.id_to_index[material_id];
 						}
 					}
 
@@ -657,7 +657,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 								if (character_settings.player_controlled)
 								{
-									state.player_character_id = game_object.unique_id;	
+									state.scene.player_character_id = game_object.unique_id;
 								}
 								break;
 							}
@@ -674,7 +674,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								printf("\t\t\t Follow Speed: %f\n", cam_control_follow_speed);
 
 								HMM_Vec3 initial_location = camera_control_get_desired_location(
-									game_object.current_transform.location.XYZ, 
+									game_object.current_transform.location.XYZ,
 									quat_forward(game_object.current_transform.rotation),
 									cam_control_follow_distance
 								);
@@ -689,7 +689,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								};
 								object_add_camera_control(game_object, cam_control_settings);
 
-								state.camera_control_id = game_object.unique_id;
+								state.scene.camera_control_id = game_object.unique_id;
 								break;
 							}
 							default:
@@ -699,23 +699,23 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				}
 
 				// Send updated object data to main thread
-				state.updated_objects.send(game_object);
+				state.live_link.updated_objects.send(game_object);
 			}
 
-			state.blender_data_loaded = true;
+			state.runtime.blender_data_loaded = true;
 		}
 
 		if (auto deleted_object_uids = update->deleted_object_uids())
 		{
 			for (i32 deleted_object_uid : *deleted_object_uids)
 			{
-				state.deleted_objects.send(deleted_object_uid);
+				state.live_link.deleted_objects.send(deleted_object_uid);
 			}
-		}	
+		}
 
 		if (update->reset())
 		{
-			state.reset.send(true);
+			state.live_link.reset.send(true);
 		}
 	}
 }
@@ -737,57 +737,57 @@ void live_link_thread_function()
 	const char* HOST = "127.0.0.1";
 	const char* PORT = "65432";
 	getaddrinfo(HOST, PORT, &hints, &res);
-	
+
 	// make a socket
-	state.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
+	state.live_link.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
 
 	// Allow us to reuse address and port
-	socket_set_reuse_addr_and_port(state.blender_socket, true);
+	socket_set_reuse_addr_and_port(state.live_link.blender_socket, true);
 
 	// bind our socket
-	SOCKET_OP(bind(state.blender_socket, res->ai_addr, res->ai_addrlen));
+	SOCKET_OP(bind(state.live_link.blender_socket, res->ai_addr, res->ai_addrlen));
 
 	const i32 backlog = 1;
-	SOCKET_OP(listen(state.blender_socket, backlog));
+	SOCKET_OP(listen(state.live_link.blender_socket, backlog));
 
-	// accept connections from blender 
+	// accept connections from blender
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size = sizeof their_addr;
 	do
 	{
-		state.connection_socket = accept(state.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
+		state.live_link.connection_socket = accept(state.live_link.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
 	}
-	while(!socket_is_valid(state.connection_socket) && state.game_running);
+	while(!socket_is_valid(state.live_link.connection_socket) && state.runtime.game_running);
 
 	// set recv timeout
 	struct timeval recv_timeout = {
 		.tv_sec = 1,
 		.tv_usec = 0
 	};
-	socket_set_recv_timeout(state.connection_socket, recv_timeout);
+	socket_set_recv_timeout(state.live_link.connection_socket, recv_timeout);
 
 	// infinite recv loop
-	while (state.game_running)
+	while (state.runtime.game_running)
 	{
-		StretchyBuffer<u8> flatbuffer_data; 
+		StretchyBuffer<u8> flatbuffer_data;
 
 		int current_bytes_read = 0;
 		int total_bytes_read = 0;
 		int packets_read = 0;
 		optional<flatbuffers::uoffset_t> flatbuffer_size;
-		do 
+		do
 		{
-			const size_t buffer_len = 4096; 
+			const size_t buffer_len = 4096;
 			u8 buffer[buffer_len];
 			const int flags = 0;
-			current_bytes_read = socket_recv(state.connection_socket, buffer, buffer_len, flags);
+			current_bytes_read = socket_recv(state.live_link.connection_socket, buffer, buffer_len, flags);
 
 			// Less than zero is an error
 			if (current_bytes_read < 0)
 			{
 				int last_error = socket_get_last_error();
 				if (	last_error == socket_error_again()
-					|| 	last_error == socket_error_would_block() 
+					|| 	last_error == socket_error_would_block()
 					|| 	last_error == socket_error_timed_out())
 				{
 					current_bytes_read = 0;
@@ -817,15 +817,15 @@ void live_link_thread_function()
 				}
 
 				total_bytes_read += current_bytes_read;
-				i32 next_idx = flatbuffer_data.length(); 
+				i32 next_idx = flatbuffer_data.length();
 				//arraddn(flatbuffer_data, current_bytes_read);
 				flatbuffer_data.add_uninitialized(current_bytes_read);
 				memcpy(&flatbuffer_data[next_idx], buffer, current_bytes_read);
-				++packets_read;	
+				++packets_read;
 			}
 		}
-		while (state.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
-	
+		while (state.runtime.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
+
 		printf("We've got some data! Data Length: %td Packets Read: %i\n", flatbuffer_data.length(), packets_read);
 
 		parse_flatbuffer_data(flatbuffer_data);
@@ -833,8 +833,8 @@ void live_link_thread_function()
 
 	printf("Shutting down sockets\n");
 
-	socket_close(state.connection_socket);
-	socket_close(state.blender_socket);
+	socket_close(state.live_link.connection_socket);
+	socket_close(state.live_link.blender_socket);
 
 	socket_lib_quit();
 }
@@ -844,15 +844,15 @@ void handle_resize()
 	int new_width = sapp_width();
     int new_height = sapp_height();
 
-	if (new_width != state.width || new_height != state.height)
+	if (new_width != state.window.width || new_height != state.window.height)
 	{
-		state.width = new_width;
-		state.height = new_height;
-	
+		state.window.width = new_width;
+		state.window.height = new_height;
+
 		const int render_pass_count = (int) ERenderPass::COUNT;
 		for (i32 pass_index = 0; pass_index < render_pass_count; ++pass_index)
 		{
-			state.render_passes[pass_index].handle_resize(state.width, state.height);
+			state.render_passes.passes[pass_index].handle_resize(state.window.width, state.window.height);
 		}
 	}
 }
@@ -870,8 +870,8 @@ void init(void)
 		.buffer_pool_size = 4096,
 		.image_pool_size = 4096,
 		//.sampler_pool_size = 1024,
-		//.shader_pool_size = 
-		//.pipeline_pool_size = 
+		//.shader_pool_size =
+		//.pipeline_pool_size =
 		.view_pool_size = 8192,
         .logger.func = slog_func,
 	   	.environment = sglue_environment(),
@@ -882,14 +882,14 @@ void init(void)
 	state_init();
 
 	// Spin up a thread that blocks until we receive our init event, and then listens for updates
-	state.live_link_thread = std::thread(live_link_thread_function);
+	state.live_link.thread = std::thread(live_link_thread_function);
 
 	// GI Scene Setup
 	gi_scene_init(gi_scene);
 	printf("gi_scene num cells: %zu num probes: %zu\n",
-		gi_scene.cells.length(), 
+		gi_scene.cells.length(),
 		gi_scene.probes.length()
-	);	
+	);
 
 	#if WITH_DEBUG_UI
 	// Init sokol imgui integration
@@ -904,7 +904,7 @@ void init(void)
 		printf("Sokol Gfx Error: Compute/Storage Buffers are Required\n");
 		exit(0);
 	}
-	
+
 	// setup sokol-debugtext
     sdtx_setup((sdtx_desc_t){
         .fonts = {
@@ -929,7 +929,7 @@ void init(void)
 
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
-	
+
 	RenderPassDesc ssao_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
@@ -948,7 +948,7 @@ void init(void)
 		},
 	};
 	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
-	
+
 	{	//SSAO Noise Texture
 		std::uniform_real_distribution<f32> randomf32s(0.0, 1.0); // random f32s between [0.0, 1.0]
 		std::default_random_engine generator;
@@ -957,7 +957,7 @@ void init(void)
 		{
 			ssao_noise[i] = HMM_V4(
 				randomf32s(generator) * 2.0f - 1.0f,
-				randomf32s(generator) * 2.0f - 1.0f, 
+				randomf32s(generator) * 2.0f - 1.0f,
 				0.0f,
 				0.0f
 			);
@@ -970,11 +970,11 @@ void init(void)
 			.data = (u8*) &ssao_noise,
 			.label = "ssao_noise_texture"
 		};
-		state.ssao_noise_texture = GpuImage(ssao_noise_desc);
+		state.ssao.noise_texture = GpuImage(ssao_noise_desc);
 
 		// Init ssao_fs_params
-		state.ssao_fs_params = {
-			.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),	
+		state.ssao.fs_params = {
+			.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
 		};
 
 		//SSAO Kernel
@@ -993,7 +993,7 @@ void init(void)
 			scale = HMM_Lerp(0.1f, scale * scale, 1.0f);
 			sample *= scale;
 
-			state.ssao_fs_params.kernel_samples[i] = HMM_V4(sample.X, sample.Y, sample.Z, 0.0);
+			state.ssao.fs_params.kernel_samples[i] = HMM_V4(sample.X, sample.Y, sample.Z, 0.0);
 		}
 	}
 
@@ -1113,9 +1113,9 @@ void init(void)
 
 	handle_resize();
 
-	if (state.init_file)
+	if (state.runtime.init_file)
 	{
-		if (FILE* file = fopen(state.init_file->c_str(), "rb"))
+		if (FILE* file = fopen(state.runtime.init_file->c_str(), "rb"))
 		{
 			fseek(file, 0, SEEK_END);
     		long file_size = ftell(file);
@@ -1128,7 +1128,7 @@ void init(void)
 
 			size_t bytes_read = fread(flatbuffer_data.data(), 1, file_size, file);
 			assert(bytes_read == (size_t) file_size);
-			parse_flatbuffer_data(flatbuffer_data);			
+			parse_flatbuffer_data(flatbuffer_data);
 		}
 	}
 }
@@ -1253,7 +1253,7 @@ void pick_isolated_gi_probe()
 
 	if (closest_probe_index >= 0)
 	{
-		state.gi_isolated_probe_index = closest_probe_index;
+		state.gi.isolated_probe_index = closest_probe_index;
 	}
 }
 
@@ -1261,21 +1261,21 @@ void frame(void)
 {
 	// Delta Time Calculation
 	static u64 last_frame_time = 0;
-	const u64 lap_time = stm_laptime(&last_frame_time);	
+	const u64 lap_time = stm_laptime(&last_frame_time);
 	const double delta_time = stm_sec(lap_time);
     const float ui_dpi_scale = sapp_dpi_scale();
 
 	DEBUG_UI(
 		simgui_new_frame((simgui_frame_desc_t){
-			.width = state.width,
-			.height = state.height, 
+			.width = state.window.width,
+			.height = state.window.height,
 			.delta_time = delta_time,
 			.dpi_scale = ui_dpi_scale,
 		});
 	);
 
 	// Receive Any Updated Objects
-	while (optional<Object> received_updated_object = state.updated_objects.receive())
+	while (optional<Object> received_updated_object = state.live_link.updated_objects.receive())
 	{
 		Object& updated_object = *received_updated_object;
 		i32 updated_object_uid = updated_object.unique_id;
@@ -1283,15 +1283,15 @@ void frame(void)
 		printf("Updating Object. UID: %i\n", updated_object_uid);
 
 		// Cleanup old object
-		if (state.objects.contains(updated_object_uid))
-		{	
-			Object& existing_object = state.objects[updated_object_uid];
+		if (state.scene.objects.contains(updated_object_uid))
+		{
+			Object& existing_object = state.scene.objects[updated_object_uid];
 			object_cleanup(existing_object);
 		}
 
 		if (updated_object.has_light)
 		{
-			state.needs_light_data_update = true;
+			state.lighting.needs_data_update = true;
 		}
 
 		if (updated_object.has_rigid_body)
@@ -1299,35 +1299,35 @@ void frame(void)
 			object_add_jolt_body(updated_object);
 		}
 
-		state.objects[updated_object_uid] = updated_object;
+		state.scene.objects[updated_object_uid] = updated_object;
 	}
 
 	// Receive Any Deleted Objects
-	while (optional<i32> received_deleted_object = state.deleted_objects.receive())
+	while (optional<i32> received_deleted_object = state.live_link.deleted_objects.receive())
 	{
 		i32 deleted_object_uid = *received_deleted_object;
-		if (state.objects.contains(deleted_object_uid))
+		if (state.scene.objects.contains(deleted_object_uid))
 		{
 			printf("Removing object. UID: %i\n", deleted_object_uid);
-			Object& object_to_delete = state.objects[deleted_object_uid];
+			Object& object_to_delete = state.scene.objects[deleted_object_uid];
 
 			if (object_to_delete.has_light)
 			{
-				state.needs_light_data_update = true;
+				state.lighting.needs_data_update = true;
 			}
-			
+
 			object_cleanup(object_to_delete);
-			state.objects.erase(deleted_object_uid);
+			state.scene.objects.erase(deleted_object_uid);
 		}
 	}
 
 	// Receive any Reset Messages
-	while(optional<bool> received_reset = state.reset.receive())
+	while(optional<bool> received_reset = state.live_link.reset.receive())
 	{
-		state.blender_data_loaded = false;
-		state.needs_light_data_update = true;
+		state.runtime.blender_data_loaded = false;
+		state.lighting.needs_data_update = true;
 
-		for (auto& [unique_id, object] : state.objects)
+		for (auto& [unique_id, object] : state.scene.objects)
 		{
 			if (object.has_rigid_body)
 			{
@@ -1338,10 +1338,10 @@ void frame(void)
 		}
 
 		//FCS TODO: Should also reset these if they're equal to a removed object...
-		state.objects.clear();
-		state.camera_control_id.reset();
-		state.player_character_id.reset();
-		state.primary_sun_id.reset();
+		state.scene.objects.clear();
+		state.scene.camera_control_id.reset();
+		state.scene.player_character_id.reset();
+		state.scene.primary_sun_id.reset();
 
 		reset_materials();
 		reset_images();
@@ -1349,8 +1349,8 @@ void frame(void)
 
 	refresh_primary_sun_id();
 
-	// Space Bar + Left Control Starts/Stops simulation 
-	DEFINE_TOGGLE_TWO_KEYS(state.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
+	// Space Bar + Left Control Starts/Stops simulation
+	DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
 
 	#if WITH_DEBUG_UI
 	// Control + I toggles imgui debug window
@@ -1359,14 +1359,14 @@ void frame(void)
 
 	// D + Left Control toggle debug camera
 	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_D, SAPP_KEYCODE_LEFT_CONTROL,
-		if (!state.debug_camera_active) state.debug_camera = get_active_camera();
-		state.debug_camera_active = !state.debug_camera_active;
+		if (!state.debug_camera.active) state.debug_camera.camera = get_active_camera();
+		state.debug_camera.active = !state.debug_camera.active;
 	);
 
 	// Reset State
 	DEFINE_EVENT_TWO_KEYS(SAPP_KEYCODE_R, SAPP_KEYCODE_LEFT_CONTROL,
 		// Reset object transforms and recreate physics state
-		for (auto& [unique_id, object] : state.objects)
+		for (auto& [unique_id, object] : state.scene.objects)
 		{
 			object.current_transform = object.initial_transform;
 
@@ -1381,30 +1381,30 @@ void frame(void)
 		ImGui::Begin("DEBUG");
 		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			ImGui::Text("Resolution: %d x %d", state.width, state.height);
+			ImGui::Text("Resolution: %d x %d", state.window.width, state.window.height);
 			ImGui::Text("frame time: %f ms", delta_time * 1000.f);
 			ImGui::Text("FPS: %f", 1.0 / delta_time);
 			ImGui::Spacing();
 		}
-	
+
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Indent();
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
-				ImGui::Checkbox("SSAO", &state.ssao_enable);
+				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+				ImGui::Checkbox("SSAO", &state.ssao.enable);
 				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					ImGui::Checkbox("Enable DoF", &state.dof_enable);
-					ImGui::BeginDisabled(!state.dof_enable);
-					ImGui::SliderFloat("Focus Distance", &state.dof_focus_distance, 0.1f, 500.0f, "%.1f");
-					ImGui::SliderFloat("Focus Range", &state.dof_focus_range, 0.1f, 200.0f, "%.1f");
-					ImGui::SliderFloat("Max CoC Radius", &state.dof_max_coc_radius, 0.0f, 32.0f, "%.1f px");
-					ImGui::SliderFloat("Foreground Scale", &state.dof_foreground_blur_scale, 0.0f, 4.0f, "%.2f");
-					ImGui::SliderFloat("Background Scale", &state.dof_background_blur_scale, 0.0f, 4.0f, "%.2f");
+					ImGui::Checkbox("Enable DoF", &state.dof.enable);
+					ImGui::BeginDisabled(!state.dof.enable);
+					ImGui::SliderFloat("Focus Distance", &state.dof.focus_distance, 0.1f, 500.0f, "%.1f");
+					ImGui::SliderFloat("Focus Range", &state.dof.focus_range, 0.1f, 200.0f, "%.1f");
+					ImGui::SliderFloat("Max CoC Radius", &state.dof.max_coc_radius, 0.0f, 32.0f, "%.1f px");
+					ImGui::SliderFloat("Foreground Scale", &state.dof.foreground_blur_scale, 0.0f, 4.0f, "%.2f");
+					ImGui::SliderFloat("Background Scale", &state.dof.background_blur_scale, 0.0f, 4.0f, "%.2f");
 					const char* dof_debug_modes[] = { "Final", "CoC" };
-					ImGui::Combo("Debug", &state.dof_debug_mode, dof_debug_modes, IM_ARRAYSIZE(dof_debug_modes));
+					ImGui::Combo("Debug", &state.dof.debug_mode, dof_debug_modes, IM_ARRAYSIZE(dof_debug_modes));
 					ImGui::EndDisabled();
 				}
 			}
@@ -1415,49 +1415,49 @@ void frame(void)
 			ImGui::Indent();
 			if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Checkbox("Shadow Rendering", &state.shadow_rendering_enable);
-				ImGui::Checkbox("Shadow Blur", &state.shadow_blur_enable);
-				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow_depth_freeze);
-				if (ImGui::SliderInt("Num Cascades", &state.shadow_num_cascades, 1, MAX_SHADOW_CASCADES))
+				ImGui::Checkbox("Shadow Rendering", &state.shadow.rendering_enable);
+				ImGui::Checkbox("Shadow Blur", &state.shadow.blur_enable);
+				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow.depth_freeze);
+				if (ImGui::SliderInt("Num Cascades", &state.shadow.num_cascades, 1, MAX_SHADOW_CASCADES))
 				{
 					ShadowDepthPass::has_valid_shadow_map = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
-				f32& active_cascade_distance_scale = state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
-					? state.shadow_centered_square_cascade_distance_scale
-					: state.shadow_frustum_cascade_distance_scale;
+				f32& active_cascade_distance_scale = state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+					? state.shadow.centered_square_cascade_distance_scale
+					: state.shadow.frustum_cascade_distance_scale;
 				if (ImGui::SliderFloat("Cascade Distance Scale", &active_cascade_distance_scale, 0.25f, 4.0f, "%.2f"))
 				{
 					ShadowDepthPass::has_valid_shadow_map = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
-				if (ImGui::Combo("Cascade Placement", (i32*) &state.shadow_cascade_placement_mode, EShadowCascadePlacementModeNames, IM_ARRAYSIZE(EShadowCascadePlacementModeNames)))
+				if (ImGui::Combo("Cascade Placement", (i32*) &state.shadow.cascade_placement_mode, EShadowCascadePlacementModeNames, IM_ARRAYSIZE(EShadowCascadePlacementModeNames)))
 				{
 					ShadowDepthPass::has_valid_shadow_map = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
-				if (state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+				if (state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 				{
-					if (ImGui::SliderFloat("Centered Square Lookahead", &state.shadow_centered_square_lookahead_distance, 0.0f, 1000.0f, "%.2f"))
+					if (ImGui::SliderFloat("Centered Square Lookahead", &state.shadow.centered_square_lookahead_distance, 0.0f, 1000.0f, "%.2f"))
 					{
-						if (!state.shadow_depth_freeze)
+						if (!state.shadow.depth_freeze)
 						{
 							ShadowDepthPass::has_valid_shadow_map = false;
 							ShadowDepthPass::has_valid_shadow_blur = false;
 						}
 					}
 					bool center_changed = false;
-					ImGui::BeginDisabled(!state.shadow_depth_freeze);
-					center_changed = ImGui::DragFloat3("Centered Square Center", &state.shadow_centered_square_center.X, 0.25f, -10000.0f, 10000.0f, "%.2f");
+					ImGui::BeginDisabled(!state.shadow.depth_freeze);
+					center_changed = ImGui::DragFloat3("Centered Square Center", &state.shadow.centered_square_center.X, 0.25f, -10000.0f, 10000.0f, "%.2f");
 					ImGui::EndDisabled();
 					if (center_changed)
 					{
-						state.shadow_force_recapture = true;
+						state.shadow.force_recapture = true;
 						ShadowDepthPass::has_valid_shadow_map = false;
 						ShadowDepthPass::has_valid_shadow_blur = false;
 					}
 				}
-				ImGui::Checkbox("Show Cascade Selection", &state.shadow_debug_show_cascade_selection);
+				ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
 			}
 			ImGui::Unindent();
 
@@ -1466,84 +1466,84 @@ void frame(void)
 			ImGui::Indent();
 			if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Checkbox("Sky Rendering", &state.sky_rendering_enable);
-				ImGui::Checkbox("Direct Lighting", &state.direct_lighting_enable);
+				ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable);
+				ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
 
 				ImGui::Separator();
 
 				ImGui::Indent();
 				if (ImGui::CollapsingHeader("Global Illumination", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					ImGui::Checkbox("GI", &state.gi_enable);
-					ImGui::Checkbox("GI Probe Occlusion", &state.gi_probe_occlusion);
-					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
+					ImGui::Checkbox("GI", &state.gi.enable);
+					ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
+					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.gi.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
 					{
-						state.gi_is_updating = true;
+						state.gi.is_updating = true;
 					}
-					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.probe_occlusion_mode, EProbeOcclusionModeNames, IM_ARRAYSIZE(EProbeOcclusionModeNames)))
+					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.gi.probe_occlusion_mode, EProbeOcclusionModeNames, IM_ARRAYSIZE(EProbeOcclusionModeNames)))
 					{
-						state.gi_is_updating = true;
+						state.gi.is_updating = true;
 					}
-					if (ImGui::Checkbox("render sky to probes", &state.gi_render_sky_to_probes))
+					if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes))
 					{
-						state.gi_is_updating = true;
+						state.gi.is_updating = true;
 					}
-					ImGui::Checkbox("Show Probes", &state.show_probes);	
-					if (ImGui::Checkbox("Probe Isolation", &state.gi_probe_isolation_enable))
+					ImGui::Checkbox("Show Probes", &state.gi.show_probes);
+					if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable))
 					{
-						if (state.gi_probe_isolation_enable)
+						if (state.gi.probe_isolation_enable)
 						{
-							state.show_probes = true;
+							state.gi.show_probes = true;
 							set_mouse_locked(false);
 						}
 						else
 						{
-							state.gi_isolated_probe_index = -1;
+							state.gi.isolated_probe_index = -1;
 						}
 					}
-					if (state.gi_probe_isolation_enable)
+					if (state.gi.probe_isolation_enable)
 					{
-						state.show_probes = true;
+						state.gi.show_probes = true;
 
 						ImGui::SameLine();
 						if (ImGui::SmallButton("Clear"))
 						{
-							state.gi_isolated_probe_index = -1;
+							state.gi.isolated_probe_index = -1;
 						}
 
-						if (state.gi_isolated_probe_index >= 0)
+						if (state.gi.isolated_probe_index >= 0)
 						{
-							ImGui::Text("Isolated Probe: %d", state.gi_isolated_probe_index);
+							ImGui::Text("Isolated Probe: %d", state.gi.isolated_probe_index);
 						}
 						else
 						{
 							ImGui::Text("Isolated Probe: None");
 						}
 					}
-					ImGui::SliderFloat("GI Intensity", &state.gi_intensity, 0.0f, 10.0f, "%.2f");
-					if (ImGui::Button("Update GI Probes") && !state.gi_is_updating)
+					ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
+					if (ImGui::Button("Update GI Probes") && !state.gi.is_updating)
 					{
-						state.gi_is_updating = true;
+						state.gi.is_updating = true;
 					}
 					ImGui::SameLine();
-					ImGui::Checkbox("Compute Irradiance", &state.compute_irradiance);
+					ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance);
 
-					if (state.gi_is_updating)
+					if (state.gi.is_updating)
 					{
 						ImGui::SameLine();
 						ImGui::Text("Updating...");
 					}
-					
-					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames)))
+
+					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.gi.probe_vis_mode, EProbeVisModeNames, IM_ARRAYSIZE(EProbeVisModeNames)))
 					{
-						if (state.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.probe_vis_mode == EProbeVisMode::SG9Irradiance)
+						if (state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance)
 						{
-							state.gi_is_updating = true;
+							state.gi.is_updating = true;
 						}
 					}
-					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi_debug_constant_white_probes))
+					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes))
 					{
-						state.gi_is_updating = true;
+						state.gi.is_updating = true;
 					}
 				}
 				ImGui::Unindent();
@@ -1559,22 +1559,22 @@ void frame(void)
 				const GpuImageDesc& desc = image.get_desc();
 				ImGui::Text("Shadow Cascades");
 				ImGui::Text("%d x %d x %d", desc.width, desc.height, ShadowDepthPass::get_active_cascade_count(state));
-				const f32 active_cascade_distance_scale = state.shadow_cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
-					? state.shadow_centered_square_cascade_distance_scale
-					: state.shadow_frustum_cascade_distance_scale;
+				const f32 active_cascade_distance_scale = state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+					? state.shadow.centered_square_cascade_distance_scale
+					: state.shadow.frustum_cascade_distance_scale;
 				ImGui::Text("Distance Scale: %.2f", active_cascade_distance_scale);
 				for (i32 cascade_idx = 0; cascade_idx < ShadowDepthPass::get_active_cascade_count(state); ++cascade_idx)
 				{
 					ImGui::Text("Cascade %d: %.2f", cascade_idx, ShadowDepthPass::cascade_distances[cascade_idx]);
 				}
 				const i32 active_cascade_count = ShadowDepthPass::get_active_cascade_count(state);
-				if (state.shadow_debug_cascade_index >= active_cascade_count)
+				if (state.shadow.debug_cascade_index >= active_cascade_count)
 				{
-					state.shadow_debug_cascade_index = active_cascade_count - 1;
+					state.shadow.debug_cascade_index = active_cascade_count - 1;
 				}
-				ImGui::SliderInt("Debug Cascade", &state.shadow_debug_cascade_index, 0, active_cascade_count - 1);
+				ImGui::SliderInt("Debug Cascade", &state.shadow.debug_cascade_index, 0, active_cascade_count - 1);
 				const char* shadow_debug_modes[] = { "Moments", "Depth" };
-				ImGui::Combo("Debug View", &state.shadow_debug_view_mode, shadow_debug_modes, IM_ARRAYSIZE(shadow_debug_modes));
+				ImGui::Combo("Debug View", &state.shadow.debug_view_mode, shadow_debug_modes, IM_ARRAYSIZE(shadow_debug_modes));
 
 				GpuImage& debug_image = get_render_pass(ERenderPass::ShadowCascadeDebug).get_color_output(0);
 				const GpuImageDesc& debug_desc = debug_image.get_desc();
@@ -1589,22 +1589,22 @@ void frame(void)
 			ImGui::Separator();
 
 			if (ImGui::TreeNode("Main Pass"))
-			{		
+			{
 				RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 				for (i32 i = 0; i < geometry_pass.get_num_color_outputs(); ++i)
-				{	
+				{
 					GpuImage& image = get_render_pass(ERenderPass::Geometry).get_color_output(i);
 					const GpuImageDesc& desc = image.get_desc();
 					const ImVec2 image_size = ImVec2(desc.width / 4.0, desc.height / 4.0);
 
-					// Use a solid background color (e.g., Black) to hide transparency		
-					const ImVec4 bg_col = ImVec4(0.0f, 0.0f, 0.0f, 1.0f); 
+					// Use a solid background color (e.g., Black) to hide transparency
+					const ImVec4 bg_col = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
 					const ImVec4 tint_col = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // Pure white tint
 
 					ImGui::ImageWithBg(
-						simgui_imtextureid(image.get_texture_view(0)), 
-						image_size, 
-						ImVec2(0,0), ImVec2(1,1), 
+						simgui_imtextureid(image.get_texture_view(0)),
+						image_size,
+						ImVec2(0,0), ImVec2(1,1),
 						bg_col, tint_col
 					);
 				}
@@ -1614,7 +1614,7 @@ void frame(void)
 
 			const ImVec2 debug_texture_size(256,256);
 
-			// Octahedral Atlas Visualization 
+			// Octahedral Atlas Visualization
 			ImGui::Text("Octahedral Atlas: Lighting");
 			ImGui::Image(simgui_imtextureid(gi_scene_get_octahedral_lighting_view(gi_scene)), debug_texture_size);
 			ImGui::Text("Octahedral Atlas: Depth");
@@ -1626,18 +1626,18 @@ void frame(void)
 		}
 	);
 
-	if (state.is_simulating)
+	if (state.runtime.is_simulating)
 	{
 		//FCS TODO: Game logic update here
 
 		// Jolt Physics Update
 		jolt_update(delta_time);
 	}
-	
+
 	// Debug Camera Control
-	if (state.debug_camera_active && !is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL))
+	if (state.debug_camera.active && !is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL))
 	{
-		Camera& camera = state.debug_camera;	
+		Camera& camera = state.debug_camera.camera;
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 
 		f32 move_speed = 10.0f * delta_time;
@@ -1648,34 +1648,34 @@ void frame(void)
 
 		if (is_key_pressed(SAPP_KEYCODE_W))
 		{
-			camera.location += camera.forward * move_speed;	
+			camera.location += camera.forward * move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_S))
 		{
-			camera.location -= camera.forward * move_speed;	
-		}	
+			camera.location -= camera.forward * move_speed;
+		}
 		if (is_key_pressed(SAPP_KEYCODE_D))
 		{
-			camera.location += camera_right * move_speed;	
+			camera.location += camera_right * move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_A))
 		{
-			camera.location -= camera_right * move_speed;	
+			camera.location -= camera_right * move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_E))
 		{
-			camera.location += camera.up * move_speed;	
+			camera.location += camera.up * move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_Q))
 		{
-			camera.location -= camera.up * move_speed;	
+			camera.location -= camera.up * move_speed;
 		}
 
 		if (is_mouse_locked())
 		{
 			const f32 look_speed = 1.0f * delta_time;
 			const HMM_Vec2 mouse_delta = get_mouse_delta();
-			
+
 			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
@@ -1683,9 +1683,9 @@ void frame(void)
 	}
 
 	// Player Camera Control
-	if (state.camera_control_id && !state.debug_camera_active)
-	{	
-		Object& camera_control_object = state.objects[*state.camera_control_id];
+	if (state.scene.camera_control_id && !state.debug_camera.active)
+	{
+		Object& camera_control_object = state.scene.objects[*state.scene.camera_control_id];
 		CameraControl& camera_control = camera_control_object.camera_control;
 		Camera& camera = camera_control.camera;
 
@@ -1698,38 +1698,38 @@ void frame(void)
 
 			// Get current target at old forward vector
 			const HMM_Vec3 camera_old_target = camera.location + camera.forward * camera_control.follow_distance;
-			
+
 			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
 			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
 
 			// Use old target and new forward vector to get our rotated desired location
 			camera_control.camera.location = camera_control_get_desired_location(
-				camera_old_target, 
+				camera_old_target,
 				camera.forward,
 				camera_control.follow_distance
 			);
 		}
 
 		HMM_Vec3 desired_location = camera_control_get_desired_location(
-			camera_control_object.current_transform.location.XYZ, 
+			camera_control_object.current_transform.location.XYZ,
 			camera.forward,
 			camera_control.follow_distance
 		);
 		camera_control.camera.location = HMM_LerpV3(
-			camera.location, 
-			camera_control.follow_speed * delta_time, 
+			camera.location,
+			camera_control.follow_speed * delta_time,
 			desired_location
 		);
 	}
 
 	// Player Character Control
-	if (state.player_character_id && !state.debug_camera_active)
+	if (state.scene.player_character_id && !state.debug_camera.active)
 	{
 		const Camera& camera = get_active_camera();
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 
-		Object& player_character_object = state.objects[*state.player_character_id];
+		Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
 		Character& player_character_state = player_character_object.character;
 		f32 character_move_speed = player_character_state.settings.move_speed * delta_time;
 
@@ -1744,19 +1744,19 @@ void frame(void)
 		HMM_Vec3 move_vec = HMM_V3(0,0,0);
 		if (is_key_pressed(SAPP_KEYCODE_W))
 		{
-			move_vec += projected_cam_forward * character_move_speed;	
+			move_vec += projected_cam_forward * character_move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_S))
 		{
-			move_vec -= projected_cam_forward * character_move_speed;	
-		}	
+			move_vec -= projected_cam_forward * character_move_speed;
+		}
 		if (is_key_pressed(SAPP_KEYCODE_D))
 		{
-			move_vec += projected_cam_right * character_move_speed;	
+			move_vec += projected_cam_right * character_move_speed;
 		}
 		if (is_key_pressed(SAPP_KEYCODE_A))
 		{
-			move_vec -= projected_cam_right * character_move_speed;	
+			move_vec -= projected_cam_right * character_move_speed;
 		}
 
 		bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
@@ -1768,16 +1768,16 @@ void frame(void)
 	{
 		{
 			// Run initially, and then only if our updates from blender encounter a light
-			if (state.needs_light_data_update)
+			if (state.lighting.needs_data_update)
 			{
-				state.needs_light_data_update = false;
+				state.lighting.needs_data_update = false;
 
 				const i32 MAX_LIGHTS_PER_TYPE = 1024;
 
 				// Init point_lights_buffer if we haven't already
-				if (!state.point_lights_buffer.is_gpu_buffer_valid())
+				if (!state.lighting.point_lights_buffer.is_gpu_buffer_valid())
 				{
-					state.point_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_PointLight_t>){
+					state.lighting.point_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_PointLight_t>){
 						.data = nullptr,
 						.size = sizeof(lighting_PointLight_t) * MAX_LIGHTS_PER_TYPE,
 						.usage = {
@@ -1789,9 +1789,9 @@ void frame(void)
 				}
 
 				// Init spot_lights_buffer if we haven't already
-				if (!state.spot_lights_buffer.is_gpu_buffer_valid())
+				if (!state.lighting.spot_lights_buffer.is_gpu_buffer_valid())
 				{
-					state.spot_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SpotLight_t>){
+					state.lighting.spot_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SpotLight_t>){
 						.data = nullptr,
 						.size = sizeof(lighting_SpotLight_t) * MAX_LIGHTS_PER_TYPE,
 						.usage = {
@@ -1803,9 +1803,9 @@ void frame(void)
 				}
 
 				// Init sun_lights_buffer if we haven't already
-				if (!state.sun_lights_buffer.is_gpu_buffer_valid())
+				if (!state.lighting.sun_lights_buffer.is_gpu_buffer_valid())
 				{
-					state.sun_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SunLight_t>){
+					state.lighting.sun_lights_buffer = GpuBuffer((GpuBufferDesc<lighting_SunLight_t>){
 						.data = nullptr,
 						.size = sizeof(lighting_SunLight_t) * MAX_LIGHTS_PER_TYPE,
 						.usage = {
@@ -1816,11 +1816,11 @@ void frame(void)
 					});
 				}
 
-				state.point_lights.reset();
-				state.spot_lights.reset();
-				state.sun_lights.reset();
+				state.lighting.point_lights.reset();
+				state.lighting.spot_lights.reset();
+				state.lighting.sun_lights.reset();
 
-				for (auto const& [unique_id, object] : state.objects)
+				for (auto const& [unique_id, object] : state.scene.objects)
 				{
 					if (object.has_light)
 					{
@@ -1829,7 +1829,7 @@ void frame(void)
 						{
 							case LightType::Point:
 							{
-								if (state.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								if (state.lighting.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
 								{
 									printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
 									continue;
@@ -1841,12 +1841,12 @@ void frame(void)
 								memcpy(&new_point_light.color, &object.light.color, sizeof(f32) * 3);
 								new_point_light.color[3] = 1.0; // Force alpha to 1.0
 								new_point_light.power = object.light.point.power;
-								state.point_lights.add(new_point_light);
+								state.lighting.point_lights.add(new_point_light);
 								break;
 							}
 							case LightType::Spot:
 							{
-								if (state.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								if (state.lighting.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
 								{
 									printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
 									continue;
@@ -1861,15 +1861,15 @@ void frame(void)
 								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
 								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(f32) * 3);
 
-								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;	
+								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
 								new_spot_light.power = object.light.spot.power;
 								new_spot_light.edge_blend = object.light.spot.edge_blend;
-								state.spot_lights.add(new_spot_light);
+								state.lighting.spot_lights.add(new_spot_light);
 								break;
 							}
 							case LightType::Sun:
 							{
-								if (state.sun_lights.length() >= MAX_LIGHTS_PER_TYPE)
+								if (state.lighting.sun_lights.length() >= MAX_LIGHTS_PER_TYPE)
 								{
 									printf("Exceeded Max Number of Sun Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
 									continue;
@@ -1886,12 +1886,12 @@ void frame(void)
 
 								new_sun_light.power = object.light.sun.power;
 								new_sun_light.cast_shadows = object.light.sun.cast_shadows;
-								state.sun_lights.add(new_sun_light);
+								state.lighting.sun_lights.add(new_sun_light);
 								break;
 							}
 							case LightType::Area:
 							{
-								//FCS TODO: 
+								//FCS TODO:
 								break;
 							}
 							default: break;
@@ -1899,46 +1899,46 @@ void frame(void)
 					}
 				}
 
-				state.lighting_fs_params.num_point_lights = state.point_lights.length();
-				printf("Num Point Lights: %i\n", state.lighting_fs_params.num_point_lights);
-				if (state.lighting_fs_params.num_point_lights > 0)
+				state.lighting.fs_params.num_point_lights = state.lighting.point_lights.length();
+				printf("Num Point Lights: %i\n", state.lighting.fs_params.num_point_lights);
+				if (state.lighting.fs_params.num_point_lights > 0)
 				{
-					state.point_lights_buffer.update_gpu_buffer(
+					state.lighting.point_lights_buffer.update_gpu_buffer(
 						(sg_range){
-							.ptr = state.point_lights.data(),
-							.size = sizeof(lighting_PointLight_t) * state.lighting_fs_params.num_point_lights,
+							.ptr = state.lighting.point_lights.data(),
+							.size = sizeof(lighting_PointLight_t) * state.lighting.fs_params.num_point_lights,
 						}
 					);
 				}
 
-				state.lighting_fs_params.num_spot_lights = state.spot_lights.length();	
-				printf("Num Spot Lights: %i\n", state.lighting_fs_params.num_spot_lights);
-				if (state.lighting_fs_params.num_spot_lights > 0)
+				state.lighting.fs_params.num_spot_lights = state.lighting.spot_lights.length();
+				printf("Num Spot Lights: %i\n", state.lighting.fs_params.num_spot_lights);
+				if (state.lighting.fs_params.num_spot_lights > 0)
 				{
-					state.spot_lights_buffer.update_gpu_buffer(
+					state.lighting.spot_lights_buffer.update_gpu_buffer(
 						(sg_range){
-							.ptr = state.spot_lights.data(),
-							.size = sizeof(lighting_SpotLight_t) * state.lighting_fs_params.num_spot_lights,
+							.ptr = state.lighting.spot_lights.data(),
+							.size = sizeof(lighting_SpotLight_t) * state.lighting.fs_params.num_spot_lights,
 						}
 					);
 				}
 
-				state.lighting_fs_params.num_sun_lights = state.sun_lights.length();
-				printf("Num Sun Lights: %i\n", state.lighting_fs_params.num_sun_lights);
-				if (state.lighting_fs_params.num_sun_lights > 0)
+				state.lighting.fs_params.num_sun_lights = state.lighting.sun_lights.length();
+				printf("Num Sun Lights: %i\n", state.lighting.fs_params.num_sun_lights);
+				if (state.lighting.fs_params.num_sun_lights > 0)
 				{
-					state.sun_lights_buffer.update_gpu_buffer(
+					state.lighting.sun_lights_buffer.update_gpu_buffer(
 						(sg_range){
-							.ptr = state.sun_lights.data(),
-							.size = sizeof(lighting_SunLight_t) * state.lighting_fs_params.num_sun_lights,
+							.ptr = state.lighting.sun_lights.data(),
+							.size = sizeof(lighting_SunLight_t) * state.lighting.fs_params.num_sun_lights,
 						}
 					);
 				}
 			}
 		}
 
-		// Bake Sky 
-		if (state.sky_rendering_enable || state.gi_render_sky_to_probes)
+		// Bake Sky
+		if (state.sky.rendering_enable || state.gi.render_sky_to_probes)
 		{
 			SkyBakePass::render(state);
 		}
@@ -1957,16 +1957,16 @@ void frame(void)
 		HMM_Vec3 target = camera.location + camera.forward * 10;
 		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
-		if (!state.shadow_depth_freeze)
+		if (!state.shadow.depth_freeze)
 		{
-			state.shadow_centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow_centered_square_lookahead_distance;
+			state.shadow.centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow.centered_square_lookahead_distance;
 		}
 
 		// Get our jolt body interface
 		JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 		// Update Objects
-		for (auto& [unique_id, object] : state.objects)
+		for (auto& [unique_id, object] : state.scene.objects)
 		{
 			// For objects that simulate physics, copy their physics transforms into their uniform buffers
 			object_copy_physics_transform(object, body_interface);
@@ -1978,7 +1978,7 @@ void frame(void)
 			}
 		}
 
-		if (state.shadow_rendering_enable)
+		if (state.shadow.rendering_enable)
 		{
 			if (!ShadowDepthPass::get_valid_shadow_sun(state))
 			{
@@ -1988,7 +1988,7 @@ void frame(void)
 			else
 			{
 				// Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
-				const bool should_update_shadow_depth = !state.shadow_depth_freeze || !ShadowDepthPass::has_valid_shadow_map || state.shadow_force_recapture;
+				const bool should_update_shadow_depth = !state.shadow.depth_freeze || !ShadowDepthPass::has_valid_shadow_map || state.shadow.force_recapture;
 				if (should_update_shadow_depth)
 				{
 					get_render_pass(ERenderPass::ShadowDepth).execute(
@@ -1997,16 +1997,16 @@ void frame(void)
 							ShadowDepthPass::render(state, pass_idx);
 						}
 					);
-					state.shadow_force_recapture = false;
+					state.shadow.force_recapture = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
 
-				if (state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
+				if (state.shadow.blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
 				{
 					ShadowBlurPass::execute_separable(
 						get_render_pass(ERenderPass::ShadowBlur),
 						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_array_view(),
-						state.linear_sampler,
+						state.gpu.linear_sampler,
 						HMM_V2(
 							(f32)ShadowDepthPass::ShadowMapResolution,
 							(f32)ShadowDepthPass::ShadowMapResolution
@@ -2015,27 +2015,27 @@ void frame(void)
 					);
 					ShadowDepthPass::has_valid_shadow_blur = true;
 				}
-				else if (!state.shadow_blur_enable)
+				else if (!state.shadow.blur_enable)
 				{
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
 
 				if (ShadowDepthPass::has_valid_shadow_map)
 				{
-					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
+					GpuImage& shadow_moments_texture = state.shadow.blur_enable && ShadowDepthPass::has_valid_shadow_blur
 						? get_render_pass(ERenderPass::ShadowBlur).get_color_output(0)
 						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
 					const i32 active_cascade_count = ShadowDepthPass::get_active_cascade_count(state);
-					if (state.shadow_debug_cascade_index >= active_cascade_count)
+					if (state.shadow.debug_cascade_index >= active_cascade_count)
 					{
-						state.shadow_debug_cascade_index = active_cascade_count - 1;
+						state.shadow.debug_cascade_index = active_cascade_count - 1;
 					}
 					ShadowCascadeDebugPass::render(
 						get_render_pass(ERenderPass::ShadowCascadeDebug),
 						shadow_moments_texture.get_texture_array_view(),
-						state.linear_sampler,
-						state.shadow_debug_cascade_index,
-						state.shadow_debug_view_mode
+						state.gpu.linear_sampler,
+						state.shadow.debug_cascade_index,
+						state.shadow.debug_view_mode
 					);
 				}
 			}
@@ -2046,7 +2046,7 @@ void frame(void)
 			ShadowDepthPass::has_valid_shadow_blur = false;
 		}
 
-		{ // Geometry Pass 	
+		{ // Geometry Pass
 			get_render_pass(ERenderPass::Geometry).execute(
 				[&](const i32 pass_idx)
 				{
@@ -2061,12 +2061,12 @@ void frame(void)
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 					// Cull objects
-					CullResult cull_result = cull_objects(state.objects, view_projection_matrix);
+					CullResult cull_result = cull_objects(state.scene.objects, view_projection_matrix);
 
 					DEBUG_UI(
 						if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
 						{
-							ImGui::Text("Total Objects: %zu", state.objects.size());
+							ImGui::Text("Total Objects: %zu", state.scene.objects.size());
 
 							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 							if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
@@ -2084,9 +2084,9 @@ void frame(void)
 							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 							if (ImGui::TreeNode("Lights", "Lights"))
 							{
-								ImGui::Text("Num Point Lights: %i", state.point_lights.length());
-								ImGui::Text("Num Spot Lights:  %i", state.spot_lights.length());
-								ImGui::Text("Num Sun Lights:   %i", state.sun_lights.length());
+								ImGui::Text("Num Point Lights: %i", state.lighting.point_lights.length());
+								ImGui::Text("Num Spot Lights:  %i", state.lighting.spot_lights.length());
+								ImGui::Text("Num Sun Lights:   %i", state.lighting.sun_lights.length());
 								ImGui::TreePop();
 							}
 
@@ -2105,41 +2105,41 @@ void frame(void)
 
 							int mesh_material_idx = mesh.material_indices[0];
 							assert(mesh_material_idx >= 0);
-							const geometry_Material_t& material = state.materials[mesh_material_idx]; 
+							const geometry_Material_t& material = state.materials.items[mesh_material_idx];
 
-							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images[material.base_color_image_index] : state.default_image;
-							GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images[material.metallic_image_index] : state.default_image;
-							GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images[material.roughness_image_index] : state.default_image;
-							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images[material.emission_color_image_index] : state.default_image;
+							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images.items[material.base_color_image_index] : state.gpu.default_image;
+							GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images.items[material.metallic_image_index] : state.gpu.default_image;
+							GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images.items[material.roughness_image_index] : state.gpu.default_image;
+							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
 
 							sg_bindings bindings = {
 								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
 								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
-									[1] = get_materials_buffer().get_storage_view(), 
+									[1] = get_materials_buffer().get_storage_view(),
 									[2] = base_color_image.get_texture_view(0),
 									[3] = metallic_image.get_texture_view(0),
 									[4] = roughness_image.get_texture_view(0),
 									[5] = emission_color_image.get_texture_view(0),
 								},
-								.samplers[0] = state.linear_sampler,
+								.samplers[0] = state.gpu.linear_sampler,
 							};
 							sg_apply_bindings(&bindings);
 							sg_draw(0, mesh.index_count, 1);
 						}
 					}
 
-					if (state.show_probes)
+					if (state.gi.show_probes)
 					{
 						gi_scene_render_debug(gi_scene, view_matrix, projection_matrix);
 					}
 
-					if (state.sky_rendering_enable)
+					if (state.sky.rendering_enable)
 					{
 						SkyPass::render(
-							view_projection_matrix, 
-							get_active_camera().location, 
+							view_projection_matrix,
+							get_active_camera().location,
 							sglue_swapchain().depth_format
 						);
 					}
@@ -2150,12 +2150,12 @@ void frame(void)
 		{ // SSAO
 			get_render_pass(ERenderPass::SSAO).execute(
 				[&](const i32 pass_idx)
-				{	
-					state.ssao_fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
-					state.ssao_fs_params.view = view_matrix;
-					state.ssao_fs_params.projection = projection_matrix;
-					state.ssao_fs_params.ssao_enable = state.ssao_enable;
-					sg_apply_uniforms(0, SG_RANGE(state.ssao_fs_params));
+				{
+					state.ssao.fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
+					state.ssao.fs_params.view = view_matrix;
+					state.ssao.fs_params.projection = projection_matrix;
+					state.ssao.fs_params.ssao_enable = state.ssao.enable;
+					sg_apply_uniforms(0, SG_RANGE(state.ssao.fs_params));
 
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
@@ -2163,9 +2163,9 @@ void frame(void)
 						.views = {
 							[0] = geometry_pass.get_color_output(1).get_texture_view(0),	// geometry pass position
 							[1] = geometry_pass.get_color_output(2).get_texture_view(0),	// geometry pass normal
-							[2] = state.ssao_noise_texture.get_texture_view(0),			// ssao noise texture
+							[2] = state.ssao.noise_texture.get_texture_view(0),			// ssao noise texture
 						},
-						.samplers[0] = state.linear_sampler,
+						.samplers[0] = state.gpu.linear_sampler,
 					};
 					sg_apply_bindings(&bindings);
 
@@ -2178,7 +2178,7 @@ void frame(void)
 			BlurPass::execute_separable(
 				get_render_pass(ERenderPass::SSAO_Blur),
 				get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0),
-				state.linear_sampler,
+				state.gpu.linear_sampler,
 				HMM_V2(sapp_widthf(), sapp_heightf()),
 				4
 			);
@@ -2187,31 +2187,31 @@ void frame(void)
 		{ // Lighting Pass
 			get_render_pass(ERenderPass::Lighting).execute(
 				[&](const i32 pass_idx)
-				{	
-					state.lighting_fs_params.view_position = get_active_camera().location;
-					state.lighting_fs_params.view_forward = get_active_camera().forward;
-					state.lighting_fs_params.ssao_enable = state.ssao_enable;
-					state.lighting_fs_params.direct_lighting_enable = state.direct_lighting_enable;
-					state.lighting_fs_params.gi_enable = state.gi_enable;
-					state.lighting_fs_params.gi_probe_occlusion = state.gi_probe_occlusion;
-					state.lighting_fs_params.probe_occlusion_mode = static_cast<i32>(state.probe_occlusion_mode);
-					state.lighting_fs_params.probe_radiance_mode = static_cast<i32>(state.probe_radiance_mode);
-					state.lighting_fs_params.gi_intensity = state.gi_intensity;
-					state.lighting_fs_params.atlas_total_size = gi_scene.atlas_total_size;
-					state.lighting_fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
-					state.lighting_fs_params.shadow_map_enable = state.shadow_rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
-					state.lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
-					state.lighting_fs_params.shadow_cascade_placement_mode = (i32) state.shadow_cascade_placement_mode;
-					state.lighting_fs_params.shadow_debug_show_cascade_selection = state.shadow_debug_show_cascade_selection ? 1 : 0;
-					state.lighting_fs_params.isolated_probe_index = state.gi_probe_isolation_enable
-						? (state.gi_isolated_probe_index >= 0 ? state.gi_isolated_probe_index : -2)
+				{
+					state.lighting.fs_params.view_position = get_active_camera().location;
+					state.lighting.fs_params.view_forward = get_active_camera().forward;
+					state.lighting.fs_params.ssao_enable = state.ssao.enable;
+					state.lighting.fs_params.direct_lighting_enable = state.lighting.direct_enable;
+					state.lighting.fs_params.gi_enable = state.gi.enable;
+					state.lighting.fs_params.gi_probe_occlusion = state.gi.probe_occlusion;
+					state.lighting.fs_params.probe_occlusion_mode = static_cast<i32>(state.gi.probe_occlusion_mode);
+					state.lighting.fs_params.probe_radiance_mode = static_cast<i32>(state.gi.probe_radiance_mode);
+					state.lighting.fs_params.gi_intensity = state.gi.intensity;
+					state.lighting.fs_params.atlas_total_size = gi_scene.atlas_total_size;
+					state.lighting.fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
+					state.lighting.fs_params.shadow_map_enable = state.shadow.rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
+					state.lighting.fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
+					state.lighting.fs_params.shadow_cascade_placement_mode = (i32) state.shadow.cascade_placement_mode;
+					state.lighting.fs_params.shadow_debug_show_cascade_selection = state.shadow.debug_show_cascade_selection ? 1 : 0;
+					state.lighting.fs_params.isolated_probe_index = state.gi.probe_isolation_enable
+						? (state.gi.isolated_probe_index >= 0 ? state.gi.isolated_probe_index : -2)
 						: -1;
-					state.lighting_fs_params.shadow_bias = 0.001f;
-					state.lighting_fs_params.shadow_map_texel_size = HMM_V2(
+					state.lighting.fs_params.shadow_bias = 0.001f;
+					state.lighting.fs_params.shadow_map_texel_size = HMM_V2(
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution
 					);
-					state.lighting_fs_params.shadow_cascade_distances = HMM_V4(
+					state.lighting.fs_params.shadow_cascade_distances = HMM_V4(
 						ShadowDepthPass::cascade_distances[0],
 						ShadowDepthPass::cascade_distances[1],
 						ShadowDepthPass::cascade_distances[2],
@@ -2219,11 +2219,11 @@ void frame(void)
 					);
 					for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
 					{
-						state.lighting_fs_params.shadow_view_projections[i] = ShadowDepthPass::shadow_view_projections[i];
+						state.lighting.fs_params.shadow_view_projections[i] = ShadowDepthPass::shadow_view_projections[i];
 					}
 
 					// Apply Fragment Uniforms
-					sg_apply_uniforms(0, SG_RANGE(state.lighting_fs_params));
+					sg_apply_uniforms(0, SG_RANGE(state.lighting.fs_params));
 
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 					RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
@@ -2233,20 +2233,20 @@ void frame(void)
 					GpuImage& normal_texture = geometry_pass.get_color_output(2);
 					GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3);
 					GpuImage& blurred_ssao_texture = ssao_blur_pass.get_color_output(0);
-					GpuImage& shadow_moments_texture = state.shadow_blur_enable && ShadowDepthPass::has_valid_shadow_blur
+					GpuImage& shadow_moments_texture = state.shadow.blur_enable && ShadowDepthPass::has_valid_shadow_blur
 						? get_render_pass(ERenderPass::ShadowBlur).get_color_output(0)
 						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
 
 					sg_bindings bindings = {
 						.views = {
 							[0] = color_texture.get_texture_view(0),
-							[1] = position_texture.get_texture_view(0), 
+							[1] = position_texture.get_texture_view(0),
 							[2] = normal_texture.get_texture_view(0),
 							[3] = roughness_metallic_texture.get_texture_view(0),
 							[4] = blurred_ssao_texture.get_texture_view(0),
-							[5] = state.point_lights_buffer.get_storage_view(),
-							[6] = state.spot_lights_buffer.get_storage_view(), 
-							[7] = state.sun_lights_buffer.get_storage_view(), 
+							[5] = state.lighting.point_lights_buffer.get_storage_view(),
+							[6] = state.lighting.spot_lights_buffer.get_storage_view(),
+							[7] = state.lighting.sun_lights_buffer.get_storage_view(),
 							[8] = gi_scene.probes_buffer.get_storage_view(),
 							[9] = gi_scene.cells_buffer.get_storage_view(),
 							[10] = gi_scene_get_octahedral_lighting_view(gi_scene),
@@ -2256,8 +2256,8 @@ void frame(void)
 							[14] = gi_scene.sg9_lobes_buffer.get_storage_view(),
 						},
 						.samplers = {
-							[0] = state.linear_sampler,
-							[1] = state.linear_sampler,
+							[0] = state.gpu.linear_sampler,
+							[1] = state.gpu.linear_sampler,
 						},
 					};
 					sg_apply_bindings(&bindings);
@@ -2269,11 +2269,11 @@ void frame(void)
 
 		{ // DOF
 
-			if (state.dof_enable)
+			if (state.dof.enable)
 			{
 				get_render_pass(ERenderPass::DOF_Combine).execute(
 					[&](const i32 pass_idx)
-					{	
+					{
 						RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 						RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
@@ -2281,12 +2281,12 @@ void frame(void)
 							.cam_pos = HMM_V4(camera.location.X, camera.location.Y, camera.location.Z, 1.0f),
 							.cam_forward = HMM_V4(camera.forward.X, camera.forward.Y, camera.forward.Z, 0.0f),
 							.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
-							.focus_distance = state.dof_focus_distance,
-							.focus_range = state.dof_focus_range,
-							.max_coc_radius = state.dof_max_coc_radius,
-							.foreground_blur_scale = state.dof_foreground_blur_scale,
-							.background_blur_scale = state.dof_background_blur_scale,
-							.debug_mode = state.dof_debug_mode,
+							.focus_distance = state.dof.focus_distance,
+							.focus_range = state.dof.focus_range,
+							.max_coc_radius = state.dof.max_coc_radius,
+							.foreground_blur_scale = state.dof.foreground_blur_scale,
+							.background_blur_scale = state.dof.background_blur_scale,
+							.debug_mode = state.dof.debug_mode,
 						};
 						sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
@@ -2294,36 +2294,36 @@ void frame(void)
 
 						sg_bindings bindings = (sg_bindings){
 							.views = {
-								[0] = lighting_pass.get_color_output(0).get_texture_view(0), 
-								[1] = position_texture.get_texture_view(0), 
+								[0] = lighting_pass.get_color_output(0).get_texture_view(0),
+								[1] = position_texture.get_texture_view(0),
 							},
-							.samplers[0] = state.linear_sampler,
+							.samplers[0] = state.gpu.linear_sampler,
 						};
 
 						sg_apply_bindings(&bindings);
 
 						sg_draw(0,6,1);
 					}
-				);	
+				);
 			}
 		}
 
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&](const i32 pass_idx)
-				{	
+				{
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 
-					sg_apply_uniforms(0, SG_RANGE(state.tonemapping_fs_params));
+					sg_apply_uniforms(0, SG_RANGE(state.tonemapping.fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = state.dof_enable
+							[0] = state.dof.enable
 								? dof_combine_pass.get_color_output(0).get_texture_view(0)
-								: lighting_pass.get_color_output(0).get_texture_view(0), 
+								: lighting_pass.get_color_output(0).get_texture_view(0),
 						},
-						.samplers[0] = state.linear_sampler,
+						.samplers[0] = state.gpu.linear_sampler,
 					};
 
 					sg_apply_bindings(&bindings);
@@ -2343,17 +2343,17 @@ void frame(void)
 					sdtx_origin(1.0f, 2.0f);
 					sdtx_home();
 
-					if (!state.blender_data_loaded)
+					if (!state.runtime.blender_data_loaded)
 					{
 						draw_debug_text(FONT_C64, "Waiting on data from Blender\n", 255,255,255);
 					}
 
-					if (state.debug_camera_active)
+					if (state.debug_camera.active)
 					{
 						draw_debug_text(FONT_C64, "Debug Camera Active\n", 255,255,255);
 					}
 
-					if (!state.is_simulating)
+					if (!state.runtime.is_simulating)
 					{
 						draw_debug_text(FONT_C64, "Simulation Paused\n", 255,255,255);
 					}
@@ -2363,10 +2363,10 @@ void frame(void)
 			);
 		}
 
-		{ // Copy To Swapchain Pass	
+		{ // Copy To Swapchain Pass
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(
 				[&](const i32 pass_idx)
-				{	
+				{
 					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
@@ -2374,39 +2374,39 @@ void frame(void)
 					GpuImage& image_to_copy_to_swapchain = tonemapping_pass.get_color_output(0);
 
 					DEBUG_UI(
-						const i32 num_images = state.images.length();
+						const i32 num_images = state.images.items.length();
 						if (num_images > 0)
 						{
 							if (ImGui::CollapsingHeader("Debug Image Viewer"))
 							{
-								ImGui::Checkbox("Fullscreen", &state.enable_debug_image_fullscreen);
+								ImGui::Checkbox("Fullscreen", &state.images.enable_debug_fullscreen);
 								ImGui::SliderInt(
-									"Image Index", 
-									&state.debug_image_index, 
-									0, num_images - 1, 
+									"Image Index",
+									&state.images.debug_index,
+									0, num_images - 1,
 									"%d", ImGuiSliderFlags_ClampOnInput
 								);
 
-								GpuImage& image = state.images[state.debug_image_index];
+								GpuImage& image = state.images.items[state.images.debug_index];
 								const ImVec2 size = ImVec2(256, 256);
 
 								ImTextureID imtex_id = simgui_imtextureid(image.get_texture_view(0));
 								ImGui::Image(imtex_id, size);
 							}
 
-							if (state.enable_debug_image_fullscreen)
+							if (state.images.enable_debug_fullscreen)
 							{
-								image_to_copy_to_swapchain = state.images[state.debug_image_index];		
+								image_to_copy_to_swapchain = state.images.items[state.images.debug_index];
 							}
 						}
-					);	
+					);
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = image_to_copy_to_swapchain.get_texture_view(0), 
-							[1] = debug_text_pass.get_color_output(0).get_texture_view(0), 
+							[0] = image_to_copy_to_swapchain.get_texture_view(0),
+							[1] = debug_text_pass.get_color_output(0).get_texture_view(0),
 						},
-						.samplers[0] = state.nearest_sampler,
+						.samplers[0] = state.gpu.nearest_sampler,
 					};
 					sg_apply_bindings(&bindings);
 
@@ -2429,8 +2429,8 @@ void frame(void)
 void cleanup(void)
 {
 	// Tell live_link_thread we're done running and wait for it to complete
-	state.game_running = false;
-	state.live_link_thread.join();
+	state.runtime.game_running = false;
+	state.live_link.thread.join();
 
 	jolt_shutdown();
 
@@ -2455,7 +2455,7 @@ void event(const sapp_event* event)
 	{
 		case SAPP_EVENTTYPE_KEY_DOWN:
 		{
-			// stop execution on escape key 
+			// stop execution on escape key
 			if (event->key_code == SAPP_KEYCODE_ESCAPE)
 			{
 			 	if (event->modifiers & SAPP_MODIFIER_SHIFT)
@@ -2481,7 +2481,7 @@ void event(const sapp_event* event)
 			app_state.mouse_buttons[event->mouse_button] = true;
 			app_state.mouse_position = HMM_V2(event->mouse_x, event->mouse_y);
 
-			if (!imgui_wants_mouse_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT && state.gi_probe_isolation_enable && state.show_probes)
+			if (!imgui_wants_mouse_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT && state.gi.probe_isolation_enable && state.gi.show_probes)
 			{
 				pick_isolated_gi_probe();
 				break;
@@ -2521,9 +2521,9 @@ void event(const sapp_event* event)
 }
 
 sapp_desc sokol_main(int argc, char* argv[])
-{	
+{
 	cxxopts::Options options("Game", "Game that uses blender as its tooling");
-	
+
 	options.add_options()
 	  ("f,file", "File name", cxxopts::value<std::string>())
   	;
@@ -2536,7 +2536,7 @@ sapp_desc sokol_main(int argc, char* argv[])
 	// If we passed an init file, load it on startup
 	if (result.count("file") > 0)
 	{
-		state.init_file = result["f"].as<std::string>();
+		state.runtime.init_file = result["f"].as<std::string>();
 	}
 
     return (sapp_desc) {

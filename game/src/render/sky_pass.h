@@ -17,7 +17,7 @@ namespace SkyBakePass
 	const i32 num_pass_outputs = 1;
 
 	optional<sg_shader> shader;
-	optional<sg_pipeline_desc> pipeline_desc;	
+	optional<sg_pipeline_desc> pipeline_desc;
 	optional<RenderPass> render_pass;
 
 	sg_pipeline_desc get_pipeline_desc()
@@ -66,7 +66,7 @@ namespace SkyBakePass
 			new_render_pass.init(render_pass_desc);
 			render_pass = new_render_pass;
 		}
-		
+
 		return render_pass.value();
 	}
 
@@ -74,14 +74,14 @@ namespace SkyBakePass
 	{
 		SkyBakePass::get_render_pass().execute(
 			[&](const i32 pass_idx)
-			{	
+			{
 				HMM_Vec3 sun_dir = HMM_V3(0,0,1);
-				if (in_state.primary_sun_id.has_value())
+				if (in_state.scene.primary_sun_id.has_value())
 				{
-					i32 primary_sun_id = in_state.primary_sun_id.value();
-					if (in_state.objects.contains(primary_sun_id))
+					i32 primary_sun_id = in_state.scene.primary_sun_id.value();
+					if (in_state.scene.objects.contains(primary_sun_id))
 					{
-						Object& sun_object = in_state.objects[primary_sun_id];
+						Object& sun_object = in_state.scene.objects[primary_sun_id];
 						if (sun_object.has_light && sun_object.light.type == LightType::Sun)
 						{
 							Transform transform = sun_object.current_transform;
@@ -169,9 +169,9 @@ namespace SkyPass
 
 		sg_bindings bindings = (sg_bindings){
 			.views = {
-				[0] = SkyBakePass::get_baked_sky_image_view(), 
+				[0] = SkyBakePass::get_baked_sky_image_view(),
 			},
-			.samplers[0] = state.linear_sampler,
+			.samplers[0] = state.gpu.linear_sampler,
 		};
 		sg_apply_bindings(&bindings);
 
