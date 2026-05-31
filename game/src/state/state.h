@@ -27,7 +27,6 @@ enum class ERenderPass : int
 	SSAO,
 	SSAO_Blur,
 	Lighting,
-	DOF_Blur,
 	DOF_Combine,
 	Tonemapping,
 	DebugText,
@@ -133,6 +132,12 @@ struct State
 	bool gi_debug_constant_white_probes = false;
 	float gi_intensity = 1.0f;
 	bool dof_enable = true;
+	f32 dof_focus_distance = 50.0f;
+	f32 dof_focus_range = 70.0f;
+	f32 dof_max_coc_radius = 8.0f;
+	f32 dof_foreground_blur_scale = 1.0f;
+	f32 dof_background_blur_scale = 1.0f;
+	i32 dof_debug_mode = 0;
 	bool show_probes = false;
 	EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
 	bool gi_probe_isolation_enable = false;

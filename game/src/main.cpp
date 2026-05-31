@@ -1042,32 +1042,6 @@ void init(void)
 	//get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
 
-	RenderPassDesc dof_blur_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
-			.depth = {
-				.pixel_format = SG_PIXELFORMAT_NONE,
-			},
-			.cull_mode = SG_CULLMODE_NONE,
-			.label = "dof-blur-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
-			.store_action = SG_STOREACTION_STORE,
-		},
-		.num_scratch_outputs = 1,
-		.scratch_outputs = {
-			[0] = {
-				.pixel_format = swapchain.color_format,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-			},
-		},
-	};
-	get_render_pass(ERenderPass::DOF_Blur).init(dof_blur_pass_desc);
-
 	RenderPassDesc dof_combine_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(dof_combine_dof_combine_shader_desc(sg_query_backend())),
@@ -1418,9 +1392,21 @@ void frame(void)
 			ImGui::Indent();
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Checkbox("SSAO", &state.ssao_enable);
-				ImGui::Checkbox("Depth-of-Field", &state.dof_enable);
 				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping_fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+				ImGui::Checkbox("SSAO", &state.ssao_enable);
+				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enable DoF", &state.dof_enable);
+					ImGui::BeginDisabled(!state.dof_enable);
+					ImGui::SliderFloat("Focus Distance", &state.dof_focus_distance, 0.1f, 500.0f, "%.1f");
+					ImGui::SliderFloat("Focus Range", &state.dof_focus_range, 0.1f, 200.0f, "%.1f");
+					ImGui::SliderFloat("Max CoC Radius", &state.dof_max_coc_radius, 0.0f, 32.0f, "%.1f px");
+					ImGui::SliderFloat("Foreground Scale", &state.dof_foreground_blur_scale, 0.0f, 4.0f, "%.2f");
+					ImGui::SliderFloat("Background Scale", &state.dof_background_blur_scale, 0.0f, 4.0f, "%.2f");
+					const char* dof_debug_modes[] = { "Final", "CoC" };
+					ImGui::Combo("Debug", &state.dof_debug_mode, dof_debug_modes, IM_ARRAYSIZE(dof_debug_modes));
+					ImGui::EndDisabled();
+				}
 			}
 			ImGui::Unindent();
 
@@ -2283,60 +2269,59 @@ void frame(void)
 
 		{ // DOF
 
-			// Blurred lighting texture
-			BlurPass::execute_separable(
-				get_render_pass(ERenderPass::DOF_Blur),
-				get_render_pass(ERenderPass::Lighting).get_color_output(0).get_texture_view(0),
-				state.linear_sampler,
-				HMM_V2(sapp_widthf(), sapp_heightf()),
-				8
-			);
+			if (state.dof_enable)
+			{
+				get_render_pass(ERenderPass::DOF_Combine).execute(
+					[&](const i32 pass_idx)
+					{	
+						RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+						RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
-			// Mix blurred and unblurred texture based on camera distance
-			get_render_pass(ERenderPass::DOF_Combine).execute(
-				[&](const i32 pass_idx)
-				{	
-					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
-					RenderPass& dof_blur_pass = get_render_pass(ERenderPass::DOF_Blur);
-					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+						const dof_combine_fs_params_t dof_combine_fs_params = {
+							.cam_pos = HMM_V4(camera.location.X, camera.location.Y, camera.location.Z, 1.0f),
+							.cam_forward = HMM_V4(camera.forward.X, camera.forward.Y, camera.forward.Z, 0.0f),
+							.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+							.focus_distance = state.dof_focus_distance,
+							.focus_range = state.dof_focus_range,
+							.max_coc_radius = state.dof_max_coc_radius,
+							.foreground_blur_scale = state.dof_foreground_blur_scale,
+							.background_blur_scale = state.dof_background_blur_scale,
+							.debug_mode = state.dof_debug_mode,
+						};
+						sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
 
-					const dof_combine_fs_params_t dof_combine_fs_params = {
-						.cam_pos = camera.location,
-						.min_distance = 50.0f,
-						.max_distance = 100.0f,
-						.dof_enabled = state.dof_enable,
-					};
-					sg_apply_uniforms(0, SG_RANGE(dof_combine_fs_params));
+						GpuImage& position_texture = geometry_pass.get_color_output(1);
 
-					GpuImage& position_texture = geometry_pass.get_color_output(1);
+						sg_bindings bindings = (sg_bindings){
+							.views = {
+								[0] = lighting_pass.get_color_output(0).get_texture_view(0), 
+								[1] = position_texture.get_texture_view(0), 
+							},
+							.samplers[0] = state.linear_sampler,
+						};
 
-					sg_bindings bindings = (sg_bindings){
-						.views = {
-							[0] = lighting_pass.get_color_output(0).get_texture_view(0), 
-							[1] = dof_blur_pass.get_color_output(0).get_texture_view(0), 
-							[2] = position_texture.get_texture_view(0), 
-						},
-						.samplers[0] = state.linear_sampler,
-					};
+						sg_apply_bindings(&bindings);
 
-					sg_apply_bindings(&bindings);
-
-					sg_draw(0,6,1);
-				}
-			);	
+						sg_draw(0,6,1);
+					}
+				);	
+			}
 		}
 
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&](const i32 pass_idx)
 				{	
+					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 
 					sg_apply_uniforms(0, SG_RANGE(state.tonemapping_fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = dof_combine_pass.get_color_output(0).get_texture_view(0), 
+							[0] = state.dof_enable
+								? dof_combine_pass.get_color_output(0).get_texture_view(0)
+								: lighting_pass.get_color_output(0).get_texture_view(0), 
 						},
 						.samplers[0] = state.linear_sampler,
 					};
