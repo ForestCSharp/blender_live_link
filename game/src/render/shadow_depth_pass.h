@@ -258,7 +258,7 @@ namespace ShadowDepthPass
 		const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);
 		const f32 cascade_far_distance = get_cascade_distance(in_state, cascade_idx);
 		const f32 fov = HMM_AngleDeg(60.0f);
-		const f32 aspect_ratio = sapp_widthf() / sapp_heightf();
+		const f32 aspect_ratio = (f32)in_state.window.render_width / (f32)in_state.window.render_height;
 
 		HMM_Vec3 frustum_corners[8];
 		get_frustum_slice_corners(active_camera, cascade_near_distance, cascade_far_distance, fov, aspect_ratio, frustum_corners);

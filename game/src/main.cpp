@@ -25,6 +25,9 @@ using std::atomic;
 // C++ std lib string
 #include <string>
 
+// C++ std lib algorithms
+#include <algorithm>
+
 // C++ std lib numeric limits
 #include <limits>
 
@@ -839,20 +842,56 @@ void live_link_thread_function()
 	socket_lib_quit();
 }
 
-void handle_resize()
+void update_render_resolution()
+{
+	state.window.target_render_width = std::max(1, state.window.target_render_width);
+	state.window.target_render_height = std::max(1, state.window.target_render_height);
+
+	if (state.window.width <= 0 || state.window.height <= 0)
+	{
+		state.window.render_width = state.window.target_render_width;
+		state.window.render_height = state.window.target_render_height;
+		return;
+	}
+
+	const f32 window_aspect = (f32)state.window.width / (f32)state.window.height;
+	const f32 target_aspect = (f32)state.window.target_render_width / (f32)state.window.target_render_height;
+
+	if (window_aspect > target_aspect)
+	{
+		state.window.render_height = state.window.target_render_height;
+		state.window.render_width = std::max(1, (i32)((f32)state.window.target_render_height * window_aspect + 0.5f));
+	}
+	else
+	{
+		state.window.render_width = state.window.target_render_width;
+		state.window.render_height = std::max(1, (i32)((f32)state.window.target_render_width / window_aspect + 0.5f));
+	}
+}
+
+void handle_resize(bool force_resize = false)
 {
 	int new_width = sapp_width();
     int new_height = sapp_height();
 
-	if (new_width != state.window.width || new_height != state.window.height)
+	if (force_resize || new_width != state.window.width || new_height != state.window.height)
 	{
 		state.window.width = new_width;
 		state.window.height = new_height;
+		update_render_resolution();
 
 		const int render_pass_count = (int) ERenderPass::COUNT;
 		for (i32 pass_index = 0; pass_index < render_pass_count; ++pass_index)
 		{
-			state.render_passes.passes[pass_index].handle_resize(state.window.width, state.window.height);
+			RenderPass& render_pass = state.render_passes.passes[pass_index];
+			if (render_pass.desc.type == ERenderPassType::Swapchain)
+			{
+				render_pass.handle_resize(state.window.width, state.window.height);
+			}
+			else
+			{
+				render_pass.handle_resize(state.window.render_width, state.window.render_height);
+			}
 		}
 	}
 }
@@ -974,7 +1013,7 @@ void init(void)
 
 		// Init ssao_fs_params
 		state.ssao.fs_params = {
-			.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+			.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
 		};
 
 		//SSAO Kernel
@@ -1397,7 +1436,46 @@ void frame(void)
 		ImGui::Begin("DEBUG");
 		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			ImGui::Text("Resolution: %d x %d", state.window.width, state.window.height);
+			ImGui::Text("Window Resolution: %d x %d", state.window.width, state.window.height);
+			ImGui::Text("Render Resolution: %d x %d", state.window.render_width, state.window.render_height);
+
+			ImGui::Text("Target Resolution:");
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(96.0f);
+			const bool target_width_changed = ImGui::InputInt("##Target Resolution Width", &state.window.target_render_width);
+			const bool target_width_active = ImGui::IsItemActive();
+			ImGui::SameLine();
+			ImGui::Text("x");
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(96.0f);
+			const bool target_height_changed = ImGui::InputInt("##Target Resolution Height", &state.window.target_render_height);
+			const bool target_height_active = ImGui::IsItemActive();
+			ImGui::Checkbox("Maintain Target Aspect Ratio", &state.window.maintain_target_aspect_ratio);
+
+			if (state.window.maintain_target_aspect_ratio)
+			{
+				if (target_width_changed && !target_height_changed)
+				{
+					state.window.target_render_height = std::max(1, (i32)((f32)state.window.target_render_width / state.window.target_render_aspect_ratio + 0.5f));
+				}
+				else if (target_height_changed && !target_width_changed)
+				{
+					state.window.target_render_width = std::max(1, (i32)((f32)state.window.target_render_height * state.window.target_render_aspect_ratio + 0.5f));
+				}
+			}
+
+			if (!target_width_active && !target_height_active)
+			{
+				const i32 target_render_width = std::max(1, state.window.target_render_width);
+				const i32 target_render_height = std::max(1, state.window.target_render_height);
+				state.window.target_render_aspect_ratio = (f32)target_render_width / (f32)target_render_height;
+			}
+
+			const bool target_resolution_changed = target_width_changed || target_height_changed;
+			if (target_resolution_changed)
+			{
+				handle_resize(true);
+			}
 			ImGui::Text("frame time: %.2f ms", state.debug_ui.frame_time_ms);
 			ImGui::Text("FPS: %.1f", state.debug_ui.fps);
 			ImGui::Spacing();
@@ -1963,8 +2041,8 @@ void frame(void)
 		gi_scene_update(gi_scene, state);
 
 		// View + Projection matrix setup
-		const f32 w = sapp_widthf();
-		const f32 h = sapp_heightf();
+		const f32 w = (f32)state.window.render_width;
+		const f32 h = (f32)state.window.render_height;
 		const f32 fov = HMM_AngleDeg(60.0f);
 		const f32 aspect_ratio = w/h;
 		HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
@@ -2167,7 +2245,7 @@ void frame(void)
 			get_render_pass(ERenderPass::SSAO).execute(
 				[&](const i32 pass_idx)
 				{
-					state.ssao.fs_params.screen_size = HMM_V2(sapp_widthf(), sapp_heightf());
+					state.ssao.fs_params.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height);
 					state.ssao.fs_params.view = view_matrix;
 					state.ssao.fs_params.projection = projection_matrix;
 					state.ssao.fs_params.ssao_enable = state.ssao.enable;
@@ -2195,7 +2273,7 @@ void frame(void)
 				get_render_pass(ERenderPass::SSAO_Blur),
 				get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0),
 				state.gpu.linear_sampler,
-				HMM_V2(sapp_widthf(), sapp_heightf()),
+				HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
 				4
 			);
 		}
@@ -2296,7 +2374,7 @@ void frame(void)
 						const dof_combine_fs_params_t dof_combine_fs_params = {
 							.cam_pos = HMM_V4(camera.location.X, camera.location.Y, camera.location.Z, 1.0f),
 							.cam_forward = HMM_V4(camera.forward.X, camera.forward.Y, camera.forward.Z, 0.0f),
-							.screen_size = HMM_V2(sapp_widthf(), sapp_heightf()),
+							.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
 							.focus_distance = state.dof.focus_distance,
 							.focus_range = state.dof.focus_range,
 							.max_coc_radius = state.dof.max_coc_radius,
@@ -2355,7 +2433,7 @@ void frame(void)
 				{
 					// Larger numbers scales down text
 					const f32 text_scale = 0.5f;
-					sdtx_canvas(sapp_width() * text_scale, sapp_height() * text_scale);
+					sdtx_canvas(state.window.render_width * text_scale, state.window.render_height * text_scale);
 					sdtx_origin(1.0f, 2.0f);
 					sdtx_home();
 
