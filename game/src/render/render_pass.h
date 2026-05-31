@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <functional>
 #include <optional>
@@ -40,6 +41,8 @@ struct RenderPassDesc {
 	int num_scratch_outputs = 0;
 	RenderPassOutputDesc scratch_outputs[SG_MAX_COLOR_ATTACHMENTS];
 
+	f32 width_scale = 1.0f;
+	f32 height_scale = 1.0f;
 	bool resize_with_window = true;
 	ERenderPassType type = ERenderPassType::Single;
 };
@@ -185,8 +188,8 @@ public: // Functions
 			in_new_height = desc.initial_height;
 		}
 
-		current_width = in_new_width;
-		current_height = in_new_height;
+		current_width = std::max(1, (i32)((f32)in_new_width * desc.width_scale + 0.5f));
+		current_height = std::max(1, (i32)((f32)in_new_height * desc.height_scale + 0.5f));
 
 		// Create render target if we aren't rendering directly to swapchain
 		if (desc.type != ERenderPassType::Swapchain)

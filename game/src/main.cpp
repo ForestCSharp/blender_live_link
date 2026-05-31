@@ -969,22 +969,33 @@ void init(void)
 	// Init main geometry pass
 	get_render_pass(ERenderPass::Geometry).init(GeometryPass::make_render_pass_desc(swapchain.depth_format));
 
+	const sg_pixelformat_info ssao_r8_info = sg_query_pixelformat(SG_PIXELFORMAT_R8);
+	const sg_pixel_format ssao_pixel_format = (ssao_r8_info.render && ssao_r8_info.filter)
+		? SG_PIXELFORMAT_R8
+		: SG_PIXELFORMAT_RGBA8;
+
 	RenderPassDesc ssao_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(ssao_ssao_shader_desc(sg_query_backend())),
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.color_count = 1,
+			.colors[0] = {
+				.pixel_format = ssao_pixel_format,
+			},
 			.cull_mode = SG_CULLMODE_NONE,
 			.label = "ssao-pipeline",
 		},
 		.num_outputs = 1,
 		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
+			.pixel_format = ssao_pixel_format,
 			.load_action = SG_LOADACTION_CLEAR,
 			.store_action = SG_STOREACTION_STORE,
-			.clear_value = {0.0, 0.0, 0.0, 0.0},
+			.clear_value = {1.0, 1.0, 1.0, 1.0},
 		},
+		.width_scale = 0.5f,
+		.height_scale = 0.5f,
 	};
 	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
 
@@ -1042,23 +1053,29 @@ void init(void)
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.color_count = 1,
+			.colors[0] = {
+				.pixel_format = ssao_pixel_format,
+			},
 			.cull_mode = SG_CULLMODE_NONE,
 			.label = "blur-pipeline",
 		},
 		.num_outputs = 1,
 		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
+			.pixel_format = ssao_pixel_format,
+			.load_action = SG_LOADACTION_DONTCARE,
 			.store_action = SG_STOREACTION_STORE,
 		},
 		.num_scratch_outputs = 1,
 		.scratch_outputs = {
 			[0] = {
-				.pixel_format = swapchain.color_format,
-				.load_action = SG_LOADACTION_CLEAR,
+				.pixel_format = ssao_pixel_format,
+				.load_action = SG_LOADACTION_DONTCARE,
 				.store_action = SG_STOREACTION_STORE,
 			},
 		},
+		.width_scale = 0.5f,
+		.height_scale = 0.5f,
 	};
 	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
@@ -2240,41 +2257,46 @@ void frame(void)
 			);
 		}
 
-		{ // SSAO
-			get_render_pass(ERenderPass::SSAO).execute(
-				[&](const i32 pass_idx)
-				{
-					state.ssao.fs_params.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height);
-					state.ssao.fs_params.view = view_matrix;
-					state.ssao.fs_params.projection = projection_matrix;
-					state.ssao.fs_params.ssao_enable = state.ssao.enable;
-					sg_apply_uniforms(0, SG_RANGE(state.ssao.fs_params));
+		if (state.ssao.enable)
+		{
+			RenderPass& ssao_pass = get_render_pass(ERenderPass::SSAO);
+			{ // SSAO
+				ssao_pass.execute(
+					[&](const i32 pass_idx)
+					{
+						state.ssao.fs_params.screen_size = HMM_V2((f32)ssao_pass.current_width, (f32)ssao_pass.current_height);
+						state.ssao.fs_params.view = view_matrix;
+						state.ssao.fs_params.projection = projection_matrix;
+						state.ssao.fs_params.ssao_enable = state.ssao.enable;
+						sg_apply_uniforms(0, SG_RANGE(state.ssao.fs_params));
 
-					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+						RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
-					sg_bindings bindings = (sg_bindings){
-						.views = {
-							[0] = geometry_pass.get_color_output(1).get_texture_view(0),	// geometry pass position
-							[1] = geometry_pass.get_color_output(2).get_texture_view(0),	// geometry pass normal
-							[2] = state.ssao.noise_texture.get_texture_view(0),			// ssao noise texture
-						},
-						.samplers[0] = state.gpu.linear_sampler,
-					};
-					sg_apply_bindings(&bindings);
+						sg_bindings bindings = (sg_bindings){
+							.views = {
+								[0] = geometry_pass.get_color_output(1).get_texture_view(0),	// geometry pass position
+								[1] = geometry_pass.get_color_output(2).get_texture_view(0),	// geometry pass normal
+								[2] = state.ssao.noise_texture.get_texture_view(0),			// ssao noise texture
+							},
+							.samplers[0] = state.gpu.linear_sampler,
+						};
+						sg_apply_bindings(&bindings);
 
-					sg_draw(0,6,1);
-				}
-			);
-		}
+						sg_draw(0,6,1);
+					}
+				);
+			}
 
-		{ // SSAO Blur
-			BlurPass::execute_separable(
-				get_render_pass(ERenderPass::SSAO_Blur),
-				get_render_pass(ERenderPass::SSAO).get_color_output(0).get_texture_view(0),
-				state.gpu.linear_sampler,
-				HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
-				4
-			);
+			{ // SSAO Blur
+				RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
+				BlurPass::execute_separable(
+					ssao_blur_pass,
+					ssao_pass.get_color_output(0).get_texture_view(0),
+					state.gpu.linear_sampler,
+					HMM_V2((f32)ssao_blur_pass.current_width, (f32)ssao_blur_pass.current_height),
+					4
+				);
+			}
 		}
 
 		{ // Lighting Pass
