@@ -1532,8 +1532,8 @@ void frame(void)
 			{
 				bool tessellation_changed = false;
 				tessellation_changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
+				ImGui::Checkbox("Shaded Wireframe", &state.tessellation.shaded_wireframe);
 				tessellation_changed |= ImGui::Combo("Mode", (i32*) &state.tessellation.mode, ETessellationModeNames, IM_ARRAYSIZE(ETessellationModeNames));
-				ImGui::Combo("Visualization", (i32*) &state.tessellation.visualization_mode, ETessellationVisualizationModeNames, IM_ARRAYSIZE(ETessellationVisualizationModeNames));
 				tessellation_changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
 				tessellation_changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32) Tessellation::MAX_FACTOR);
 				tessellation_changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
@@ -2302,7 +2302,7 @@ void frame(void)
 						}
 					}
 
-					if (state.tessellation.visualization_mode == ETessellationVisualizationMode::ShadedWireframe)
+					if (state.tessellation.shaded_wireframe)
 					{
 						sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(sglue_swapchain().depth_format));
 						sg_apply_uniforms(0, SG_RANGE(vs_params));

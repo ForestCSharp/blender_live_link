@@ -110,18 +110,6 @@ const char* ETessellationModeNames[(i32)ETessellationMode::MAX] = {
 	"Adaptive Angular",
 };
 
-enum class ETessellationVisualizationMode : i32
-{
-	Off = 0,
-	ShadedWireframe = 1,
-	MAX,
-};
-
-const char* ETessellationVisualizationModeNames[(i32)ETessellationVisualizationMode::MAX] = {
-	"Off",
-	"Shaded Wireframe",
-};
-
 struct State
 {
 	struct RuntimeState
@@ -234,7 +222,7 @@ struct State
 	{
 		bool enabled = false;
 		ETessellationMode mode = ETessellationMode::AdaptiveAngular;
-		ETessellationVisualizationMode visualization_mode = ETessellationVisualizationMode::Off;
+		bool shaded_wireframe = false;
 		i32 fixed_factor = 4;
 		i32 max_factor = 24;
 		f32 target_pixels_per_segment = 20.0f;
