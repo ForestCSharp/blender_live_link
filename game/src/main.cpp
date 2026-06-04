@@ -927,8 +927,9 @@ void init(void)
 	state.live_link.thread = std::thread(live_link_thread_function);
 
 	// GI Scene Setup
-	gi_scene_init(gi_scene);
-	printf("gi_scene num cells: %zu num probes: %zu\n",
+	gi_scene_init(gi_scene, state);
+	printf("gi_scene num octree nodes: %zu num cells: %zu num probes: %zu\n",
+		gi_scene.octree_nodes.length(),
 		gi_scene.cells.length(),
 		gi_scene.probes.length()
 	);
@@ -1305,14 +1306,14 @@ void pick_isolated_gi_probe()
 		camera_right * (ndc_x * aspect_ratio * tan_half_fov) +
 		camera_up * (ndc_y * tan_half_fov)
 	);
-	const f32 probe_radius = GI_CELL_EXTENT * 0.1f;
+	const f32 probe_radius = gi_scene_debug_probe_radius(gi_scene);
 
 	i32 closest_probe_index = -1;
 	f32 closest_t = std::numeric_limits<f32>::max();
-	for (i32 probe_index = 0; probe_index < GI_PROBE_COUNT; ++probe_index)
+	for (i32 probe_index = 0; probe_index < gi_scene.non_fallback_probe_count; ++probe_index)
 	{
 		f32 t = 0.0f;
-		const HMM_Vec3 probe_position = gi_probe_position_from_index(probe_index);
+		const HMM_Vec3 probe_position = gi_scene_probe_position_from_index(gi_scene, probe_index);
 		if (ray_sphere_intersect(ray_origin, ray_direction, probe_position, probe_radius, t) && t < closest_t)
 		{
 			closest_t = t;
@@ -1391,6 +1392,7 @@ void frame(void)
 			ShadowDepthPass::has_valid_shadow_map = false;
 			ShadowDepthPass::has_valid_shadow_blur = false;
 			state.shadow.force_recapture = true;
+			state.gi.layout_dirty = true;
 			state.gi.is_updating = true;
 		}
 
@@ -1416,6 +1418,7 @@ void frame(void)
 				ShadowDepthPass::has_valid_shadow_map = false;
 				ShadowDepthPass::has_valid_shadow_blur = false;
 				state.shadow.force_recapture = true;
+				state.gi.layout_dirty = true;
 				state.gi.is_updating = true;
 			}
 
@@ -1432,6 +1435,7 @@ void frame(void)
 		ShadowDepthPass::has_valid_shadow_map = false;
 		ShadowDepthPass::has_valid_shadow_blur = false;
 		state.shadow.force_recapture = true;
+		state.gi.layout_dirty = true;
 		state.gi.is_updating = true;
 
 		for (auto& [unique_id, object] : state.scene.objects)
@@ -1482,6 +1486,8 @@ void frame(void)
 				object_reset_jolt_body(object);
 			}
 		}
+		state.gi.layout_dirty = true;
+		state.gi.is_updating = true;
 	);
 
 	DEBUG_UI(
@@ -1652,6 +1658,31 @@ void frame(void)
 				{
 					ImGui::Checkbox("GI", &state.gi.enable);
 					ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
+					if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
+					{
+						state.gi.layout_dirty = true;
+						state.gi.is_updating = true;
+					}
+					ImGui::Text(
+						"Octree: depth %d  nodes %zu  cells %zu  probes %d",
+						gi_scene.octree_depth,
+						gi_scene.octree_nodes.length(),
+						gi_scene.cells.length(),
+						gi_scene.non_fallback_probe_count
+					);
+					ImGui::Text(
+						"Bounds Min: %.2f %.2f %.2f",
+						gi_scene.scene_bounds.min.X,
+						gi_scene.scene_bounds.min.Y,
+						gi_scene.scene_bounds.min.Z
+					);
+					ImGui::Text(
+						"Bounds Max: %.2f %.2f %.2f",
+						gi_scene.scene_bounds.max.X,
+						gi_scene.scene_bounds.max.Y,
+						gi_scene.scene_bounds.max.Z
+					);
+					ImGui::Text("Leaf Extent: %.2f  Max Radial Depth: %.2f", gi_scene.leaf_cell_extent, gi_scene.max_radial_depth);
 					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.gi.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
 					{
 						state.gi.is_updating = true;
@@ -1727,7 +1758,7 @@ void frame(void)
 			ImGui::Unindent();
 		}
 
-		if (ImGui::CollapsingHeader("Render Texture Viewer", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("Render Texture Viewer"))
 		{
 			{
 				RenderPass& depth_pass = get_render_pass(ERenderPass::ShadowDepth);
@@ -2146,6 +2177,11 @@ void frame(void)
 
 			if (object.storage_buffer_needs_update)
 			{
+				if (object.has_mesh)
+				{
+					state.gi.layout_dirty = true;
+					state.gi.is_updating = true;
+				}
 				object.storage_buffer_needs_update = false;
 				object_update_storage_buffer(object);
 			}
@@ -2415,6 +2451,9 @@ void frame(void)
 					state.lighting.fs_params.gi_intensity = state.gi.intensity;
 					state.lighting.fs_params.atlas_total_size = gi_scene.atlas_total_size;
 					state.lighting.fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
+					state.lighting.fs_params.gi_fallback_probe_index = gi_scene.fallback_probe_index;
+					state.lighting.fs_params.gi_octree_node_count = (i32)gi_scene.octree_nodes.length();
+					state.lighting.fs_params.gi_max_radial_depth = gi_scene.max_radial_depth;
 					state.lighting.fs_params.shadow_map_enable = state.shadow.rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
 					state.lighting.fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
 					state.lighting.fs_params.shadow_cascade_placement_mode = (i32) state.shadow.cascade_placement_mode;
@@ -2470,6 +2509,7 @@ void frame(void)
 							[12] = shadow_moments_texture.get_texture_array_view(),
 							[13] = gi_scene.sh9_coefficients_buffer.get_storage_view(),
 							[14] = gi_scene.sg9_lobes_buffer.get_storage_view(),
+							[15] = gi_scene.octree_nodes_buffer.get_storage_view(),
 						},
 						.samplers = {
 							[0] = state.gpu.linear_sampler,

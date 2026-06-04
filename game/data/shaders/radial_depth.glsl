@@ -17,6 +17,7 @@ layout(binding=0) uniform fs_params {
 	vec3 capture_location;
 	int probe_occlusion_mode;
 	int force_fully_visible;
+	float max_radial_depth;
 };
 
 layout(binding=0) uniform texture2D world_position_texture;
@@ -37,8 +38,8 @@ float sample_radial_depth(vec2 sample_uv)
 {
 	const vec4 world_position = texture(sampler2D(world_position_texture, tex_sampler), sample_uv);
 	return world_position.w > 0.0
-		? min(length(world_position.xyz - capture_location), GI_MAX_RADIAL_DEPTH)
-		: GI_MAX_RADIAL_DEPTH;
+		? min(length(world_position.xyz - capture_location), max_radial_depth)
+		: max_radial_depth;
 }
 
 void main()
@@ -46,11 +47,11 @@ void main()
 	// Variance Shadow Map second-moment stabilization term from GPU Gems:
 	// m2 += 0.25 * (ddx(d)^2 + ddy(d)^2)
 	const float center_depth = force_fully_visible != 0
-		? GI_MAX_RADIAL_DEPTH
+		? max_radial_depth
 		: sample_radial_depth(uv);
 	if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
 	{
-		const float normalized_depth = clamp(center_depth / GI_MAX_RADIAL_DEPTH, 0.0, 1.0);
+		const float normalized_depth = clamp(center_depth / max_radial_depth, 0.0, 1.0);
 		const vec2 warped_depth = vec2(
 			exp(EVRP_POSITIVE_EXPONENT * normalized_depth),
 			-exp(-EVRP_NEGATIVE_EXPONENT * normalized_depth)

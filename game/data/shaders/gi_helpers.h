@@ -6,124 +6,12 @@
 @block gi_helpers
 #endif
 
-#define GI_CELL_EXTENT 5
-#define GI_CELL_DIMENSIONS 6
-#define GI_CELL_DIMENSIONS_SQUARED (GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS)
-#define GI_PROBE_DIMENSIONS (GI_CELL_DIMENSIONS + 1)
-#define GI_PROBE_DIMENSIONS_SQUARED (GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS)
-#define GI_SCENE_EXTENT = GI_CELL_EXTENT * GI_CELL_DIMENSIONS
-#define GI_CELL_COUNT (GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS * GI_CELL_DIMENSIONS)
-#define GI_PROBE_COUNT (GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS * GI_PROBE_DIMENSIONS)
-
-#define GI_PROBE_COUNT_WITH_FALLBACK (GI_PROBE_COUNT + 1)
-#define GI_FALLBACK_PROBE_IDX GI_PROBE_COUNT
-
-#define GI_MAX_RADIAL_DEPTH (GI_CELL_EXTENT * 4.0)
-
-const vec3 GI_SCENE_CENTER = HMM_V3(0,0,0);
-const vec3 GI_SCENE_MIN = HMM_V3(
-	GI_SCENE_CENTER[0] - (GI_CELL_EXTENT * GI_CELL_DIMENSIONS) / 2.0f,
-	GI_SCENE_CENTER[1] - (GI_CELL_EXTENT * GI_CELL_DIMENSIONS) / 2.0f,
-	GI_SCENE_CENTER[2] - (GI_CELL_EXTENT * GI_CELL_DIMENSIONS) / 2.0f
-);
+#define GI_MAX_OCTREE_SEARCH_DEPTH 32
 
 struct GI_Coords
 {
 	int x,y,z;
 };
-
-//FCS TODO: TEST ALL THESE FUNCTIONS
-
-GI_Coords gi_cell_coords_from_position(const vec3 in_position)
-{
-    const vec3 adjusted_position = in_position - GI_SCENE_MIN;
-
-    GI_Coords out_coords;
-    
-    // Ensure we aren't picking up probes exactly on or outside the min boundary
-    if (	adjusted_position[0] < 0.0 
-		||	adjusted_position[1] < 0.0
-		||	adjusted_position[2] < 0.0)
-	{
-		out_coords.x = out_coords.y = out_coords.z = -1;
-		return out_coords;
-    }
-
-    out_coords.x = int(floor(adjusted_position[0] / GI_CELL_EXTENT));
-    out_coords.y = int(floor(adjusted_position[1] / GI_CELL_EXTENT));
-    out_coords.z = int(floor(adjusted_position[2] / GI_CELL_EXTENT));
-    return out_coords;
-}
-
-GI_Coords gi_cell_coords_from_index(const int in_index)
-{
-	GI_Coords out_coords;
-	out_coords.x = in_index % GI_CELL_DIMENSIONS;
-	out_coords.y = (in_index / GI_CELL_DIMENSIONS) % GI_CELL_DIMENSIONS;
-	out_coords.z = in_index / GI_CELL_DIMENSIONS_SQUARED;
-	return out_coords;
-}
-
-int gi_cell_index_from_coords(const GI_Coords in_coords)
-{
-    if (in_coords.x < 0 || in_coords.x >= GI_CELL_DIMENSIONS ||
-        in_coords.y < 0 || in_coords.y >= GI_CELL_DIMENSIONS ||
-        in_coords.z < 0 || in_coords.z >= GI_CELL_DIMENSIONS) 
-    {
-        return -1;
-    }
-    
-    return in_coords.x + 
-           in_coords.y * GI_CELL_DIMENSIONS + 
-           in_coords.z * GI_CELL_DIMENSIONS_SQUARED;
-}
-
-GI_Coords gi_probe_coords_from_index(const int in_index)
-{
-	GI_Coords out_coords;
-	out_coords.x = in_index % GI_PROBE_DIMENSIONS;
-	out_coords.y = (in_index / GI_PROBE_DIMENSIONS) % GI_PROBE_DIMENSIONS;
-	out_coords.z = in_index / GI_PROBE_DIMENSIONS_SQUARED;
-	return out_coords;
-}
-
-int gi_probe_index_from_coords(const GI_Coords in_coords)
-{
-    if (in_coords.x < 0 || in_coords.x >= GI_PROBE_DIMENSIONS ||
-        in_coords.y < 0 || in_coords.y >= GI_PROBE_DIMENSIONS ||
-        in_coords.z < 0 || in_coords.z >= GI_PROBE_DIMENSIONS) 
-    {
-        return -1;
-    }
-    
-    return in_coords.x + 
-           in_coords.y * GI_PROBE_DIMENSIONS + 
-           in_coords.z * GI_PROBE_DIMENSIONS_SQUARED;
-}
-
-vec3 gi_cell_center_from_coords(const GI_Coords in_coords)
-{
-	return GI_SCENE_MIN + HMM_V3(
-		(in_coords.x + 0.5f) * GI_CELL_EXTENT,
-		(in_coords.y + 0.5f) * GI_CELL_EXTENT,
-		(in_coords.z + 0.5f) * GI_CELL_EXTENT
-	);
-}
-
-vec3 gi_probe_position_from_coords(const GI_Coords in_coords)
-{
-	return GI_SCENE_MIN + HMM_V3(
-		in_coords.x * GI_CELL_EXTENT,
-		in_coords.y * GI_CELL_EXTENT,
-		in_coords.z * GI_CELL_EXTENT
-	);
-}
-
-vec3 gi_probe_position_from_index(const int in_probe_index)
-{
-	GI_Coords probe_coords = gi_probe_coords_from_index(in_probe_index);
-	return gi_probe_position_from_coords(probe_coords);
-}
 
 struct GI_Cell
 {
@@ -132,8 +20,38 @@ struct GI_Cell
 
 struct GI_Probe
 {
+	vec4 position;
 	int atlas_idx;
+	int padding[3];
 };
+
+struct GI_OctreeNode
+{
+	vec4 min;
+	vec4 max;
+	int is_leaf;
+	int child_indices[8];
+	int payload_index;
+	int padding[2];
+};
+
+#if !defined(__cplusplus) || !defined(__STDC__)
+
+bool gi_octree_is_valid_position(GI_OctreeNode node, vec3 position)
+{
+	return all(greaterThanEqual(position, node.min.xyz)) && all(lessThanEqual(position, node.max.xyz));
+}
+
+int gi_octree_child_slot(GI_OctreeNode node, vec3 position)
+{
+	vec3 center = (node.min.xyz + node.max.xyz) * 0.5;
+	int x = position.x < center.x ? 0 : 1;
+	int y = position.y < center.y ? 0 : 1;
+	int z = position.z < center.z ? 0 : 1;
+	return x + y * 2 + z * 4;
+}
+
+#endif //!defined(__cplusplus) || !defined(__STDC__)
 
 #if !defined(__cplusplus) || !defined(__STDC__)
 @end // @block gi_helpers

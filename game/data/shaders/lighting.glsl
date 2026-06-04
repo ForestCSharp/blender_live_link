@@ -74,6 +74,9 @@ layout(binding=0) uniform fs_params {
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
+	int gi_fallback_probe_index;
+	int gi_octree_node_count;
+	float gi_max_radial_depth;
 	int shadow_map_enable;
 	int shadow_num_cascades;
 	int shadow_cascade_placement_mode;
@@ -122,6 +125,10 @@ layout(binding=13) readonly buffer SH9CoefficientsBuffer {
 
 layout(binding=14) readonly buffer SG9LobesBuffer {
 	ProbeSGLobe sg9_lobes[];
+};
+
+layout(binding=15) readonly buffer GIOctreeNodesBuffer {
+	GI_OctreeNode gi_octree_nodes[];
 };
 
 float vec2_length_squared(vec2 v)
@@ -213,6 +220,11 @@ vec2 evrp_warp_depth(float normalized_depth)
 
 vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 {
+	if (probe.atlas_idx < 0)
+	{
+		return vec3(0.0);
+	}
+
 	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SH9)
 	{
 		vec3 irradiance = vec3(0.0);
@@ -241,6 +253,41 @@ vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 
 	const vec2 octahedral_lighting_coords = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
 	return texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords).rgb;
+}
+
+int find_gi_octree_leaf_payload_index(vec3 position)
+{
+	if (gi_octree_node_count <= 0)
+	{
+		return -1;
+	}
+
+	int node_index = 0;
+	GI_OctreeNode node = gi_octree_nodes[node_index];
+	if (!gi_octree_is_valid_position(node, position))
+	{
+		return -1;
+	}
+
+	for (int i = 0; i < GI_MAX_OCTREE_SEARCH_DEPTH; ++i)
+	{
+		if (node.is_leaf != 0)
+		{
+			return node.payload_index;
+		}
+
+		int child_slot = gi_octree_child_slot(node, position);
+		int child_index = node.child_indices[child_slot];
+		if (child_index < 0 || child_index >= gi_octree_node_count)
+		{
+			return -1;
+		}
+
+		node_index = child_index;
+		node = gi_octree_nodes[node_index];
+	}
+
+	return -1;
 }
 
 vec3 sample_point_light(
@@ -599,8 +646,7 @@ void main()
 
 			if (gi_enable != 0)
 			{
-				GI_Coords cell_coords = gi_cell_coords_from_position(position);
-				int cell_index = gi_cell_index_from_coords(cell_coords);
+				int cell_index = find_gi_octree_leaf_payload_index(position);
 				const bool probe_isolation_active = isolated_probe_index != -1;
 
 				if (cell_index < 0)
@@ -612,13 +658,15 @@ void main()
 					}
 
 					// Fallback probe is at end of probes array
-					GI_Probe probe = gi_probes[GI_FALLBACK_PROBE_IDX];
-					const vec3 probe_radiance = sample_probe_radiance(probe, GI_FALLBACK_PROBE_IDX, normal);
-					
-					const vec3 final_irradiance = probe_radiance;		
-					const vec3 albedo = color * (1.0 - metallic); 
-					vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
-					final_color.xyz += final_gi;
+					GI_Probe probe = gi_probes[gi_fallback_probe_index];
+					if (probe.atlas_idx >= 0)
+					{
+						const vec3 probe_radiance = sample_probe_radiance(probe, gi_fallback_probe_index, normal);
+						const vec3 final_irradiance = probe_radiance;		
+						const vec3 albedo = color * (1.0 - metallic); 
+						vec3 final_gi = final_irradiance * albedo * gi_intensity * gi_shadow_multiplier;
+						final_color.xyz += final_gi;
+					}
 				}
 				else
 				{
@@ -626,8 +674,10 @@ void main()
 
 					// 1. Find the "alpha" position of the pixel within this specific cell
 					// This requires the world position of the '0,0,0' corner probe of the cell
-					vec3 cell_min_pos = gi_probe_position_from_index(cell.probe_indices[0]);
-					vec3 alpha = clamp((position - cell_min_pos) / GI_CELL_EXTENT, 0.0, 1.0);
+					vec3 cell_min_pos = gi_probes[cell.probe_indices[0]].position.xyz;
+					vec3 cell_max_pos = gi_probes[cell.probe_indices[7]].position.xyz;
+					vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
+					vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
 
 					vec3 accumulated_irradiance_no_cheb = vec3(0.0);
 					float accumulated_weight_no_cheb = 0.0;
@@ -645,7 +695,7 @@ void main()
 
 						if (probe.atlas_idx < 0) { continue; }
 						const vec3 probe_radiance = sample_probe_radiance(probe, probe_index, normal);
-						const vec3 probe_position = gi_probe_position_from_index(probe_index);
+						const vec3 probe_position = probe.position.xyz;
 						const vec3 position_to_probe = probe_position - position;
 						const vec3 probe_to_pos = position - probe_position;
 						const float dist_to_pixel = length(probe_to_pos);
@@ -683,7 +733,7 @@ void main()
 
 							if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
 							{
-								const float normalized_depth = clamp(dist_to_pixel / GI_MAX_RADIAL_DEPTH, 0.0, 1.0);
+								const float normalized_depth = clamp(dist_to_pixel / gi_max_radial_depth, 0.0, 1.0);
 								const vec2 warped_receiver_depth = evrp_warp_depth(normalized_depth);
 								const float min_variance = 0.00001;
 								const float light_bleed_reduction = 0.2;

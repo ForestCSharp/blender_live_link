@@ -165,6 +165,7 @@ public:
 		const i32 in_atlas_idx,
 		const bool should_render_geometry,
 		const i32 in_probe_idx,
+		const f32 in_max_radial_depth,
 		const sg_view in_sh9_coefficients_view,
 		const sg_view in_sg9_lobes_view)
 	{
@@ -293,6 +294,7 @@ public:
 						[12] = in_state.gpu.default_image_array.get_texture_array_view(),
 						[13] = in_state.gpu.default_buffer.get_storage_view(),
 						[14] = in_state.gpu.default_buffer.get_storage_view(),
+						[15] = in_state.gpu.default_buffer.get_storage_view(),
 					},
 					.samplers = {
 						[0] = in_state.gpu.linear_sampler,
@@ -315,6 +317,7 @@ public:
 					.capture_location = in_location,
 					.probe_occlusion_mode = static_cast<i32>(in_state.gi.probe_occlusion_mode),
 					.force_fully_visible = in_state.gi.debug_constant_white_probes ? 1 : 0,
+					.max_radial_depth = in_max_radial_depth,
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
