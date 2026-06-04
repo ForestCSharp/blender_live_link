@@ -39,6 +39,7 @@ namespace ShadowCascadeDebugPass
 		desc.outputs[0].store_action = SG_STOREACTION_STORE;
 		desc.outputs[0].clear_value = {0.0f, 0.0f, 0.0f, 1.0f};
 		desc.resize_with_window = false;
+		desc.debug_label = "Shadow Cascade Debug";
 		return desc;
 	}
 

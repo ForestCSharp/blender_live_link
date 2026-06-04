@@ -46,6 +46,8 @@ namespace ShadowBlurPass
 		desc.resize_with_window = false;
 		desc.type = ERenderPassType::Array;
 		desc.pass_count = MAX_SHADOW_CASCADES;
+		desc.debug_label = "Shadow Blur Vertical";
+		desc.scratch_debug_label = "Shadow Blur Horizontal";
 		return desc;
 	}
 

@@ -1001,6 +1001,7 @@ void init(void)
 		},
 		.width_scale = 0.5f,
 		.height_scale = 0.5f,
+		.debug_label = "SSAO",
 	};
 	get_render_pass(ERenderPass::SSAO).init(ssao_pass_desc);
 
@@ -1081,6 +1082,8 @@ void init(void)
 		},
 		.width_scale = 0.5f,
 		.height_scale = 0.5f,
+		.debug_label = "SSAO Blur Vertical",
+		.scratch_debug_label = "SSAO Blur Horizontal",
 	};
 	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
@@ -1099,6 +1102,7 @@ void init(void)
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
 		},
+		.debug_label = "Lighting",
 	};
 	//get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
@@ -1118,6 +1122,7 @@ void init(void)
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
 		},
+		.debug_label = "DOF Combine",
 	};
 	get_render_pass(ERenderPass::DOF_Combine).init(dof_combine_pass_desc);
 
@@ -1136,6 +1141,7 @@ void init(void)
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
 		},
+		.debug_label = "Tonemapping",
 	};
 	get_render_pass(ERenderPass::Tonemapping).init(tonemapping_pass_desc);
 
@@ -1151,6 +1157,7 @@ void init(void)
 		.depth_output = {
 			.pixel_format = swapchain.depth_format,
 		},
+		.debug_label = "Debug Text",
 	};
 	get_render_pass(ERenderPass::DebugText).init(debug_text_pass_desc);
 
@@ -1169,6 +1176,7 @@ void init(void)
 			.pixel_format = swapchain.depth_format,
 		},
 		.type = ERenderPassType::Swapchain,
+		.debug_label = "Copy To Swapchain",
 	};
 	get_render_pass(ERenderPass::CopyToSwapchain).init(copy_to_swapchain_pass_desc);
 

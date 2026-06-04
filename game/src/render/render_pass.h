@@ -10,6 +10,7 @@
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_glue.h"
+#include "render/sokol_helpers.h"
 
 using std::optional;
 
@@ -45,6 +46,8 @@ struct RenderPassDesc {
 	f32 height_scale = 1.0f;
 	bool resize_with_window = true;
 	ERenderPassType type = ERenderPassType::Single;
+	const char* debug_label = nullptr;
+	const char* scratch_debug_label = nullptr;
 };
 
 struct RenderPassOutput {
@@ -412,6 +415,7 @@ public: // Functions
 			sg_pass pass = {
 				.attachments = !render_to_swapchain ? attachments[pass_idx] : (sg_attachments){},
 				.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
+				.label = desc.debug_label,
 			};
 
 			for (int i = 0; i < desc.num_outputs; ++i)
@@ -438,12 +442,16 @@ public: // Functions
 
 			sg_begin_pass(pass);
 
-			if (pipeline.id != SG_INVALID_ID)
 			{
-				sg_apply_pipeline(pipeline);
-			}
+				GpuDebugScope debug_scope(desc.debug_label);
 
-			in_callback(pass_idx);
+				if (pipeline.id != SG_INVALID_ID)
+				{
+					sg_apply_pipeline(pipeline);
+				}
+
+				in_callback(pass_idx);
+			}
 
 			sg_end_pass();
 		}
@@ -469,6 +477,7 @@ public: // Functions
 
 			sg_pass pass = {
 				.attachments = scratch_attachment,
+				.label = desc.scratch_debug_label ? desc.scratch_debug_label : desc.debug_label,
 			};
 			pass.action.colors[0] = {
 				.load_action = desc.scratch_outputs[scratch_output_idx].load_action,
@@ -478,12 +487,16 @@ public: // Functions
 
 			sg_begin_pass(pass);
 
-			if (pipeline.id != SG_INVALID_ID)
 			{
-				sg_apply_pipeline(pipeline);
-			}
+				GpuDebugScope debug_scope(desc.scratch_debug_label ? desc.scratch_debug_label : desc.debug_label);
 
-			in_callback(pass_idx);
+				if (pipeline.id != SG_INVALID_ID)
+				{
+					sg_apply_pipeline(pipeline);
+				}
+
+				in_callback(pass_idx);
+			}
 
 			sg_end_pass();
 		}

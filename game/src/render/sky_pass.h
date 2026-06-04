@@ -61,6 +61,7 @@ namespace SkyBakePass
 					.store_action = SG_STOREACTION_STORE,
 					.clear_value = {0.0, 0.0, 0.0, 0.0},
 				},
+				.debug_label = "Sky Bake",
 			};
 			RenderPass new_render_pass;
 			new_render_pass.init(render_pass_desc);

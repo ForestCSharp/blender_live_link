@@ -92,6 +92,7 @@ namespace GeometryPass
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = Render::DEPTH_CLEAR_VALUE,
 			},
+			.debug_label = "Geometry",
 		};
 	}
 

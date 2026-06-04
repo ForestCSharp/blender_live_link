@@ -367,10 +367,10 @@ void state_init()
 	};
 	state.gpu.white_image_cube = GpuImage(white_image_cube_desc);
 
-	u8 default_buffer_data[4] = { 0,0,0,0 };
+	u8 default_buffer_data[32] = {};
 	GpuBufferDesc<u8> default_buffer_desc = {
 		.data = default_buffer_data,
-		.size = 4,
+		.size = sizeof(default_buffer_data),
 		.usage = {
 			.storage_buffer = true,
 		},

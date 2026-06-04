@@ -10,6 +10,7 @@ using ankerl::unordered_dense::map;
 
 #include "tessellation.compiled.h"
 
+#include "render/sokol_helpers.h"
 #include "state/state.h"
 
 namespace Tessellation
@@ -572,6 +573,7 @@ namespace Tessellation
 
 	void dispatch_patch_pipeline(
 		const sg_pipeline pipeline,
+		const char* debug_label,
 		const u32 patch_count,
 		const f32 phong_strength,
 		const sg_bindings& bindings)
@@ -585,11 +587,14 @@ namespace Tessellation
 				.phong_strength = phong_strength,
 			};
 
-			sg_begin_pass((sg_pass) { .compute = true });
-			sg_apply_pipeline(pipeline);
-			sg_apply_uniforms(0, SG_RANGE(params));
-			sg_apply_bindings(&bindings);
-			sg_dispatch((i32) dispatch_count, 1, 1);
+			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			{
+				GpuDebugScope debug_scope(debug_label);
+				sg_apply_pipeline(pipeline);
+				sg_apply_uniforms(0, SG_RANGE(params));
+				sg_apply_bindings(&bindings);
+				sg_dispatch((i32) dispatch_count, 1, 1);
+			}
 			sg_end_pass();
 		}
 	}
@@ -620,11 +625,15 @@ namespace Tessellation
 				},
 			};
 
-			sg_begin_pass((sg_pass) { .compute = true });
-			sg_apply_pipeline(weld_edges_pipeline);
-			sg_apply_uniforms(0, SG_RANGE(params));
-			sg_apply_bindings(&bindings);
-			sg_dispatch((i32) group_count, 1, 1);
+			const char* debug_label = "Tessellation Weld Edges";
+			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			{
+				GpuDebugScope debug_scope(debug_label);
+				sg_apply_pipeline(weld_edges_pipeline);
+				sg_apply_uniforms(0, SG_RANGE(params));
+				sg_apply_bindings(&bindings);
+				sg_dispatch((i32) group_count, 1, 1);
+			}
 			sg_end_pass();
 		}
 	}
@@ -646,7 +655,7 @@ namespace Tessellation
 					[3] = tessellated.vertex_buffer.get_storage_view(),
 				},
 			};
-			dispatch_patch_pipeline(emit_vertices_pipeline, tessellated.patch_count, state.tessellation.phong_strength, bindings);
+			dispatch_patch_pipeline(emit_vertices_pipeline, "Tessellation Emit Vertices", tessellated.patch_count, state.tessellation.phong_strength, bindings);
 		}
 
 		{
@@ -657,7 +666,7 @@ namespace Tessellation
 					[2] = tessellated.wire_index_buffer.get_storage_view(),
 				},
 			};
-			dispatch_patch_pipeline(emit_indices_pipeline, tessellated.patch_count, state.tessellation.phong_strength, bindings);
+			dispatch_patch_pipeline(emit_indices_pipeline, "Tessellation Emit Indices", tessellated.patch_count, state.tessellation.phong_strength, bindings);
 		}
 
 		if (state.tessellation.edge_welding)

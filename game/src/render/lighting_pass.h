@@ -45,6 +45,7 @@ namespace LightingPass
 			.load_action = SG_LOADACTION_LOAD,
 			.store_action = SG_STOREACTION_STORE,
 		},
+		.debug_label = "Lighting",
 		};
 	}
 }
