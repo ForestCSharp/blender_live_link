@@ -88,12 +88,10 @@ namespace Tessellation
 	std::optional<sg_shader> emit_vertices_shader;
 	std::optional<sg_shader> emit_indices_shader;
 	std::optional<sg_shader> weld_edges_shader;
-	std::optional<sg_shader> weld_corners_shader;
 
 	sg_pipeline emit_vertices_pipeline = {};
 	sg_pipeline emit_indices_pipeline = {};
 	sg_pipeline weld_edges_pipeline = {};
-	sg_pipeline weld_corners_pipeline = {};
 
 	FactorLookupEntry factor_lookup_entries[MAX_FACTOR + 1] = {};
 	GpuBuffer<FactorLookupEntry> factor_lookup_buffer;
@@ -252,7 +250,6 @@ namespace Tessellation
 		emit_vertices_shader = sg_make_shader(tessellation_emit_vertices_shader_desc(sg_query_backend()));
 		emit_indices_shader = sg_make_shader(tessellation_emit_indices_shader_desc(sg_query_backend()));
 		weld_edges_shader = sg_make_shader(tessellation_weld_edges_shader_desc(sg_query_backend()));
-		weld_corners_shader = sg_make_shader(tessellation_weld_corners_shader_desc(sg_query_backend()));
 
 		emit_vertices_pipeline = sg_make_pipeline((sg_pipeline_desc) {
 			.compute = true,
@@ -268,11 +265,6 @@ namespace Tessellation
 			.compute = true,
 			.shader = weld_edges_shader.value(),
 			.label = "tessellation-weld-edges-pipeline",
-		});
-		weld_corners_pipeline = sg_make_pipeline((sg_pipeline_desc) {
-			.compute = true,
-			.shader = weld_corners_shader.value(),
-			.label = "tessellation-weld-corners-pipeline",
 		});
 
 		initialized = true;

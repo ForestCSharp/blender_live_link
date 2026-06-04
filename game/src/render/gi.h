@@ -10,7 +10,6 @@
 #include "render/lighting_capture.h"
 
 #include "render/gi_debug_pass.h"
-#include "render/cubemap_debug_pass.h"
 
 #include "shaders/gi_helpers.h"
 #include "ankerl/unordered_dense.h"
@@ -43,7 +42,6 @@ struct GI_Scene
 	LightingCapture lighting_capture;
 	i32 probe_idx_to_update = 0;
 	i32 next_atlas_index = 0;
-	bool has_rendered_default_probe = false;
 
 	// Dynamic Layout
 	BoundingBox scene_bounds = {};
@@ -64,7 +62,6 @@ struct GI_Scene
 	// Static Parameters
 	static constexpr int min_octree_depth = 1;
 	static constexpr int max_octree_depth = 4;
-	static constexpr int default_octree_depth = 4;
 	static constexpr f32 fallback_scene_extent = 30.0f;
 	static constexpr f32 minimum_scene_extent = 1.0f;
 	static constexpr f32 radial_depth_cell_scale = GI_RADIAL_DEPTH_CELL_SCALE;
@@ -515,7 +512,6 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 
 	out_gi_scene.probe_idx_to_update = 0;
 	out_gi_scene.next_atlas_index = 0;
-	out_gi_scene.has_rendered_default_probe = false;
 	in_state.gi.layout_dirty = false;
 	in_state.gi.is_updating = true;
 	in_state.gi.isolated_probe_index = -1;

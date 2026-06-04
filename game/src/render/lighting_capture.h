@@ -82,11 +82,11 @@ public:
 		geometry_pass.init(geometry_pass_desc);
 
 		// Render lighting into a cubemap (ERenderPassType::Cubemap)
-		RenderPassDesc lighting_pass_desc = LightingPass::make_render_pass_desc(color_format);
-		lighting_pass_desc.initial_width = in_desc.cubemap_render_size;
-		lighting_pass_desc.initial_height = in_desc.cubemap_render_size;
-		lighting_pass_desc.type = ERenderPassType::Cubemap;
-		lighting_pass.init(lighting_pass_desc);
+		RenderPassDesc cubemap_lighting_desc = LightingPass::make_render_pass_desc(color_format);
+		cubemap_lighting_desc.initial_width = in_desc.cubemap_render_size;
+		cubemap_lighting_desc.initial_height = in_desc.cubemap_render_size;
+		cubemap_lighting_desc.type = ERenderPassType::Cubemap;
+		lighting_pass.init(cubemap_lighting_desc);
 
 		// Render radial depth into a cubemap (ERenderPassType::Cubemap)
 		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_RGBA32F;

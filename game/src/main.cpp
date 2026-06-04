@@ -367,12 +367,11 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// process images from update
 		if (auto images = update->images())
 		{
-			bool needs_images_update = false;
 			for (i32 idx = 0; idx < images->size(); ++idx)
 			{
 				auto image = images->Get(idx);
 				assert(image);
-				needs_images_update = register_image(*image);
+				register_image(*image);
 			}
 		}
 
@@ -449,8 +448,6 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					if (flatbuffer_positions && flatbuffer_normals && flatbuffer_texcoords)
 					{
 						num_vertices = flatbuffer_positions->size() / 3;
-						u32 num_normals = flatbuffer_normals->size() / 3;
-						u32 num_texcoords = flatbuffer_texcoords->size() / 2;
 
 						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
@@ -562,6 +559,13 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						};
 						game_object.mesh = make_mesh(mesh_init_data);
 						game_object.has_mesh = true;
+					}
+					else
+					{
+						free(indices);
+						free(vertices);
+						free(skinned_vertices);
+						free(material_indices);
 					}
 				}
 
@@ -1088,24 +1092,6 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
-	RenderPassDesc lighting_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(lighting_lighting_shader_desc(sg_query_backend())),
-			.depth = {
-				.pixel_format = SG_PIXELFORMAT_NONE,
-			},
-			.cull_mode = SG_CULLMODE_NONE,
-			.label = "lighting-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
-			.store_action = SG_STOREACTION_STORE,
-		},
-		.debug_label = "Lighting",
-	};
-	//get_render_pass(ERenderPass::Lighting).init(lighting_pass_desc);
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
 
 	RenderPassDesc dof_combine_pass_desc = {
@@ -1206,9 +1192,6 @@ void init(void)
 struct AppState {
 	bool keycodes[SAPP_MAX_KEYCODES];
 
-	static const i32 num_mouse_buttons = 3;
-	bool mouse_buttons[num_mouse_buttons];
-
 	HMM_Vec2 mouse_position;
 	HMM_Vec2 mouse_delta;
 
@@ -1219,12 +1202,6 @@ bool is_key_pressed(sapp_keycode keycode)
 {
 	assert((i32)keycode < SAPP_MAX_KEYCODES);
 	return app_state.keycodes[keycode];
-}
-
-bool is_mouse_down(sapp_mousebutton in_mouse_button)
-{
-	assert(in_mouse_button < app_state.num_mouse_buttons);
-	return app_state.mouse_buttons[in_mouse_button];
 }
 
 HMM_Vec2 get_mouse_delta()
@@ -2271,7 +2248,7 @@ void frame(void)
 
 		{ // Geometry Pass
 			get_render_pass(ERenderPass::Geometry).execute(
-				[&](const i32 pass_idx)
+				[&](const i32)
 				{
 				    geometry_vs_params_t vs_params;
 					vs_params.view = view_matrix;
@@ -2279,9 +2256,6 @@ void frame(void)
 
 					// Apply Vertex Uniforms
 					sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-					// Get our jolt body interface
-					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 					// Cull objects
 					const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
@@ -2408,7 +2382,7 @@ void frame(void)
 			RenderPass& ssao_pass = get_render_pass(ERenderPass::SSAO);
 			{ // SSAO
 				ssao_pass.execute(
-					[&](const i32 pass_idx)
+					[&](const i32)
 					{
 						state.ssao.fs_params.screen_size = HMM_V2((f32)ssao_pass.current_width, (f32)ssao_pass.current_height);
 						state.ssao.fs_params.view = view_matrix;
@@ -2447,7 +2421,7 @@ void frame(void)
 
 		{ // Lighting Pass
 			get_render_pass(ERenderPass::Lighting).execute(
-				[&](const i32 pass_idx)
+				[&](const i32)
 				{
 					state.lighting.fs_params.view_position = get_active_camera().location;
 					state.lighting.fs_params.view_forward = get_active_camera().forward;
@@ -2536,7 +2510,7 @@ void frame(void)
 			if (state.dof.enable)
 			{
 				get_render_pass(ERenderPass::DOF_Combine).execute(
-					[&](const i32 pass_idx)
+					[&](const i32)
 					{
 						RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 						RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
@@ -2574,7 +2548,7 @@ void frame(void)
 
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
-				[&](const i32 pass_idx)
+				[&](const i32)
 				{
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
@@ -2599,7 +2573,7 @@ void frame(void)
 
 		{ // Debug Text
 			get_render_pass(ERenderPass::DebugText).execute(
-				[&](const i32 pass_idx)
+				[&](const i32)
 				{
 					// Larger numbers scales down text
 					const f32 text_scale = 0.5f;
@@ -2629,7 +2603,7 @@ void frame(void)
 
 		{ // Copy To Swapchain Pass
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(
-				[&](const i32 pass_idx)
+				[&](const i32)
 				{
 					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
@@ -2742,7 +2716,6 @@ void event(const sapp_event* event)
 		}
 		case SAPP_EVENTTYPE_MOUSE_DOWN:
 		{
-			app_state.mouse_buttons[event->mouse_button] = true;
 			app_state.mouse_position = HMM_V2(event->mouse_x, event->mouse_y);
 
 			if (!imgui_wants_mouse_capture && event->mouse_button == SAPP_MOUSEBUTTON_LEFT && state.gi.probe_isolation_enable && state.gi.show_probes)
@@ -2764,7 +2737,6 @@ void event(const sapp_event* event)
 		}
 		case SAPP_EVENTTYPE_MOUSE_UP:
 		{
-			app_state.mouse_buttons[event->mouse_button] = false;
 			break;
 		}
 		case SAPP_EVENTTYPE_MOUSE_MOVE:

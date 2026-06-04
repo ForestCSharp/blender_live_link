@@ -58,16 +58,6 @@ struct MeshRenderView
 	bool is_tessellated = false;
 };
 
-// currently we pass this data to Mesh so shouldn't destroy
-void mesh_init_data_free(MeshInitData& in_init_data)
-{
-	free(in_init_data.indices);
-	free(in_init_data.vertices);
-	free(in_init_data.skinned_vertices);
-	free(in_init_data.material_indices);
-	memset(&in_init_data, 0, sizeof(MeshInitData));
-}
-
 MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 {
 	latitudes	= MAX(2, latitudes);
@@ -177,6 +167,7 @@ struct Mesh
 	GpuBuffer<Vertex> vertex_buffer;
 
 	bool has_skinned_vertices;
+	SkinnedVertex* skinned_vertices;
 	GpuBuffer<SkinnedVertex> skinned_vertex_buffer;
 
 	u32 material_indices_count;
@@ -252,6 +243,8 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 			},
 			.label = "Mesh::vertex_buffer",
 		}),	
+		.has_skinned_vertices = false,
+		.skinned_vertices = in_init_data.skinned_vertices,
 		.material_indices_count = in_init_data.num_material_indices,
 		.material_indices = in_init_data.material_indices,
 		.bounding_box = bounding_box,

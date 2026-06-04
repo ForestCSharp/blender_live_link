@@ -161,7 +161,6 @@ struct State
 		sg_sampler nearest_sampler;
 		GpuImage default_image;
 		GpuImage default_image_array;
-		GpuImage default_image_cube;
 		GpuImage white_image_cube;
 		GpuBuffer<u8> default_buffer;
 	} gpu;
@@ -330,25 +329,6 @@ void state_init()
 		.data = (u8*) &default_image_array_data,
 	};
 	state.gpu.default_image_array = GpuImage(default_image_array_desc);
-
-	HMM_Vec4 default_image_cube_data[6] =
-	{
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-		HMM_V4(0,0,0,1),
-	};
-	GpuImageDesc default_image_cube_desc = {
-		.type = SG_IMAGETYPE_CUBE,
-		.width = 1,
-		.height = 1,
-		.num_slices = 6,
-		.pixel_format = SG_PIXELFORMAT_RGBA32F,
-		.data = (u8*) &default_image_cube_data,
-	};
-	state.gpu.default_image_cube = GpuImage(default_image_cube_desc);
 
 	HMM_Vec4 white_image_cube_data[6] =
 	{

@@ -25,10 +25,6 @@
 #define CLAMP(value, min, max) (MAX(min, MIN(max, value)))
 #endif
 
-#ifndef ABS
-#define ABS(value) (value < 0 ? -value : value)
-#endif
-
 static constexpr float LOWEST_FLOAT = std::numeric_limits<float>::lowest(); 
 static constexpr float HIGHEST_FLOAT = std::numeric_limits<float>::max(); 
 
@@ -62,7 +58,6 @@ namespace Constants
 
 namespace UnitVectors
 {
-	static const HMM_Vec3 Right		= HMM_NormV3(HMM_V3(1,0,0));
 	static const HMM_Vec3 Forward	= HMM_NormV3(HMM_V3(0,1,0));
 	static const HMM_Vec3 Up		= HMM_NormV3(HMM_V3(0,0,1));	
 }
@@ -267,4 +262,3 @@ bool frustum_cull(const Frustum& in_frustum, const BoundingBox& in_bounding_box)
     }
     return false; // Not culled
 }
-

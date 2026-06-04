@@ -354,8 +354,11 @@ void object_cleanup_gpu_resources(Object& in_object)
 
 		if (in_object.mesh.has_skinned_vertices)
 		{
+			free(in_object.mesh.skinned_vertices);
 			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
 		}
+
+		free(in_object.mesh.material_indices);
 	}
 }
 

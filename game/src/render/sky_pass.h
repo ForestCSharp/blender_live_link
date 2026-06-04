@@ -74,7 +74,7 @@ namespace SkyBakePass
 	void render(State& in_state)
 	{
 		SkyBakePass::get_render_pass().execute(
-			[&](const i32 pass_idx)
+			[&](const i32)
 			{
 				HMM_Vec3 sun_dir = HMM_V3(0,0,1);
 				if (in_state.scene.primary_sun_id.has_value())

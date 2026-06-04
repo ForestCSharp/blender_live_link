@@ -52,7 +52,7 @@ namespace ShadowCascadeDebugPass
 	)
 	{
 		in_pass.execute(
-			[&](const i32 pass_idx)
+			[&](const i32)
 			{
 				const shadow_cascade_debug_fs_params_t fs_params = {
 					.cascade_index = in_cascade_index,

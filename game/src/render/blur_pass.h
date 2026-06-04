@@ -17,7 +17,7 @@ namespace BlurPass
 	{
 		in_pass.execute_scratch(
 			0,
-			[&](const i32 pass_idx)
+			[&](const i32)
 			{
 				const blur_fs_params_t blur_fs_params = {
 					.screen_size = in_screen_size,
@@ -38,7 +38,7 @@ namespace BlurPass
 		);
 
 		in_pass.execute(
-			[&](const i32 pass_idx)
+			[&](const i32)
 			{
 				const blur_fs_params_t blur_fs_params = {
 					.screen_size = in_screen_size,
