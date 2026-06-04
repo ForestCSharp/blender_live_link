@@ -928,10 +928,10 @@ void init(void)
 
 	// GI Scene Setup
 	gi_scene_init(gi_scene, state);
-	printf("gi_scene num octree nodes: %zu num cells: %zu num probes: %zu\n",
+	printf("gi_scene num octree nodes: %zu num payloads: %d num probes: %d\n",
 		gi_scene.octree_nodes.length(),
-		gi_scene.cells.length(),
-		gi_scene.probes.length()
+		gi_scene.payload_count,
+		gi_scene.non_fallback_probe_count
 	);
 
 	#if WITH_DEBUG_UI
@@ -1306,14 +1306,13 @@ void pick_isolated_gi_probe()
 		camera_right * (ndc_x * aspect_ratio * tan_half_fov) +
 		camera_up * (ndc_y * tan_half_fov)
 	);
-	const f32 probe_radius = gi_scene_debug_probe_radius(gi_scene);
-
 	i32 closest_probe_index = -1;
 	f32 closest_t = std::numeric_limits<f32>::max();
 	for (i32 probe_index = 0; probe_index < gi_scene.non_fallback_probe_count; ++probe_index)
 	{
 		f32 t = 0.0f;
 		const HMM_Vec3 probe_position = gi_scene_probe_position_from_index(gi_scene, probe_index);
+		const f32 probe_radius = gi_scene_debug_probe_radius_for_probe(gi_scene, probe_index);
 		if (ray_sphere_intersect(ray_origin, ray_direction, probe_position, probe_radius, t) && t < closest_t)
 		{
 			closest_t = t;
@@ -1664,11 +1663,16 @@ void frame(void)
 						state.gi.is_updating = true;
 					}
 					ImGui::Text(
-						"Octree: depth %d  nodes %zu  cells %zu  probes %d",
+						"Octree: depth %d  nodes %zu  payloads %d  probes %d",
 						gi_scene.octree_depth,
 						gi_scene.octree_nodes.length(),
-						gi_scene.cells.length(),
+						gi_scene.payload_count,
 						gi_scene.non_fallback_probe_count
+					);
+					ImGui::Text(
+						"Atlas: %zu / %d",
+						gi_scene.probes.length(),
+						gi_scene_atlas_capacity()
 					);
 					ImGui::Text(
 						"Bounds Min: %.2f %.2f %.2f",
@@ -1682,7 +1686,12 @@ void frame(void)
 						gi_scene.scene_bounds.max.Y,
 						gi_scene.scene_bounds.max.Z
 					);
-					ImGui::Text("Leaf Extent: %.2f  Max Radial Depth: %.2f", gi_scene.leaf_cell_extent, gi_scene.max_radial_depth);
+					ImGui::Text(
+						"Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f",
+						gi_scene.min_occupied_cell_extent,
+						gi_scene.max_occupied_cell_extent,
+						gi_scene.max_radial_depth
+					);
 					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.gi.probe_radiance_mode, EProbeRadianceModeNames, IM_ARRAYSIZE(EProbeRadianceModeNames)))
 					{
 						state.gi.is_updating = true;
@@ -2453,7 +2462,6 @@ void frame(void)
 					state.lighting.fs_params.atlas_entry_size = gi_scene.atlas_entry_size;
 					state.lighting.fs_params.gi_fallback_probe_index = gi_scene.fallback_probe_index;
 					state.lighting.fs_params.gi_octree_node_count = (i32)gi_scene.octree_nodes.length();
-					state.lighting.fs_params.gi_max_radial_depth = gi_scene.max_radial_depth;
 					state.lighting.fs_params.shadow_map_enable = state.shadow.rendering_enable && ShadowDepthPass::has_valid_shadow_map ? 1 : 0;
 					state.lighting.fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
 					state.lighting.fs_params.shadow_cascade_placement_mode = (i32) state.shadow.cascade_placement_mode;

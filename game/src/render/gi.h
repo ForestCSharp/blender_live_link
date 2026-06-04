@@ -13,6 +13,7 @@
 #include "render/cubemap_debug_pass.h"
 
 #include "shaders/gi_helpers.h"
+#include "ankerl/unordered_dense.h"
 
 static_assert(sizeof(GI_Cell) == 32, "GI_Cell must match shader storage layout.");
 static_assert(sizeof(GI_Probe) == 32, "GI_Probe must match shader storage layout.");
@@ -50,8 +51,11 @@ struct GI_Scene
 	i32 leaf_divisions = 16;
 	i32 fallback_probe_index = -1;
 	i32 non_fallback_probe_count = 0;
+	i32 payload_count = 0;
 	f32 leaf_cell_extent = 1.0f;
 	f32 max_radial_depth = 4.0f;
+	f32 min_occupied_cell_extent = 0.0f;
+	f32 max_occupied_cell_extent = 0.0f;
 
 	// Debug Data
 	Mesh debug_sphere;
@@ -63,7 +67,7 @@ struct GI_Scene
 	static constexpr int default_octree_depth = 4;
 	static constexpr f32 fallback_scene_extent = 30.0f;
 	static constexpr f32 minimum_scene_extent = 1.0f;
-	static constexpr f32 radial_depth_cell_scale = 4.0f;
+	static constexpr f32 radial_depth_cell_scale = GI_RADIAL_DEPTH_CELL_SCALE;
 	static constexpr int cubemap_capture_size = 256;
 	static constexpr int atlas_total_size = 2048;
 	static constexpr int atlas_entry_size = 16;
@@ -82,20 +86,6 @@ i32 gi_scene_atlas_capacity()
 i32 gi_scene_leaf_divisions_from_depth(const i32 in_octree_depth)
 {
 	return 1 << in_octree_depth;
-}
-
-i32 gi_scene_cell_index_from_coords(const GI_Coords in_coords, const i32 in_leaf_divisions)
-{
-	return in_coords.x +
-		in_coords.y * in_leaf_divisions +
-		in_coords.z * in_leaf_divisions * in_leaf_divisions;
-}
-
-i32 gi_scene_probe_index_from_coords(const GI_Coords in_coords, const i32 in_probe_divisions)
-{
-	return in_coords.x +
-		in_coords.y * in_probe_divisions +
-		in_coords.z * in_probe_divisions * in_probe_divisions;
 }
 
 HMM_Vec3 gi_scene_bounds_center(const BoundingBox& in_bounds)
@@ -123,10 +113,13 @@ BoundingBox gi_scene_expand_bounds_to_cube(const BoundingBox& in_bounds)
 	return gi_scene_cube_bounds_from_center_extent(gi_scene_bounds_center(in_bounds), cube_extent);
 }
 
-BoundingBox gi_scene_compute_scene_bounds(const State& in_state)
+bool gi_scene_collect_visible_mesh_bounds(
+	const State& in_state,
+	StretchyBuffer<BoundingBox>& out_geometry_bounds,
+	BoundingBox& out_scene_bounds)
 {
-	BoundingBox scene_bounds = bounding_box_init();
-	bool has_visible_mesh = false;
+	out_geometry_bounds.reset();
+	out_scene_bounds = bounding_box_init();
 
 	for (auto const& [unique_id, object] : in_state.scene.objects)
 	{
@@ -136,17 +129,19 @@ BoundingBox gi_scene_compute_scene_bounds(const State& in_state)
 		}
 
 		const BoundingBox object_bounds = object_get_bounding_box(object);
-		scene_bounds.min = HMM_MinV3(scene_bounds.min, object_bounds.min);
-		scene_bounds.max = HMM_MaxV3(scene_bounds.max, object_bounds.max);
-		has_visible_mesh = true;
+		out_geometry_bounds.add(object_bounds);
+		out_scene_bounds.min = HMM_MinV3(out_scene_bounds.min, object_bounds.min);
+		out_scene_bounds.max = HMM_MaxV3(out_scene_bounds.max, object_bounds.max);
 	}
 
-	if (!has_visible_mesh)
+	if (out_geometry_bounds.length() == 0)
 	{
-		return gi_scene_cube_bounds_from_center_extent(HMM_V3(0.0f, 0.0f, 0.0f), GI_Scene::fallback_scene_extent);
+		out_scene_bounds = gi_scene_cube_bounds_from_center_extent(HMM_V3(0.0f, 0.0f, 0.0f), GI_Scene::fallback_scene_extent);
+		return false;
 	}
 
-	return gi_scene_expand_bounds_to_cube(scene_bounds);
+	out_scene_bounds = gi_scene_expand_bounds_to_cube(out_scene_bounds);
+	return true;
 }
 
 HMM_Vec3 gi_scene_lattice_position(const BoundingBox& in_bounds, const i32 in_leaf_divisions, const GI_Coords in_coords)
@@ -166,6 +161,12 @@ void gi_scene_reset_layout_buffers(GI_Scene& in_gi_scene)
 	in_gi_scene.probes.reset();
 	in_gi_scene.sh9_coefficients.reset();
 	in_gi_scene.sg9_lobes.reset();
+	in_gi_scene.fallback_probe_index = -1;
+	in_gi_scene.non_fallback_probe_count = 0;
+	in_gi_scene.payload_count = 0;
+	in_gi_scene.min_occupied_cell_extent = 0.0f;
+	in_gi_scene.max_occupied_cell_extent = 0.0f;
+	in_gi_scene.max_radial_depth = 0.0f;
 }
 
 void gi_scene_destroy_layout_gpu_resources(GI_Scene& in_gi_scene)
@@ -177,130 +178,235 @@ void gi_scene_destroy_layout_gpu_resources(GI_Scene& in_gi_scene)
 	in_gi_scene.sg9_lobes_buffer.destroy_gpu_buffer();
 }
 
-void gi_scene_init_probe_lattice(GI_Scene& out_gi_scene)
+u64 gi_scene_probe_corner_key(const GI_Coords in_coords)
 {
-	const i32 probe_divisions = out_gi_scene.leaf_divisions + 1;
-	const i32 probe_count = probe_divisions * probe_divisions * probe_divisions;
-	out_gi_scene.non_fallback_probe_count = probe_count;
-	out_gi_scene.fallback_probe_index = probe_count;
-
-	out_gi_scene.probes.add_uninitialized(probe_count + 1);
-
-	for (i32 z = 0; z < probe_divisions; ++z)
-	{
-		for (i32 y = 0; y < probe_divisions; ++y)
-		{
-			for (i32 x = 0; x < probe_divisions; ++x)
-			{
-				const GI_Coords probe_coords = { x, y, z };
-				const i32 probe_index = gi_scene_probe_index_from_coords(probe_coords, probe_divisions);
-				GI_Probe& probe = out_gi_scene.probes[probe_index];
-				probe.position = HMM_V4V(gi_scene_lattice_position(out_gi_scene.scene_bounds, out_gi_scene.leaf_divisions, probe_coords), 1.0f);
-				probe.atlas_idx = -1;
-				probe.padding[0] = probe.padding[1] = probe.padding[2] = 0;
-			}
-		}
-	}
-
-	GI_Probe& fallback_probe = out_gi_scene.probes[out_gi_scene.fallback_probe_index];
-	fallback_probe.position = HMM_V4V(gi_scene_bounds_center(out_gi_scene.scene_bounds), 1.0f);
-	fallback_probe.atlas_idx = -1;
-	fallback_probe.padding[0] = fallback_probe.padding[1] = fallback_probe.padding[2] = 0;
+	assert(in_coords.x >= 0 && in_coords.y >= 0 && in_coords.z >= 0);
+	constexpr u64 coord_mask = (1ull << 21ull) - 1ull;
+	return (((u64)in_coords.x & coord_mask) << 42ull) |
+		(((u64)in_coords.y & coord_mask) << 21ull) |
+		((u64)in_coords.z & coord_mask);
 }
 
-void gi_scene_init_leaf_payloads(GI_Scene& out_gi_scene)
+f32 gi_scene_cell_extent_from_depth(const GI_Scene& in_gi_scene, const i32 in_depth)
 {
-	const i32 leaf_count = out_gi_scene.leaf_divisions * out_gi_scene.leaf_divisions * out_gi_scene.leaf_divisions;
-	const i32 probe_divisions = out_gi_scene.leaf_divisions + 1;
-	out_gi_scene.cells.add_uninitialized(leaf_count);
-
-	for (i32 z = 0; z < out_gi_scene.leaf_divisions; ++z)
-	{
-		for (i32 y = 0; y < out_gi_scene.leaf_divisions; ++y)
-		{
-			for (i32 x = 0; x < out_gi_scene.leaf_divisions; ++x)
-			{
-				const GI_Coords cell_coords = { x, y, z };
-				const i32 cell_index = gi_scene_cell_index_from_coords(cell_coords, out_gi_scene.leaf_divisions);
-				GI_Cell& cell = out_gi_scene.cells[cell_index];
-
-				for (i32 corner_z = 0; corner_z < 2; ++corner_z)
-				{
-					for (i32 corner_y = 0; corner_y < 2; ++corner_y)
-					{
-						for (i32 corner_x = 0; corner_x < 2; ++corner_x)
-						{
-							const GI_Coords probe_coords = {
-								x + corner_x,
-								y + corner_y,
-								z + corner_z,
-							};
-							const i32 corner_index = corner_x + corner_y * 2 + corner_z * 4;
-							cell.probe_indices[corner_index] = gi_scene_probe_index_from_coords(probe_coords, probe_divisions);
-						}
-					}
-				}
-			}
-		}
-	}
+	const i32 divisions = 1 << in_depth;
+	return (in_gi_scene.scene_bounds.max.X - in_gi_scene.scene_bounds.min.X) / (f32)divisions;
 }
 
-i32 gi_scene_build_dense_octree_node(
+f32 gi_scene_max_radial_depth_from_cell_extent(const f32 in_cell_extent)
+{
+	return std::max(in_cell_extent * GI_Scene::radial_depth_cell_scale, GI_Scene::minimum_scene_extent);
+}
+
+GI_Probe gi_scene_make_probe(const HMM_Vec3 in_position, const f32 in_max_radial_depth)
+{
+	GI_Probe probe = {};
+	probe.position = HMM_V4V(in_position, 1.0f);
+	probe.atlas_idx = -1;
+	probe.max_radial_depth = in_max_radial_depth;
+	probe.padding[0] = probe.padding[1] = 0;
+	return probe;
+}
+
+void gi_scene_init_empty_cell_sentinel(GI_Scene& out_gi_scene)
+{
+	GI_Cell cell = {};
+	for (i32 i = 0; i < 8; ++i)
+	{
+		cell.probe_indices[i] = -1;
+	}
+	out_gi_scene.cells.add(cell);
+}
+
+void gi_scene_add_fallback_probe(GI_Scene& out_gi_scene)
+{
+	out_gi_scene.non_fallback_probe_count = (i32)out_gi_scene.probes.length();
+	out_gi_scene.fallback_probe_index = out_gi_scene.non_fallback_probe_count;
+
+	const f32 fallback_radial_depth = gi_scene_max_radial_depth_from_cell_extent(out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X);
+	out_gi_scene.probes.add(gi_scene_make_probe(gi_scene_bounds_center(out_gi_scene.scene_bounds), fallback_radial_depth));
+	out_gi_scene.max_radial_depth = std::max(out_gi_scene.max_radial_depth, fallback_radial_depth);
+}
+
+bool gi_scene_bounds_intersect(const BoundingBox& in_a, const BoundingBox& in_b)
+{
+	return in_a.min.X <= in_b.max.X && in_a.max.X >= in_b.min.X &&
+		in_a.min.Y <= in_b.max.Y && in_a.max.Y >= in_b.min.Y &&
+		in_a.min.Z <= in_b.max.Z && in_a.max.Z >= in_b.min.Z;
+}
+
+bool gi_scene_bounds_intersect_any(const BoundingBox& in_bounds, const StretchyBuffer<BoundingBox>& in_geometry_bounds)
+{
+	for (const BoundingBox& geometry_bounds : in_geometry_bounds)
+	{
+		if (gi_scene_bounds_intersect(in_bounds, geometry_bounds))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+BoundingBox gi_scene_make_bounds(const HMM_Vec3 in_min, const HMM_Vec3 in_max)
+{
+	return (BoundingBox) {
+		.min = in_min,
+		.max = in_max,
+	};
+}
+
+BoundingBox gi_scene_child_bounds(const BoundingBox& in_bounds, const i32 in_child_x, const i32 in_child_y, const i32 in_child_z)
+{
+	const HMM_Vec3 center = (in_bounds.min + in_bounds.max) * 0.5f;
+	return gi_scene_make_bounds(
+		HMM_V3(
+			in_child_x == 0 ? in_bounds.min.X : center.X,
+			in_child_y == 0 ? in_bounds.min.Y : center.Y,
+			in_child_z == 0 ? in_bounds.min.Z : center.Z
+		),
+		HMM_V3(
+			in_child_x == 0 ? center.X : in_bounds.max.X,
+			in_child_y == 0 ? center.Y : in_bounds.max.Y,
+			in_child_z == 0 ? center.Z : in_bounds.max.Z
+		)
+	);
+}
+
+i32 gi_scene_get_or_create_probe(
 	GI_Scene& out_gi_scene,
-	const HMM_Vec3 in_min,
-	const HMM_Vec3 in_max,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
+	const GI_Coords in_max_depth_coords,
+	const f32 in_required_radial_depth)
+{
+	const u64 probe_key = gi_scene_probe_corner_key(in_max_depth_coords);
+	auto existing_probe = out_probe_indices_by_corner.find(probe_key);
+	if (existing_probe != out_probe_indices_by_corner.end())
+	{
+		GI_Probe& probe = out_gi_scene.probes[existing_probe->second];
+		probe.max_radial_depth = std::max(probe.max_radial_depth, in_required_radial_depth);
+		return existing_probe->second;
+	}
+
+	const i32 probe_index = (i32)out_gi_scene.probes.length();
+	const HMM_Vec3 probe_position = gi_scene_lattice_position(out_gi_scene.scene_bounds, out_gi_scene.leaf_divisions, in_max_depth_coords);
+	out_gi_scene.probes.add(gi_scene_make_probe(probe_position, in_required_radial_depth));
+	out_probe_indices_by_corner[probe_key] = probe_index;
+	return probe_index;
+}
+
+i32 gi_scene_add_node_payload(
+	GI_Scene& out_gi_scene,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const i32 in_depth,
 	const GI_Coords in_coords)
 {
+	const i32 coord_scale = 1 << (out_gi_scene.octree_depth - in_depth);
+	const f32 cell_extent = gi_scene_cell_extent_from_depth(out_gi_scene, in_depth);
+	const f32 required_radial_depth = gi_scene_max_radial_depth_from_cell_extent(cell_extent);
+
+	if (out_gi_scene.payload_count == 0)
+	{
+		out_gi_scene.min_occupied_cell_extent = cell_extent;
+		out_gi_scene.max_occupied_cell_extent = cell_extent;
+	}
+	else
+	{
+		out_gi_scene.min_occupied_cell_extent = std::min(out_gi_scene.min_occupied_cell_extent, cell_extent);
+		out_gi_scene.max_occupied_cell_extent = std::max(out_gi_scene.max_occupied_cell_extent, cell_extent);
+	}
+	out_gi_scene.max_radial_depth = std::max(out_gi_scene.max_radial_depth, required_radial_depth);
+
+	GI_Cell cell = {};
+	for (i32 corner_z = 0; corner_z < 2; ++corner_z)
+	{
+		for (i32 corner_y = 0; corner_y < 2; ++corner_y)
+		{
+			for (i32 corner_x = 0; corner_x < 2; ++corner_x)
+			{
+				const GI_Coords probe_coords = {
+					(in_coords.x + corner_x) * coord_scale,
+					(in_coords.y + corner_y) * coord_scale,
+					(in_coords.z + corner_z) * coord_scale,
+				};
+				const i32 corner_index = corner_x + corner_y * 2 + corner_z * 4;
+				cell.probe_indices[corner_index] = gi_scene_get_or_create_probe(out_gi_scene, out_probe_indices_by_corner, probe_coords, required_radial_depth);
+			}
+		}
+	}
+
+	const i32 payload_index = (i32)out_gi_scene.cells.length();
+	out_gi_scene.cells.add(cell);
+	out_gi_scene.payload_count += 1;
+	return payload_index;
+}
+
+GI_OctreeNode gi_scene_make_octree_node(const BoundingBox& in_bounds)
+{
 	GI_OctreeNode node = {};
-	node.min = HMM_V4V(in_min, 1.0f);
-	node.max = HMM_V4V(in_max, 1.0f);
-	node.is_leaf = in_depth >= out_gi_scene.octree_depth ? 1 : 0;
+	node.min = HMM_V4V(in_bounds.min, 1.0f);
+	node.max = HMM_V4V(in_bounds.max, 1.0f);
+	node.is_leaf = 1;
 	node.payload_index = -1;
 	node.padding[0] = node.padding[1] = 0;
 	for (i32 i = 0; i < 8; ++i)
 	{
 		node.child_indices[i] = -1;
 	}
+	return node;
+}
+
+void gi_scene_init_empty_octree(GI_Scene& out_gi_scene)
+{
+	out_gi_scene.octree_nodes.add(gi_scene_make_octree_node(out_gi_scene.scene_bounds));
+	gi_scene_init_empty_cell_sentinel(out_gi_scene);
+}
+
+i32 gi_scene_build_sparse_octree_node(
+	GI_Scene& out_gi_scene,
+	const StretchyBuffer<BoundingBox>& in_geometry_bounds,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
+	const BoundingBox& in_bounds,
+	const i32 in_depth,
+	const GI_Coords in_coords)
+{
+	GI_OctreeNode node = gi_scene_make_octree_node(in_bounds);
+	node.payload_index = gi_scene_add_node_payload(out_gi_scene, out_probe_indices_by_corner, in_depth, in_coords);
 
 	const i32 node_index = (i32)out_gi_scene.octree_nodes.length();
 	out_gi_scene.octree_nodes.add(node);
 
-	if (node.is_leaf)
+	if (in_depth >= out_gi_scene.octree_depth)
 	{
-		out_gi_scene.octree_nodes[node_index].payload_index = gi_scene_cell_index_from_coords(in_coords, out_gi_scene.leaf_divisions);
 		return node_index;
 	}
 
-	const HMM_Vec3 center = (in_min + in_max) * 0.5f;
+	i32 child_count = 0;
 	for (i32 child_z = 0; child_z < 2; ++child_z)
 	{
 		for (i32 child_y = 0; child_y < 2; ++child_y)
 		{
 			for (i32 child_x = 0; child_x < 2; ++child_x)
 			{
-				const HMM_Vec3 child_min = HMM_V3(
-					child_x == 0 ? in_min.X : center.X,
-					child_y == 0 ? in_min.Y : center.Y,
-					child_z == 0 ? in_min.Z : center.Z
-				);
-				const HMM_Vec3 child_max = HMM_V3(
-					child_x == 0 ? center.X : in_max.X,
-					child_y == 0 ? center.Y : in_max.Y,
-					child_z == 0 ? center.Z : in_max.Z
-				);
+				const BoundingBox child_bounds = gi_scene_child_bounds(in_bounds, child_x, child_y, child_z);
+				if (!gi_scene_bounds_intersect_any(child_bounds, in_geometry_bounds))
+				{
+					continue;
+				}
+
 				const GI_Coords child_coords = {
 					in_coords.x * 2 + child_x,
 					in_coords.y * 2 + child_y,
 					in_coords.z * 2 + child_z,
 				};
 				const i32 child_slot = child_x + child_y * 2 + child_z * 4;
-				const i32 child_index = gi_scene_build_dense_octree_node(out_gi_scene, child_min, child_max, in_depth + 1, child_coords);
+				const i32 child_index = gi_scene_build_sparse_octree_node(out_gi_scene, in_geometry_bounds, out_probe_indices_by_corner, child_bounds, in_depth + 1, child_coords);
 				out_gi_scene.octree_nodes[node_index].child_indices[child_slot] = child_index;
+				child_count += 1;
 			}
 		}
 	}
 
+	out_gi_scene.octree_nodes[node_index].is_leaf = child_count == 0 ? 1 : 0;
 	return node_index;
 }
 
@@ -384,17 +490,27 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	out_gi_scene.octree_depth = std::clamp(in_state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
 	in_state.gi.octree_depth = out_gi_scene.octree_depth;
 	out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(out_gi_scene.octree_depth);
-	out_gi_scene.scene_bounds = gi_scene_compute_scene_bounds(in_state);
+	StretchyBuffer<BoundingBox> geometry_bounds;
+	const bool has_visible_geometry = gi_scene_collect_visible_mesh_bounds(in_state, geometry_bounds, out_gi_scene.scene_bounds);
 	out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32)out_gi_scene.leaf_divisions;
-	out_gi_scene.max_radial_depth = std::max(out_gi_scene.leaf_cell_extent * GI_Scene::radial_depth_cell_scale, GI_Scene::minimum_scene_extent);
 
 	gi_scene_reset_layout_buffers(out_gi_scene);
-	gi_scene_init_probe_lattice(out_gi_scene);
-	gi_scene_init_leaf_payloads(out_gi_scene);
-	gi_scene_build_dense_octree_node(out_gi_scene, out_gi_scene.scene_bounds.min, out_gi_scene.scene_bounds.max, 0, (GI_Coords){0,0,0});
+	if (has_visible_geometry)
+	{
+		ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
+		gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0,0,0});
+	}
+	else
+	{
+		gi_scene_init_empty_octree(out_gi_scene);
+	}
+	gi_scene_add_fallback_probe(out_gi_scene);
 	gi_scene_init_radiance_buffers(out_gi_scene);
 
 	assert(out_gi_scene.probes.length() <= (size_t)gi_scene_atlas_capacity());
+	assert(out_gi_scene.probes.length() > 0);
+	assert(out_gi_scene.octree_nodes.length() > 0);
+	assert(out_gi_scene.cells.length() > 0);
 	gi_scene_recreate_gpu_buffers(out_gi_scene);
 
 	out_gi_scene.probe_idx_to_update = 0;
@@ -408,12 +524,13 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	{
 		bounding_box_print(out_gi_scene.scene_bounds, "GI Scene Bounds");
 		printf(
-			"GI octree depth: %d nodes: %zu cells: %zu probes: %zu leaf extent: %f max radial depth: %f\n",
+			"GI octree depth: %d nodes: %zu payloads: %d probes: %zu min/max cell extent: %f/%f max radial depth: %f\n",
 			out_gi_scene.octree_depth,
 			out_gi_scene.octree_nodes.length(),
-			out_gi_scene.cells.length(),
+			out_gi_scene.payload_count,
 			out_gi_scene.probes.length(),
-			out_gi_scene.leaf_cell_extent,
+			out_gi_scene.min_occupied_cell_extent,
+			out_gi_scene.max_occupied_cell_extent,
 			out_gi_scene.max_radial_depth
 		);
 	}
@@ -422,6 +539,14 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 f32 gi_scene_debug_probe_radius(const GI_Scene& in_gi_scene)
 {
 	return std::max(in_gi_scene.leaf_cell_extent * 0.1f, 0.025f);
+}
+
+f32 gi_scene_debug_probe_radius_for_probe(const GI_Scene& in_gi_scene, const i32 in_probe_index)
+{
+	assert(in_gi_scene.probes.is_valid_index(in_probe_index));
+	const GI_Probe& probe = in_gi_scene.probes.data()[in_probe_index];
+	const f32 probe_cell_extent = probe.max_radial_depth / GI_Scene::radial_depth_cell_scale;
+	return std::max(probe_cell_extent * 0.1f, gi_scene_debug_probe_radius(in_gi_scene));
 }
 
 HMM_Vec3 gi_scene_probe_position_from_index(GI_Scene& in_gi_scene, const i32 in_probe_index)
@@ -483,7 +608,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 				probe_to_update.atlas_idx,
 				should_render_geometry,
 				in_gi_scene.probe_idx_to_update,
-				in_gi_scene.max_radial_depth,
+				probe_to_update.max_radial_depth,
 				in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
 				in_gi_scene.sg9_lobes_buffer.get_storage_view()
 		);
@@ -547,7 +672,6 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 		.atlas_entry_size = in_gi_scene.lighting_capture.desc.octahedral_entry_size,
 		.probe_vis_mode = static_cast<i32>(state.gi.probe_vis_mode),
 		.isolated_probe_index = state.gi.isolated_probe_index,
-		.max_radial_depth = in_gi_scene.max_radial_depth,
 	};
 	// Apply Fragment Uniforms
 	sg_apply_uniforms(1, SG_RANGE(fs_params));

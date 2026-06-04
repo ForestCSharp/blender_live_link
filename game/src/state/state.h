@@ -251,7 +251,7 @@ struct State
 	{
 		bool enable = true;
 		bool probe_occlusion = true;
-		i32 octree_depth = 3;
+		i32 octree_depth = 4;
 		bool layout_dirty = true;
 		EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
 		EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;

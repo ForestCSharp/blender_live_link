@@ -40,10 +40,12 @@ void main() {
 
 	probe_index = debug_probe_start_index + gl_InstanceIndex;
 
-	vec3 probe_position = gi_debug_vs_probes[probe_index].position.xyz;
+	GI_Probe debug_probe = gi_debug_vs_probes[probe_index];
+	vec3 probe_position = debug_probe.position.xyz;
+	float debug_radius = max((debug_probe.max_radial_depth / GI_RADIAL_DEPTH_CELL_SCALE) * 0.1, probe_debug_radius);
 	mat4 model = mat4_translate(probe_position);
 
-	world_position = model * vec4(position.xyz * probe_debug_radius, position.w);
+	world_position = model * vec4(position.xyz * debug_radius, position.w);
 	world_normal = normal;
 	pixel_texcoord = texcoord;
 
@@ -64,7 +66,6 @@ layout(binding=1) uniform fs_params {
 	int atlas_entry_size;
 	int probe_vis_mode;
 	int isolated_probe_index;
-	float max_radial_depth;
 };
 
 layout(binding=0) uniform sampler linear_sampler;
@@ -167,14 +168,14 @@ void main()
 		case 3:
 		{
 			const float radial_depth = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).x;
-			const float adjusted_depth = remap_clamped(radial_depth, 0.0, max_radial_depth, 0.0, 1.0);
+			const float adjusted_depth = remap_clamped(radial_depth, 0.0, probe.max_radial_depth, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth), 1.0);
 			break;
 		}
 		case 4:
 		{
 			const float radial_depth_squared = texture(sampler2D(octahedral_depth_texture, linear_sampler), octahedral_coords).y;
-			const float adjusted_depth_squared = remap_clamped(radial_depth_squared, 0.0, max_radial_depth * max_radial_depth, 0.0, 1.0);
+			const float adjusted_depth_squared = remap_clamped(radial_depth_squared, 0.0, probe.max_radial_depth * probe.max_radial_depth, 0.0, 1.0);
 			out_color = vec4(vec3(adjusted_depth_squared), 1.0);
 			break;
 		}

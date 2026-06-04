@@ -7,6 +7,7 @@
 #endif
 
 #define GI_MAX_OCTREE_SEARCH_DEPTH 32
+#define GI_RADIAL_DEPTH_CELL_SCALE 4.0
 
 struct GI_Coords
 {
@@ -22,7 +23,8 @@ struct GI_Probe
 {
 	vec4 position;
 	int atlas_idx;
-	int padding[3];
+	float max_radial_depth;
+	int padding[2];
 };
 
 struct GI_OctreeNode

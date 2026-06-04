@@ -76,7 +76,6 @@ layout(binding=0) uniform fs_params {
 	int atlas_entry_size;
 	int gi_fallback_probe_index;
 	int gi_octree_node_count;
-	float gi_max_radial_depth;
 	int shadow_map_enable;
 	int shadow_num_cascades;
 	int shadow_cascade_placement_mode;
@@ -255,7 +254,7 @@ vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 	return texture(sampler2D(octahedral_lighting_texture, tex_sampler), octahedral_lighting_coords).rgb;
 }
 
-int find_gi_octree_leaf_payload_index(vec3 position)
+int find_gi_octree_payload_index(vec3 position)
 {
 	if (gi_octree_node_count <= 0)
 	{
@@ -269,25 +268,30 @@ int find_gi_octree_leaf_payload_index(vec3 position)
 		return -1;
 	}
 
+	int payload_index = node.payload_index;
 	for (int i = 0; i < GI_MAX_OCTREE_SEARCH_DEPTH; ++i)
 	{
 		if (node.is_leaf != 0)
 		{
-			return node.payload_index;
+			return payload_index;
 		}
 
 		int child_slot = gi_octree_child_slot(node, position);
 		int child_index = node.child_indices[child_slot];
 		if (child_index < 0 || child_index >= gi_octree_node_count)
 		{
-			return -1;
+			return payload_index;
 		}
 
 		node_index = child_index;
 		node = gi_octree_nodes[node_index];
+		if (node.payload_index >= 0)
+		{
+			payload_index = node.payload_index;
+		}
 	}
 
-	return -1;
+	return payload_index;
 }
 
 vec3 sample_point_light(
@@ -646,7 +650,7 @@ void main()
 
 			if (gi_enable != 0)
 			{
-				int cell_index = find_gi_octree_leaf_payload_index(position);
+				int cell_index = find_gi_octree_payload_index(position);
 				const bool probe_isolation_active = isolated_probe_index != -1;
 
 				if (cell_index < 0)
@@ -733,7 +737,7 @@ void main()
 
 							if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
 							{
-								const float normalized_depth = clamp(dist_to_pixel / gi_max_radial_depth, 0.0, 1.0);
+								const float normalized_depth = clamp(dist_to_pixel / max(probe.max_radial_depth, 0.00001), 0.0, 1.0);
 								const vec2 warped_receiver_depth = evrp_warp_depth(normalized_depth);
 								const float min_variance = 0.00001;
 								const float light_bleed_reduction = 0.2;
