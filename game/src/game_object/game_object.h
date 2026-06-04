@@ -338,8 +338,13 @@ void object_cleanup_gpu_resources(Object& in_object)
 	in_object.storage_buffer.destroy_gpu_buffer();
 	if (in_object.has_mesh)
 	{
+		mesh_cleanup_tessellated_geometry(in_object.mesh);
+
 		free(in_object.mesh.indices);
 		in_object.mesh.index_buffer.destroy_gpu_buffer();
+
+		free(in_object.mesh.wire_indices);
+		in_object.mesh.wire_index_buffer.destroy_gpu_buffer();
 
 		if (in_object.mesh.vertices)
 		{

@@ -168,8 +168,8 @@
   <header>
     <h1><code>probe_radiance_projection.glsl</code> Explained</h1>
     <p class="subtitle">
-      This compute shader projects one captured probe lighting cubemap into a compact coefficient representation.
-      It writes either SH9 coefficients or SG9 lobe amplitudes, which the lighting shader can later evaluate instead
+      This compute shader projects one captured probe lighting cubemap into a compact probe-radiance representation.
+      It writes either SH9 coefficients or fitted SG9 lobes, which the lighting shader can later evaluate instead
       of sampling the octahedral irradiance atlas.
     </p>
   </header>
@@ -180,25 +180,25 @@
     <span class="tag">Output</span>
     <p>
       The shader runs after a GI probe has rendered its six-face lighting cubemap. Each dispatch processes one probe.
-      The workgroup has 32 lanes, but only lanes <code>0..8</code> do useful work: one lane per coefficient.
+      The workgroup has 32 lanes, but only lanes <code>0..8</code> own output entries: one lane per SH coefficient
+      or SG lobe.
     </p>
     <pre><code>layout(local_size_x=32, local_size_y=1, local_size_z=1) in;
 
-uint coefficient_index = gl_GlobalInvocationID.x;
-if (coefficient_index &gt;= 9u)
-{
-    return;
-}</code></pre>
+uint coefficient_index = gl_LocalInvocationID.x;
+bool has_lobe = coefficient_index &lt; 9u;</code></pre>
     <p>
       The 32-wide workgroup is mostly a GPU/backend requirement. Sokol's shader compiler requires the compute
-      workgroup size to be a multiple of 32 for this target, so the shader launches 32 threads and discards the extras.
+      workgroup size to be a multiple of 32 for this target, so the shader launches 32 threads. In SH mode the extra
+      lanes return immediately. In SG mode they stay alive until the shared-memory barriers are complete, but only
+      lanes <code>0..8</code> initialize, fit, and store lobes.
     </p>
   </section>
 
   <h2>Shared Probe Radiance Helpers</h2>
   <p>
     The shader includes <code>shader_common.h</code> and then imports the shared <code>probe_radiance</code> block.
-    That block defines the coefficient struct and the math for SH and SG basis evaluation.
+    That block defines the SH coefficient struct, the SG lobe struct, and the math for SH and SG basis evaluation.
   </p>
   <pre><code>#include "shader_common.h"
 
@@ -206,12 +206,20 @@ if (coefficient_index &gt;= 9u)
 
 @include_block probe_radiance</code></pre>
   <p>
-    The important shared type is intentionally tiny: one <code>vec4</code> per coefficient. RGB stores radiance data;
-    alpha is currently unused.
+    SH is stored as one <code>vec4</code> per coefficient. RGB stores radiance data; alpha is currently unused.
   </p>
   <pre><code>struct ProbeRadianceCoefficient
 {
     vec4 value;
+};</code></pre>
+  <p>
+    SG now stores a full lobe per entry instead of just an amplitude. <code>params.xyz</code> is the fitted lobe axis,
+    <code>params.w</code> is fitted sharpness, and <code>amplitude.rgb</code> is the lobe color.
+  </p>
+  <pre><code>struct ProbeSGLobe
+{
+    vec4 params;
+    vec4 amplitude;
 };</code></pre>
 
   <h2>Inputs And Outputs</h2>
@@ -246,8 +254,8 @@ if (coefficient_index &gt;= 9u)
       </tr>
       <tr>
         <td><code>storage binding 1</code></td>
-        <td><code>SG9CoefficientsBuffer</code></td>
-        <td>Writable buffer for 9 SG amplitudes per probe.</td>
+        <td><code>SG9LobesBuffer</code></td>
+        <td>Writable buffer for 9 fitted SG lobes per probe.</td>
       </tr>
     </tbody>
   </table>
@@ -265,14 +273,14 @@ layout(binding=0) buffer SH9CoefficientsBuffer {
     ProbeRadianceCoefficient sh9_coefficients[];
 };
 
-layout(binding=1) buffer SG9CoefficientsBuffer {
-    ProbeRadianceCoefficient sg9_coefficients[];
+layout(binding=1) buffer SG9LobesBuffer {
+    ProbeSGLobe sg9_lobes[];
 };</code></pre>
 
   <div class="note">
     <strong>Why the buffers are flat:</strong>
-    coefficients are addressed as <code>probe_index * 9 + coefficient_index</code>.
-    This keeps GPU storage simple and lets the lighting shader use the same indexing convention.
+    SH coefficients and SG lobes are addressed as <code>probe_index * 9 + coefficient_index</code>.
+    This keeps GPU storage simple and lets the lighting and debug shaders use the same indexing convention.
   </div>
 
   <h2>Sampling The Sphere</h2>
@@ -309,23 +317,28 @@ vec2 hammersley(uint i, uint N)
 
   <h2>Main Dispatch Flow</h2>
   <p>
-    Each active thread computes one coefficient for the selected probe. The offset into the coefficient buffer is:
+    Each active lane handles one coefficient or lobe for the selected probe. The offset into the flat output buffer is:
   </p>
   <pre><code>int coefficient_offset = probe_index * 9 + int(coefficient_index);
 uint num_samples = uint(max(sample_count, 1));</code></pre>
   <p>
-    This means dispatching once for <code>probe_index = 17</code> writes coefficients
-    <code>153..161</code> in the corresponding coefficient buffer.
+    This means dispatching once for <code>probe_index = 17</code> writes entries
+    <code>153..161</code> in the corresponding SH coefficient or SG lobe buffer.
   </p>
 
   <h2>SH9 Projection</h2>
   <p>
-    In SH9 mode, each thread projects the cubemap radiance onto one real spherical-harmonic basis function. For
+    In SH9 mode, each active lane projects the cubemap radiance onto one real spherical-harmonic basis function. For
     coefficient <code>k</code>, it repeatedly samples a sphere direction <code>dir</code>, reads the cubemap radiance
     in that direction, multiplies by <code>sh9_basis(k, dir)</code>, and accumulates.
   </p>
   <pre><code>if (radiance_mode == PROBE_RADIANCE_MODE_SH9)
 {
+    if (!has_lobe)
+    {
+        return;
+    }
+
     vec3 accumulated = vec3(0.0);
     for (uint i = 0u; i &lt; num_samples; ++i)
     {
@@ -356,42 +369,141 @@ uint num_samples = uint(max(sample_count, 1));</code></pre>
 
   <h2>SG9 Projection</h2>
   <p>
-    In SG9 mode, each coefficient corresponds to a fixed spherical-Gaussian lobe. The shader estimates the lobe's
-    color amplitude by weighted averaging: samples near the lobe axis contribute strongly, samples far away contribute
-    weakly.
+    In SG9 mode, each active lane owns one spherical-Gaussian lobe. The current implementation is no longer a fixed
+    basis with only amplitudes fitted. It starts from nine seed axes, fits lobe axes and sharpness values in shared
+    memory, then stores both the fitted lobe shape and its color amplitude.
   </p>
-  <pre><code>else if (radiance_mode == PROBE_RADIANCE_MODE_SG9)
-{
-    vec3 accumulated = vec3(0.0);
-    float accumulated_weight = 0.0;
-    for (uint i = 0u; i &lt; num_samples; ++i)
-    {
-        vec3 dir = sample_sphere(hammersley(i, num_samples));
-        vec3 radiance = texture(samplerCube(cubemap_lighting_texture, smp), dir).rgb;
-        float weight = sg9_basis(int(coefficient_index), dir);
-        accumulated += radiance * weight;
-        accumulated_weight += weight;
-    }
+  <pre><code>const int SG9_NUM_LOBES = 9;
+const int SG9_FIT_ITERATIONS = 4;
 
-    sg9_coefficients[coefficient_offset].value =
-        vec4(accumulated / max(accumulated_weight, 0.00001), 0.0);
+shared vec3 shared_sg9_axes[SG9_NUM_LOBES];
+shared float shared_sg9_sharpness[SG9_NUM_LOBES];</code></pre>
+  <p>
+    Lanes <code>0..8</code> initialize the shared lobe state from <code>sg9_initial_axis()</code> and
+    <code>SG9_SHARPNESS</code>. All 32 lanes then synchronize before fitting begins.
+  </p>
+  <pre><code>if (has_lobe)
+{
+    shared_sg9_axes[coefficient_index] = sg9_initial_axis(int(coefficient_index));
+    shared_sg9_sharpness[coefficient_index] = SG9_SHARPNESS;
+}
+barrier();</code></pre>
+  <p>
+    During fitting, each lobe computes a soft responsibility for every sample direction. The responsibility is the
+    lobe's diffuse SG response divided by the sum of all nine diffuse SG responses for that direction.
+  </p>
+  <pre><code>float sg9_basis_sum(vec3 dir)
+{
+    float sum_basis = 0.0;
+    for (int i = 0; i &lt; SG9_NUM_LOBES; ++i)
+    {
+        sum_basis += sg_lobe_diffuse_response(shared_sg9_axes[i], shared_sg9_sharpness[i], dir);
+    }
+    return max(sum_basis, 0.00001);
 }</code></pre>
   <p>
-    The denominator normalizes the weighted average. The <code>max(..., 0.00001)</code> guard prevents division by zero,
-    though the current fixed SG basis should always accumulate some positive weight.
+    Each iteration moves the lobe axis toward its responsibility-weighted sample directions. The average cosine
+    between the old axis and those samples is converted into a sharpness estimate, then clamped to the shared SG
+    sharpness range.
   </p>
+  <pre><code>for (int iteration = 0; iteration &lt; SG9_FIT_ITERATIONS; ++iteration)
+{
+    if (has_lobe)
+    {
+        vec3 current_axis = shared_sg9_axes[coefficient_index];
+        float current_sharpness = shared_sg9_sharpness[coefficient_index];
+
+        vec3 accumulated_direction = vec3(0.0);
+        float accumulated_weight = 0.0;
+        float accumulated_cosine = 0.0;
+
+        for (uint i = 0u; i &lt; num_samples; ++i)
+        {
+            vec3 dir = sample_sphere(hammersley(i, num_samples));
+            float basis = sg_lobe_diffuse_response(current_axis, current_sharpness, dir);
+            float responsibility = basis / sg9_basis_sum(dir);
+
+            accumulated_direction += dir * responsibility;
+            accumulated_cosine += dot(current_axis, dir) * responsibility;
+            accumulated_weight += responsibility;
+        }
+
+        if (accumulated_weight &gt; 0.00001)
+        {
+            vec3 fitted_axis = normalize(accumulated_direction);
+            float average_cosine = clamp(accumulated_cosine / accumulated_weight, 0.0, 0.999);
+            float fitted_sharpness = clamp(
+                1.0 / max(1.0 - average_cosine, 0.00001),
+                SG9_MIN_SHARPNESS,
+                SG9_MAX_SHARPNESS
+            );
+
+            shared_sg9_axes[coefficient_index] = fitted_axis;
+            shared_sg9_sharpness[coefficient_index] = fitted_sharpness;
+        }
+    }
+
+    barrier();
+}</code></pre>
+  <p>
+    After fitting, each lobe uses the final responsibility weights to estimate its color amplitude from the cubemap.
+    The shader stores the fitted axis and sharpness in <code>params</code>, and the normalized RGB amplitude in
+    <code>amplitude</code>.
+  </p>
+  <pre><code>if (!has_lobe)
+{
+    return;
+}
+
+vec3 final_axis = shared_sg9_axes[coefficient_index];
+float final_sharpness = shared_sg9_sharpness[coefficient_index];
+vec3 accumulated_radiance = vec3(0.0);
+float accumulated_weight = 0.0;
+for (uint i = 0u; i &lt; num_samples; ++i)
+{
+    vec3 dir = sample_sphere(hammersley(i, num_samples));
+    vec3 radiance = texture(samplerCube(cubemap_lighting_texture, smp), dir).rgb;
+    float basis = sg_lobe_diffuse_response(final_axis, final_sharpness, dir);
+    float responsibility = basis / sg9_basis_sum(dir);
+
+    accumulated_radiance += radiance * responsibility;
+    accumulated_weight += responsibility;
+}
+
+sg9_lobes[coefficient_offset].params = vec4(final_axis, final_sharpness);
+sg9_lobes[coefficient_offset].amplitude =
+    vec4(accumulated_radiance / max(accumulated_weight, 0.00001), 0.0);</code></pre>
 
   <section class="card">
     <h3>What SG9 Stores</h3>
     <p>
-      SG9 stores nine lobe amplitudes. The lobe axes and sharpness are shared constants in the
-      <code>probe_radiance</code> block, not per-probe data.
+      SG9 stores nine complete lobes per probe. Each lobe has a fitted axis, fitted sharpness, and RGB amplitude.
+      The initial axes and clamp limits are shared constants, but the final lobe shape is per probe.
     </p>
     <p>
-      This first pass uses a simple normalized weighted projection rather than a full least-squares fit, so it is
-      intentionally inexpensive and easy to reason about.
+      The fit is still intentionally compact: it uses four soft-assignment iterations over Hammersley sphere samples,
+      then a final weighted radiance average. It is more adaptive than the older fixed SG basis without turning probe
+      updates into a full nonlinear optimizer.
     </p>
   </section>
+
+  <h2>SG9 Reconstruction</h2>
+  <p>
+    Runtime lighting and probe debug visualization use the same reconstruction shape. For the requested normal, they
+    evaluate all nine fitted lobes, blend each lobe's amplitude by its diffuse response, then divide by the response
+    sum. This keeps the fitted SG output normalized in the same spirit as the projection pass.
+  </p>
+  <pre><code>vec3 reconstructed_radiance = vec3(0.0);
+float weight_sum = 0.0;
+int coefficient_offset = probe_index * 9;
+for (int i = 0; i &lt; 9; ++i)
+{
+    vec4 lobe = sg9_lobes[coefficient_offset + i].params;
+    float response = sg_lobe_diffuse_response(normalize(lobe.xyz), lobe.w, normal);
+    reconstructed_radiance += sg9_lobes[coefficient_offset + i].amplitude.rgb * response;
+    weight_sum += response;
+}
+return max(reconstructed_radiance / max(weight_sum, 0.00001), vec3(0.0));</code></pre>
 
   <h2>What This Shader Does Not Do</h2>
   <div class="grid">
@@ -405,13 +517,13 @@ uint num_samples = uint(max(sample_count, 1));</code></pre>
       <h3>No Octahedral Radiance</h3>
       <p>
         The octahedral irradiance atlas path is still generated by <code>cubemap_to_octahedral.glsl</code>.
-        This shader only writes SH9/SG9 coefficient buffers.
+        This shader only writes the SH9 coefficient buffer and SG9 lobe buffer.
       </p>
     </div>
     <div class="card">
       <h3>No Runtime Shading</h3>
       <p>
-        Final surface GI is evaluated in <code>lighting.glsl</code>, which reads the coefficients written here.
+        Final surface GI is evaluated in <code>lighting.glsl</code>, which reads the coefficients or lobes written here.
       </p>
     </div>
   </div>
@@ -422,14 +534,17 @@ uint num_samples = uint(max(sample_count, 1));</code></pre>
     - render probe lighting cubemap
     - render radial visibility cubemap
     - update octahedral visibility atlas
-    - if mode is SH9 or SG9:
+    - if radiance mode or probe visualization needs SH9:
         dispatch probe_radiance_projection.glsl
-        write 9 coefficients for this probe
+        write 9 SH coefficients for this probe
+    - if radiance mode or probe visualization needs SG9:
+        dispatch probe_radiance_projection.glsl
+        fit and write 9 SG lobes for this probe
 
 lighting.glsl
     - Octahedral mode: sample octahedral irradiance atlas
     - SH9 mode: evaluate SH9 coefficient buffer
-    - SG9 mode: evaluate SG9 coefficient buffer
+    - SG9 mode: evaluate SG9 lobe buffer
     - all modes: use octahedral visibility atlas for probe occlusion</code></pre>
 
   <h2>Tuning Knobs</h2>
@@ -450,12 +565,27 @@ lighting.glsl
       <tr>
         <td><code>SG9_SHARPNESS</code></td>
         <td><code>shader_common.h</code></td>
-        <td>Higher values make SG lobes narrower and more directional.</td>
+        <td>Initial sharpness for every SG lobe before the iterative fit starts.</td>
       </tr>
       <tr>
-        <td><code>sg9_axis()</code></td>
+        <td><code>SG9_MIN_SHARPNESS</code> / <code>SG9_MAX_SHARPNESS</code></td>
         <td><code>shader_common.h</code></td>
-        <td>Changes which directions the nine SG lobes represent.</td>
+        <td>Clamp range for fitted lobe sharpness.</td>
+      </tr>
+      <tr>
+        <td><code>SG9_DIFFUSE_SHARPNESS_SCALE</code></td>
+        <td><code>shader_common.h</code></td>
+        <td>Scales sharpness before SG diffuse response is used for fitting and reconstruction.</td>
+      </tr>
+      <tr>
+        <td><code>sg9_initial_axis()</code></td>
+        <td><code>shader_common.h</code></td>
+        <td>Changes the seed directions for the nine SG lobes before fitting.</td>
+      </tr>
+      <tr>
+        <td><code>SG9_FIT_ITERATIONS</code></td>
+        <td><code>probe_radiance_projection.glsl</code></td>
+        <td>Controls how many soft-assignment axis/sharpness refinement passes run per SG projection.</td>
       </tr>
       <tr>
         <td>SH basis constants</td>
@@ -469,7 +599,7 @@ lighting.glsl
     <strong>Debug tip:</strong>
     after switching <code>Probe Radiance Mode</code> to <code>SH9</code> or <code>SG9</code>, wait for probe updating
     to finish, then use <code>Probe Vis Mode</code> values <code>SH9 Irradiance</code> or <code>SG9 Irradiance</code>
-    to inspect what these coefficient buffers reconstruct on the probe spheres.
+    to inspect what these SH coefficients or SG lobes reconstruct on the probe spheres.
   </section>
 </main>
 </body>

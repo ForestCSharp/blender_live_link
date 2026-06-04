@@ -1,6 +1,12 @@
 #pragma once
 
+#include "core/stretchy_buffer.h"
 #include "render/render_types.h"
+#include "shaders/tessellation_common.h"
+
+static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout.");
+static_assert(sizeof(TessellationPatch) == 32, "TessellationPatch must match shader storage layout.");
+static_assert(sizeof(TessellationWeldPair) == 16, "TessellationWeldPair must match shader storage layout.");
 
 struct MeshInitData
 {	
@@ -13,6 +19,43 @@ struct MeshInitData
 
 	u32 num_material_indices = 0;
 	i32* material_indices = nullptr;
+};
+
+struct TessellatedGeometry
+{
+	bool active = false;
+	bool overflowed = false;
+
+	u32 patch_count = 0;
+	u32 vertex_count = 0;
+	u32 index_count = 0;
+	u32 wire_index_count = 0;
+	u32 edge_weld_pair_count = 0;
+
+	u32 patch_capacity = 0;
+	u32 vertex_capacity = 0;
+	u32 index_capacity = 0;
+	u32 wire_index_capacity = 0;
+	u32 edge_weld_pair_capacity = 0;
+
+	StretchyBuffer<TessellationPatch> patches;
+	StretchyBuffer<TessellationWeldPair> edge_weld_pairs;
+
+	GpuBuffer<TessellationPatch> patch_buffer;
+	GpuBuffer<TessellationWeldPair> edge_weld_pair_buffer;
+	GpuBuffer<Vertex> vertex_buffer;
+	GpuBuffer<u32> index_buffer;
+	GpuBuffer<u32> wire_index_buffer;
+};
+
+struct MeshRenderView
+{
+	sg_buffer vertex_buffer = {};
+	sg_buffer index_buffer = {};
+	sg_buffer wire_index_buffer = {};
+	u32 index_count = 0;
+	u32 wire_index_count = 0;
+	bool is_tessellated = false;
 };
 
 // currently we pass this data to Mesh so shouldn't destroy
@@ -125,6 +168,10 @@ struct Mesh
 	u32* indices;
 	GpuBuffer<u32> index_buffer; 
 
+	u32 wire_index_count;
+	u32* wire_indices;
+	GpuBuffer<u32> wire_index_buffer;
+
 	u32 vertex_count;
 	Vertex* vertices; 
 	GpuBuffer<Vertex> vertex_buffer;
@@ -136,6 +183,8 @@ struct Mesh
 	i32* material_indices;
 
 	BoundingBox bounding_box;
+
+	TessellatedGeometry tessellated_geometry;
 };
 
 // Takes ownership of vertices and indices
@@ -153,6 +202,22 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 
 	u64 indices_size = sizeof(u32) * in_init_data.num_indices;
 	u64 vertices_size = sizeof(Vertex) * in_init_data.num_vertices;
+	u32 source_triangle_count = in_init_data.num_indices / 3;
+	u32 source_wire_index_count = source_triangle_count * 6;
+	u32* source_wire_indices = (u32*) malloc(sizeof(u32) * source_wire_index_count);
+	for (u32 index_idx = 0, wire_idx = 0; index_idx + 2 < in_init_data.num_indices; index_idx += 3)
+	{
+		const u32 i0 = in_init_data.indices[index_idx + 0];
+		const u32 i1 = in_init_data.indices[index_idx + 1];
+		const u32 i2 = in_init_data.indices[index_idx + 2];
+		source_wire_indices[wire_idx++] = i0;
+		source_wire_indices[wire_idx++] = i1;
+		source_wire_indices[wire_idx++] = i1;
+		source_wire_indices[wire_idx++] = i2;
+		source_wire_indices[wire_idx++] = i2;
+		source_wire_indices[wire_idx++] = i0;
+	}
+	u64 wire_indices_size = sizeof(u32) * source_wire_index_count;
 
 	Mesh out_mesh {
 		.index_count = in_init_data.num_indices,
@@ -162,8 +227,19 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 			.size = indices_size,
 			.usage = {
 				.index_buffer = true,
+				.storage_buffer = true,
 			},
 			.label = "Mesh::index_buffer",
+		}),
+		.wire_index_count = source_wire_index_count,
+		.wire_indices = source_wire_indices,
+		.wire_index_buffer = GpuBuffer((GpuBufferDesc<u32>){
+			.data = source_wire_indices,
+			.size = wire_indices_size,
+			.usage = {
+				.index_buffer = true,
+			},
+			.label = "Mesh::wire_index_buffer",
 		}),
 		.vertex_count = in_init_data.num_vertices,
 		.vertices = in_init_data.vertices,
@@ -172,6 +248,7 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 			.size = vertices_size,
 			.usage = {
 				.vertex_buffer = true,
+				.storage_buffer = true,
 			},
 			.label = "Mesh::vertex_buffer",
 		}),	
@@ -189,10 +266,48 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 			.size = skinned_vertices_size,
 			.usage = {
 				.vertex_buffer = true,
+				.storage_buffer = true,
 			},
 			.label = "Mesh::skinned_vertex_buffer",
 		});
 	}
 
 	return out_mesh;
+}
+
+MeshRenderView mesh_get_render_view(Mesh& in_mesh)
+{
+	if (in_mesh.tessellated_geometry.active && in_mesh.tessellated_geometry.index_count > 0)
+	{
+		return (MeshRenderView) {
+			.vertex_buffer = in_mesh.tessellated_geometry.vertex_buffer.get_gpu_buffer(),
+			.index_buffer = in_mesh.tessellated_geometry.index_buffer.get_gpu_buffer(),
+			.wire_index_buffer = in_mesh.tessellated_geometry.wire_index_buffer.get_gpu_buffer(),
+			.index_count = in_mesh.tessellated_geometry.index_count,
+			.wire_index_count = in_mesh.tessellated_geometry.wire_index_count,
+			.is_tessellated = true,
+		};
+	}
+
+	return (MeshRenderView) {
+		.vertex_buffer = in_mesh.vertex_buffer.get_gpu_buffer(),
+		.index_buffer = in_mesh.index_buffer.get_gpu_buffer(),
+		.wire_index_buffer = in_mesh.wire_index_buffer.get_gpu_buffer(),
+		.index_count = in_mesh.index_count,
+		.wire_index_count = in_mesh.wire_index_count,
+		.is_tessellated = false,
+	};
+}
+
+void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
+{
+	TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
+	tessellated.patch_buffer.destroy_gpu_buffer();
+	tessellated.edge_weld_pair_buffer.destroy_gpu_buffer();
+	tessellated.vertex_buffer.destroy_gpu_buffer();
+	tessellated.index_buffer.destroy_gpu_buffer();
+	tessellated.wire_index_buffer.destroy_gpu_buffer();
+	tessellated.patches.reset();
+	tessellated.edge_weld_pairs.reset();
+	tessellated = {};
 }

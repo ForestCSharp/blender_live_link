@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compute Tessellation Explained</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --good: #0b7f56;
+      --warn: #a15c00;
+      --bad: #a32929;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.15rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p { margin: 0 0 14px; }
+
+    a { color: var(--accent); }
+
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 14px 0 20px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+      line-height: 1.48;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 860px;
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 18px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 18px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .grid .card { margin: 0; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f8;
+      font-weight: 650;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .ok { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+    .bad { color: var(--bad); font-weight: 650; }
+
+    @media (max-width: 760px) {
+      main { padding: 32px 18px 56px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 1.75rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Compute Tessellation Explained</h1>
+    <p class="subtitle">
+      The renderer can optionally expand Blender live-link triangle meshes into denser GPU vertex and index buffers
+      before geometry-dependent passes run. The generated buffers are then reused by main geometry, shadows, GI capture,
+      SSAO inputs, and the shaded wireframe visualization.
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>Executive Summary</h2>
+    <p>
+      Tessellation is a frame-local GPU geometry generation path. The CPU decides how many subdivisions each mesh gets,
+      allocates enough generated buffers, and uploads compact patch metadata. Compute shaders then emit vertices,
+      triangle indices, and wireframe line indices. Draw passes ask each mesh for a <code>MeshRenderView</code>, so the
+      same downstream rendering code can use either source geometry or tessellated geometry.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Planning</h3>
+        <p><span class="tag">CPU</span><span class="tag">per frame</span></p>
+        <p>Choose a tessellation factor, count output vertices and indices, apply budgets, and prepare patch metadata.</p>
+      </div>
+      <div class="card">
+        <h3>Emission</h3>
+        <p><span class="tag">compute</span><span class="tag">storage buffers</span></p>
+        <p>Generate interpolated vertices, Phong-smoothed positions, triangle indices, and wireframe line indices.</p>
+      </div>
+      <div class="card">
+        <h3>Rendering</h3>
+        <p><span class="tag">shared view</span><span class="tag">fallback</span></p>
+        <p>All geometry-dependent passes draw through <code>mesh_get_render_view()</code> and fall back to source mesh buffers.</p>
+      </div>
+    </div>
+  </section>
+
+  <h2>Where It Runs In The Frame</h2>
+  <p>
+    The update happens after live-link object data and transform buffers are current, but before shadow, geometry, and
+    lighting capture passes render geometry.
+  </p>
+  <pre><code>object_copy_physics_transform(...)
+object_update_storage_buffer(...)
+
+Tessellation::update(state, camera, fov)
+
+ShadowDepthPass::render(...)
+LightingCapture::render(...)
+Geometry pass
+SSAO reads geometry pass position/normal outputs</code></pre>
+  <p>
+    This ordering is the main reason tessellation shows up everywhere. Shadow depth and GI capture do not need their own
+    tessellation logic; they simply receive the mesh view that points at the generated buffers.
+  </p>
+
+  <section class="note">
+    <strong>Fallback rule:</strong>
+    when tessellation is disabled, over budget, or has no generated indices, <code>mesh_get_render_view()</code> returns
+    the original live-link vertex and index buffers.
+  </section>
+
+  <h2>CPU Planning</h2>
+  <p>
+    The renderer currently treats each source triangle as a tessellation patch. For each mesh, the CPU picks one factor,
+    computes exact output counts, checks the global budgets, builds patch records, and uploads them to
+    <code>TessellatedGeometry::patch_buffer</code>.
+  </p>
+  <pre><code>vertices_per_patch = ((factor + 1) * (factor + 2)) / 2;
+indices_per_patch = factor * factor * 3;
+
+generated_vertex_count = source_triangle_count * vertices_per_patch;
+generated_index_count = source_triangle_count * indices_per_patch;
+generated_wire_index_count = generated_index_count * 2;</code></pre>
+  <p>
+    Buffer capacity grows only when needed. Once a mesh has enough GPU memory for the current counts, later frames can
+    reuse those buffers and only refresh patch data and generated contents.
+  </p>
+
+  <h2>Tessellation Factors</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Mode</th>
+        <th>How factor is chosen</th>
+        <th>Best use</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Fixed</code></td>
+        <td>Uses <code>fixed_factor</code>, clamped to <code>1..max_factor</code>.</td>
+        <td>Deterministic inspection, debugging counts, and comparing factor levels.</td>
+      </tr>
+      <tr>
+        <td><code>AdaptiveAngular</code></td>
+        <td>
+          Measures world-space edge angular size relative to the active camera, converts that to approximate pixels,
+          and chooses enough segments to hit <code>target_pixels_per_segment</code>.
+        </td>
+        <td>Keeping nearby or large-on-screen meshes denser than distant meshes.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The current implementation uses one factor per object: the maximum factor needed by any source edge in the mesh.
+    This keeps patch borders consistent without per-edge crack handling becoming the primary problem in v1.
+  </p>
+
+  <h2>Shared Buffer Layouts</h2>
+  <p>
+    Tessellation buffer structs are shared between C++ and GLSL through <code>tessellation_common.h</code>. C++ uses the
+    same <code>TessellationPatch</code> and <code>TessellationWeldPair</code> declarations as the compute shader, with
+    static assertions near <code>mesh.h</code> to catch layout drift.
+  </p>
+  <pre><code>static_assert(sizeof(Vertex) == 48);
+static_assert(sizeof(TessellationPatch) == 32);
+static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
+  <table>
+    <thead>
+      <tr>
+        <th>Buffer</th>
+        <th>Type</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Source vertices</td>
+        <td><code>Vertex</code> / <code>TessellationVertex</code></td>
+        <td>Read by compute, also used directly when tessellation is inactive.</td>
+      </tr>
+      <tr>
+        <td>Source indices</td>
+        <td><code>u32</code> / <code>TessellationIndex</code></td>
+        <td>Read by compute to find the three source vertices for each patch.</td>
+      </tr>
+      <tr>
+        <td>Patch metadata</td>
+        <td><code>TessellationPatch</code></td>
+        <td>Stores source offsets, generated offsets, factor, and per-patch counts.</td>
+      </tr>
+      <tr>
+        <td>Generated vertices</td>
+        <td><code>Vertex</code> / <code>TessellationVertex</code></td>
+        <td>Written by compute and drawn by geometry, shadow, and GI passes.</td>
+      </tr>
+      <tr>
+        <td>Generated indices</td>
+        <td><code>u32</code> / <code>TessellationIndex</code></td>
+        <td>Triangle index buffer used by normal rendering passes.</td>
+      </tr>
+      <tr>
+        <td>Generated wire indices</td>
+        <td><code>u32</code> / <code>TessellationIndex</code></td>
+        <td>Line index buffer used by the shaded wireframe overlay.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Compute Shader Flow</h2>
+  <p>
+    <code>tessellation.glsl</code> contains four compute entry points. Three currently do meaningful work; the corner
+    weld pass exists as a reserved hook for a fuller crack-reduction path.
+  </p>
+  <div class="grid">
+    <div class="card">
+      <h3><code>emit_vertices</code></h3>
+      <p>
+        Builds each patch's triangular grid. It converts a local vertex index to barycentric coordinates, interpolates
+        position, normal, and UV, then optionally applies Phong tessellation.
+      </p>
+    </div>
+    <div class="card">
+      <h3><code>emit_indices</code></h3>
+      <p>
+        Walks the triangular grid and emits <code>factor * factor</code> small triangles. It also emits three line
+        segments per generated triangle for wireframe visualization.
+      </p>
+    </div>
+    <div class="card">
+      <h3><code>weld_edges</code></h3>
+      <p>
+        Averages position and normal across generated edge vertex pairs. UVs remain separate because the pair writes
+        back each side's original vertex payload except for position and normal.
+      </p>
+    </div>
+  </div>
+  <pre><code>for each mesh:
+    emit_vertices(source vertices, source indices, patches -> generated vertices)
+    emit_indices(patches -> generated triangle indices, generated wire indices)
+    if edge_welding:
+        weld_edges(generated vertices, weld pairs)</code></pre>
+
+  <h2>Phong Tessellation</h2>
+  <p>
+    Linear tessellation places new vertices directly on the original triangle plane. Phong tessellation bends those
+    generated positions toward planes defined by the source vertex normals, which gives smoother silhouettes and
+    highlights on curved meshes.
+  </p>
+  <pre><code>linear_position = p0 * b0 + p1 * b1 + p2 * b2;
+
+projected_position =
+    project_to_normal_plane(linear_position, p0, n0) * b0 +
+    project_to_normal_plane(linear_position, p1, n1) * b1 +
+    project_to_normal_plane(linear_position, p2, n2) * b2;
+
+out_position = mix(linear_position, projected_position, phong_strength);</code></pre>
+  <p>
+    <code>phong_strength = 0</code> keeps the generated mesh on the original triangles.
+    <code>phong_strength = 1</code> uses the fully projected position.
+  </p>
+
+  <h2>Render Pass Integration</h2>
+  <p>
+    Geometry consumers do not inspect tessellation settings directly. They call <code>mesh_get_render_view()</code>,
+    bind the returned buffers, and draw the returned counts.
+  </p>
+  <pre><code>MeshRenderView render_view = mesh_get_render_view(mesh);
+
+bindings.vertex_buffers[0] = render_view.vertex_buffer;
+bindings.index_buffer = render_view.index_buffer;
+sg_draw(0, render_view.index_count, 1);</code></pre>
+  <table>
+    <thead>
+      <tr>
+        <th>Pass</th>
+        <th>Uses tessellated geometry?</th>
+        <th>Why it matters</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Main geometry pass</td>
+        <td><span class="ok">Yes</span></td>
+        <td>Writes tessellated world position and normal into the G-buffer.</td>
+      </tr>
+      <tr>
+        <td>SSAO</td>
+        <td><span class="ok">Indirectly</span></td>
+        <td>Reads the G-buffer generated by the main geometry pass.</td>
+      </tr>
+      <tr>
+        <td>Shadow depth pass</td>
+        <td><span class="ok">Yes</span></td>
+        <td>Shadow maps see the same generated silhouettes and surface changes.</td>
+      </tr>
+      <tr>
+        <td>GI lighting capture</td>
+        <td><span class="ok">Yes</span></td>
+        <td>Probe cubemaps capture tessellated scene geometry.</td>
+      </tr>
+      <tr>
+        <td>Physics</td>
+        <td><span class="warn">No</span></td>
+        <td>Simulation continues to use the source mesh and transforms.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Shaded Wireframe</h2>
+  <p>
+    The visualization mode draws normal shaded geometry first, then overlays a line pass using the render view's
+    <code>wire_index_buffer</code>. When tessellation is active, those lines come from generated triangles; otherwise
+    they come from source triangle edges.
+  </p>
+  <pre><code>if (visualization_mode == ShadedWireframe)
+{
+    sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(...));
+    bindings.index_buffer = render_view.wire_index_buffer;
+    sg_draw(0, render_view.wire_index_count, 1);
+}</code></pre>
+  <p>
+    The wireframe shader lives in the geometry shader module because it shares the same vertex/object inputs and writes
+    to the same G-buffer attachments as the shaded pass.
+  </p>
+
+  <h2>Controls And Stats</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Control</th>
+        <th>Default</th>
+        <th>Effect</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Enable Tessellation</code></td>
+        <td><code>false</code></td>
+        <td>Toggles generated buffers. Disabled meshes render from source buffers.</td>
+      </tr>
+      <tr>
+        <td><code>Mode</code></td>
+        <td><code>Adaptive Angular</code></td>
+        <td>Selects fixed factor or camera-size-driven factor selection.</td>
+      </tr>
+      <tr>
+        <td><code>Visualization</code></td>
+        <td><code>Off</code></td>
+        <td>Can draw the shaded wireframe overlay.</td>
+      </tr>
+      <tr>
+        <td><code>Fixed Factor</code></td>
+        <td><code>4</code></td>
+        <td>Subdivision factor used in fixed mode.</td>
+      </tr>
+      <tr>
+        <td><code>Max Factor</code></td>
+        <td><code>24</code>, capped at <code>31</code></td>
+        <td>Upper bound for fixed and adaptive modes.</td>
+      </tr>
+      <tr>
+        <td><code>Target Segment</code></td>
+        <td><code>20.0 px</code></td>
+        <td>Adaptive mode tries to keep generated segments near this screen-space length.</td>
+      </tr>
+      <tr>
+        <td><code>Phong Strength</code></td>
+        <td><code>0.5</code></td>
+        <td>Blends generated positions between flat linear interpolation and Phong projection.</td>
+      </tr>
+      <tr>
+        <td><code>Edge Welding</code></td>
+        <td><code>false</code></td>
+        <td>Enables generated edge vertex position/normal averaging across matching source edges.</td>
+      </tr>
+      <tr>
+        <td><code>Max Vertices</code>, <code>Max Indices</code></td>
+        <td><code>4M</code>, <code>12M</code></td>
+        <td>Global frame budgets. Meshes that would exceed remaining budget overflow and fall back.</td>
+      </tr>
+      <tr>
+        <td><code>Bounds Padding</code></td>
+        <td><code>0.0</code></td>
+        <td>Expands source bounds for culling when Phong projection can move generated vertices outward.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <section class="card">
+    <h3>Debug Stats</h3>
+    <p>
+      The UI reports mesh count, overflow count, source triangle count, patch count, generated vertex/index counts,
+      edge weld pair count, and the maximum factor seen this frame. These numbers are reset and rebuilt every
+      <code>Tessellation::update()</code>.
+    </p>
+  </section>
+
+  <h2>Current Limits</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>No Displacement</h3>
+      <p>
+        Tessellation currently smooths existing geometry. It does not sample displacement textures or change material
+        schemas.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Triangle Patches</h3>
+      <p>
+        Live-link meshes arrive triangulated, so v1 subdivides triangle patches. Quad-aware topology is deferred until
+        source polygon metadata exists.
+      </p>
+    </div>
+    <div class="card">
+      <h3>CPU Counts</h3>
+      <p>
+        Sokol draw calls still use CPU-known counts. Compute emits geometry, but the CPU owns factor selection, counts,
+        budgets, and draw sizes.
+      </p>
+    </div>
+  </div>
+
+  <section class="note">
+    <strong>Practical debug path:</strong>
+    start with <code>Fixed</code> mode at factor <code>1</code> to confirm source parity, switch to factors
+    <code>2</code>, <code>4</code>, or <code>8</code> to inspect counts, then enable <code>Shaded Wireframe</code> and
+    <code>Phong Strength</code> to see where smoothing changes the generated mesh.
+  </section>
+</main>
+</body>
+</html>

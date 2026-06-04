@@ -231,7 +231,8 @@ namespace ShadowDepthPass
 			sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 			// Cull objects
-			CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj);
+			const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+			CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
 
 			// Submit draw calls for objects after culling
 			for (auto& [unique_id, object_ptr] : cull_result.objects)
@@ -242,13 +243,14 @@ namespace ShadowDepthPass
 				if (object.has_mesh)
 				{
 					Mesh& mesh = object.mesh;
+					MeshRenderView render_view = mesh_get_render_view(mesh);
 
 					sg_bindings bindings = {};
-					bindings.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer();
-					bindings.index_buffer = mesh.index_buffer.get_gpu_buffer();
+					bindings.vertex_buffers[0] = render_view.vertex_buffer;
+					bindings.index_buffer = render_view.index_buffer;
 					bindings.views[0] = object.storage_buffer.get_storage_view();
 					sg_apply_bindings(&bindings);
-					sg_draw(0, mesh.index_count, 1);
+					sg_draw(0, render_view.index_count, 1);
 				}
 			}
 
@@ -312,7 +314,8 @@ namespace ShadowDepthPass
 		sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 		// Cull objects
-		CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj);
+		const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+		CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
 
 		// Submit draw calls for objects after culling
 		for (auto& [unique_id, object_ptr] : cull_result.objects)
@@ -323,13 +326,14 @@ namespace ShadowDepthPass
 			if (object.has_mesh)
 			{
 				Mesh& mesh = object.mesh;
+				MeshRenderView render_view = mesh_get_render_view(mesh);
 
 				sg_bindings bindings = {};
-				bindings.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer();
-				bindings.index_buffer = mesh.index_buffer.get_gpu_buffer();
+				bindings.vertex_buffers[0] = render_view.vertex_buffer;
+				bindings.index_buffer = render_view.index_buffer;
 				bindings.views[0] = object.storage_buffer.get_storage_view();
 				sg_apply_bindings(&bindings);
-				sg_draw(0, mesh.index_count, 1);
+				sg_draw(0, render_view.index_count, 1);
 			}
 		}
 	}

@@ -203,7 +203,8 @@ public:
 				sg_apply_uniforms(0, SG_RANGE(vs_params));
 
 				// Cull objects
-				CullResult cull_result = cull_objects(in_state.scene.objects, view_projection_matrix);
+				const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+				CullResult cull_result = cull_objects(in_state.scene.objects, view_projection_matrix, cull_bounds_padding);
 
 				// Submit draw calls for objects after culling
 				if (should_render_geometry)
@@ -216,6 +217,7 @@ public:
 						if (object.has_mesh)
 						{
 							Mesh& mesh = object.mesh;
+							MeshRenderView render_view = mesh_get_render_view(mesh);
 
 							int mesh_material_idx = mesh.material_indices[0];
 							assert(mesh_material_idx >= 0);
@@ -227,8 +229,8 @@ public:
 							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images.items[material.emission_color_image_index] : in_state.gpu.default_image;
 
 							sg_bindings bindings = {
-								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+								.vertex_buffers[0] = render_view.vertex_buffer,
+								.index_buffer = render_view.index_buffer,
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
 									[1] = get_materials_buffer().get_storage_view(),
@@ -240,7 +242,7 @@ public:
 								.samplers[0] = in_state.gpu.linear_sampler,
 							};
 							sg_apply_bindings(&bindings);
-							sg_draw(0, mesh.index_count, 1);
+							sg_draw(0, render_view.index_count, 1);
 						}
 					}
 				}

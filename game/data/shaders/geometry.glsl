@@ -122,4 +122,49 @@ void main()
 }
 @end
 
+// Wireframe lives in the geometry shader module because the overlay uses the same
+// vertex/object data and writes into the same G-buffer attachments as shaded geometry.
+@vs wire_vs
+
+layout(binding=0) uniform vs_params {
+    mat4 view;
+	mat4 projection;
+};
+
+@include_block object_data
+
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec4 normal;
+layout(location = 2) in vec2 texcoord;
+
+out vec4 wire_world_position;
+out vec4 wire_world_normal;
+
+void main() {
+	wire_world_position = object_data_array[0].model_matrix * position;
+	wire_world_normal = object_data_array[0].rotation_matrix * normal;
+	gl_Position = projection * view * wire_world_position;
+}
+@end
+
+@fs wire_fs
+
+in vec4 wire_world_position;
+in vec4 wire_world_normal;
+
+out vec4 out_color;
+out vec4 out_position;
+out vec4 out_normal;
+out vec4 out_roughness_metallic_emissive;
+
+void main()
+{
+	out_color = vec4(0.01, 0.01, 0.01, 1.0);
+	out_position = wire_world_position;
+	out_normal = normalize(wire_world_normal);
+	out_roughness_metallic_emissive = vec4(0.85, 0.0, 0.35, 0.0);
+}
+@end
+
 @program geometry vs fs
+@program wireframe wire_vs wire_fs

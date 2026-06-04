@@ -104,6 +104,9 @@ using ankerl::unordered_dense::map;
 // Global State
 #include "state/state.h"
 
+// Compute tessellation
+#include "render/tessellation.h"
+
 // Macro to define an event and run code in __VA_ARGS__ when it triggers
 #define DEFINE_EVENT_TWO_KEYS(key_1, key_2, ...)\
 	{\
@@ -944,6 +947,8 @@ void init(void)
 		exit(0);
 	}
 
+	Tessellation::init();
+
 	// setup sokol-debugtext
     sdtx_setup((sdtx_desc_t){
         .fonts = {
@@ -1355,9 +1360,11 @@ void frame(void)
 		printf("Updating Object. UID: %i\n", updated_object_uid);
 
 		// Cleanup old object
+		bool mesh_changed = updated_object.has_mesh;
 		if (state.scene.objects.contains(updated_object_uid))
 		{
 			Object& existing_object = state.scene.objects[updated_object_uid];
+			mesh_changed = mesh_changed || existing_object.has_mesh;
 			object_cleanup(existing_object);
 		}
 
@@ -1369,6 +1376,14 @@ void frame(void)
 		if (updated_object.has_rigid_body)
 		{
 			object_add_jolt_body(updated_object);
+		}
+
+		if (mesh_changed)
+		{
+			ShadowDepthPass::has_valid_shadow_map = false;
+			ShadowDepthPass::has_valid_shadow_blur = false;
+			state.shadow.force_recapture = true;
+			state.gi.is_updating = true;
 		}
 
 		state.scene.objects[updated_object_uid] = updated_object;
@@ -1388,6 +1403,14 @@ void frame(void)
 				state.lighting.needs_data_update = true;
 			}
 
+			if (object_to_delete.has_mesh)
+			{
+				ShadowDepthPass::has_valid_shadow_map = false;
+				ShadowDepthPass::has_valid_shadow_blur = false;
+				state.shadow.force_recapture = true;
+				state.gi.is_updating = true;
+			}
+
 			object_cleanup(object_to_delete);
 			state.scene.objects.erase(deleted_object_uid);
 		}
@@ -1398,6 +1421,10 @@ void frame(void)
 	{
 		state.runtime.blender_data_loaded = false;
 		state.lighting.needs_data_update = true;
+		ShadowDepthPass::has_valid_shadow_map = false;
+		ShadowDepthPass::has_valid_shadow_blur = false;
+		state.shadow.force_recapture = true;
+		state.gi.is_updating = true;
 
 		for (auto& [unique_id, object] : state.scene.objects)
 		{
@@ -1501,6 +1528,37 @@ void frame(void)
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Indent();
+			if (ImGui::CollapsingHeader("Tessellation", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				bool tessellation_changed = false;
+				tessellation_changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
+				tessellation_changed |= ImGui::Combo("Mode", (i32*) &state.tessellation.mode, ETessellationModeNames, IM_ARRAYSIZE(ETessellationModeNames));
+				ImGui::Combo("Visualization", (i32*) &state.tessellation.visualization_mode, ETessellationVisualizationModeNames, IM_ARRAYSIZE(ETessellationVisualizationModeNames));
+				tessellation_changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
+				tessellation_changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32) Tessellation::MAX_FACTOR);
+				tessellation_changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
+				tessellation_changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
+				tessellation_changed |= ImGui::Checkbox("Edge Welding", &state.tessellation.edge_welding);
+				tessellation_changed |= ImGui::DragInt("Max Vertices", &state.tessellation.max_generated_vertices, 1024.0f, 3, 64 * 1024 * 1024);
+				tessellation_changed |= ImGui::DragInt("Max Indices", &state.tessellation.max_generated_indices, 1024.0f, 3, 128 * 1024 * 1024);
+				tessellation_changed |= ImGui::SliderFloat("Bounds Padding", &state.tessellation.bounds_padding, 0.0f, 10.0f, "%.2f");
+
+				ImGui::Text("Meshes: %d  Overflow: %d", state.tessellation.mesh_count, state.tessellation.overflowed_mesh_count);
+				ImGui::Text("Source Tris: %d  Patches: %d", state.tessellation.source_triangle_count, state.tessellation.patch_count);
+				ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
+				ImGui::Text("Weld Pairs: %d  Max Factor: %d", state.tessellation.edge_weld_pair_count, state.tessellation.max_factor_seen);
+
+				if (tessellation_changed)
+				{
+					ShadowDepthPass::has_valid_shadow_map = false;
+					ShadowDepthPass::has_valid_shadow_blur = false;
+					state.shadow.force_recapture = true;
+					state.gi.is_updating = true;
+				}
+			}
+
+			ImGui::Separator();
+
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
 				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
@@ -2053,9 +2111,6 @@ void frame(void)
 			SkyBakePass::render(state);
 		}
 
-		// Update our GI Scene
-		gi_scene_update(gi_scene, state);
-
 		// View + Projection matrix setup
 		const f32 w = (f32)state.window.render_width;
 		const f32 h = (f32)state.window.render_height;
@@ -2087,6 +2142,11 @@ void frame(void)
 				object_update_storage_buffer(object);
 			}
 		}
+
+		Tessellation::update(state, camera, fov);
+
+		// Update our GI Scene
+		gi_scene_update(gi_scene, state);
 
 		if (state.shadow.rendering_enable)
 		{
@@ -2171,7 +2231,8 @@ void frame(void)
 					JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 					// Cull objects
-					CullResult cull_result = cull_objects(state.scene.objects, view_projection_matrix);
+					const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
+					CullResult cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
 
 					DEBUG_UI(
 						if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2212,6 +2273,7 @@ void frame(void)
 						if (object.has_mesh)
 						{
 							Mesh& mesh = object.mesh;
+							MeshRenderView render_view = mesh_get_render_view(mesh);
 
 							int mesh_material_idx = mesh.material_indices[0];
 							assert(mesh_material_idx >= 0);
@@ -2223,8 +2285,8 @@ void frame(void)
 							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
 
 							sg_bindings bindings = {
-								.vertex_buffers[0] = mesh.vertex_buffer.get_gpu_buffer(),
-								.index_buffer = mesh.index_buffer.get_gpu_buffer(),
+								.vertex_buffers[0] = render_view.vertex_buffer,
+								.index_buffer = render_view.index_buffer,
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
 									[1] = get_materials_buffer().get_storage_view(),
@@ -2236,7 +2298,38 @@ void frame(void)
 								.samplers[0] = state.gpu.linear_sampler,
 							};
 							sg_apply_bindings(&bindings);
-							sg_draw(0, mesh.index_count, 1);
+							sg_draw(0, render_view.index_count, 1);
+						}
+					}
+
+					if (state.tessellation.visualization_mode == ETessellationVisualizationMode::ShadedWireframe)
+					{
+						sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(sglue_swapchain().depth_format));
+						sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+						for (auto& [unique_id, object_ptr] : cull_result.objects)
+						{
+							assert(object_ptr);
+							Object& object = *object_ptr;
+
+							if (object.has_mesh)
+							{
+								MeshRenderView render_view = mesh_get_render_view(object.mesh);
+								if (render_view.wire_index_count == 0)
+								{
+									continue;
+								}
+
+								sg_bindings wire_bindings = {
+									.vertex_buffers[0] = render_view.vertex_buffer,
+									.index_buffer = render_view.wire_index_buffer,
+									.views = {
+										[0] = object.storage_buffer.get_storage_view(),
+									},
+								};
+								sg_apply_bindings(&wire_bindings);
+								sg_draw(0, render_view.wire_index_count, 1);
+							}
 						}
 					}
 

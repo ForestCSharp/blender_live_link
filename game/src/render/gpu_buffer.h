@@ -58,11 +58,13 @@ public:
 		if (storage_view.has_value())
 		{
 			sg_destroy_view(storage_view.value());
+			storage_view.reset();
 		}
 		
 		if (gpu_buffer.has_value())
 		{
 			sg_destroy_buffer(gpu_buffer.value());
+			gpu_buffer.reset();
 		}
 	}
 
@@ -86,8 +88,10 @@ public:
 				.label = label ? label->c_str() : "",
 			};
 
-			// Non-Dynamic Buffers pass their initial data to sg_make_buffer
-			if (!is_dynamic())
+			// Non-dynamic buffers pass initial data only when they actually
+			// have CPU data. Immutable storage buffers may be created empty
+			// for compute shaders to write into.
+			if (!is_dynamic() && data != nullptr)
 			{
 				buffer_desc.data = {
 					.ptr = data,
@@ -124,6 +128,12 @@ public:
 
 	void destroy_gpu_buffer()
 	{	
+		if (storage_view.has_value())
+		{
+			sg_destroy_view(*storage_view);
+			storage_view.reset();
+		}
+
 		if (gpu_buffer.has_value())
 		{
 			sg_destroy_buffer(*gpu_buffer);

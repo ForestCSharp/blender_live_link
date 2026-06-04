@@ -98,6 +98,30 @@ const char* EShadowCascadePlacementModeNames[(i32)EShadowCascadePlacementMode::M
 	"Centered Squares",
 };
 
+enum class ETessellationMode : i32
+{
+	Fixed = 0,
+	AdaptiveAngular = 1,
+	MAX,
+};
+
+const char* ETessellationModeNames[(i32)ETessellationMode::MAX] = {
+	"Fixed",
+	"Adaptive Angular",
+};
+
+enum class ETessellationVisualizationMode : i32
+{
+	Off = 0,
+	ShadedWireframe = 1,
+	MAX,
+};
+
+const char* ETessellationVisualizationModeNames[(i32)ETessellationVisualizationMode::MAX] = {
+	"Off",
+	"Shaded Wireframe",
+};
+
 struct State
 {
 	struct RuntimeState
@@ -205,6 +229,30 @@ struct State
 		i32 debug_view_mode = 0;
 		bool debug_show_cascade_selection = false;
 	} shadow;
+
+	struct TessellationState
+	{
+		bool enabled = false;
+		ETessellationMode mode = ETessellationMode::AdaptiveAngular;
+		ETessellationVisualizationMode visualization_mode = ETessellationVisualizationMode::Off;
+		i32 fixed_factor = 4;
+		i32 max_factor = 24;
+		f32 target_pixels_per_segment = 20.0f;
+		f32 phong_strength = 0.5f;
+		bool edge_welding = false;
+		i32 max_generated_vertices = 4 * 1024 * 1024;
+		i32 max_generated_indices = 12 * 1024 * 1024;
+		f32 bounds_padding = 0.0f;
+
+		i32 source_triangle_count = 0;
+		i32 patch_count = 0;
+		i32 generated_vertex_count = 0;
+		i32 generated_index_count = 0;
+		i32 edge_weld_pair_count = 0;
+		i32 mesh_count = 0;
+		i32 overflowed_mesh_count = 0;
+		i32 max_factor_seen = 1;
+	} tessellation;
 
 	struct SkyState
 	{

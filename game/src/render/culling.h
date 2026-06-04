@@ -24,7 +24,7 @@ struct CullResult
 	#endif
 };
 
-CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj)
+CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_proj, f32 in_bounds_padding = 0.0f)
 {
 	CullResult out_cull_result = {
 		.cull_count = 0,
@@ -56,6 +56,12 @@ CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_pr
 
 		// Frustum Cull
 		BoundingBox object_bounding_box = object_get_bounding_box(object);
+		if (in_bounds_padding > 0.0f)
+		{
+			HMM_Vec3 padding = HMM_V3(in_bounds_padding, in_bounds_padding, in_bounds_padding);
+			object_bounding_box.min -= padding;
+			object_bounding_box.max += padding;
+		}
 		if (frustum_cull(frustum, object_bounding_box))
 		{
 			out_cull_result.cull_count += 1;
