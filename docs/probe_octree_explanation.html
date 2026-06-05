@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GI Probe Octree Placement Explained</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --good: #0b7f56;
+      --warn: #a15c00;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.15rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p { margin: 0 0 14px; }
+
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 14px 0 20px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 880px;
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin: 18px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 18px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .grid .card { margin: 0; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f8;
+      font-weight: 650;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .ok { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+
+    @media (max-width: 760px) {
+      main { padding: 32px 18px 56px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 1.75rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>GI Probe Octree Placement Explained</h1>
+    <p class="subtitle">
+      Probe placement is now built from a sparse, pruned octree instead of a fixed dense grid. The CPU builds the
+      layout from visible mesh bounds, shares probes across octree cell corners, uploads the compact structure to the
+      GPU, and the lighting shader walks the octree to find the best cell for each shaded point.
+    </p>
+  </header>
+
+  <section class="card">
+    <span class="tag">CPU layout</span>
+    <span class="tag">Sparse octree</span>
+    <span class="tag">GPU lookup</span>
+    <p>
+      The important change is that probe density now follows scene occupancy. Child octree nodes are only created
+      where their bounds intersect visible mesh bounds. Missing child slots are pruned, and shader traversal falls
+      back to the deepest valid ancestor payload.
+    </p>
+    <pre><code>if (!gi_scene_bounds_intersect_any(child_bounds, in_geometry_bounds))
+{
+    continue;
+}
+
+child_indices[child_slot] = gi_scene_build_sparse_octree_node(...);</code></pre>
+  </section>
+
+  <h2>Shared Data Model</h2>
+  <p>
+    The CPU and shaders share the GI structs from <code>gi_helpers.h</code>. Static asserts in
+    <code>render/gi.h</code> keep the C++ storage layout aligned with shader storage buffers.
+  </p>
+  <pre><code>struct GI_Cell
+{
+    int probe_indices[8];
+};
+
+struct GI_Probe
+{
+    vec4 position;
+    int atlas_idx;
+    float max_radial_depth;
+    int padding[2];
+};
+
+struct GI_OctreeNode
+{
+    vec4 min;
+    vec4 max;
+    int is_leaf;
+    int child_indices[8];
+    int payload_index;
+    int padding[2];
+};</code></pre>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Buffer</th>
+        <th>Contains</th>
+        <th>Used By</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>octree_nodes</code></td>
+        <td>Bounds, child links, leaf flag, and payload index for each octree node.</td>
+        <td><code>lighting.glsl</code> octree traversal.</td>
+      </tr>
+      <tr>
+        <td><code>cells</code></td>
+        <td>Eight probe indices for the trilinear cell attached to an octree node.</td>
+        <td><code>lighting.glsl</code> probe interpolation.</td>
+      </tr>
+      <tr>
+        <td><code>probes</code></td>
+        <td>Probe position, atlas assignment, and maximum radial depth.</td>
+        <td>Probe capture, debug draw, and lighting.</td>
+      </tr>
+      <tr>
+        <td><code>sh9_coefficients</code> / <code>sg9_lobes</code></td>
+        <td>Radiance data sized from the final probe count.</td>
+        <td>Radiance projection and lighting modes.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Scene Bounds</h2>
+  <p>
+    Layout rebuild starts by collecting bounds for objects that are both visible and mesh-backed. Light-only objects,
+    invisible objects, and non-mesh objects do not place probes.
+  </p>
+  <pre><code>for (auto const&amp; [unique_id, object] : in_state.scene.objects)
+{
+    if (!object.visibility || !object.has_mesh)
+    {
+        continue;
+    }
+
+    const BoundingBox object_bounds = object_get_bounding_box(object);
+    out_geometry_bounds.add(object_bounds);
+    out_scene_bounds.min = HMM_MinV3(out_scene_bounds.min, object_bounds.min);
+    out_scene_bounds.max = HMM_MaxV3(out_scene_bounds.max, object_bounds.max);
+}</code></pre>
+  <p>
+    The combined bounds are expanded to a cube so octree subdivision is uniform in X, Y, and Z. If no visible mesh
+    exists, the scene uses a fallback cube centered at the origin and skips sparse node payload generation.
+  </p>
+  <pre><code>out_scene_bounds = gi_scene_expand_bounds_to_cube(out_scene_bounds);</code></pre>
+
+  <h2>Depth And Lattice</h2>
+  <p>
+    <code>GI Octree Depth</code> controls the maximum subdivision depth. The current range is
+    <code>1..4</code>, and max-depth lattice divisions are <code>1 &lt;&lt; depth</code>. Probe positions are placed
+    on that max-depth lattice even when the cell payload belongs to a coarser ancestor.
+  </p>
+  <pre><code>i32 gi_scene_leaf_divisions_from_depth(const i32 in_octree_depth)
+{
+    return 1 &lt;&lt; in_octree_depth;
+}
+
+HMM_Vec3 gi_scene_lattice_position(
+    const BoundingBox&amp; in_bounds,
+    const i32 in_leaf_divisions,
+    const GI_Coords in_coords)
+{
+    const f32 cell_extent = (in_bounds.max.X - in_bounds.min.X) / (f32)in_leaf_divisions;
+    return in_bounds.min + HMM_V3(
+        (f32)in_coords.x * cell_extent,
+        (f32)in_coords.y * cell_extent,
+        (f32)in_coords.z * cell_extent
+    );
+}</code></pre>
+
+  <div class="note">
+    <strong>Why use one lattice:</strong>
+    using max-depth coordinates lets probes be shared between neighboring cells, even when those cells live at
+    different octree depths.
+  </div>
+
+  <h2>Cell Payloads</h2>
+  <p>
+    Every octree node that is actually created receives a <code>GI_Cell</code> payload. The payload stores eight corner
+    probes. Coarser nodes use a larger coordinate scale so their corners still line up with the max-depth lattice.
+  </p>
+  <pre><code>const i32 coord_scale = 1 &lt;&lt; (out_gi_scene.octree_depth - in_depth);
+const f32 cell_extent = gi_scene_cell_extent_from_depth(out_gi_scene, in_depth);
+const f32 required_radial_depth = gi_scene_max_radial_depth_from_cell_extent(cell_extent);
+
+for (i32 corner_z = 0; corner_z &lt; 2; ++corner_z)
+{
+    for (i32 corner_y = 0; corner_y &lt; 2; ++corner_y)
+    {
+        for (i32 corner_x = 0; corner_x &lt; 2; ++corner_x)
+        {
+            const GI_Coords probe_coords = {
+                (in_coords.x + corner_x) * coord_scale,
+                (in_coords.y + corner_y) * coord_scale,
+                (in_coords.z + corner_z) * coord_scale,
+            };
+            cell.probe_indices[corner_index] =
+                gi_scene_get_or_create_probe(out_gi_scene, probe_indices_by_corner, probe_coords, required_radial_depth);
+        }
+    }
+}</code></pre>
+  <p>
+    Probe corner coordinates are hashed into a 64-bit key. If another cell already created the same corner probe, the
+    existing probe is reused and its <code>max_radial_depth</code> is raised if the new cell needs a larger capture
+    radius.
+  </p>
+
+  <h2>Pruned Children</h2>
+  <p>
+    A node subdivides only into child octants whose bounds intersect at least one visible mesh bounding box. This is
+    broad-phase pruning against object bounds, not triangle-accurate occupancy, which keeps layout rebuilds cheap.
+  </p>
+  <pre><code>for (i32 child_z = 0; child_z &lt; 2; ++child_z)
+{
+    for (i32 child_y = 0; child_y &lt; 2; ++child_y)
+    {
+        for (i32 child_x = 0; child_x &lt; 2; ++child_x)
+        {
+            const BoundingBox child_bounds = gi_scene_child_bounds(in_bounds, child_x, child_y, child_z);
+            if (!gi_scene_bounds_intersect_any(child_bounds, in_geometry_bounds))
+            {
+                continue;
+            }
+
+            const i32 child_slot = child_x + child_y * 2 + child_z * 4;
+            const i32 child_index = gi_scene_build_sparse_octree_node(...);
+            octree_nodes[node_index].child_indices[child_slot] = child_index;
+        }
+    }
+}</code></pre>
+  <p>
+    If no children are created, the node remains a leaf. If some children are absent, those slots stay
+    <code>-1</code>. The shader can still shade points in that region by using the node's own payload.
+  </p>
+
+  <h2>Fallback Probe</h2>
+  <p>
+    After building the sparse octree, the scene appends one fallback probe at the center of the scene bounds. Its
+    index is stored separately from the non-fallback probe count.
+  </p>
+  <pre><code>out_gi_scene.non_fallback_probe_count = (i32)out_gi_scene.probes.length();
+out_gi_scene.fallback_probe_index = out_gi_scene.non_fallback_probe_count;
+
+out_gi_scene.probes.add(
+    gi_scene_make_probe(gi_scene_bounds_center(out_gi_scene.scene_bounds), fallback_radial_depth)
+);</code></pre>
+  <p>
+    Lighting uses this fallback when a shaded point is outside the octree root or when no payload can be found. Debug
+    probe rendering only draws <code>non_fallback_probe_count</code>, so the fallback probe is not drawn as a normal
+    layout probe.
+  </p>
+
+  <h2>GPU Traversal</h2>
+  <p>
+    <code>lighting.glsl</code> receives <code>gi_octree_node_count</code> and the
+    <code>GIOctreeNodesBuffer</code>. It starts at node <code>0</code>, checks that the surface position is inside the
+    root bounds, and then descends toward the child slot containing the position.
+  </p>
+  <pre><code>int find_gi_octree_payload_index(vec3 position)
+{
+    if (gi_octree_node_count &lt;= 0)
+    {
+        return -1;
+    }
+
+    int node_index = 0;
+    GI_OctreeNode node = gi_octree_nodes[node_index];
+    if (!gi_octree_is_valid_position(node, position))
+    {
+        return -1;
+    }
+
+    int payload_index = node.payload_index;
+    for (int i = 0; i &lt; GI_MAX_OCTREE_SEARCH_DEPTH; ++i)
+    {
+        if (node.is_leaf != 0)
+        {
+            return payload_index;
+        }
+
+        int child_slot = gi_octree_child_slot(node, position);
+        int child_index = node.child_indices[child_slot];
+        if (child_index &lt; 0 || child_index &gt;= gi_octree_node_count)
+        {
+            return payload_index;
+        }
+
+        node = gi_octree_nodes[child_index];
+        if (node.payload_index &gt;= 0)
+        {
+            payload_index = node.payload_index;
+        }
+    }
+
+    return payload_index;
+}</code></pre>
+  <p>
+    Returning the last valid payload is what makes pruning work. A shaded point can land in a missing child slot and
+    still use the ancestor cell instead of failing the GI lookup.
+  </p>
+
+  <h2>Probe Blending</h2>
+  <p>
+    Once the shader has a payload index, it loads the <code>GI_Cell</code>, computes local alpha from corner probes
+    <code>0</code> and <code>7</code>, and trilinearly blends the eight probe samples. Existing normal-facing,
+    occlusion, and weight-threshold logic still apply after the octree lookup.
+  </p>
+  <pre><code>GI_Cell cell = gi_cells[cell_index];
+
+vec3 cell_min_pos = gi_probes[cell.probe_indices[0]].position.xyz;
+vec3 cell_max_pos = gi_probes[cell.probe_indices[7]].position.xyz;
+vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
+vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
+
+for (int i = 0; i &lt; 8; ++i)
+{
+    int probe_index = cell.probe_indices[i];
+    if (probe_index == -1) { continue; }
+
+    float x_side = float(i &amp; 1);
+    float y_side = float((i &gt;&gt; 1) &amp; 1);
+    float z_side = float((i &gt;&gt; 2) &amp; 1);
+
+    float trilinear_weight =
+        (x_side &gt; 0.5 ? alpha.x : 1.0 - alpha.x) *
+        (y_side &gt; 0.5 ? alpha.y : 1.0 - alpha.y) *
+        (z_side &gt; 0.5 ? alpha.z : 1.0 - alpha.z);
+}</code></pre>
+
+  <h2>Rebuilds And Updates</h2>
+  <p>
+    The layout rebuild path is controlled by <code>state.gi.layout_dirty</code>. A rebuild resets the octree, cells,
+    probes, radiance buffers, atlas assignments, and isolated probe selection, then marks GI as updating so captures
+    restart on the new probe set.
+  </p>
+  <pre><code>if (in_state.gi.layout_dirty)
+{
+    gi_scene_rebuild_layout(in_gi_scene, in_state);
+}</code></pre>
+  <table>
+    <thead>
+      <tr>
+        <th>Trigger</th>
+        <th>Why It Rebuilds</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Updated or deleted mesh object</td>
+        <td>Scene bounds and occupied octree branches may change.</td>
+      </tr>
+      <tr>
+        <td>Reset or transform/storage-buffer update on a mesh</td>
+        <td>Object bounds may move, changing which child nodes are occupied.</td>
+      </tr>
+      <tr>
+        <td><code>GI Octree Depth</code> slider</td>
+        <td>Changes the max subdivision depth and max-depth lattice resolution.</td>
+      </tr>
+      <tr>
+        <td>Live-link reset</td>
+        <td>All scene objects and GPU layout resources must be recreated.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Probe capture still happens incrementally. <code>gi_scene_update()</code> captures up to
+    <code>probes_to_update_per_frame</code> probes per frame, assigns atlas slots lazily, and updates the probes buffer
+    when newly assigned atlas indices need to reach the GPU.
+  </p>
+
+  <h2>Debug UI</h2>
+  <p>
+    The Global Illumination panel now exposes the octree layout directly. It shows depth, node count, payload count,
+    non-fallback probe count, atlas usage, scene bounds, occupied cell extent range, and maximum radial depth.
+  </p>
+  <pre><code>ImGui::SliderInt("GI Octree Depth", &amp;state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
+ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", ...);
+ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", ...);</code></pre>
+
+  <section class="note">
+    <strong>Reading the numbers:</strong>
+    <code>nodes</code> is the sparse octree size, <code>payloads</code> is the number of trilinear cells attached to
+    created nodes, <code>probes</code> excludes the fallback probe, and <code>Atlas</code> includes every probe that
+    needs an atlas slot.
+  </section>
+</main>
+</body>
+</html>

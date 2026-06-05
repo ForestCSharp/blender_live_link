@@ -529,10 +529,17 @@ return max(reconstructed_radiance / max(weight_sum, 0.00001), vec3(0.0));</code>
   </div>
 
   <h2>End-To-End Data Flow</h2>
+  <p>
+    Probe positions are no longer generated from a dense fixed grid. They come from the pruned GI octree described in
+    <code>probe_octree_explanation.html</code>. This shader is still per-probe: once the octree layout decides which
+    probes exist, each captured probe can project its cubemap into SH9 or SG9 storage using the same flat
+    <code>probe_index * 9</code> addressing.
+  </p>
   <pre><code>LightingCapture::render(...)
-    - render probe geometry cubemap
-    - render probe lighting cubemap
-    - render radial visibility cubemap
+    - receive one probe from the current pruned octree layout
+    - render that probe's geometry cubemap
+    - render that probe's lighting cubemap
+    - render that probe's radial visibility cubemap
     - update octahedral visibility atlas
     - if radiance mode or probe visualization needs SH9:
         dispatch probe_radiance_projection.glsl
