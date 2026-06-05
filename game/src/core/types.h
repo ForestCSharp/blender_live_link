@@ -127,6 +127,18 @@ BoundingBox bounding_box_init()
 	};
 }
 
+void bounding_box_expand(BoundingBox& io_bounds, const HMM_Vec3 in_point)
+{
+	io_bounds.min = HMM_MinV3(io_bounds.min, in_point);
+	io_bounds.max = HMM_MaxV3(io_bounds.max, in_point);
+}
+
+void bounding_box_expand(BoundingBox& io_bounds, const BoundingBox& in_bounds)
+{
+	bounding_box_expand(io_bounds, in_bounds.min);
+	bounding_box_expand(io_bounds, in_bounds.max);
+}
+
 void bounding_box_print(const BoundingBox& in_bounding_box, const char* in_label)
 {
 	printf(
@@ -171,8 +183,7 @@ BoundingBox bounding_box_transform(const BoundingBox& in_bounding_box, const Tra
 	BoundingBox out_bounding_box = bounding_box_init();
 	for (int i = 0; i < 8; ++i)
 	{
-		out_bounding_box.min = HMM_MinV3(out_bounding_box.min, corners[i]);
-		out_bounding_box.max = HMM_MaxV3(out_bounding_box.max, corners[i]);
+		bounding_box_expand(out_bounding_box, corners[i]);
 	}
 	return out_bounding_box;
 }

@@ -127,8 +127,7 @@ bool gi_scene_collect_visible_mesh_bounds(
 
 		const BoundingBox object_bounds = object_get_bounding_box(object);
 		out_geometry_bounds.add(object_bounds);
-		out_scene_bounds.min = HMM_MinV3(out_scene_bounds.min, object_bounds.min);
-		out_scene_bounds.max = HMM_MaxV3(out_scene_bounds.max, object_bounds.max);
+		bounding_box_expand(out_scene_bounds, object_bounds);
 	}
 
 	if (out_geometry_bounds.length() == 0)

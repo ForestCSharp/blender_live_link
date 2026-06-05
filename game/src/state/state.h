@@ -268,8 +268,8 @@ struct State
 	struct DofState
 	{
 		bool enable = true;
-		f32 focus_distance = 50.0f;
-		f32 focus_range = 70.0f;
+		f32 focus_distance = 60.0f;
+		f32 focus_range = 120.0f;
 		f32 max_coc_radius = 8.0f;
 		f32 foreground_blur_scale = 1.0f;
 		f32 background_blur_scale = 1.0f;

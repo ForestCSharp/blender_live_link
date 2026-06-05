@@ -265,8 +265,7 @@ struct GI_OctreeNode
 
     const BoundingBox object_bounds = object_get_bounding_box(object);
     out_geometry_bounds.add(object_bounds);
-    out_scene_bounds.min = HMM_MinV3(out_scene_bounds.min, object_bounds.min);
-    out_scene_bounds.max = HMM_MaxV3(out_scene_bounds.max, object_bounds.max);
+    bounding_box_expand(out_scene_bounds, object_bounds);
 }</code></pre>
   <p>
     The combined bounds are expanded to a cube so octree subdivision is uniform in X, Y, and Z. If no visible mesh

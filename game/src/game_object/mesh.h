@@ -187,8 +187,7 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 	{
 		Vertex v = in_init_data.vertices[vtx_idx];
 		HMM_Vec3 vtx_pos = v.position.XYZ;
-		bounding_box.min = HMM_MinV3(bounding_box.min, vtx_pos);
-		bounding_box.max = HMM_MaxV3(bounding_box.max, vtx_pos);
+		bounding_box_expand(bounding_box, vtx_pos);
 	}
 
 	u64 indices_size = sizeof(u32) * in_init_data.num_indices;
