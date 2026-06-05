@@ -10,6 +10,7 @@ using ankerl::unordered_dense::map;
 
 #include "tessellation.compiled.h"
 
+#include "core/timings.h"
 #include "render/sokol_helpers.h"
 #include "state/state.h"
 
@@ -579,7 +580,10 @@ namespace Tessellation
 				.phong_strength = phong_strength,
 			};
 
-			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
+				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			}
 			{
 				GpuDebugScope debug_scope(debug_label);
 				sg_apply_pipeline(pipeline);
@@ -587,7 +591,10 @@ namespace Tessellation
 				sg_apply_bindings(&bindings);
 				sg_dispatch((i32) dispatch_count, 1, 1);
 			}
-			sg_end_pass();
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
+				sg_end_pass();
+			}
 		}
 	}
 
@@ -618,7 +625,10 @@ namespace Tessellation
 			};
 
 			const char* debug_label = "Tessellation Weld Edges";
-			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
+				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			}
 			{
 				GpuDebugScope debug_scope(debug_label);
 				sg_apply_pipeline(weld_edges_pipeline);
@@ -626,7 +636,10 @@ namespace Tessellation
 				sg_apply_bindings(&bindings);
 				sg_dispatch((i32) group_count, 1, 1);
 			}
-			sg_end_pass();
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
+				sg_end_pass();
+			}
 		}
 	}
 

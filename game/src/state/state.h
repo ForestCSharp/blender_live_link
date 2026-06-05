@@ -289,6 +289,11 @@ struct State
 		i32 stats_sample_count = 0;
 		f32 frame_time_ms = 0.0f;
 		f32 fps = 0.0f;
+		bool show_profiler = false;
+		bool freeze_profiler = false;
+		bool show_profiler_unaccounted = false;
+		f32 profiler_zoom = 1.0f;
+		i32 num_profiler_frames = 3;
 	} debug_ui;
 
 	struct DebugCameraState

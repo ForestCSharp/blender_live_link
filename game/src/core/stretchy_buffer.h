@@ -41,11 +41,15 @@ public:
 
 	void add(const T& value) { arrput(_data, value); }
 	void add_uninitialized(const size_t num) { arraddn(_data, num); }
+	void pop() { arrpop(_data); }
 	void reset() { if (_data) { arrfree(_data); _data = nullptr; } }
 	size_t length() const { return arrlen(_data); }
 	T* data() { return _data; }
 	const T* data() const { return _data; }
 	T& operator[](i32 idx) { return _data[idx]; }
+	const T& operator[](i32 idx) const { return _data[idx]; }
+	T& last() { return _data[arrlen(_data) - 1]; }
+	const T& last() const { return _data[arrlen(_data) - 1]; }
 	bool is_valid_index(i32 idx) const { return idx < length(); }
 
 	// Range-for support

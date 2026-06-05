@@ -2,6 +2,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#ifndef WITH_DEBUG_UI
+#define WITH_DEBUG_UI 1
+#endif
+
 // Simple Template Wrapper around stb_ds array
 #define STB_DS_IMPLEMENTATION
 #include "core/stretchy_buffer.h"
@@ -43,6 +47,7 @@ using std::atomic;
 
 // Basic Types
 #include "core/types.h"
+#include "core/timings.h"
 
 // Game Objects we receive from Blender
 #include "game_object/game_object.h"
@@ -136,7 +141,6 @@ using ankerl::unordered_dense::map;
 		var_name = !var_name;\
 	)
 
-#define WITH_DEBUG_UI 1
 #if WITH_DEBUG_UI
 
 // Only include ImGui when debug UI is enabled
@@ -144,6 +148,7 @@ using ankerl::unordered_dense::map;
 #define SOKOL_IMGUI_IMPL
 #include "imgui/misc/single_file/imgui_single_file.h"
 #include "sokol/util/sokol_imgui.h"
+#include "ui/cpu_profiler_ui.h"
 
 bool g_show_imgui = true;
 // All imgui debug ui should be wrapped in this.
@@ -1305,6 +1310,8 @@ void pick_isolated_gi_probe()
 
 void frame(void)
 {
+	CPU_TIMING_FRAME("Frame");
+
 	// Delta Time Calculation
 	static u64 last_frame_time = 0;
 	const u64 lap_time = stm_laptime(&last_frame_time);
@@ -1336,60 +1343,37 @@ void frame(void)
 		});
 	);
 
-	// Receive Any Updated Objects
-	while (optional<Object> received_updated_object = state.live_link.updated_objects.receive())
 	{
-		Object& updated_object = *received_updated_object;
-		i32 updated_object_uid = updated_object.unique_id;
+		CPU_TIMING_SCOPE("Live Link");
 
-		printf("Updating Object. UID: %i\n", updated_object_uid);
-
-		// Cleanup old object
-		bool mesh_changed = updated_object.has_mesh;
-		if (state.scene.objects.contains(updated_object_uid))
+		// Receive Any Updated Objects
+		while (optional<Object> received_updated_object = state.live_link.updated_objects.receive())
 		{
-			Object& existing_object = state.scene.objects[updated_object_uid];
-			mesh_changed = mesh_changed || existing_object.has_mesh;
-			object_cleanup(existing_object);
-		}
+			Object& updated_object = *received_updated_object;
+			i32 updated_object_uid = updated_object.unique_id;
 
-		if (updated_object.has_light)
-		{
-			state.lighting.needs_data_update = true;
-		}
+			printf("Updating Object. UID: %i\n", updated_object_uid);
 
-		if (updated_object.has_rigid_body)
-		{
-			object_add_jolt_body(updated_object);
-		}
+			// Cleanup old object
+			bool mesh_changed = updated_object.has_mesh;
+			if (state.scene.objects.contains(updated_object_uid))
+			{
+				Object& existing_object = state.scene.objects[updated_object_uid];
+				mesh_changed = mesh_changed || existing_object.has_mesh;
+				object_cleanup(existing_object);
+			}
 
-		if (mesh_changed)
-		{
-			ShadowDepthPass::has_valid_shadow_map = false;
-			ShadowDepthPass::has_valid_shadow_blur = false;
-			state.shadow.force_recapture = true;
-			state.gi.layout_dirty = true;
-			state.gi.is_updating = true;
-		}
-
-		state.scene.objects[updated_object_uid] = updated_object;
-	}
-
-	// Receive Any Deleted Objects
-	while (optional<i32> received_deleted_object = state.live_link.deleted_objects.receive())
-	{
-		i32 deleted_object_uid = *received_deleted_object;
-		if (state.scene.objects.contains(deleted_object_uid))
-		{
-			printf("Removing object. UID: %i\n", deleted_object_uid);
-			Object& object_to_delete = state.scene.objects[deleted_object_uid];
-
-			if (object_to_delete.has_light)
+			if (updated_object.has_light)
 			{
 				state.lighting.needs_data_update = true;
 			}
 
-			if (object_to_delete.has_mesh)
+			if (updated_object.has_rigid_body)
+			{
+				object_add_jolt_body(updated_object);
+			}
+
+			if (mesh_changed)
 			{
 				ShadowDepthPass::has_valid_shadow_map = false;
 				ShadowDepthPass::has_valid_shadow_blur = false;
@@ -1398,40 +1382,67 @@ void frame(void)
 				state.gi.is_updating = true;
 			}
 
-			object_cleanup(object_to_delete);
-			state.scene.objects.erase(deleted_object_uid);
+			state.scene.objects[updated_object_uid] = updated_object;
 		}
-	}
 
-	// Receive any Reset Messages
-	while(optional<bool> received_reset = state.live_link.reset.receive())
-	{
-		state.runtime.blender_data_loaded = false;
-		state.lighting.needs_data_update = true;
-		ShadowDepthPass::has_valid_shadow_map = false;
-		ShadowDepthPass::has_valid_shadow_blur = false;
-		state.shadow.force_recapture = true;
-		state.gi.layout_dirty = true;
-		state.gi.is_updating = true;
-
-		for (auto& [unique_id, object] : state.scene.objects)
+		// Receive Any Deleted Objects
+		while (optional<i32> received_deleted_object = state.live_link.deleted_objects.receive())
 		{
-			if (object.has_rigid_body)
+			i32 deleted_object_uid = *received_deleted_object;
+			if (state.scene.objects.contains(deleted_object_uid))
 			{
-				object_remove_jolt_body(object);
+				printf("Removing object. UID: %i\n", deleted_object_uid);
+				Object& object_to_delete = state.scene.objects[deleted_object_uid];
+
+				if (object_to_delete.has_light)
+				{
+					state.lighting.needs_data_update = true;
+				}
+
+				if (object_to_delete.has_mesh)
+				{
+					ShadowDepthPass::has_valid_shadow_map = false;
+					ShadowDepthPass::has_valid_shadow_blur = false;
+					state.shadow.force_recapture = true;
+					state.gi.layout_dirty = true;
+					state.gi.is_updating = true;
+				}
+
+				object_cleanup(object_to_delete);
+				state.scene.objects.erase(deleted_object_uid);
+			}
+		}
+
+		// Receive any Reset Messages
+		while(optional<bool> received_reset = state.live_link.reset.receive())
+		{
+			state.runtime.blender_data_loaded = false;
+			state.lighting.needs_data_update = true;
+			ShadowDepthPass::has_valid_shadow_map = false;
+			ShadowDepthPass::has_valid_shadow_blur = false;
+			state.shadow.force_recapture = true;
+			state.gi.layout_dirty = true;
+			state.gi.is_updating = true;
+
+			for (auto& [unique_id, object] : state.scene.objects)
+			{
+				if (object.has_rigid_body)
+				{
+					object_remove_jolt_body(object);
+				}
+
+				object_cleanup_gpu_resources(object);
 			}
 
-			object_cleanup_gpu_resources(object);
+			//FCS TODO: Should also reset these if they're equal to a removed object...
+			state.scene.objects.clear();
+			state.scene.camera_control_id.reset();
+			state.scene.player_character_id.reset();
+			state.scene.primary_sun_id.reset();
+
+			reset_materials();
+			reset_images();
 		}
-
-		//FCS TODO: Should also reset these if they're equal to a removed object...
-		state.scene.objects.clear();
-		state.scene.camera_control_id.reset();
-		state.scene.player_character_id.reset();
-		state.scene.primary_sun_id.reset();
-
-		reset_materials();
-		reset_images();
 	}
 
 	refresh_primary_sun_id();
@@ -1468,6 +1479,9 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
+		ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
+		ImGui::Separator();
+
 		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Text("Window Resolution: %d x %d", state.window.width, state.window.height);
@@ -1819,150 +1833,166 @@ void frame(void)
 		}
 	);
 
-	if (state.runtime.is_simulating)
 	{
-		//FCS TODO: Game logic update here
+		CPU_TIMING_SCOPE("Simulation");
+		if (state.runtime.is_simulating)
+		{
+			//FCS TODO: Game logic update here
 
-		// Jolt Physics Update
-		jolt_update(delta_time);
-	}
-
-	// Debug Camera Control
-	if (state.debug_camera.active && !is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL))
-	{
-		Camera& camera = state.debug_camera.camera;
-		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
-
-		f32 move_speed = 10.0f * delta_time;
-		if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
-		{
-			move_speed *= 5.0f;
-		}
-
-		if (is_key_pressed(SAPP_KEYCODE_W))
-		{
-			camera.location += camera.forward * move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_S))
-		{
-			camera.location -= camera.forward * move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_D))
-		{
-			camera.location += camera_right * move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_A))
-		{
-			camera.location -= camera_right * move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_E))
-		{
-			camera.location += camera.up * move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_Q))
-		{
-			camera.location -= camera.up * move_speed;
-		}
-
-		if (is_mouse_locked())
-		{
-			const f32 look_speed = 1.0f * delta_time;
-			const HMM_Vec2 mouse_delta = get_mouse_delta();
-
-			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+			// Jolt Physics Update
+			jolt_update(delta_time);
 		}
 	}
 
-	// Player Camera Control
-	if (state.scene.camera_control_id && !state.debug_camera.active)
 	{
-		Object& camera_control_object = state.scene.objects[*state.scene.camera_control_id];
-		CameraControl& camera_control = camera_control_object.camera_control;
-		Camera& camera = camera_control.camera;
+		CPU_TIMING_SCOPE("Camera + Controls");
 
-		if (is_mouse_locked())
+		// Debug Camera Control
+		if (state.debug_camera.active && !is_key_pressed(SAPP_KEYCODE_LEFT_CONTROL))
 		{
-			//FCS TODO: Add max angle property (angle above XY plane) that we can rotate camera
-			//FCS TODO: Add rotation speed property to camera control component
-			const f32 look_speed = 1.0f * delta_time;
-			const HMM_Vec2 mouse_delta = get_mouse_delta();
-
-			// Get current target at old forward vector
-			const HMM_Vec3 camera_old_target = camera.location + camera.forward * camera_control.follow_distance;
-
+			Camera& camera = state.debug_camera.camera;
 			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
 
-			// Use old target and new forward vector to get our rotated desired location
-			camera_control.camera.location = camera_control_get_desired_location(
-				camera_old_target,
+			f32 move_speed = 10.0f * delta_time;
+			if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
+			{
+				move_speed *= 5.0f;
+			}
+
+			if (is_key_pressed(SAPP_KEYCODE_W))
+			{
+				camera.location += camera.forward * move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_S))
+			{
+				camera.location -= camera.forward * move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_D))
+			{
+				camera.location += camera_right * move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_A))
+			{
+				camera.location -= camera_right * move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_E))
+			{
+				camera.location += camera.up * move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_Q))
+			{
+				camera.location -= camera.up * move_speed;
+			}
+
+			if (is_mouse_locked())
+			{
+				const f32 look_speed = 1.0f * delta_time;
+				const HMM_Vec2 mouse_delta = get_mouse_delta();
+
+				const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+				camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
+				camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+			}
+		}
+
+		// Player Camera Control
+		if (state.scene.camera_control_id && !state.debug_camera.active)
+		{
+			Object& camera_control_object = state.scene.objects[*state.scene.camera_control_id];
+			CameraControl& camera_control = camera_control_object.camera_control;
+			Camera& camera = camera_control.camera;
+
+			if (is_mouse_locked())
+			{
+				//FCS TODO: Add max angle property (angle above XY plane) that we can rotate camera
+				//FCS TODO: Add rotation speed property to camera control component
+				const f32 look_speed = 1.0f * delta_time;
+				const HMM_Vec2 mouse_delta = get_mouse_delta();
+
+				// Get current target at old forward vector
+				const HMM_Vec3 camera_old_target = camera.location + camera.forward * camera_control.follow_distance;
+
+				const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+				camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
+				camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+
+				// Use old target and new forward vector to get our rotated desired location
+				camera_control.camera.location = camera_control_get_desired_location(
+					camera_old_target,
+					camera.forward,
+					camera_control.follow_distance
+				);
+			}
+
+			HMM_Vec3 desired_location = camera_control_get_desired_location(
+				camera_control_object.current_transform.location.XYZ,
 				camera.forward,
 				camera_control.follow_distance
 			);
+			camera_control.camera.location = HMM_LerpV3(
+				camera.location,
+				camera_control.follow_speed * delta_time,
+				desired_location
+			);
 		}
 
-		HMM_Vec3 desired_location = camera_control_get_desired_location(
-			camera_control_object.current_transform.location.XYZ,
-			camera.forward,
-			camera_control.follow_distance
-		);
-		camera_control.camera.location = HMM_LerpV3(
-			camera.location,
-			camera_control.follow_speed * delta_time,
-			desired_location
-		);
-	}
-
-	// Player Character Control
-	if (state.scene.player_character_id && !state.debug_camera.active)
-	{
-		const Camera& camera = get_active_camera();
-		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
-
-		Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
-		Character& player_character_state = player_character_object.character;
-		f32 character_move_speed = player_character_state.settings.move_speed * delta_time;
-
-		HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
-		HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
-
-		if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
+		// Player Character Control
+		if (state.scene.player_character_id && !state.debug_camera.active)
 		{
-			character_move_speed *= 3.0f;
-		}
+			const Camera& camera = get_active_camera();
+			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 
-		HMM_Vec3 move_vec = HMM_V3(0,0,0);
-		if (is_key_pressed(SAPP_KEYCODE_W))
-		{
-			move_vec += projected_cam_forward * character_move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_S))
-		{
-			move_vec -= projected_cam_forward * character_move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_D))
-		{
-			move_vec += projected_cam_right * character_move_speed;
-		}
-		if (is_key_pressed(SAPP_KEYCODE_A))
-		{
-			move_vec -= projected_cam_right * character_move_speed;
-		}
+			Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
+			Character& player_character_state = player_character_object.character;
+			f32 character_move_speed = player_character_state.settings.move_speed * delta_time;
 
-		bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
+			HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
+			HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
 
-		character_move(player_character_state, move_vec, jump);
+			if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
+			{
+				character_move_speed *= 3.0f;
+			}
+
+			HMM_Vec3 move_vec = HMM_V3(0,0,0);
+			if (is_key_pressed(SAPP_KEYCODE_W))
+			{
+				move_vec += projected_cam_forward * character_move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_S))
+			{
+				move_vec -= projected_cam_forward * character_move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_D))
+			{
+				move_vec += projected_cam_right * character_move_speed;
+			}
+			if (is_key_pressed(SAPP_KEYCODE_A))
+			{
+				move_vec -= projected_cam_right * character_move_speed;
+			}
+
+			bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
+
+			character_move(player_character_state, move_vec, jump);
+		}
 	}
 
 	// Rendering
 	{
+		CPU_TIMING_SCOPE("Rendering");
+		Camera& camera = get_active_camera();
+		HMM_Mat4 projection_matrix = HMM_M4D(1.0f);
+		HMM_Mat4 view_matrix = HMM_M4D(1.0f);
+		HMM_Mat4 view_projection_matrix = HMM_M4D(1.0f);
+
 		{
+			CPU_TIMING_SCOPE("Render Preparation");
+
 			// Run initially, and then only if our updates from blender encounter a light
 			if (state.lighting.needs_data_update)
 			{
+				CPU_TIMING_SCOPE("Lighting Data Update");
 				state.lighting.needs_data_update = false;
 
 				const i32 MAX_LIGHTS_PER_TYPE = 1024;
@@ -2128,55 +2158,68 @@ void frame(void)
 					);
 				}
 			}
-		}
 
-		// Bake Sky
-		if (state.sky.rendering_enable || state.gi.render_sky_to_probes)
-		{
-			SkyBakePass::render(state);
-		}
-
-		// View + Projection matrix setup
-		const f32 w = (f32)state.window.render_width;
-		const f32 h = (f32)state.window.render_height;
-		const f32 fov = HMM_AngleDeg(60.0f);
-		const f32 aspect_ratio = w/h;
-		HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
-
-		Camera& camera = get_active_camera();
-		HMM_Vec3 target = camera.location + camera.forward * 10;
-		HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
-		HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
-		if (!state.shadow.depth_freeze)
-		{
-			state.shadow.centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow.centered_square_lookahead_distance;
-		}
-
-		// Get our jolt body interface
-		JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
-
-		// Update Objects
-		for (auto& [unique_id, object] : state.scene.objects)
-		{
-			// For objects that simulate physics, copy their physics transforms into their uniform buffers
-			object_copy_physics_transform(object, body_interface);
-
-			if (object.storage_buffer_needs_update)
+			// Bake Sky
+			if (state.sky.rendering_enable || state.gi.render_sky_to_probes)
 			{
-				if (object.has_mesh)
+				CPU_TIMING_SCOPE("Sky Bake Update");
+				SkyBakePass::render(state);
+			}
+
+			// View + Projection matrix setup
+			const f32 fov = HMM_AngleDeg(60.0f);
+			{
+				CPU_TIMING_SCOPE("Camera Matrices");
+				const f32 w = (f32)state.window.render_width;
+				const f32 h = (f32)state.window.render_height;
+				const f32 aspect_ratio = w/h;
+				projection_matrix = mat4_perspective(fov, aspect_ratio);
+
+				HMM_Vec3 target = camera.location + camera.forward * 10;
+				view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
+				view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+				if (!state.shadow.depth_freeze)
 				{
-					state.gi.layout_dirty = true;
-					state.gi.is_updating = true;
+					state.shadow.centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow.centered_square_lookahead_distance;
 				}
-				object.storage_buffer_needs_update = false;
-				object_update_storage_buffer(object);
+			}
+
+			// Get our jolt body interface
+			JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
+			// Update Objects
+			{
+				CPU_TIMING_SCOPE("Object Updates");
+
+				for (auto& [unique_id, object] : state.scene.objects)
+				{
+					// For objects that simulate physics, copy their physics transforms into their uniform buffers
+					object_copy_physics_transform(object, body_interface);
+
+					if (object.storage_buffer_needs_update)
+					{
+						if (object.has_mesh)
+						{
+							state.gi.layout_dirty = true;
+							state.gi.is_updating = true;
+						}
+						object.storage_buffer_needs_update = false;
+						object_update_storage_buffer(object);
+					}
+				}
+			}
+
+			{
+				CPU_TIMING_SCOPE("Tessellation Update");
+				Tessellation::update(state, camera, fov);
+			}
+
+			// Update our GI Scene
+			{
+				CPU_TIMING_SCOPE("GI Scene Update");
+				gi_scene_update(gi_scene, state);
 			}
 		}
-
-		Tessellation::update(state, camera, fov);
-
-		// Update our GI Scene
-		gi_scene_update(gi_scene, state);
 
 		if (state.shadow.rendering_enable)
 		{
@@ -2191,12 +2234,15 @@ void frame(void)
 				const bool should_update_shadow_depth = !state.shadow.depth_freeze || !ShadowDepthPass::has_valid_shadow_map || state.shadow.force_recapture;
 				if (should_update_shadow_depth)
 				{
-					get_render_pass(ERenderPass::ShadowDepth).execute(
+					RenderPass& shadow_depth_pass = get_render_pass(ERenderPass::ShadowDepth);
+					shadow_depth_pass.set_pass_count_override(ShadowDepthPass::get_active_cascade_count(state));
+					shadow_depth_pass.execute(
 						[&](const i32 pass_idx)
 						{
 							ShadowDepthPass::render(state, pass_idx);
 						}
 					);
+					shadow_depth_pass.set_pass_count_override(-1);
 					state.shadow.force_recapture = false;
 					ShadowDepthPass::has_valid_shadow_blur = false;
 				}
@@ -2251,86 +2297,102 @@ void frame(void)
 				[&](const i32)
 				{
 				    geometry_vs_params_t vs_params;
-					vs_params.view = view_matrix;
-					vs_params.projection = projection_matrix;
+					{
+						CPU_TIMING_SCOPE("Geometry Uniforms");
+						vs_params.view = view_matrix;
+						vs_params.projection = projection_matrix;
 
-					// Apply Vertex Uniforms
-					sg_apply_uniforms(0, SG_RANGE(vs_params));
+						// Apply Vertex Uniforms
+						sg_apply_uniforms(0, SG_RANGE(vs_params));
+					}
 
 					// Cull objects
 					const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
-					CullResult cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
+					CullResult cull_result;
+					{
+						CPU_TIMING_SCOPE("Geometry Culling");
+						cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
+					}
 
 					DEBUG_UI(
-						if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
 						{
-							ImGui::Text("Total Objects: %zu", state.scene.objects.size());
+							CPU_TIMING_SCOPE("Geometry Debug UI");
 
-							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-							if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
+							if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
 							{
-								#if WITH_VERBOSE_CULL_RESULTS
-								ImGui::Text("Non-Renderable: %i", cull_result.non_renderable_cull_count);
-								ImGui::Text("Invisible: %i", cull_result.visibility_cull_count);
-								ImGui::Text("Frustum Culled: %i", cull_result.frustum_cull_count);
-								#else
-								ImGui::Text("#define WITH_VERBOSE_CULL_RESULTS 1 for additional culling stats");
-								#endif
-								ImGui::TreePop();
-							}
+								ImGui::Text("Total Objects: %zu", state.scene.objects.size());
 
-							ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-							if (ImGui::TreeNode("Lights", "Lights"))
-							{
-								ImGui::Text("Num Point Lights: %i", state.lighting.point_lights.length());
-								ImGui::Text("Num Spot Lights:  %i", state.lighting.spot_lights.length());
-								ImGui::Text("Num Sun Lights:   %i", state.lighting.sun_lights.length());
-								ImGui::TreePop();
-							}
+								ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+								if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
+								{
+									#if WITH_VERBOSE_CULL_RESULTS
+									ImGui::Text("Non-Renderable: %i", cull_result.non_renderable_cull_count);
+									ImGui::Text("Invisible: %i", cull_result.visibility_cull_count);
+									ImGui::Text("Frustum Culled: %i", cull_result.frustum_cull_count);
+									#else
+									ImGui::Text("#define WITH_VERBOSE_CULL_RESULTS 1 for additional culling stats");
+									#endif
+									ImGui::TreePop();
+								}
 
+								ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+								if (ImGui::TreeNode("Lights", "Lights"))
+								{
+									ImGui::Text("Num Point Lights: %i", state.lighting.point_lights.length());
+									ImGui::Text("Num Spot Lights:  %i", state.lighting.spot_lights.length());
+									ImGui::Text("Num Sun Lights:   %i", state.lighting.sun_lights.length());
+									ImGui::TreePop();
+								}
+
+							}
 						}
 					);
 
 					// Submit draw calls for objects after culling
-					for (auto& [unique_id, object_ptr] : cull_result.objects)
 					{
-						assert(object_ptr);
-						Object& object = *object_ptr;
+						CPU_TIMING_SCOPE("Geometry Draw Meshes");
 
-						if (object.has_mesh)
+						for (auto& [unique_id, object_ptr] : cull_result.objects)
 						{
-							Mesh& mesh = object.mesh;
-							MeshRenderView render_view = mesh_get_render_view(mesh);
+							assert(object_ptr);
+							Object& object = *object_ptr;
 
-							int mesh_material_idx = mesh.material_indices[0];
-							assert(mesh_material_idx >= 0);
-							const geometry_Material_t& material = state.materials.items[mesh_material_idx];
+							if (object.has_mesh)
+							{
+								Mesh& mesh = object.mesh;
+								MeshRenderView render_view = mesh_get_render_view(mesh);
 
-							GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images.items[material.base_color_image_index] : state.gpu.default_image;
-							GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images.items[material.metallic_image_index] : state.gpu.default_image;
-							GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images.items[material.roughness_image_index] : state.gpu.default_image;
-							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
+								int mesh_material_idx = mesh.material_indices[0];
+								assert(mesh_material_idx >= 0);
+								const geometry_Material_t& material = state.materials.items[mesh_material_idx];
 
-							sg_bindings bindings = {
-								.vertex_buffers[0] = render_view.vertex_buffer,
-								.index_buffer = render_view.index_buffer,
-								.views = {
-									[0] = object.storage_buffer.get_storage_view(),
-									[1] = get_materials_buffer().get_storage_view(),
-									[2] = base_color_image.get_texture_view(0),
-									[3] = metallic_image.get_texture_view(0),
-									[4] = roughness_image.get_texture_view(0),
-									[5] = emission_color_image.get_texture_view(0),
-								},
-								.samplers[0] = state.gpu.linear_sampler,
-							};
-							sg_apply_bindings(&bindings);
-							sg_draw(0, render_view.index_count, 1);
+								GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images.items[material.base_color_image_index] : state.gpu.default_image;
+								GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images.items[material.metallic_image_index] : state.gpu.default_image;
+								GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images.items[material.roughness_image_index] : state.gpu.default_image;
+								GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
+
+								sg_bindings bindings = {
+									.vertex_buffers[0] = render_view.vertex_buffer,
+									.index_buffer = render_view.index_buffer,
+									.views = {
+										[0] = object.storage_buffer.get_storage_view(),
+										[1] = get_materials_buffer().get_storage_view(),
+										[2] = base_color_image.get_texture_view(0),
+										[3] = metallic_image.get_texture_view(0),
+										[4] = roughness_image.get_texture_view(0),
+										[5] = emission_color_image.get_texture_view(0),
+									},
+									.samplers[0] = state.gpu.linear_sampler,
+								};
+								sg_apply_bindings(&bindings);
+								sg_draw(0, render_view.index_count, 1);
+							}
 						}
 					}
 
 					if (state.tessellation.shaded_wireframe)
 					{
+						CPU_TIMING_SCOPE("Geometry Wireframe");
 						sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(sglue_swapchain().depth_format));
 						sg_apply_uniforms(0, SG_RANGE(vs_params));
 
@@ -2362,11 +2424,13 @@ void frame(void)
 
 					if (state.gi.show_probes)
 					{
+						CPU_TIMING_SCOPE("Geometry GI Probes");
 						gi_scene_render_debug(gi_scene, view_matrix, projection_matrix);
 					}
 
 					if (state.sky.rendering_enable)
 					{
+						CPU_TIMING_SCOPE("Geometry Sky");
 						SkyPass::render(
 							view_projection_matrix,
 							get_active_camera().location,
@@ -2652,13 +2716,17 @@ void frame(void)
 
 					DEBUG_UI(
 						ImGui::End();
+						draw_cpu_profiler_window();
 						simgui_render();
 					);
 				}
 			);
 		}
 
-		sg_commit();
+		{
+			CPU_TIMING_SCOPE("sg_commit");
+			sg_commit();
+		}
 	}
 
 	reset_mouse_delta();
@@ -2783,6 +2851,7 @@ sapp_desc sokol_main(int argc, char* argv[])
         .width = 1920,
         .height = 1080,
         .sample_count = 1,
+		.swap_interval = 1, 
 		.high_dpi = true,
         .window_title = "Blender Game",
         .icon = {

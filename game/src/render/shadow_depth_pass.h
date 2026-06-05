@@ -171,6 +171,8 @@ namespace ShadowDepthPass
 
 	void render(State& in_state, i32 cascade_idx)
 	{
+		CPU_TIMING_SCOPE("Shadow Depth Cascade");
+
 		if (cascade_idx == 0)
 		{
 			has_valid_shadow_map = false;
@@ -204,6 +206,8 @@ namespace ShadowDepthPass
 
 		if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 		{
+			CPU_TIMING_SCOPE("Shadow Centered Setup");
+
 			const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
 			const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
 			const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
@@ -229,13 +233,124 @@ namespace ShadowDepthPass
 			vs_params.projection = light_proj;
 
 			// Apply Vertex Uniforms
-			sg_apply_uniforms(0, SG_RANGE(vs_params));
+			{
+				CPU_TIMING_SCOPE("Shadow Uniforms");
+				sg_apply_uniforms(0, SG_RANGE(vs_params));
+			}
 
 			// Cull objects
 			const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
-			CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
+			CullResult cull_result;
+			{
+				CPU_TIMING_SCOPE("Shadow Culling");
+				cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
+			}
 
 			// Submit draw calls for objects after culling
+			{
+				CPU_TIMING_SCOPE("Shadow Draw Meshes");
+
+				for (auto& [unique_id, object_ptr] : cull_result.objects)
+				{
+					assert(object_ptr);
+					Object& object = *object_ptr;
+
+					if (object.has_mesh)
+					{
+						Mesh& mesh = object.mesh;
+						MeshRenderView render_view = mesh_get_render_view(mesh);
+
+						sg_bindings bindings = {};
+						bindings.vertex_buffers[0] = render_view.vertex_buffer;
+						bindings.index_buffer = render_view.index_buffer;
+						bindings.views[0] = object.storage_buffer.get_storage_view();
+						sg_apply_bindings(&bindings);
+						sg_draw(0, render_view.index_count, 1);
+					}
+				}
+			}
+
+			return;
+		}
+
+		HMM_Mat4 light_view = HMM_M4D(1.0f);
+		HMM_Mat4 light_proj = HMM_M4D(1.0f);
+		HMM_Mat4 light_view_proj = HMM_M4D(1.0f);
+		{
+			CPU_TIMING_SCOPE("Shadow Frustum Setup");
+
+			const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);
+			const f32 cascade_far_distance = get_cascade_distance(in_state, cascade_idx);
+			const f32 fov = HMM_AngleDeg(60.0f);
+			const f32 aspect_ratio = (f32)in_state.window.render_width / (f32)in_state.window.render_height;
+
+			HMM_Vec3 frustum_corners[8];
+			get_frustum_slice_corners(active_camera, cascade_near_distance, cascade_far_distance, fov, aspect_ratio, frustum_corners);
+
+			HMM_Vec3 frustum_center = HMM_V3(0.0f, 0.0f, 0.0f);
+			for (i32 i = 0; i < 8; ++i)
+			{
+				frustum_center += frustum_corners[i] * 0.125f;
+			}
+
+			f32 bounding_radius = 0.0f;
+			for (i32 i = 0; i < 8; ++i)
+			{
+				bounding_radius = fmaxf(bounding_radius, HMM_LenV3(frustum_corners[i] - frustum_center));
+			}
+
+			const f32 depth_margin = fmaxf(10.0f, bounding_radius * 0.25f);
+			HMM_Vec3 light_pos = frustum_center - sun_dir * (bounding_radius + depth_margin);
+			light_view = HMM_LookAt_RH(light_pos, frustum_center, light_up);
+
+			f32 min_x = FLT_MAX;
+			f32 max_x = -FLT_MAX;
+			f32 min_y = FLT_MAX;
+			f32 max_y = -FLT_MAX;
+			f32 min_z = FLT_MAX;
+			f32 max_z = -FLT_MAX;
+			for (i32 i = 0; i < 8; ++i)
+			{
+				HMM_Vec4 light_space_corner = HMM_MulM4V4(light_view, HMM_V4V(frustum_corners[i], 1.0f));
+				min_x = fminf(min_x, light_space_corner.X);
+				max_x = fmaxf(max_x, light_space_corner.X);
+				min_y = fminf(min_y, light_space_corner.Y);
+				max_y = fmaxf(max_y, light_space_corner.Y);
+				min_z = fminf(min_z, light_space_corner.Z);
+				max_z = fmaxf(max_z, light_space_corner.Z);
+			}
+
+			f32 near_plane = fmaxf(0.01f, -max_z - depth_margin);
+			f32 far_plane = fmaxf(near_plane + 1.0f, -min_z + depth_margin);
+			light_proj = mat4_orthographic(min_x, max_x, min_y, max_y, near_plane, far_plane);
+			light_view_proj = HMM_MulM4(light_proj, light_view);
+			shadow_view_projections[cascade_idx] = light_view_proj;
+			cascade_distances[cascade_idx] = cascade_far_distance;
+			has_valid_shadow_map = true;
+		}
+
+		shadow_depth_vs_params_t vs_params;
+		vs_params.view = light_view;
+		vs_params.projection = light_proj;
+
+		// Apply Vertex Uniforms
+		{
+			CPU_TIMING_SCOPE("Shadow Uniforms");
+			sg_apply_uniforms(0, SG_RANGE(vs_params));
+		}
+
+		// Cull objects
+		const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+		CullResult cull_result;
+		{
+			CPU_TIMING_SCOPE("Shadow Culling");
+			cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
+		}
+
+		// Submit draw calls for objects after culling
+		{
+			CPU_TIMING_SCOPE("Shadow Draw Meshes");
+
 			for (auto& [unique_id, object_ptr] : cull_result.objects)
 			{
 				assert(object_ptr);
@@ -253,88 +368,6 @@ namespace ShadowDepthPass
 					sg_apply_bindings(&bindings);
 					sg_draw(0, render_view.index_count, 1);
 				}
-			}
-
-			return;
-		}
-
-		const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);
-		const f32 cascade_far_distance = get_cascade_distance(in_state, cascade_idx);
-		const f32 fov = HMM_AngleDeg(60.0f);
-		const f32 aspect_ratio = (f32)in_state.window.render_width / (f32)in_state.window.render_height;
-
-		HMM_Vec3 frustum_corners[8];
-		get_frustum_slice_corners(active_camera, cascade_near_distance, cascade_far_distance, fov, aspect_ratio, frustum_corners);
-
-		HMM_Vec3 frustum_center = HMM_V3(0.0f, 0.0f, 0.0f);
-		for (i32 i = 0; i < 8; ++i)
-		{
-			frustum_center += frustum_corners[i] * 0.125f;
-		}
-
-		f32 bounding_radius = 0.0f;
-		for (i32 i = 0; i < 8; ++i)
-		{
-			bounding_radius = fmaxf(bounding_radius, HMM_LenV3(frustum_corners[i] - frustum_center));
-		}
-
-		const f32 depth_margin = fmaxf(10.0f, bounding_radius * 0.25f);
-		HMM_Vec3 light_pos = frustum_center - sun_dir * (bounding_radius + depth_margin);
-		HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, frustum_center, light_up);
-
-		f32 min_x = FLT_MAX;
-		f32 max_x = -FLT_MAX;
-		f32 min_y = FLT_MAX;
-		f32 max_y = -FLT_MAX;
-		f32 min_z = FLT_MAX;
-		f32 max_z = -FLT_MAX;
-		for (i32 i = 0; i < 8; ++i)
-		{
-			HMM_Vec4 light_space_corner = HMM_MulM4V4(light_view, HMM_V4V(frustum_corners[i], 1.0f));
-			min_x = fminf(min_x, light_space_corner.X);
-			max_x = fmaxf(max_x, light_space_corner.X);
-			min_y = fminf(min_y, light_space_corner.Y);
-			max_y = fmaxf(max_y, light_space_corner.Y);
-			min_z = fminf(min_z, light_space_corner.Z);
-			max_z = fmaxf(max_z, light_space_corner.Z);
-		}
-
-		f32 near_plane = fmaxf(0.01f, -max_z - depth_margin);
-		f32 far_plane = fmaxf(near_plane + 1.0f, -min_z + depth_margin);
-		HMM_Mat4 light_proj = mat4_orthographic(min_x, max_x, min_y, max_y, near_plane, far_plane);
-		HMM_Mat4 light_view_proj = HMM_MulM4(light_proj, light_view);
-		shadow_view_projections[cascade_idx] = light_view_proj;
-		cascade_distances[cascade_idx] = cascade_far_distance;
-		has_valid_shadow_map = true;
-
-		shadow_depth_vs_params_t vs_params;
-		vs_params.view = light_view;
-		vs_params.projection = light_proj;
-
-		// Apply Vertex Uniforms
-		sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-		// Cull objects
-		const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
-		CullResult cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
-
-		// Submit draw calls for objects after culling
-		for (auto& [unique_id, object_ptr] : cull_result.objects)
-		{
-			assert(object_ptr);
-			Object& object = *object_ptr;
-
-			if (object.has_mesh)
-			{
-				Mesh& mesh = object.mesh;
-				MeshRenderView render_view = mesh_get_render_view(mesh);
-
-				sg_bindings bindings = {};
-				bindings.vertex_buffers[0] = render_view.vertex_buffer;
-				bindings.index_buffer = render_view.index_buffer;
-				bindings.views[0] = object.storage_buffer.get_storage_view();
-				sg_apply_bindings(&bindings);
-				sg_draw(0, render_view.index_count, 1);
 			}
 		}
 	}

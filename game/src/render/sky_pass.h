@@ -19,6 +19,8 @@ namespace SkyBakePass
 	optional<sg_shader> shader;
 	optional<sg_pipeline_desc> pipeline_desc;
 	optional<RenderPass> render_pass;
+	bool has_baked_sky = false;
+	HMM_Vec3 last_baked_sun_dir = HMM_V3(0,0,1);
 
 	sg_pipeline_desc get_pipeline_desc()
 	{
@@ -71,26 +73,47 @@ namespace SkyBakePass
 		return render_pass.value();
 	}
 
+	HMM_Vec3 get_sun_dir(State& in_state)
+	{
+		HMM_Vec3 sun_dir = HMM_V3(0,0,1);
+		if (in_state.scene.primary_sun_id.has_value())
+		{
+			i32 primary_sun_id = in_state.scene.primary_sun_id.value();
+			if (in_state.scene.objects.contains(primary_sun_id))
+			{
+				Object& sun_object = in_state.scene.objects[primary_sun_id];
+				if (sun_object.has_light && sun_object.light.type == LightType::Sun)
+				{
+					Transform transform = sun_object.current_transform;
+					sun_dir = -HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+				}
+			}
+		}
+		return sun_dir;
+	}
+
+	bool should_bake_sky(const HMM_Vec3 in_sun_dir)
+	{
+		if (!has_baked_sky)
+		{
+			return true;
+		}
+
+		const HMM_Vec3 sun_dir_delta = in_sun_dir - last_baked_sun_dir;
+		return HMM_LenSqrV3(sun_dir_delta) > 0.000001f;
+	}
+
 	void render(State& in_state)
 	{
+		const HMM_Vec3 sun_dir = get_sun_dir(in_state);
+		if (!should_bake_sky(sun_dir))
+		{
+			return;
+		}
+
 		SkyBakePass::get_render_pass().execute(
 			[&](const i32)
 			{
-				HMM_Vec3 sun_dir = HMM_V3(0,0,1);
-				if (in_state.scene.primary_sun_id.has_value())
-				{
-					i32 primary_sun_id = in_state.scene.primary_sun_id.value();
-					if (in_state.scene.objects.contains(primary_sun_id))
-					{
-						Object& sun_object = in_state.scene.objects[primary_sun_id];
-						if (sun_object.has_light && sun_object.light.type == LightType::Sun)
-						{
-							Transform transform = sun_object.current_transform;
-							sun_dir = -HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-						}
-					}
-				}
-
 				sky_bake_fs_params_t sky_bake_params = {
 					.sun_dir = sun_dir,
 				};
@@ -99,6 +122,9 @@ namespace SkyBakePass
 				sg_draw(0,6,1);
 			}
 		);
+
+		last_baked_sun_dir = sun_dir;
+		has_baked_sky = true;
 	}
 
 	GpuImage& get_baked_sky_image()

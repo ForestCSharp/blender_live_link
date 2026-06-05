@@ -7,6 +7,7 @@
 
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
+#include "core/timings.h"
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_glue.h"
@@ -75,6 +76,7 @@ public: // Variables
 
 	i32 current_width = -1;
 	i32 current_height = -1;
+	i32 pass_count_override = -1;
 
 public: // Functions
 	void init(const RenderPassDesc& in_desc)
@@ -106,6 +108,11 @@ public: // Functions
 	// number of times the execute lambda is invoked on execute
 	const i32 get_pass_count() const
 	{	
+		if (pass_count_override > 0)
+		{
+			return std::min(pass_count_override, desc.pass_count);
+		}
+
 		switch (desc.type)
 		{
 			case ERenderPassType::Single:		return 1;
@@ -154,6 +161,11 @@ public: // Functions
 	i32 get_num_color_outputs() const
 	{
 		return color_outputs.length();
+	}
+
+	void set_pass_count_override(i32 in_pass_count_override)
+	{
+		pass_count_override = in_pass_count_override;
 	}
 
 	GpuImage& get_color_output(i32 color_output_idx, i32 pass_idx = 0)
@@ -412,10 +424,11 @@ public: // Functions
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
+			const char* pass_debug_label = desc.debug_label ? desc.debug_label : "(unnamed)";
 			sg_pass pass = {
 				.attachments = !render_to_swapchain ? attachments[pass_idx] : (sg_attachments){},
 				.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
-				.label = desc.debug_label,
+				.label = pass_debug_label,
 			};
 
 			for (int i = 0; i < desc.num_outputs; ++i)
@@ -440,10 +453,14 @@ public: // Functions
 				};
 			}
 
-			sg_begin_pass(pass);
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", pass_debug_label);
+				sg_begin_pass(pass);
+			}
 
 			{
-				GpuDebugScope debug_scope(desc.debug_label);
+				CPU_TIMING_SCOPE(pass_debug_label);
+				GpuDebugScope debug_scope(pass_debug_label);
 
 				if (pipeline.id != SG_INVALID_ID)
 				{
@@ -453,7 +470,10 @@ public: // Functions
 				in_callback(pass_idx);
 			}
 
-			sg_end_pass();
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", pass_debug_label);
+				sg_end_pass();
+			}
 		}
 	}
 
@@ -465,6 +485,10 @@ public: // Functions
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
+			const char* pass_debug_label = desc.scratch_debug_label
+				? desc.scratch_debug_label
+				: (desc.debug_label ? desc.debug_label : "(unnamed)");
+
 			sg_attachments scratch_attachment = {};
 			if (desc.type == ERenderPassType::Array)
 			{
@@ -477,7 +501,7 @@ public: // Functions
 
 			sg_pass pass = {
 				.attachments = scratch_attachment,
-				.label = desc.scratch_debug_label ? desc.scratch_debug_label : desc.debug_label,
+				.label = pass_debug_label,
 			};
 			pass.action.colors[0] = {
 				.load_action = desc.scratch_outputs[scratch_output_idx].load_action,
@@ -485,10 +509,14 @@ public: // Functions
 				.clear_value = desc.scratch_outputs[scratch_output_idx].clear_value,
 			};
 
-			sg_begin_pass(pass);
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", pass_debug_label);
+				sg_begin_pass(pass);
+			}
 
 			{
-				GpuDebugScope debug_scope(desc.scratch_debug_label ? desc.scratch_debug_label : desc.debug_label);
+				CPU_TIMING_SCOPE(pass_debug_label);
+				GpuDebugScope debug_scope(pass_debug_label);
 
 				if (pipeline.id != SG_INVALID_ID)
 				{
@@ -498,7 +526,10 @@ public: // Functions
 				in_callback(pass_idx);
 			}
 
-			sg_end_pass();
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", pass_debug_label);
+				sg_end_pass();
+			}
 		}
 	}
 };

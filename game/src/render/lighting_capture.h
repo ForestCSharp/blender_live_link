@@ -404,10 +404,13 @@ public:
 				: lighting_pass.get_color_output(0);
 
 			const char* debug_label = "Probe Radiance Projection";
-			sg_begin_pass((sg_pass) {
-				.compute = true,
-				.label = debug_label,
-			});
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
+				sg_begin_pass((sg_pass) {
+					.compute = true,
+					.label = debug_label,
+				});
+			}
 			{
 				GpuDebugScope debug_scope(debug_label);
 				sg_apply_pipeline(radiance_projection_pipeline);
@@ -423,7 +426,10 @@ public:
 				sg_apply_bindings(&bindings);
 				sg_dispatch(1, 1, 1);
 			}
-			sg_end_pass();
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
+				sg_end_pass();
+			}
 		};
 
 		if (should_project_sh9)
