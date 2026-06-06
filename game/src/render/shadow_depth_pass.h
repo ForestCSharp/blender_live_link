@@ -166,12 +166,15 @@ namespace ShadowDepthPass
 		desc.type = ERenderPassType::Array;
 		desc.pass_count = MAX_SHADOW_CASCADES;
 		desc.debug_label = "Shadow Depth";
+		desc.debug_label_formatter = render_pass_format_cascade_debug_label;
 		return desc;
 	}
 
 	void render(State& in_state, i32 cascade_idx)
 	{
-		CPU_TIMING_SCOPE("Shadow Depth Cascade");
+		char cascade_timing_label[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+		render_pass_format_cascade_debug_label("Shadow Depth", cascade_idx, cascade_timing_label, sizeof(cascade_timing_label));
+		CPU_TIMING_SCOPE(cascade_timing_label);
 
 		if (cascade_idx == 0)
 		{

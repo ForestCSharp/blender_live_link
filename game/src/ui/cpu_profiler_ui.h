@@ -24,6 +24,106 @@ static ImU32 cpu_profiler_color_for_depth(i32 in_depth)
 }
 
 static constexpr f64 CPU_PROFILER_MIN_UNACCOUNTED_TIME_MS = 0.002;
+static constexpr f32 PROFILER_ROW_HEIGHT = 24.0f;
+static constexpr f32 PROFILER_BOX_HEIGHT = 20.0f;
+static constexpr f32 PROFILER_HEADER_HEIGHT = 22.0f;
+static constexpr f32 PROFILER_FRAME_GAP = 0.0f;
+static constexpr f32 PROFILER_MIN_FRAME_WIDTH = 220.0f;
+static constexpr f32 PROFILER_MIN_BOX_WIDTH = 3.0f;
+
+struct ProfilerTooltip
+{
+	bool active = false;
+	char frame[64] = {};
+	char context[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+	char name[256] = {};
+	char percent_label[64] = {};
+	f64 elapsed_ms = 0.0;
+	f64 percent = 0.0;
+	i32 depth = -1;
+	i32 draw_order = -1;
+};
+
+static bool profiler_rect_hovered(const ImVec2& rect_min, const ImVec2& rect_max)
+{
+	return ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+		ImGui::IsMouseHoveringRect(rect_min, rect_max, true);
+}
+
+static void profiler_consider_tooltip(
+	ProfilerTooltip& tooltip,
+	bool in_rect_hovered,
+	const char* in_frame,
+	const char* in_context,
+	const char* in_name,
+	f64 in_elapsed_ms,
+	f64 in_percent,
+	const char* in_percent_label,
+	i32 in_depth,
+	i32 in_draw_order)
+{
+	if (!in_rect_hovered)
+	{
+		return;
+	}
+
+	const bool is_better_match =
+		!tooltip.active ||
+		in_depth > tooltip.depth ||
+		(in_depth == tooltip.depth && in_draw_order > tooltip.draw_order);
+	if (!is_better_match)
+	{
+		return;
+	}
+
+	tooltip.active = true;
+	snprintf(tooltip.frame, sizeof(tooltip.frame), "%s", in_frame ? in_frame : "");
+	snprintf(tooltip.context, sizeof(tooltip.context), "%s", in_context ? in_context : "");
+	snprintf(tooltip.name, sizeof(tooltip.name), "%s", in_name ? in_name : "(unnamed)");
+	snprintf(tooltip.percent_label, sizeof(tooltip.percent_label), "%s", in_percent_label ? in_percent_label : "% of frame");
+	tooltip.elapsed_ms = in_elapsed_ms;
+	tooltip.percent = in_percent;
+	tooltip.depth = in_depth;
+	tooltip.draw_order = in_draw_order;
+}
+
+static void profiler_draw_tooltip(const ProfilerTooltip& tooltip)
+{
+	if (!tooltip.active)
+	{
+		return;
+	}
+
+	ImGui::BeginTooltip();
+	ImGui::Text("%s", tooltip.frame);
+	if (tooltip.context[0])
+	{
+		ImGui::Text("%s", tooltip.context);
+	}
+	ImGui::Text("%s", tooltip.name);
+	ImGui::Text("%.3f ms", tooltip.elapsed_ms);
+	ImGui::Text("%.2f%s", tooltip.percent, tooltip.percent_label);
+	ImGui::EndTooltip();
+}
+
+static void profiler_draw_clipped_label(
+	ImDrawList* draw_list,
+	const ImVec2& rect_min,
+	const ImVec2& rect_max,
+	ImU32 text_color,
+	const char* label)
+{
+	if (!draw_list || !label || rect_max.x <= rect_min.x || rect_max.y <= rect_min.y)
+	{
+		return;
+	}
+
+	const ImVec2 text_size = ImGui::CalcTextSize(label);
+	const ImVec2 text_pos = ImVec2(rect_min.x + 4.0f, rect_min.y + (PROFILER_BOX_HEIGHT - text_size.y) * 0.5f);
+	ImGui::PushClipRect(rect_min, rect_max, true);
+	draw_list->AddText(text_pos, text_color, label);
+	ImGui::PopClipRect();
+}
 
 static f64 cpu_profiler_ms_from_root(const CpuTimingEvent& in_root_event, u64 in_ticks)
 {
@@ -35,7 +135,64 @@ static f64 cpu_profiler_ms_from_root(const CpuTimingEvent& in_root_event, u64 in
 	return stm_ms(stm_diff(in_ticks, in_root_event.start_ticks));
 }
 
-static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
+static f32 profiler_graph_width(i32 in_display_frame_count, f32 in_base_frame_width)
+{
+	const f32 frame_width = in_base_frame_width * state.debug_ui.profiler_zoom;
+	return frame_width * (f32)in_display_frame_count + PROFILER_FRAME_GAP * (f32)(in_display_frame_count - 1);
+}
+
+static void profiler_apply_shared_zoom_and_scroll(i32 in_display_frame_count, f32 in_base_frame_width)
+{
+	const bool graph_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+	const bool graph_dragging = graph_hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+	const f32 current_scroll_x = ImGui::GetScrollX();
+	if (graph_dragging && std::abs(current_scroll_x - state.debug_ui.profiler_scroll_x) > 0.5f)
+	{
+		state.debug_ui.profiler_scroll_x = current_scroll_x;
+	}
+	else
+	{
+		ImGui::SetScrollX(state.debug_ui.profiler_scroll_x);
+	}
+
+	const f32 old_graph_width = profiler_graph_width(in_display_frame_count, in_base_frame_width);
+	if (graph_hovered)
+	{
+		const f32 mouse_wheel = ImGui::GetIO().MouseWheel;
+		if (mouse_wheel != 0.0f)
+		{
+			const f32 old_scroll_x = state.debug_ui.profiler_scroll_x;
+			const f32 mouse_x_in_window = ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x;
+			const f32 mouse_content_x = old_scroll_x + mouse_x_in_window;
+			const f32 mouse_content_t = old_graph_width > 0.0f
+				? CLAMP(mouse_content_x / old_graph_width, 0.0f, 1.0f)
+				: 0.0f;
+
+			const f32 zoom_multiplier = (f32)std::pow(1.15f, mouse_wheel);
+			state.debug_ui.profiler_zoom = CLAMP(state.debug_ui.profiler_zoom * zoom_multiplier, 0.25f, 128.0f);
+
+			const f32 new_graph_width = profiler_graph_width(in_display_frame_count, in_base_frame_width);
+			state.debug_ui.profiler_scroll_x = std::max(0.0f, mouse_content_t * new_graph_width - mouse_x_in_window);
+			ImGui::SetScrollX(state.debug_ui.profiler_scroll_x);
+		}
+	}
+}
+
+static void profiler_capture_shared_scroll()
+{
+	const bool graph_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+	const bool graph_dragging = graph_hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+	if (graph_dragging || graph_hovered)
+	{
+		const f32 current_scroll_x = ImGui::GetScrollX();
+		if (std::abs(current_scroll_x - state.debug_ui.profiler_scroll_x) > 0.5f)
+		{
+			state.debug_ui.profiler_scroll_x = current_scroll_x;
+		}
+	}
+}
+
+static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base_frame_width)
 {
 	i32 max_depth = 0;
 	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
@@ -51,48 +208,14 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 		++max_depth;
 	}
 
-	const f32 row_height = 24.0f;
-	const f32 box_height = 20.0f;
-	const f32 header_height = 22.0f;
-	const f32 frame_gap = 0.0f;
-	const f32 min_frame_width = 220.0f;
-	const f32 min_box_width = 3.0f;
-	const f32 visible_width = std::max(1.0f, ImGui::GetContentRegionAvail().x - 8.0f);
-	const f32 base_frame_width = std::max(
-		min_frame_width,
-		(visible_width - frame_gap * (f32)(in_display_frame_count - 1)) / (f32)in_display_frame_count
-	);
-	const f32 graph_height = header_height + (max_depth + 1) * row_height + 8.0f;
+	const f32 graph_height = PROFILER_HEADER_HEIGHT + (max_depth + 1) * PROFILER_ROW_HEIGHT + 8.0f;
 	const f32 child_height = std::max(180.0f, std::min(420.0f, graph_height + 12.0f));
 
 	ImGui::BeginChild("##CpuProfilerGraph", ImVec2(0.0f, child_height), true, ImGuiWindowFlags_HorizontalScrollbar);
+	profiler_apply_shared_zoom_and_scroll(in_display_frame_count, in_base_frame_width);
 
-	const f32 old_frame_width = base_frame_width * state.debug_ui.profiler_zoom;
-	const f32 old_graph_width = old_frame_width * (f32)in_display_frame_count + frame_gap * (f32)(in_display_frame_count - 1);
-	if (ImGui::IsWindowHovered())
-	{
-		const f32 mouse_wheel = ImGui::GetIO().MouseWheel;
-		if (mouse_wheel != 0.0f)
-		{
-			const f32 old_scroll_x = ImGui::GetScrollX();
-			const f32 mouse_x_in_window = ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x;
-			const f32 mouse_content_x = old_scroll_x + mouse_x_in_window;
-			const f32 mouse_content_t = old_graph_width > 0.0f
-				? CLAMP(mouse_content_x / old_graph_width, 0.0f, 1.0f)
-				: 0.0f;
-
-			const f32 zoom_multiplier = (f32)std::pow(1.15f, mouse_wheel);
-			state.debug_ui.profiler_zoom = CLAMP(state.debug_ui.profiler_zoom * zoom_multiplier, 0.25f, 128.0f);
-
-			const f32 new_frame_width = base_frame_width * state.debug_ui.profiler_zoom;
-			const f32 new_graph_width = new_frame_width * (f32)in_display_frame_count + frame_gap * (f32)(in_display_frame_count - 1);
-			const f32 new_scroll_x = mouse_content_t * new_graph_width - mouse_x_in_window;
-			ImGui::SetScrollX(std::max(0.0f, new_scroll_x));
-		}
-	}
-
-	const f32 frame_width = base_frame_width * state.debug_ui.profiler_zoom;
-	const f32 graph_width = frame_width * (f32)in_display_frame_count + frame_gap * (f32)(in_display_frame_count - 1);
+	const f32 frame_width = in_base_frame_width * state.debug_ui.profiler_zoom;
+	const f32 graph_width = profiler_graph_width(in_display_frame_count, in_base_frame_width);
 	const ImVec2 graph_origin = ImGui::GetCursorScreenPos();
 	const ImVec2 graph_max = ImVec2(graph_origin.x + graph_width, graph_origin.y + graph_height);
 	ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -109,10 +232,12 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 	);
 
 	ImGui::PushClipRect(graph_origin, graph_max, true);
+	ProfilerTooltip hovered_tooltip = {};
+	i32 tooltip_draw_order = 0;
 	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
 	{
 		const i32 frame_source_index = in_display_frame_count - 1 - display_frame_index;
-		const i32 frame_age = frame_source_index + 1;
+		const i64 frame_id = cpu_timings_get_display_frame_index(state.debug_ui.freeze_profiler, frame_source_index);
 		const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_display_frame(state.debug_ui.freeze_profiler, frame_source_index);
 		if (events.length() == 0)
 		{
@@ -121,11 +246,11 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 
 		const CpuTimingEvent& root_event = events[0];
 		const f64 frame_elapsed_ms = std::max(root_event.elapsed_ms, 0.0001);
-		const f32 frame_x = graph_origin.x + (frame_width + frame_gap) * (f32)display_frame_index;
-		const f32 frame_y = graph_origin.y + header_height;
+		const f32 frame_x = graph_origin.x + (frame_width + PROFILER_FRAME_GAP) * (f32)display_frame_index;
+		const f32 frame_y = graph_origin.y + PROFILER_HEADER_HEIGHT;
 
 		char frame_label[64];
-		snprintf(frame_label, sizeof(frame_label), "Frame -%d: %.3f ms", frame_age, root_event.elapsed_ms);
+		snprintf(frame_label, sizeof(frame_label), "CPU Frame %lld: %.3f ms", (long long)frame_id, root_event.elapsed_ms);
 		draw_list->AddText(ImVec2(frame_x + 4.0f, graph_origin.y + 3.0f), IM_COL32(230, 232, 238, 255), frame_label);
 
 		if (display_frame_index > 0)
@@ -148,9 +273,9 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 			const f32 raw_w = (f32)(in_elapsed_ms / frame_elapsed_ms) * frame_width;
 
 			const f32 x0 = frame_x + CLAMP(raw_x, 0.0f, frame_width);
-			const f32 x1 = std::min(frame_x + frame_width, x0 + std::max(raw_w, min_box_width));
-			const f32 y0 = frame_y + in_depth * row_height + 2.0f;
-			const f32 y1 = y0 + box_height;
+			const f32 x1 = std::min(frame_x + frame_width, x0 + std::max(raw_w, PROFILER_MIN_BOX_WIDTH));
+			const f32 y0 = frame_y + in_depth * PROFILER_ROW_HEIGHT + 2.0f;
+			const f32 y1 = y0 + PROFILER_BOX_HEIGHT;
 			if (x1 <= x0 || y1 <= y0)
 			{
 				return false;
@@ -163,29 +288,23 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 
 			char label[256];
 			snprintf(label, sizeof(label), "%s %.3f ms", in_name, in_elapsed_ms);
-			const ImVec2 text_size = ImGui::CalcTextSize(label);
-			const f32 rect_width = rect_max.x - rect_min.x;
-			if (text_size.x + 8.0f <= rect_width)
-			{
-				const ImVec2 text_pos = ImVec2(rect_min.x + 4.0f, rect_min.y + (box_height - text_size.y) * 0.5f);
-				draw_list->AddText(text_pos, in_text_color, label);
-			}
+			profiler_draw_clipped_label(draw_list, rect_min, rect_max, in_text_color, label);
 
-			ImGui::SetCursorScreenPos(rect_min);
-			ImGui::InvisibleButton("scope", ImVec2(rect_max.x - rect_min.x, rect_max.y - rect_min.y));
-			if (ImGui::IsItemHovered())
-			{
-				ImGui::BeginTooltip();
-				ImGui::Text("Frame -%d", frame_age);
-				if (in_tooltip_context)
-				{
-					ImGui::Text("%s", in_tooltip_context);
-				}
-				ImGui::Text("%s", in_name);
-				ImGui::Text("%.3f ms", in_elapsed_ms);
-				ImGui::Text("%.2f%% of frame", (in_elapsed_ms / frame_elapsed_ms) * 100.0);
-				ImGui::EndTooltip();
-			}
+			const bool rect_hovered = profiler_rect_hovered(rect_min, rect_max);
+			char tooltip_frame[64];
+			snprintf(tooltip_frame, sizeof(tooltip_frame), "Frame %lld", (long long)frame_id);
+			profiler_consider_tooltip(
+				hovered_tooltip,
+				rect_hovered,
+				tooltip_frame,
+				in_tooltip_context,
+				in_name,
+				in_elapsed_ms,
+				(in_elapsed_ms / frame_elapsed_ms) * 100.0,
+				"% of frame",
+				in_depth,
+				tooltip_draw_order++
+			);
 
 			return true;
 		};
@@ -304,9 +423,181 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count)
 		}
 	}
 	ImGui::PopClipRect();
+	profiler_draw_tooltip(hovered_tooltip);
 
 	ImGui::SetCursorScreenPos(graph_origin);
 	ImGui::Dummy(ImVec2(graph_width, graph_height));
+	profiler_capture_shared_scroll();
+	ImGui::EndChild();
+}
+
+static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base_frame_width)
+{
+	const bool gpu_timings_available = gpu_timings_are_available();
+	char gpu_timings_unavailable_reason[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+	if (!gpu_timings_available)
+	{
+		gpu_timings_copy_unavailable_reason(gpu_timings_unavailable_reason, sizeof(gpu_timings_unavailable_reason));
+	}
+
+	i32 max_depth = 0;
+	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
+	{
+		const i32 frame_source_index = in_display_frame_count - 1 - display_frame_index;
+		GpuTimingFrame gpu_frame = {};
+		if (!gpu_timings_copy_display_frame(state.debug_ui.freeze_profiler, frame_source_index, gpu_frame))
+		{
+			continue;
+		}
+
+		for (const GpuTimingEvent& event : gpu_frame.events)
+		{
+			if (event.valid)
+			{
+				max_depth = std::max(max_depth, event.depth);
+			}
+		}
+	}
+
+	const f32 graph_height = PROFILER_HEADER_HEIGHT + (max_depth + 1) * PROFILER_ROW_HEIGHT + 8.0f;
+	const f32 child_height = std::max(96.0f, std::min(180.0f, graph_height + 12.0f));
+
+	ImGui::Text("GPU");
+	ImGui::BeginChild("##GpuProfilerGraph", ImVec2(0.0f, child_height), true, ImGuiWindowFlags_HorizontalScrollbar);
+	profiler_apply_shared_zoom_and_scroll(in_display_frame_count, in_base_frame_width);
+
+	const f32 frame_width = in_base_frame_width * state.debug_ui.profiler_zoom;
+	const f32 graph_width = profiler_graph_width(in_display_frame_count, in_base_frame_width);
+	const ImVec2 graph_origin = ImGui::GetCursorScreenPos();
+	const ImVec2 graph_max = ImVec2(graph_origin.x + graph_width, graph_origin.y + graph_height);
+	ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+	draw_list->AddRectFilled(
+		graph_origin,
+		graph_max,
+		IM_COL32(22, 28, 28, 255)
+	);
+	draw_list->AddRect(
+		graph_origin,
+		graph_max,
+		IM_COL32(70, 82, 82, 255)
+	);
+
+	ImGui::PushClipRect(graph_origin, graph_max, true);
+	ProfilerTooltip hovered_tooltip = {};
+	i32 tooltip_draw_order = 0;
+	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
+	{
+		const i32 frame_source_index = in_display_frame_count - 1 - display_frame_index;
+		const i64 cpu_frame_index = cpu_timings_get_display_frame_index(state.debug_ui.freeze_profiler, frame_source_index);
+
+		GpuTimingFrame gpu_frame = {};
+		const bool has_gpu_frame = gpu_timings_copy_display_frame(state.debug_ui.freeze_profiler, frame_source_index, gpu_frame);
+
+		f64 gpu_frame_elapsed_ms = 0.0001;
+		for (const GpuTimingEvent& event : gpu_frame.events)
+		{
+			if (event.valid)
+			{
+				gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, event.start_offset_ms + event.elapsed_ms);
+			}
+		}
+		if (has_gpu_frame && gpu_frame.events.length() > 0 && gpu_frame.events[0].valid)
+		{
+			gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, gpu_frame.events[0].elapsed_ms);
+		}
+		const f64 frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, 0.0001);
+		const f32 frame_x = graph_origin.x + (frame_width + PROFILER_FRAME_GAP) * (f32)display_frame_index;
+		const f32 frame_y = graph_origin.y + PROFILER_HEADER_HEIGHT;
+
+		char frame_label[96];
+		if (has_gpu_frame && gpu_frame.events.length() > 0)
+		{
+			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: %.3f ms", (long long)cpu_frame_index, gpu_frame.events[0].elapsed_ms);
+		}
+		else if (!gpu_timings_available)
+		{
+			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: unavailable", (long long)cpu_frame_index);
+		}
+		else
+		{
+			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: pending", (long long)cpu_frame_index);
+		}
+		draw_list->AddText(ImVec2(frame_x + 4.0f, graph_origin.y + 3.0f), IM_COL32(230, 238, 238, 255), frame_label);
+
+		if (display_frame_index > 0)
+		{
+			draw_list->AddLine(
+				ImVec2(frame_x, graph_origin.y),
+				ImVec2(frame_x, graph_origin.y + graph_height),
+				IM_COL32(70, 82, 82, 255)
+			);
+		}
+
+		if (!has_gpu_frame || gpu_frame.events.length() == 0)
+		{
+			const char* message = gpu_timings_available
+				? "GPU timing pending"
+				: (gpu_timings_unavailable_reason[0] ? gpu_timings_unavailable_reason : "GPU timing unavailable");
+			draw_list->AddText(
+				ImVec2(frame_x + 4.0f, frame_y + 4.0f),
+				IM_COL32(150, 168, 168, 255),
+				message
+			);
+			continue;
+		}
+
+		for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
+		{
+			const GpuTimingEvent& event = gpu_frame.events[event_index];
+			if (!event.valid || event.elapsed_ms <= 0.0)
+			{
+				continue;
+			}
+
+			const f32 raw_x = (f32)(event.start_offset_ms / frame_elapsed_ms) * frame_width;
+			const f32 raw_w = (f32)(event.elapsed_ms / frame_elapsed_ms) * frame_width;
+			const f32 x0 = frame_x + CLAMP(raw_x, 0.0f, frame_width);
+			const f32 x1 = std::min(frame_x + frame_width, x0 + std::max(raw_w, PROFILER_MIN_BOX_WIDTH));
+			const f32 y0 = frame_y + event.depth * PROFILER_ROW_HEIGHT + 2.0f;
+			const f32 y1 = y0 + PROFILER_BOX_HEIGHT;
+			if (x1 <= x0 || y1 <= y0)
+			{
+				continue;
+			}
+
+			const ImVec2 rect_min = ImVec2(x0, y0);
+			const ImVec2 rect_max = ImVec2(x1, y1);
+			draw_list->AddRectFilled(rect_min, rect_max, IM_COL32(0x4B, 0xA7, 0xA0, 255), 2.0f);
+			draw_list->AddRect(rect_min, rect_max, IM_COL32(12, 18, 18, 190), 2.0f);
+
+			char label[256];
+			snprintf(label, sizeof(label), "%s %.3f ms", event.name, event.elapsed_ms);
+			profiler_draw_clipped_label(draw_list, rect_min, rect_max, IM_COL32(255, 255, 255, 255), label);
+
+			const bool rect_hovered = profiler_rect_hovered(rect_min, rect_max);
+			char tooltip_frame[64];
+			snprintf(tooltip_frame, sizeof(tooltip_frame), "Frame %lld", (long long)cpu_frame_index);
+			profiler_consider_tooltip(
+				hovered_tooltip,
+				rect_hovered,
+				tooltip_frame,
+				nullptr,
+				event.name,
+				event.elapsed_ms,
+				(event.elapsed_ms / frame_elapsed_ms) * 100.0,
+				"% of GPU frame",
+				event.depth,
+				tooltip_draw_order++
+			);
+		}
+	}
+	ImGui::PopClipRect();
+	profiler_draw_tooltip(hovered_tooltip);
+
+	ImGui::SetCursorScreenPos(graph_origin);
+	ImGui::Dummy(ImVec2(graph_width, graph_height));
+	profiler_capture_shared_scroll();
 	ImGui::EndChild();
 }
 
@@ -337,6 +628,7 @@ static void draw_cpu_profiler_window()
 	if (ImGui::Button("Reset Zoom"))
 	{
 		state.debug_ui.profiler_zoom = 1.0f;
+		state.debug_ui.profiler_scroll_x = 0.0f;
 	}
 	ImGui::SameLine();
 	ImGui::Text("Zoom: %.2fx", state.debug_ui.profiler_zoom);
@@ -350,7 +642,13 @@ static void draw_cpu_profiler_window()
 	}
 
 	const i32 display_frame_count = std::min(state.debug_ui.num_profiler_frames, available_frame_count);
-	draw_cpu_profiler_flamegraph(display_frame_count);
+	const f32 visible_width = std::max(1.0f, ImGui::GetContentRegionAvail().x - 8.0f);
+	const f32 base_frame_width = std::max(
+		PROFILER_MIN_FRAME_WIDTH,
+		(visible_width - PROFILER_FRAME_GAP * (f32)(display_frame_count - 1)) / (f32)display_frame_count
+	);
+	draw_cpu_profiler_flamegraph(display_frame_count, base_frame_width);
+	draw_gpu_profiler_flamegraph(display_frame_count, base_frame_width);
 
 	ImGui::End();
 }

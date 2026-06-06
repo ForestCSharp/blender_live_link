@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <optional>
 
@@ -14,6 +16,26 @@
 #include "render/sokol_helpers.h"
 
 using std::optional;
+
+using RenderPassDebugLabelFormatter = const char* (*)(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size);
+
+static const char* render_pass_format_index_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
+{
+	snprintf(out_label, out_label_size, "%s: Pass %d", base_label ? base_label : "(unnamed)", pass_idx);
+	return out_label;
+}
+
+static const char* render_pass_format_face_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
+{
+	snprintf(out_label, out_label_size, "%s: Face %d", base_label ? base_label : "(unnamed)", pass_idx);
+	return out_label;
+}
+
+static const char* render_pass_format_cascade_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
+{
+	snprintf(out_label, out_label_size, "%s: Cascade %d", base_label ? base_label : "(unnamed)", pass_idx);
+	return out_label;
+}
 
 struct RenderPassOutputDesc {
 	sg_pixel_format pixel_format	= SG_PIXELFORMAT_NONE;
@@ -49,6 +71,8 @@ struct RenderPassDesc {
 	ERenderPassType type = ERenderPassType::Single;
 	const char* debug_label = nullptr;
 	const char* scratch_debug_label = nullptr;
+	RenderPassDebugLabelFormatter debug_label_formatter = nullptr;
+	RenderPassDebugLabelFormatter scratch_debug_label_formatter = nullptr;
 };
 
 struct RenderPassOutput {
@@ -166,6 +190,32 @@ public: // Functions
 	void set_pass_count_override(i32 in_pass_count_override)
 	{
 		pass_count_override = in_pass_count_override;
+	}
+
+	const char* get_debug_label_for_pass(i32 pass_idx, bool in_scratch_pass, char* out_label, size_t out_label_size) const
+	{
+		const char* base_label = in_scratch_pass
+			? (desc.scratch_debug_label ? desc.scratch_debug_label : desc.debug_label)
+			: desc.debug_label;
+		base_label = base_label ? base_label : "(unnamed)";
+
+		RenderPassDebugLabelFormatter formatter = in_scratch_pass
+			? (desc.scratch_debug_label_formatter ? desc.scratch_debug_label_formatter : desc.debug_label_formatter)
+			: desc.debug_label_formatter;
+		if (!formatter)
+		{
+			if (get_pass_count() <= 1)
+			{
+				return base_label;
+			}
+
+			formatter = desc.type == ERenderPassType::Cubemap
+				? render_pass_format_face_debug_label
+				: render_pass_format_index_debug_label;
+		}
+
+		const char* formatted_label = formatter(base_label, pass_idx, out_label, out_label_size);
+		return formatted_label ? formatted_label : base_label;
 	}
 
 	GpuImage& get_color_output(i32 color_output_idx, i32 pass_idx = 0)
@@ -424,7 +474,13 @@ public: // Functions
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
-			const char* pass_debug_label = desc.debug_label ? desc.debug_label : "(unnamed)";
+			char pass_debug_label_buffer[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+			const char* pass_debug_label = get_debug_label_for_pass(
+				pass_idx,
+				false,
+				pass_debug_label_buffer,
+				sizeof(pass_debug_label_buffer)
+			);
 			sg_pass pass = {
 				.attachments = !render_to_swapchain ? attachments[pass_idx] : (sg_attachments){},
 				.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
@@ -453,10 +509,7 @@ public: // Functions
 				};
 			}
 
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", pass_debug_label);
-				sg_begin_pass(pass);
-			}
+			sg_begin_pass(pass);
 
 			{
 				CPU_TIMING_SCOPE(pass_debug_label);
@@ -485,9 +538,13 @@ public: // Functions
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
-			const char* pass_debug_label = desc.scratch_debug_label
-				? desc.scratch_debug_label
-				: (desc.debug_label ? desc.debug_label : "(unnamed)");
+			char pass_debug_label_buffer[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+			const char* pass_debug_label = get_debug_label_for_pass(
+				pass_idx,
+				true,
+				pass_debug_label_buffer,
+				sizeof(pass_debug_label_buffer)
+			);
 
 			sg_attachments scratch_attachment = {};
 			if (desc.type == ERenderPassType::Array)
@@ -509,10 +566,7 @@ public: // Functions
 				.clear_value = desc.scratch_outputs[scratch_output_idx].clear_value,
 			};
 
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", pass_debug_label);
-				sg_begin_pass(pass);
-			}
+			sg_begin_pass(pass);
 
 			{
 				CPU_TIMING_SCOPE(pass_debug_label);

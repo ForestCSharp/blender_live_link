@@ -293,6 +293,7 @@ struct State
 		bool freeze_profiler = false;
 		bool show_profiler_unaccounted = false;
 		f32 profiler_zoom = 1.0f;
+		f32 profiler_scroll_x = 0.0f;
 		i32 num_profiler_frames = 3;
 	} debug_ui;
 

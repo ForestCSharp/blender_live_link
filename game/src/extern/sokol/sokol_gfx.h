@@ -5339,6 +5339,30 @@ SOKOL_GFX_API_DECL const void* sg_mtl_render_command_encoder(void);
 SOKOL_GFX_API_DECL const void* sg_mtl_compute_command_encoder(void);
 // Metal: return __bridge-casted MTLCommandQueue
 SOKOL_GFX_API_DECL const void* sg_mtl_command_queue(void);
+// Metal: optional callback for coarse GPU frame timing from completed MTLCommandBuffer timestamps
+typedef void (*sg_mtl_gpu_frame_timing_cb)(int64_t frame_index, double gpu_start_sec, double gpu_end_sec, void* user_data);
+SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_timing_callback(sg_mtl_gpu_frame_timing_cb callback, void* user_data);
+SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_timing_frame_index(int64_t frame_index);
+// Metal: optional callback around Sokol's in-flight-frame semaphore wait in the first begin-pass of a frame
+typedef void (*sg_mtl_gpu_frame_wait_cb)(bool waiting, void* user_data);
+SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_wait_callback(sg_mtl_gpu_frame_wait_cb callback, void* user_data);
+// Metal: optional timestamp-counter scopes for GPU flame graphs
+#define SG_MTL_GPU_TIMING_MAX_NAME_LENGTH (128)
+#define SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS (128)
+typedef struct sg_mtl_gpu_timing_event {
+    char name[SG_MTL_GPU_TIMING_MAX_NAME_LENGTH];
+    int depth;
+    int parent_index;
+    double start_offset_ms;
+    double elapsed_ms;
+    bool valid;
+} sg_mtl_gpu_timing_event;
+typedef void (*sg_mtl_gpu_scope_timing_cb)(int64_t frame_index, const sg_mtl_gpu_timing_event* events, int event_count, void* user_data);
+SOKOL_GFX_API_DECL bool sg_mtl_init_gpu_scope_timing(void);
+SOKOL_GFX_API_DECL void sg_mtl_shutdown_gpu_scope_timing(void);
+SOKOL_GFX_API_DECL void sg_mtl_set_gpu_scope_timing_callback(sg_mtl_gpu_scope_timing_cb callback, void* user_data);
+SOKOL_GFX_API_DECL int sg_mtl_begin_gpu_scope_timing(const char* name);
+SOKOL_GFX_API_DECL void sg_mtl_end_gpu_scope_timing(int scope_index);
 // Metal: get internal __bridge-casted buffer resource objects
 SOKOL_GFX_API_DECL sg_mtl_buffer_info sg_mtl_query_buffer_info(sg_buffer buf);
 // Metal: get internal __bridge-casted image resource objects
@@ -6772,6 +6796,26 @@ typedef struct {
     id<MTLComputeCommandEncoder> compute_cmd_encoder;
     id<CAMetalDrawable> cur_drawable;
     id<MTLBuffer> uniform_buffers[SG_NUM_INFLIGHT_FRAMES];
+    sg_mtl_gpu_frame_timing_cb gpu_frame_timing_cb;
+    void* gpu_frame_timing_user_data;
+    int64_t gpu_frame_timing_frame_index;
+    sg_mtl_gpu_frame_wait_cb gpu_frame_wait_cb;
+    void* gpu_frame_wait_user_data;
+    id<MTLCounterSampleBuffer> gpu_scope_sample_buffers[SG_NUM_INFLIGHT_FRAMES];
+    sg_mtl_gpu_scope_timing_cb gpu_scope_timing_cb;
+    void* gpu_scope_timing_user_data;
+    sg_mtl_gpu_timing_event gpu_scope_events[SG_NUM_INFLIGHT_FRAMES][SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS];
+    int gpu_scope_start_sample_indices[SG_NUM_INFLIGHT_FRAMES][SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS];
+    int gpu_scope_end_sample_indices[SG_NUM_INFLIGHT_FRAMES][SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS];
+    int gpu_scope_active_stacks[SG_NUM_INFLIGHT_FRAMES][SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS];
+    int gpu_scope_event_counts[SG_NUM_INFLIGHT_FRAMES];
+    int gpu_scope_active_stack_counts[SG_NUM_INFLIGHT_FRAMES];
+    int gpu_scope_next_sample_indices[SG_NUM_INFLIGHT_FRAMES];
+    int64_t gpu_scope_frame_indices[SG_NUM_INFLIGHT_FRAMES];
+    bool gpu_scope_timing_available;
+    bool gpu_scope_render_sampling_available;
+    bool gpu_scope_compute_sampling_available;
+    bool gpu_scope_stage_sampling_available;
 } _sg_mtl_backend_t;
 
 #elif defined(SOKOL_WGPU)
@@ -15152,6 +15196,252 @@ _SOKOL_PRIVATE void _sg_mtl_init_caps(void) {
     _sg_pixelformat_compute_all(&_sg.formats[SG_PIXELFORMAT_RGBA32F]);
 }
 
+_SOKOL_PRIVATE void _sg_mtl_gpu_scope_timing_reset_frame(int slot_index, int64_t frame_index) {
+    SOKOL_ASSERT((slot_index >= 0) && (slot_index < SG_NUM_INFLIGHT_FRAMES));
+    _sg.mtl.gpu_scope_event_counts[slot_index] = 0;
+    _sg.mtl.gpu_scope_active_stack_counts[slot_index] = 0;
+    _sg.mtl.gpu_scope_next_sample_indices[slot_index] = 0;
+    _sg.mtl.gpu_scope_frame_indices[slot_index] = frame_index;
+}
+
+_SOKOL_PRIVATE id<MTLCounterSet> _sg_mtl_gpu_scope_timing_find_timestamp_counter_set(void) {
+    if (@available(macOS 10.15, iOS 14.0, *)) {
+        for (id<MTLCounterSet> counter_set in _sg.mtl.device.counterSets) {
+            if ([counter_set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+                return counter_set;
+            }
+        }
+    }
+    return nil;
+}
+
+_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_alloc_event(int slot_index, const char* name) {
+    SOKOL_ASSERT((slot_index >= 0) && (slot_index < SG_NUM_INFLIGHT_FRAMES));
+    const int event_index = _sg.mtl.gpu_scope_event_counts[slot_index];
+    const int next_sample_index = _sg.mtl.gpu_scope_next_sample_indices[slot_index];
+    if ((event_index >= SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS) || ((next_sample_index + 1) >= (SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS * 2))) {
+        return -1;
+    }
+
+    sg_mtl_gpu_timing_event* event = &_sg.mtl.gpu_scope_events[slot_index][event_index];
+    snprintf(event->name, sizeof(event->name), "%s", name ? name : "(unnamed)");
+    event->depth = _sg.mtl.gpu_scope_active_stack_counts[slot_index] + 1;
+    event->parent_index = (_sg.mtl.gpu_scope_active_stack_counts[slot_index] > 0)
+        ? _sg.mtl.gpu_scope_active_stacks[slot_index][_sg.mtl.gpu_scope_active_stack_counts[slot_index] - 1] + 1
+        : 0;
+    event->start_offset_ms = 0.0;
+    event->elapsed_ms = 0.0;
+    event->valid = false;
+
+    _sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index] = next_sample_index;
+    _sg.mtl.gpu_scope_end_sample_indices[slot_index][event_index] = next_sample_index + 1;
+    _sg.mtl.gpu_scope_next_sample_indices[slot_index] = next_sample_index + 2;
+    _sg.mtl.gpu_scope_event_counts[slot_index] = event_index + 1;
+    return event_index;
+}
+
+_SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_sample(int slot_index, int sample_index) {
+    SOKOL_ASSERT((slot_index >= 0) && (slot_index < SG_NUM_INFLIGHT_FRAMES));
+    if (!_sg.mtl.gpu_scope_timing_available) {
+        return false;
+    }
+    id<MTLCounterSampleBuffer> sample_buffer = _sg.mtl.gpu_scope_sample_buffers[slot_index];
+    if (nil == sample_buffer) {
+        return false;
+    }
+    if (_sg.mtl.render_cmd_encoder) {
+        if (!_sg.mtl.gpu_scope_render_sampling_available) {
+            return false;
+        }
+        [_sg.mtl.render_cmd_encoder sampleCountersInBuffer:sample_buffer atSampleIndex:(NSUInteger)sample_index withBarrier:YES];
+        return true;
+    }
+    if (_sg.mtl.compute_cmd_encoder) {
+        if (!_sg.mtl.gpu_scope_compute_sampling_available) {
+            return false;
+        }
+        [_sg.mtl.compute_cmd_encoder sampleCountersInBuffer:sample_buffer atSampleIndex:(NSUInteger)sample_index withBarrier:YES];
+        return true;
+    }
+    return false;
+}
+
+_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_begin_stage_event(const char* name) {
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available) {
+        return -1;
+    }
+
+    const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
+    const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name);
+    if (event_index < 0) {
+        return -1;
+    }
+
+    _sg.mtl.gpu_scope_events[slot_index][event_index].valid = true;
+    return event_index;
+}
+
+_SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(MTLRenderPassDescriptor* pass_desc, const char* name) {
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || _sg.mtl.gpu_scope_render_sampling_available) {
+        return false;
+    }
+    if (!pass_desc || !name) {
+        return false;
+    }
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
+        id<MTLCounterSampleBuffer> sample_buffer = _sg.mtl.gpu_scope_sample_buffers[slot_index];
+        if (nil == sample_buffer) {
+            return false;
+        }
+
+        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name);
+        if (event_index < 0) {
+            return false;
+        }
+
+        MTLRenderPassSampleBufferAttachmentDescriptor* sample_desc = pass_desc.sampleBufferAttachments[0];
+        sample_desc.sampleBuffer = sample_buffer;
+        sample_desc.startOfVertexSampleIndex = (NSUInteger)_sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index];
+        sample_desc.endOfVertexSampleIndex = MTLCounterDontSample;
+        sample_desc.startOfFragmentSampleIndex = MTLCounterDontSample;
+        sample_desc.endOfFragmentSampleIndex = (NSUInteger)_sg.mtl.gpu_scope_end_sample_indices[slot_index][event_index];
+        return true;
+    }
+    return false;
+}
+
+_SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor(MTLComputePassDescriptor* pass_desc, const char* name) {
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || _sg.mtl.gpu_scope_compute_sampling_available) {
+        return false;
+    }
+    if (!pass_desc || !name) {
+        return false;
+    }
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
+        id<MTLCounterSampleBuffer> sample_buffer = _sg.mtl.gpu_scope_sample_buffers[slot_index];
+        if (nil == sample_buffer) {
+            return false;
+        }
+
+        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name);
+        if (event_index < 0) {
+            return false;
+        }
+
+        MTLComputePassSampleBufferAttachmentDescriptor* sample_desc = pass_desc.sampleBufferAttachments[0];
+        sample_desc.sampleBuffer = sample_buffer;
+        sample_desc.startOfEncoderSampleIndex = (NSUInteger)_sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index];
+        sample_desc.endOfEncoderSampleIndex = (NSUInteger)_sg.mtl.gpu_scope_end_sample_indices[slot_index][event_index];
+        return true;
+    }
+    return false;
+}
+
+_SOKOL_PRIVATE double _sg_mtl_gpu_scope_timing_delta_ms(uint64_t start_timestamp, uint64_t end_timestamp) {
+    if (end_timestamp < start_timestamp) {
+        return 0.0;
+    }
+    return (double)(end_timestamp - start_timestamp) / 1000000.0;
+}
+
+_SOKOL_PRIVATE void _sg_mtl_gpu_scope_timing_report_completed_frame(int slot_index, int64_t frame_index, id<MTLCommandBuffer> cmd_buf) {
+    SOKOL_ASSERT((slot_index >= 0) && (slot_index < SG_NUM_INFLIGHT_FRAMES));
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_timing_cb || (frame_index < 0)) {
+        return;
+    }
+
+    const int event_count = _sg.mtl.gpu_scope_event_counts[slot_index];
+    const int sample_count = _sg.mtl.gpu_scope_next_sample_indices[slot_index];
+    if ((event_count <= 0) || (sample_count <= 0)) {
+        return;
+    }
+
+    id<MTLCounterSampleBuffer> sample_buffer = _sg.mtl.gpu_scope_sample_buffers[slot_index];
+    if (nil == sample_buffer) {
+        return;
+    }
+
+    NSData* resolved_data = nil;
+    if (@available(macOS 10.15, iOS 14.0, *)) {
+        resolved_data = [sample_buffer resolveCounterRange:NSMakeRange(0, (NSUInteger)sample_count)];
+    }
+    if (!resolved_data || ([resolved_data length] < ((NSUInteger)sample_count * sizeof(MTLCounterResultTimestamp)))) {
+        return;
+    }
+
+    const MTLCounterResultTimestamp* timestamps = (const MTLCounterResultTimestamp*)[resolved_data bytes];
+    uint64_t min_scope_timestamp = UINT64_MAX;
+    uint64_t max_scope_timestamp = 0;
+    for (int event_index = 0; event_index < event_count; ++event_index) {
+        if (!_sg.mtl.gpu_scope_events[slot_index][event_index].valid) {
+            continue;
+        }
+        const int start_sample_index = _sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index];
+        const int end_sample_index = _sg.mtl.gpu_scope_end_sample_indices[slot_index][event_index];
+        if ((start_sample_index < 0) || (end_sample_index < 0) || (start_sample_index >= sample_count) || (end_sample_index >= sample_count)) {
+            continue;
+        }
+        const uint64_t start_timestamp = timestamps[start_sample_index].timestamp;
+        const uint64_t end_timestamp = timestamps[end_sample_index].timestamp;
+        if ((start_timestamp == MTLCounterErrorValue) || (end_timestamp == MTLCounterErrorValue) || (end_timestamp < start_timestamp)) {
+            continue;
+        }
+        min_scope_timestamp = (start_timestamp < min_scope_timestamp) ? start_timestamp : min_scope_timestamp;
+        max_scope_timestamp = (end_timestamp > max_scope_timestamp) ? end_timestamp : max_scope_timestamp;
+    }
+    if ((min_scope_timestamp == UINT64_MAX) || (max_scope_timestamp <= min_scope_timestamp)) {
+        return;
+    }
+
+    sg_mtl_gpu_timing_event resolved_events[SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS + 1];
+    _sg_clear(&resolved_events, sizeof(resolved_events));
+    int resolved_event_count = 0;
+
+    sg_mtl_gpu_timing_event* root_event = &resolved_events[resolved_event_count++];
+    snprintf(root_event->name, sizeof(root_event->name), "%s", "GPU Frame");
+    root_event->depth = 0;
+    root_event->parent_index = -1;
+    root_event->start_offset_ms = 0.0;
+    const double command_buffer_elapsed_ms = ((cmd_buf.GPUEndTime > 0.0) && (cmd_buf.GPUStartTime > 0.0) && (cmd_buf.GPUEndTime >= cmd_buf.GPUStartTime))
+        ? (cmd_buf.GPUEndTime - cmd_buf.GPUStartTime) * 1000.0
+        : 0.0;
+    const double scoped_elapsed_ms = _sg_mtl_gpu_scope_timing_delta_ms(min_scope_timestamp, max_scope_timestamp);
+    root_event->elapsed_ms = (command_buffer_elapsed_ms > scoped_elapsed_ms) ? command_buffer_elapsed_ms : scoped_elapsed_ms;
+    root_event->valid = root_event->elapsed_ms > 0.0;
+
+    for (int event_index = 0; event_index < event_count; ++event_index) {
+        if (!_sg.mtl.gpu_scope_events[slot_index][event_index].valid) {
+            continue;
+        }
+        const int start_sample_index = _sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index];
+        const int end_sample_index = _sg.mtl.gpu_scope_end_sample_indices[slot_index][event_index];
+        if ((start_sample_index < 0) || (end_sample_index < 0) || (start_sample_index >= sample_count) || (end_sample_index >= sample_count)) {
+            continue;
+        }
+
+        const uint64_t start_timestamp = timestamps[start_sample_index].timestamp;
+        const uint64_t end_timestamp = timestamps[end_sample_index].timestamp;
+        if ((start_timestamp == MTLCounterErrorValue) || (end_timestamp == MTLCounterErrorValue) || (end_timestamp < start_timestamp)) {
+            continue;
+        }
+
+        sg_mtl_gpu_timing_event* event = &resolved_events[resolved_event_count++];
+        *event = _sg.mtl.gpu_scope_events[slot_index][event_index];
+        event->start_offset_ms = _sg_mtl_gpu_scope_timing_delta_ms(min_scope_timestamp, start_timestamp);
+        event->elapsed_ms = _sg_mtl_gpu_scope_timing_delta_ms(start_timestamp, end_timestamp);
+        event->valid = event->elapsed_ms > 0.0;
+        if (resolved_event_count >= ((int)SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS + 1)) {
+            break;
+        }
+    }
+
+    if (resolved_event_count > 1) {
+        _sg.mtl.gpu_scope_timing_cb(frame_index, resolved_events, resolved_event_count, _sg.mtl.gpu_scope_timing_user_data);
+    }
+}
+
 //-- main Metal backend state and functions ------------------------------------
 _SOKOL_PRIVATE void _sg_mtl_setup_backend(const sg_desc* desc) {
     // assume already zero-initialized
@@ -15216,6 +15506,7 @@ _SOKOL_PRIVATE void _sg_mtl_discard_backend(void) {
     _SG_OBJC_RELEASE(_sg.mtl.cmd_queue);
     for (int i = 0; i < SG_NUM_INFLIGHT_FRAMES; i++) {
         _SG_OBJC_RELEASE(_sg.mtl.uniform_buffers[i]);
+        _SG_OBJC_RELEASE(_sg.mtl.gpu_scope_sample_buffers[i]);
     }
     // NOTE: MTLCommandBuffer, MTLRenderCommandEncoder and MTLComputeCommandEncoder are auto-released
     _sg.mtl.cmd_buffer = nil;
@@ -15891,7 +16182,16 @@ _SOKOL_PRIVATE void _sg_mtl_begin_compute_pass(const sg_pass* pass) {
     SOKOL_ASSERT(nil == _sg.mtl.compute_cmd_encoder);
     SOKOL_ASSERT(nil == _sg.mtl.render_cmd_encoder);
 
-    _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoder];
+    MTLComputePassDescriptor* compute_pass_desc = nil;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        compute_pass_desc = [MTLComputePassDescriptor computePassDescriptor];
+        _sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor(compute_pass_desc, pass->label ? pass->label : "(unnamed)");
+    }
+    if (nil != compute_pass_desc) {
+        _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoderWithDescriptor:compute_pass_desc];
+    } else {
+        _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoder];
+    }
     if (nil == _sg.mtl.compute_cmd_encoder) {
         _sg.cur_pass.valid = false;
         return;
@@ -16051,6 +16351,7 @@ _SOKOL_PRIVATE void _sg_mtl_begin_render_pass(const sg_pass* pass, const _sg_att
     // render command encoder is also returned in a minimized window
     // ===
     // create a render command encoder, this might return nil if window is minimized
+    _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(pass_desc, pass->label ? pass->label : "(unnamed)");
     _sg.mtl.render_cmd_encoder = [_sg.mtl.cmd_buffer renderCommandEncoderWithDescriptor:pass_desc];
     if (nil == _sg.mtl.render_cmd_encoder) {
         _sg.cur_pass.valid = false;
@@ -16075,16 +16376,36 @@ _SOKOL_PRIVATE void _sg_mtl_begin_pass(const sg_pass* pass, const _sg_attachment
     // if this is the first pass in the frame, create one command buffer and blit-cmd-encoder for the entire frame
     if (nil == _sg.mtl.cmd_buffer) {
         // block until the oldest frame in flight has finished
+        sg_mtl_gpu_frame_wait_cb gpu_frame_wait_cb = _sg.mtl.gpu_frame_wait_cb;
+        void* gpu_frame_wait_user_data = _sg.mtl.gpu_frame_wait_user_data;
+        if (gpu_frame_wait_cb) {
+            gpu_frame_wait_cb(true, gpu_frame_wait_user_data);
+        }
         dispatch_semaphore_wait(_sg.mtl.sem, DISPATCH_TIME_FOREVER);
+        if (gpu_frame_wait_cb) {
+            gpu_frame_wait_cb(false, gpu_frame_wait_user_data);
+        }
         if (_sg.desc.metal.use_command_buffer_with_retained_references) {
             _sg.mtl.cmd_buffer = [_sg.mtl.cmd_queue commandBuffer];
         } else {
             _sg.mtl.cmd_buffer = [_sg.mtl.cmd_queue commandBufferWithUnretainedReferences];
         }
         [_sg.mtl.cmd_buffer enqueue];
+        const int64_t gpu_frame_timing_frame_index = _sg.mtl.gpu_frame_timing_frame_index;
+        sg_mtl_gpu_frame_timing_cb gpu_frame_timing_cb = _sg.mtl.gpu_frame_timing_cb;
+        void* gpu_frame_timing_user_data = _sg.mtl.gpu_frame_timing_user_data;
+        const int gpu_scope_timing_slot = (int)_sg.mtl.cur_frame_rotate_index;
+        _sg_mtl_gpu_scope_timing_reset_frame(gpu_scope_timing_slot, gpu_frame_timing_frame_index);
         [_sg.mtl.cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> cmd_buf) {
             // NOTE: this code is called on a different thread!
-            _SOKOL_UNUSED(cmd_buf);
+            if ((gpu_frame_timing_frame_index >= 0) && gpu_frame_timing_cb) {
+                const double gpu_start_sec = cmd_buf.GPUStartTime;
+                const double gpu_end_sec = cmd_buf.GPUEndTime;
+                if ((gpu_start_sec > 0.0) && (gpu_end_sec > 0.0) && (gpu_end_sec >= gpu_start_sec)) {
+                    gpu_frame_timing_cb(gpu_frame_timing_frame_index, gpu_start_sec, gpu_end_sec, gpu_frame_timing_user_data);
+                }
+            }
+            _sg_mtl_gpu_scope_timing_report_completed_frame(gpu_scope_timing_slot, gpu_frame_timing_frame_index, cmd_buf);
             dispatch_semaphore_signal(_sg.mtl.sem);
         }];
     }
@@ -26241,6 +26562,174 @@ SOKOL_API_IMPL const void* sg_mtl_command_queue(void) {
         }
     #else
         return 0;
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_set_gpu_frame_timing_callback(sg_mtl_gpu_frame_timing_cb callback, void* user_data) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.gpu_frame_timing_cb = callback;
+        _sg.mtl.gpu_frame_timing_user_data = user_data;
+    #else
+        _SOKOL_UNUSED(callback);
+        _SOKOL_UNUSED(user_data);
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_set_gpu_frame_timing_frame_index(int64_t frame_index) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.gpu_frame_timing_frame_index = frame_index;
+    #else
+        _SOKOL_UNUSED(frame_index);
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_set_gpu_frame_wait_callback(sg_mtl_gpu_frame_wait_cb callback, void* user_data) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.gpu_frame_wait_cb = callback;
+        _sg.mtl.gpu_frame_wait_user_data = user_data;
+    #else
+        _SOKOL_UNUSED(callback);
+        _SOKOL_UNUSED(user_data);
+    #endif
+}
+
+SOKOL_API_IMPL bool sg_mtl_init_gpu_scope_timing(void) {
+    #if defined(SOKOL_METAL)
+        if (_sg.mtl.gpu_scope_timing_available) {
+            return true;
+        }
+        if (nil == _sg.mtl.device) {
+            return false;
+        }
+        if (@available(macOS 11.0, iOS 14.0, *)) {
+            id<MTLCounterSet> timestamp_counter_set = _sg_mtl_gpu_scope_timing_find_timestamp_counter_set();
+            if (nil == timestamp_counter_set) {
+                return false;
+            }
+
+            _sg.mtl.gpu_scope_render_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+            _sg.mtl.gpu_scope_compute_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+            _sg.mtl.gpu_scope_stage_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+            if (!_sg.mtl.gpu_scope_render_sampling_available && !_sg.mtl.gpu_scope_compute_sampling_available && !_sg.mtl.gpu_scope_stage_sampling_available) {
+                return false;
+            }
+
+            for (int slot_index = 0; slot_index < SG_NUM_INFLIGHT_FRAMES; ++slot_index) {
+                if (nil != _sg.mtl.gpu_scope_sample_buffers[slot_index]) {
+                    continue;
+                }
+
+                MTLCounterSampleBufferDescriptor* descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
+                descriptor.counterSet = timestamp_counter_set;
+                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.sampleCount = (NSUInteger)(SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS * 2);
+                descriptor.label = [NSString stringWithFormat:@"sg-gpu-scope-timing.%d", slot_index];
+
+                NSError* error = nil;
+                _sg.mtl.gpu_scope_sample_buffers[slot_index] = [_sg.mtl.device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+                _SG_OBJC_RELEASE(descriptor);
+                if (nil == _sg.mtl.gpu_scope_sample_buffers[slot_index]) {
+                    sg_mtl_shutdown_gpu_scope_timing();
+                    return false;
+                }
+            }
+
+            _sg.mtl.gpu_scope_timing_available = true;
+            return true;
+        }
+        return false;
+    #else
+        return false;
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_shutdown_gpu_scope_timing(void) {
+    #if defined(SOKOL_METAL)
+        for (int slot_index = 0; slot_index < SG_NUM_INFLIGHT_FRAMES; ++slot_index) {
+            _SG_OBJC_RELEASE(_sg.mtl.gpu_scope_sample_buffers[slot_index]);
+            _sg.mtl.gpu_scope_event_counts[slot_index] = 0;
+            _sg.mtl.gpu_scope_active_stack_counts[slot_index] = 0;
+            _sg.mtl.gpu_scope_next_sample_indices[slot_index] = 0;
+            _sg.mtl.gpu_scope_frame_indices[slot_index] = -1;
+        }
+        _sg.mtl.gpu_scope_timing_available = false;
+        _sg.mtl.gpu_scope_render_sampling_available = false;
+        _sg.mtl.gpu_scope_compute_sampling_available = false;
+        _sg.mtl.gpu_scope_stage_sampling_available = false;
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_set_gpu_scope_timing_callback(sg_mtl_gpu_scope_timing_cb callback, void* user_data) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.gpu_scope_timing_cb = callback;
+        _sg.mtl.gpu_scope_timing_user_data = user_data;
+    #else
+        _SOKOL_UNUSED(callback);
+        _SOKOL_UNUSED(user_data);
+    #endif
+}
+
+SOKOL_API_IMPL int sg_mtl_begin_gpu_scope_timing(const char* name) {
+    #if defined(SOKOL_METAL)
+        if (!_sg.mtl.gpu_scope_timing_available || !name) {
+            return -1;
+        }
+        if (!_sg.mtl.render_cmd_encoder && !_sg.mtl.compute_cmd_encoder) {
+            return -1;
+        }
+        if (_sg.mtl.render_cmd_encoder && !_sg.mtl.gpu_scope_render_sampling_available) {
+            return -1;
+        }
+        if (_sg.mtl.compute_cmd_encoder && !_sg.mtl.gpu_scope_compute_sampling_available) {
+            return -1;
+        }
+
+        const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
+        const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name);
+        if (event_index < 0) {
+            return -1;
+        }
+        if (!_sg_mtl_gpu_scope_timing_sample(slot_index, _sg.mtl.gpu_scope_start_sample_indices[slot_index][event_index])) {
+            --_sg.mtl.gpu_scope_event_counts[slot_index];
+            _sg.mtl.gpu_scope_next_sample_indices[slot_index] -= 2;
+            return -1;
+        }
+
+        _sg.mtl.gpu_scope_active_stacks[slot_index][_sg.mtl.gpu_scope_active_stack_counts[slot_index]++] = event_index;
+        return event_index;
+    #else
+        _SOKOL_UNUSED(name);
+        return -1;
+    #endif
+}
+
+SOKOL_API_IMPL void sg_mtl_end_gpu_scope_timing(int scope_index) {
+    #if defined(SOKOL_METAL)
+        if (!_sg.mtl.gpu_scope_timing_available || (scope_index < 0)) {
+            return;
+        }
+        if (!_sg.mtl.render_cmd_encoder && !_sg.mtl.compute_cmd_encoder) {
+            return;
+        }
+
+        const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
+        if ((scope_index >= _sg.mtl.gpu_scope_event_counts[slot_index])) {
+            return;
+        }
+
+        const int end_sample_index = _sg.mtl.gpu_scope_end_sample_indices[slot_index][scope_index];
+        if (_sg_mtl_gpu_scope_timing_sample(slot_index, end_sample_index)) {
+            _sg.mtl.gpu_scope_events[slot_index][scope_index].valid = true;
+        }
+
+        if (
+            (_sg.mtl.gpu_scope_active_stack_counts[slot_index] > 0) &&
+            (_sg.mtl.gpu_scope_active_stacks[slot_index][_sg.mtl.gpu_scope_active_stack_counts[slot_index] - 1] == scope_index)
+        ) {
+            --_sg.mtl.gpu_scope_active_stack_counts[slot_index];
+        }
+    #else
+        _SOKOL_UNUSED(scope_index);
     #endif
 }
 

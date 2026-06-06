@@ -48,6 +48,8 @@ namespace ShadowBlurPass
 		desc.pass_count = MAX_SHADOW_CASCADES;
 		desc.debug_label = "Shadow Blur Vertical";
 		desc.scratch_debug_label = "Shadow Blur Horizontal";
+		desc.debug_label_formatter = render_pass_format_cascade_debug_label;
+		desc.scratch_debug_label_formatter = render_pass_format_cascade_debug_label;
 		return desc;
 	}
 

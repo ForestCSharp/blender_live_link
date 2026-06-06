@@ -927,6 +927,7 @@ void init(void)
         .logger.func = slog_func,
 	   	.environment = sglue_environment(),
     });
+	gpu_frame_timings_init();
 
 	sg_swapchain swapchain = sglue_swapchain();
 
@@ -1311,6 +1312,8 @@ void pick_isolated_gi_probe()
 void frame(void)
 {
 	CPU_TIMING_FRAME("Frame");
+	const i64 gpu_timing_frame_index = cpu_timings_get_current_frame_index();
+	gpu_frame_timings_begin_frame(gpu_timing_frame_index);
 
 	// Delta Time Calculation
 	static u64 last_frame_time = 0;
@@ -1479,8 +1482,6 @@ void frame(void)
 
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
-		ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
-		ImGui::Separator();
 
 		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
@@ -1527,6 +1528,7 @@ void frame(void)
 			ImGui::Text("frame time: %.2f ms", state.debug_ui.frame_time_ms);
 			ImGui::Text("FPS: %.1f", state.debug_ui.fps);
 			ImGui::Spacing();
+		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
 		}
 
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2725,6 +2727,7 @@ void frame(void)
 
 		{
 			CPU_TIMING_SCOPE("sg_commit");
+			gpu_frame_timings_end_frame(gpu_timing_frame_index);
 			sg_commit();
 		}
 	}
@@ -2744,6 +2747,7 @@ void cleanup(void)
 	simgui_shutdown();
 	#endif // WITH_DEBUG_UI
 
+	gpu_frame_timings_shutdown();
     sg_shutdown();
 }
 

@@ -79,6 +79,7 @@ public:
 		geometry_pass_desc.initial_height = in_desc.cubemap_render_size;
 		geometry_pass_desc.type = ERenderPassType::Multi;
 		geometry_pass_desc.pass_count = NUM_CUBE_FACES;
+		geometry_pass_desc.debug_label_formatter = render_pass_format_face_debug_label;
 		geometry_pass.init(geometry_pass_desc);
 
 		// Render lighting into a cubemap (ERenderPassType::Cubemap)
@@ -86,6 +87,7 @@ public:
 		cubemap_lighting_desc.initial_width = in_desc.cubemap_render_size;
 		cubemap_lighting_desc.initial_height = in_desc.cubemap_render_size;
 		cubemap_lighting_desc.type = ERenderPassType::Cubemap;
+		cubemap_lighting_desc.debug_label_formatter = render_pass_format_face_debug_label;
 		lighting_pass.init(cubemap_lighting_desc);
 
 		// Render radial depth into a cubemap (ERenderPassType::Cubemap)
@@ -113,6 +115,8 @@ public:
 				.clear_value = {1.0, 1.0, 1.0, 1.0},
 			},
 			.type = ERenderPassType::Cubemap,
+			.debug_label = "Radial Depth",
+			.debug_label_formatter = render_pass_format_face_debug_label,
 		};
 		radial_depth_pass.init(radial_depth_pass_desc);
 
