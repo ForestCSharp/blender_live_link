@@ -2386,7 +2386,7 @@ void frame(void)
 									},
 									.samplers[0] = state.gpu.linear_sampler,
 								};
-								sg_apply_bindings(&bindings);
+								gpu_apply_bindings(&bindings);
 								sg_draw(0, render_view.index_count, 1);
 							}
 						}
@@ -2418,7 +2418,7 @@ void frame(void)
 										[0] = object.storage_buffer.get_storage_view(),
 									},
 								};
-								sg_apply_bindings(&wire_bindings);
+								gpu_apply_bindings(&wire_bindings);
 								sg_draw(0, render_view.wire_index_count, 1);
 							}
 						}
@@ -2466,7 +2466,7 @@ void frame(void)
 							},
 							.samplers[0] = state.gpu.linear_sampler,
 						};
-						sg_apply_bindings(&bindings);
+						gpu_apply_bindings(&bindings);
 
 						sg_draw(0,6,1);
 					}
@@ -2564,7 +2564,7 @@ void frame(void)
 							[1] = state.gpu.linear_sampler,
 						},
 					};
-					sg_apply_bindings(&bindings);
+					gpu_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
 				}
@@ -2604,7 +2604,7 @@ void frame(void)
 							.samplers[0] = state.gpu.linear_sampler,
 						};
 
-						sg_apply_bindings(&bindings);
+						gpu_apply_bindings(&bindings);
 
 						sg_draw(0,6,1);
 					}
@@ -2630,7 +2630,7 @@ void frame(void)
 						.samplers[0] = state.gpu.linear_sampler,
 					};
 
-					sg_apply_bindings(&bindings);
+					gpu_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
 				}
@@ -2712,7 +2712,7 @@ void frame(void)
 						},
 						.samplers[0] = state.gpu.nearest_sampler,
 					};
-					sg_apply_bindings(&bindings);
+					gpu_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
 

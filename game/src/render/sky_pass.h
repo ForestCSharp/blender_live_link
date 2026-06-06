@@ -200,7 +200,7 @@ namespace SkyPass
 			},
 			.samplers[0] = state.gpu.linear_sampler,
 		};
-		sg_apply_bindings(&bindings);
+		gpu_apply_bindings(&bindings);
 
 		sg_draw(0,6,1);
 	}

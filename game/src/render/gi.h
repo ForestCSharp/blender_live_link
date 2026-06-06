@@ -687,7 +687,7 @@ void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix
 			[1] = state.gpu.nearest_sampler,
 		},
 	};
-	sg_apply_bindings(&bindings);
+	gpu_apply_bindings(&bindings);
 
 	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.non_fallback_probe_count);
 }

@@ -5,6 +5,7 @@
 #include "core/types.h"
 
 static constexpr i32 CPU_TIMINGS_MAX_NAME_LENGTH = 128;
+static constexpr i32 GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH = 256;
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 
@@ -313,13 +314,95 @@ i32 cpu_timings_get_display_frame_age(bool in_freeze, i32 in_frame_index = 0)
 	return (i32)(timings.display_latest_frame_index - display_frame_index + 1);
 }
 
+enum class GpuTimingEventType : i32
+{
+	Unknown,
+	Frame,
+	RenderPass,
+	ComputePass,
+	Scope,
+};
+
+const char* gpu_timing_event_type_name(GpuTimingEventType in_type)
+{
+	switch (in_type)
+	{
+		case GpuTimingEventType::Frame: return "Frame";
+		case GpuTimingEventType::RenderPass: return "Render pass";
+		case GpuTimingEventType::ComputePass: return "Compute pass";
+		case GpuTimingEventType::Scope: return "Scope";
+		case GpuTimingEventType::Unknown:
+		default: return "Unknown";
+	}
+}
+
+enum class GpuTimingTimestampSource : i32
+{
+	Unknown,
+	CommandBuffer,
+	D3D11Timestamp,
+	MetalEncoderSample,
+	MetalStageSample,
+	CpuOnlyMarker,
+};
+
+const char* gpu_timing_timestamp_source_name(GpuTimingTimestampSource in_source)
+{
+	switch (in_source)
+	{
+		case GpuTimingTimestampSource::CommandBuffer: return "Command buffer";
+		case GpuTimingTimestampSource::D3D11Timestamp: return "D3D11 timestamp";
+		case GpuTimingTimestampSource::MetalEncoderSample: return "Metal encoder sample";
+		case GpuTimingTimestampSource::MetalStageSample: return "Metal stage sample";
+		case GpuTimingTimestampSource::CpuOnlyMarker: return "CPU marker";
+		case GpuTimingTimestampSource::Unknown:
+		default: return "Unknown";
+	}
+}
+
+enum class GpuTimingTimestampConfidence : i32
+{
+	Unavailable,
+	Approximate,
+	Sampled,
+	Authoritative,
+	AdjustedForOrder,
+};
+
+const char* gpu_timing_timestamp_confidence_name(GpuTimingTimestampConfidence in_confidence)
+{
+	switch (in_confidence)
+	{
+		case GpuTimingTimestampConfidence::Approximate: return "Approximate";
+		case GpuTimingTimestampConfidence::Sampled: return "Sampled";
+		case GpuTimingTimestampConfidence::Authoritative: return "Authoritative";
+		case GpuTimingTimestampConfidence::AdjustedForOrder: return "Adjusted for order";
+		case GpuTimingTimestampConfidence::Unavailable:
+		default: return "Unavailable";
+	}
+}
+
 struct GpuTimingEvent
 {
 	char name[CPU_TIMINGS_MAX_NAME_LENGTH] = "(unnamed)";
 	i32 depth = 0;
 	i32 parent_index = -1;
+	i32 lane_index = 0;
+	GpuTimingEventType type = GpuTimingEventType::Unknown;
+	GpuTimingTimestampSource timestamp_source = GpuTimingTimestampSource::Unknown;
+	GpuTimingTimestampConfidence timestamp_confidence = GpuTimingTimestampConfidence::Unavailable;
+	i64 submission_id = -1;
+	i64 command_buffer_id = -1;
+	i32 command_order_index = -1;
 	f64 start_offset_ms = 0.0;
 	f64 elapsed_ms = 0.0;
+	u64 cpu_encode_start_ticks = 0;
+	u64 cpu_encode_end_ticks = 0;
+	u64 cpu_submit_ticks = 0;
+	u64 cpu_scheduled_ticks = 0;
+	u64 cpu_completed_ticks = 0;
+	char reads[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
+	char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
 	bool valid = false;
 };
 
@@ -347,6 +430,7 @@ struct GpuTimings
 	i32 display_frame_count = 0;
 	bool available = false;
 	char unavailable_reason[CPU_TIMINGS_MAX_NAME_LENGTH] = "GPU timings unavailable";
+	char status_message[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
 	bool display_is_frozen = false;
 };
 
@@ -396,6 +480,31 @@ void gpu_timings_copy_unavailable_reason(char* out_reason, size_t in_reason_size
 	snprintf(out_reason, in_reason_size, "%s", timings.unavailable_reason);
 }
 
+void gpu_timings_set_status_message(const char* in_status_message)
+{
+	GpuTimings& timings = gpu_timings_get();
+	std::lock_guard<std::mutex> lock(timings.mutex);
+	snprintf(
+		timings.status_message,
+		sizeof(timings.status_message),
+		"%s",
+		in_status_message ? in_status_message : ""
+	);
+	++timings.completed_generation;
+}
+
+void gpu_timings_copy_status_message(char* out_status_message, size_t in_status_message_size)
+{
+	if (!out_status_message || in_status_message_size == 0)
+	{
+		return;
+	}
+
+	GpuTimings& timings = gpu_timings_get();
+	std::lock_guard<std::mutex> lock(timings.mutex);
+	snprintf(out_status_message, in_status_message_size, "%s", timings.status_message);
+}
+
 GpuTimingFrame* gpu_timings_find_history_frame_locked(GpuTimings& timings, i64 in_frame_index)
 {
 	for (GpuTimingFrame& frame : timings.history_frames)
@@ -406,80 +515,6 @@ GpuTimingFrame* gpu_timings_find_history_frame_locked(GpuTimings& timings, i64 i
 		}
 	}
 	return nullptr;
-}
-
-void gpu_timings_normalize_sibling_intervals(GpuTimingFrame& frame)
-{
-	const i32 event_count = (i32)frame.events.length();
-	if (event_count <= 1)
-	{
-		return;
-	}
-
-	StretchyBuffer<i32> child_indices;
-	for (i32 parent_index = 0; parent_index < event_count; ++parent_index)
-	{
-		const GpuTimingEvent& parent_event = frame.events[parent_index];
-		if (!parent_event.valid || parent_event.elapsed_ms <= 0.0)
-		{
-			continue;
-		}
-
-		child_indices.reset();
-		for (i32 event_index = 0; event_index < event_count; ++event_index)
-		{
-			const GpuTimingEvent& event = frame.events[event_index];
-			if (event.valid && event.parent_index == parent_index && event.elapsed_ms > 0.0)
-			{
-				child_indices.add(event_index);
-			}
-		}
-
-		if (child_indices.length() == 0)
-		{
-			continue;
-		}
-
-		std::sort(
-			child_indices.begin(),
-			child_indices.end(),
-			[&](const i32 a, const i32 b)
-			{
-				const GpuTimingEvent& event_a = frame.events[a];
-				const GpuTimingEvent& event_b = frame.events[b];
-				if (event_a.start_offset_ms == event_b.start_offset_ms)
-				{
-					return a < b;
-				}
-				return event_a.start_offset_ms < event_b.start_offset_ms;
-			}
-		);
-
-		const f64 parent_start_ms = parent_event.start_offset_ms;
-		const f64 parent_end_ms = parent_event.start_offset_ms + parent_event.elapsed_ms;
-		for (i32 child_index_index = 0; child_index_index < (i32)child_indices.length(); ++child_index_index)
-		{
-			GpuTimingEvent& child_event = frame.events[child_indices[child_index_index]];
-			const f64 child_start_ms = std::max(parent_start_ms, child_event.start_offset_ms);
-			f64 child_end_ms = std::min(parent_end_ms, child_event.start_offset_ms + child_event.elapsed_ms);
-			if (child_index_index + 1 < (i32)child_indices.length())
-			{
-				const GpuTimingEvent& next_child_event = frame.events[child_indices[child_index_index + 1]];
-				const f64 next_child_start_ms = std::max(parent_start_ms, next_child_event.start_offset_ms);
-				child_end_ms = std::min(child_end_ms, next_child_start_ms);
-			}
-
-			if (child_end_ms <= child_start_ms)
-			{
-				child_event.valid = false;
-				child_event.elapsed_ms = 0.0;
-				continue;
-			}
-
-			child_event.start_offset_ms = child_start_ms;
-			child_event.elapsed_ms = child_end_ms - child_start_ms;
-		}
-	}
 }
 
 void gpu_timings_record_completed_frame_events(i64 in_frame_index, const GpuTimingEvent* in_events, i32 in_event_count)
@@ -509,7 +544,6 @@ void gpu_timings_record_completed_frame_events(i64 in_frame_index, const GpuTimi
 	{
 		frame->events.add(in_events[event_index]);
 	}
-	gpu_timings_normalize_sibling_intervals(*frame);
 
 	++timings.completed_generation;
 }
@@ -525,6 +559,10 @@ void gpu_timings_record_completed_frame(i64 in_frame_index, f64 in_elapsed_ms)
 	gpu_timing_event_set_name(event, "GPU Frame");
 	event.depth = 0;
 	event.parent_index = -1;
+	event.lane_index = 0;
+	event.type = GpuTimingEventType::Frame;
+	event.timestamp_source = GpuTimingTimestampSource::CommandBuffer;
+	event.timestamp_confidence = GpuTimingTimestampConfidence::Authoritative;
 	event.start_offset_ms = 0.0;
 	event.elapsed_ms = in_elapsed_ms;
 	event.valid = true;
@@ -689,6 +727,8 @@ i32 cpu_timings_get_display_frame_age(bool, i32 = 0) { return 0; }
 void gpu_timings_set_available(bool, const char* = nullptr) {}
 bool gpu_timings_are_available() { return false; }
 void gpu_timings_copy_unavailable_reason(char*, size_t) {}
+void gpu_timings_set_status_message(const char*) {}
+void gpu_timings_copy_status_message(char*, size_t) {}
 void gpu_timings_record_completed_frame_events(i64, const GpuTimingEvent*, i32) {}
 void gpu_timings_record_completed_frame(i64, f64) {}
 bool gpu_timings_copy_display_frame(bool, i32, GpuTimingFrame&) { return false; }

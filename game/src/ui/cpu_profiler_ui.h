@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "core/timings.h"
 #include "imgui/imgui.h"
@@ -38,10 +39,14 @@ struct ProfilerTooltip
 	char context[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
 	char name[256] = {};
 	char percent_label[64] = {};
+	char details[1024] = {};
 	f64 elapsed_ms = 0.0;
 	f64 percent = 0.0;
+	f64 start_ms = 0.0;
+	f64 end_ms = 0.0;
 	i32 depth = -1;
 	i32 draw_order = -1;
+	bool show_interval = false;
 };
 
 static bool profiler_rect_hovered(const ImVec2& rect_min, const ImVec2& rect_max)
@@ -60,7 +65,11 @@ static void profiler_consider_tooltip(
 	f64 in_percent,
 	const char* in_percent_label,
 	i32 in_depth,
-	i32 in_draw_order)
+	i32 in_draw_order,
+	f64 in_start_ms = 0.0,
+	f64 in_end_ms = 0.0,
+	bool in_show_interval = false,
+	const char* in_details = nullptr)
 {
 	if (!in_rect_hovered)
 	{
@@ -81,10 +90,14 @@ static void profiler_consider_tooltip(
 	snprintf(tooltip.context, sizeof(tooltip.context), "%s", in_context ? in_context : "");
 	snprintf(tooltip.name, sizeof(tooltip.name), "%s", in_name ? in_name : "(unnamed)");
 	snprintf(tooltip.percent_label, sizeof(tooltip.percent_label), "%s", in_percent_label ? in_percent_label : "% of frame");
+	snprintf(tooltip.details, sizeof(tooltip.details), "%s", in_details ? in_details : "");
 	tooltip.elapsed_ms = in_elapsed_ms;
 	tooltip.percent = in_percent;
+	tooltip.start_ms = in_start_ms;
+	tooltip.end_ms = in_end_ms;
 	tooltip.depth = in_depth;
 	tooltip.draw_order = in_draw_order;
+	tooltip.show_interval = in_show_interval;
 }
 
 static void profiler_draw_tooltip(const ProfilerTooltip& tooltip)
@@ -101,6 +114,17 @@ static void profiler_draw_tooltip(const ProfilerTooltip& tooltip)
 		ImGui::Text("%s", tooltip.context);
 	}
 	ImGui::Text("%s", tooltip.name);
+	if (tooltip.details[0])
+	{
+		ImGui::Separator();
+		ImGui::TextUnformatted(tooltip.details);
+		ImGui::Separator();
+	}
+	if (tooltip.show_interval)
+	{
+		ImGui::Text("Start: %.3f ms", tooltip.start_ms);
+		ImGui::Text("End: %.3f ms", tooltip.end_ms);
+	}
 	ImGui::Text("%.3f ms", tooltip.elapsed_ms);
 	ImGui::Text("%.2f%s", tooltip.percent, tooltip.percent_label);
 	ImGui::EndTooltip();
@@ -156,7 +180,7 @@ static void profiler_apply_shared_zoom_and_scroll(i32 in_display_frame_count, f3
 	}
 
 	const f32 old_graph_width = profiler_graph_width(in_display_frame_count, in_base_frame_width);
-	if (graph_hovered)
+	if (graph_hovered && ImGui::GetIO().KeyCtrl)
 	{
 		const f32 mouse_wheel = ImGui::GetIO().MouseWheel;
 		if (mouse_wheel != 0.0f)
@@ -431,16 +455,324 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 	ImGui::EndChild();
 }
 
-static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base_frame_width)
+static bool gpu_profiler_is_root_event(const GpuTimingEvent& event)
+{
+	return event.parent_index < 0 && event.depth == 0;
+}
+
+static bool gpu_profiler_is_cpu_marker(const GpuTimingEvent& event)
+{
+	return event.timestamp_source == GpuTimingTimestampSource::CpuOnlyMarker;
+}
+
+static bool gpu_profiler_event_is_drawable(const GpuTimingEvent& event)
+{
+	return event.valid && !gpu_profiler_is_root_event(event) && (event.elapsed_ms > 0.0 || gpu_profiler_is_cpu_marker(event));
+}
+
+static const char* gpu_profiler_event_badge(const GpuTimingEvent& event)
+{
+	switch (event.timestamp_source)
+	{
+		case GpuTimingTimestampSource::CommandBuffer: return "CB";
+		case GpuTimingTimestampSource::D3D11Timestamp: return "D3D";
+		case GpuTimingTimestampSource::MetalEncoderSample: return "MTL";
+		case GpuTimingTimestampSource::MetalStageSample: return "STG";
+		case GpuTimingTimestampSource::CpuOnlyMarker: return "MARK";
+		case GpuTimingTimestampSource::Unknown:
+		default: return "?";
+	}
+}
+
+static ImU32 gpu_profiler_event_color(const GpuTimingEvent& event)
+{
+	switch (event.timestamp_confidence)
+	{
+		case GpuTimingTimestampConfidence::Authoritative:
+			return IM_COL32(0x3B, 0x92, 0xC8, 255);
+		case GpuTimingTimestampConfidence::Sampled:
+			return IM_COL32(0x4B, 0xA7, 0xA0, 255);
+		case GpuTimingTimestampConfidence::Approximate:
+			return IM_COL32(0xB8, 0x9B, 0x48, 255);
+		case GpuTimingTimestampConfidence::AdjustedForOrder:
+			return IM_COL32(0x8C, 0x7A, 0xB8, 255);
+		case GpuTimingTimestampConfidence::Unavailable:
+		default:
+			return IM_COL32(0x76, 0x7D, 0x86, 255);
+	}
+}
+
+struct GpuProfilerTimelineRange
+{
+	f64 display_start_ms = 0.0;
+	f64 display_end_ms = 0.0;
+	i32 row_index = -1;
+	bool adjusted_for_order = false;
+};
+
+static bool gpu_profiler_same_ordered_stream(const GpuTimingEvent& a, const GpuTimingEvent& b)
+{
+	return a.command_buffer_id >= 0 &&
+		b.command_buffer_id >= 0 &&
+		a.command_buffer_id == b.command_buffer_id &&
+		a.lane_index == b.lane_index;
+}
+
+static f64 gpu_profiler_ms_between_ticks(u64 in_start_ticks, u64 in_end_ticks)
+{
+	if (in_start_ticks == 0 || in_end_ticks == 0 || in_end_ticks < in_start_ticks)
+	{
+		return -1.0;
+	}
+	return stm_ms(stm_diff(in_end_ticks, in_start_ticks));
+}
+
+static void gpu_profiler_format_optional_duration(
+	char*& out_cursor,
+	size_t& inout_remaining,
+	const char* in_label,
+	f64 in_duration_ms)
+{
+	if (!out_cursor || inout_remaining == 0 || in_duration_ms < 0.0)
+	{
+		return;
+	}
+
+	const int written = snprintf(out_cursor, inout_remaining, "%s: %.3f ms\n", in_label, in_duration_ms);
+	if (written <= 0)
+	{
+		return;
+	}
+	const size_t clamped_written = std::min((size_t)written, inout_remaining - 1);
+	out_cursor += clamped_written;
+	inout_remaining -= clamped_written;
+}
+
+static void gpu_profiler_build_event_details(const GpuTimingEvent& event, char* out_details, size_t in_details_size)
+{
+	if (!out_details || in_details_size == 0)
+	{
+		return;
+	}
+
+	char* cursor = out_details;
+	size_t remaining = in_details_size;
+	const bool is_cpu_marker = gpu_profiler_is_cpu_marker(event);
+	int header_written = 0;
+	if (is_cpu_marker)
+	{
+		header_written = snprintf(
+			cursor,
+			remaining,
+			"Type: %s\nSource: %s\nConfidence: %s\nGPU interval: unavailable\nDisplayed duration: CPU encode marker\nSubmission: %lld\nCommand buffer: %lld\nOrder: %d\n",
+			gpu_timing_event_type_name(event.type),
+			gpu_timing_timestamp_source_name(event.timestamp_source),
+			gpu_timing_timestamp_confidence_name(event.timestamp_confidence),
+			(long long)event.submission_id,
+			(long long)event.command_buffer_id,
+			event.command_order_index
+		);
+	}
+	else
+	{
+		header_written = snprintf(
+			cursor,
+			remaining,
+			"Type: %s\nSource: %s\nConfidence: %s\nRaw interval: %.3f - %.3f ms\nSubmission: %lld\nCommand buffer: %lld\nOrder: %d\n",
+			gpu_timing_event_type_name(event.type),
+			gpu_timing_timestamp_source_name(event.timestamp_source),
+			gpu_timing_timestamp_confidence_name(event.timestamp_confidence),
+			event.start_offset_ms,
+			event.start_offset_ms + event.elapsed_ms,
+			(long long)event.submission_id,
+			(long long)event.command_buffer_id,
+			event.command_order_index
+		);
+	}
+	if (header_written > 0)
+	{
+		const size_t clamped_written = std::min((size_t)header_written, remaining - 1);
+		cursor += clamped_written;
+		remaining -= clamped_written;
+	}
+
+	gpu_profiler_format_optional_duration(
+		cursor,
+		remaining,
+		"CPU encode",
+		gpu_profiler_ms_between_ticks(event.cpu_encode_start_ticks, event.cpu_encode_end_ticks)
+	);
+	gpu_profiler_format_optional_duration(
+		cursor,
+		remaining,
+		"CPU submit -> scheduled",
+		gpu_profiler_ms_between_ticks(event.cpu_submit_ticks, event.cpu_scheduled_ticks)
+	);
+	gpu_profiler_format_optional_duration(
+		cursor,
+		remaining,
+		"CPU scheduled -> completed",
+		gpu_profiler_ms_between_ticks(event.cpu_scheduled_ticks, event.cpu_completed_ticks)
+	);
+	gpu_profiler_format_optional_duration(
+		cursor,
+		remaining,
+		"CPU submit -> completed",
+		gpu_profiler_ms_between_ticks(event.cpu_submit_ticks, event.cpu_completed_ticks)
+	);
+
+	if (event.reads[0] && remaining > 1)
+	{
+		const int written = snprintf(cursor, remaining, "Reads from: %s\n", event.reads);
+		if (written > 0)
+		{
+			const size_t clamped_written = std::min((size_t)written, remaining - 1);
+			cursor += clamped_written;
+			remaining -= clamped_written;
+		}
+	}
+	if (event.writes[0] && remaining > 1)
+	{
+		const int written = snprintf(cursor, remaining, "Writes to: %s\n", event.writes);
+		if (written > 0)
+		{
+			const size_t clamped_written = std::min((size_t)written, remaining - 1);
+			cursor += clamped_written;
+			remaining -= clamped_written;
+		}
+	}
+}
+
+static i32 gpu_profiler_build_timeline_ranges(const GpuTimingFrame& gpu_frame, StretchyBuffer<GpuProfilerTimelineRange>& out_ranges)
+{
+	out_ranges.reset();
+	for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
+	{
+		const GpuTimingEvent& event = gpu_frame.events[event_index];
+		GpuProfilerTimelineRange range = {};
+		range.display_start_ms = event.start_offset_ms;
+		range.display_end_ms = event.start_offset_ms + std::max(event.elapsed_ms, gpu_profiler_is_cpu_marker(event) ? 0.001 : 0.0);
+		out_ranges.add(range);
+	}
+
+	StretchyBuffer<i32> event_indices;
+	for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
+	{
+		const GpuTimingEvent& event = gpu_frame.events[event_index];
+		if (gpu_profiler_event_is_drawable(event))
+		{
+			event_indices.add(event_index);
+		}
+	}
+
+	std::sort(
+		event_indices.begin(),
+		event_indices.end(),
+		[&](const i32 a, const i32 b)
+		{
+			const GpuTimingEvent& event_a = gpu_frame.events[a];
+			const GpuTimingEvent& event_b = gpu_frame.events[b];
+			if (event_a.command_buffer_id != event_b.command_buffer_id)
+			{
+				return event_a.command_buffer_id < event_b.command_buffer_id;
+			}
+			if (event_a.lane_index != event_b.lane_index)
+			{
+				return event_a.lane_index < event_b.lane_index;
+			}
+			if (event_a.command_order_index != event_b.command_order_index)
+			{
+				return event_a.command_order_index < event_b.command_order_index;
+			}
+			return event_a.start_offset_ms < event_b.start_offset_ms;
+		}
+	);
+
+	i32 previous_event_index = -1;
+	f64 ordered_stream_end_ms = 0.0;
+	for (const i32 event_index : event_indices)
+	{
+		const GpuTimingEvent& event = gpu_frame.events[event_index];
+		GpuProfilerTimelineRange& range = out_ranges[event_index];
+		if (
+			previous_event_index >= 0 &&
+			gpu_profiler_same_ordered_stream(gpu_frame.events[previous_event_index], event)
+		)
+		{
+			if (range.display_start_ms < ordered_stream_end_ms)
+			{
+				range.display_start_ms = ordered_stream_end_ms;
+				range.display_end_ms = range.display_start_ms + event.elapsed_ms;
+				range.adjusted_for_order = true;
+			}
+		}
+		else
+		{
+			ordered_stream_end_ms = range.display_end_ms;
+		}
+
+		ordered_stream_end_ms = std::max(ordered_stream_end_ms, range.display_end_ms);
+		previous_event_index = event_index;
+	}
+
+	std::sort(
+		event_indices.begin(),
+		event_indices.end(),
+		[&](const i32 a, const i32 b)
+		{
+			const GpuProfilerTimelineRange& range_a = out_ranges[a];
+			const GpuProfilerTimelineRange& range_b = out_ranges[b];
+			if (range_a.display_start_ms == range_b.display_start_ms)
+			{
+				return (range_a.display_end_ms - range_a.display_start_ms) > (range_b.display_end_ms - range_b.display_start_ms);
+			}
+			return range_a.display_start_ms < range_b.display_start_ms;
+		}
+	);
+
+	StretchyBuffer<f64> row_end_times;
+	for (const i32 event_index : event_indices)
+	{
+		GpuProfilerTimelineRange& range = out_ranges[event_index];
+		const f64 event_end_ms = range.display_end_ms;
+		i32 row_index = -1;
+		for (i32 candidate_row = 0; candidate_row < (i32)row_end_times.length(); ++candidate_row)
+		{
+			if (range.display_start_ms >= row_end_times[candidate_row])
+			{
+				row_index = candidate_row;
+				break;
+			}
+		}
+
+		if (row_index < 0)
+		{
+			row_index = (i32)row_end_times.length();
+			row_end_times.add(event_end_ms);
+		}
+		else
+		{
+			row_end_times[row_index] = event_end_ms;
+		}
+
+		range.row_index = row_index;
+	}
+
+	return std::max((i32)row_end_times.length(), 1);
+}
+
+static void draw_gpu_profiler_timeline(i32 in_display_frame_count, f32 in_base_frame_width)
 {
 	const bool gpu_timings_available = gpu_timings_are_available();
 	char gpu_timings_unavailable_reason[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+	char gpu_timings_status_message[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
 	if (!gpu_timings_available)
 	{
 		gpu_timings_copy_unavailable_reason(gpu_timings_unavailable_reason, sizeof(gpu_timings_unavailable_reason));
 	}
+	gpu_timings_copy_status_message(gpu_timings_status_message, sizeof(gpu_timings_status_message));
 
-	i32 max_depth = 0;
+	i32 max_row_count = 1;
 	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
 	{
 		const i32 frame_source_index = in_display_frame_count - 1 - display_frame_index;
@@ -450,20 +782,20 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 			continue;
 		}
 
-		for (const GpuTimingEvent& event : gpu_frame.events)
-		{
-			if (event.valid)
-			{
-				max_depth = std::max(max_depth, event.depth);
-			}
-		}
+		StretchyBuffer<GpuProfilerTimelineRange> event_ranges;
+		max_row_count = std::max(max_row_count, gpu_profiler_build_timeline_ranges(gpu_frame, event_ranges));
 	}
 
-	const f32 graph_height = PROFILER_HEADER_HEIGHT + (max_depth + 1) * PROFILER_ROW_HEIGHT + 8.0f;
-	const f32 child_height = std::max(96.0f, std::min(180.0f, graph_height + 12.0f));
+	const f32 graph_height = PROFILER_HEADER_HEIGHT + max_row_count * PROFILER_ROW_HEIGHT + 8.0f;
+	const f32 child_height = std::max(96.0f, std::min(220.0f, graph_height + 12.0f));
 
-	ImGui::Text("GPU");
-	ImGui::BeginChild("##GpuProfilerGraph", ImVec2(0.0f, child_height), true, ImGuiWindowFlags_HorizontalScrollbar);
+	ImGui::Text("GPU Timeline");
+	if (gpu_timings_status_message[0])
+	{
+		ImGui::SameLine();
+		ImGui::TextDisabled("%s", gpu_timings_status_message);
+	}
+	ImGui::BeginChild("##GpuProfilerTimeline", ImVec2(0.0f, child_height), true, ImGuiWindowFlags_HorizontalScrollbar);
 	profiler_apply_shared_zoom_and_scroll(in_display_frame_count, in_base_frame_width);
 
 	const f32 frame_width = in_base_frame_width * state.debug_ui.profiler_zoom;
@@ -493,27 +825,42 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 
 		GpuTimingFrame gpu_frame = {};
 		const bool has_gpu_frame = gpu_timings_copy_display_frame(state.debug_ui.freeze_profiler, frame_source_index, gpu_frame);
+		StretchyBuffer<GpuProfilerTimelineRange> event_ranges;
+		gpu_profiler_build_timeline_ranges(gpu_frame, event_ranges);
 
 		f64 gpu_frame_elapsed_ms = 0.0001;
+		const GpuTimingEvent* root_event = nullptr;
 		for (const GpuTimingEvent& event : gpu_frame.events)
 		{
 			if (event.valid)
 			{
+				if (!root_event && gpu_profiler_is_root_event(event))
+				{
+					root_event = &event;
+				}
 				gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, event.start_offset_ms + event.elapsed_ms);
 			}
 		}
-		if (has_gpu_frame && gpu_frame.events.length() > 0 && gpu_frame.events[0].valid)
+		for (const GpuProfilerTimelineRange& range : event_ranges)
 		{
-			gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, gpu_frame.events[0].elapsed_ms);
+			gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, range.display_end_ms);
+		}
+		if (root_event)
+		{
+			gpu_frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, root_event->elapsed_ms);
 		}
 		const f64 frame_elapsed_ms = std::max(gpu_frame_elapsed_ms, 0.0001);
 		const f32 frame_x = graph_origin.x + (frame_width + PROFILER_FRAME_GAP) * (f32)display_frame_index;
 		const f32 frame_y = graph_origin.y + PROFILER_HEADER_HEIGHT;
 
 		char frame_label[96];
-		if (has_gpu_frame && gpu_frame.events.length() > 0)
+		if (has_gpu_frame && root_event)
 		{
-			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: %.3f ms", (long long)cpu_frame_index, gpu_frame.events[0].elapsed_ms);
+			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: %.3f ms", (long long)cpu_frame_index, root_event->elapsed_ms);
+		}
+		else if (has_gpu_frame && gpu_frame.events.length() > 0)
+		{
+			snprintf(frame_label, sizeof(frame_label), "GPU Frame %lld: %.3f ms", (long long)cpu_frame_index, frame_elapsed_ms);
 		}
 		else if (!gpu_timings_available)
 		{
@@ -534,6 +881,21 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 			);
 		}
 
+		draw_list->AddRectFilled(
+			ImVec2(frame_x, frame_y),
+			ImVec2(frame_x + frame_width, frame_y + max_row_count * PROFILER_ROW_HEIGHT),
+			IM_COL32(30, 42, 42, 95)
+		);
+		for (i32 row_index = 0; row_index < max_row_count; ++row_index)
+		{
+			const f32 lane_y = frame_y + row_index * PROFILER_ROW_HEIGHT;
+			draw_list->AddLine(
+				ImVec2(frame_x, lane_y),
+				ImVec2(frame_x + frame_width, lane_y),
+				IM_COL32(50, 62, 62, 180)
+			);
+		}
+
 		if (!has_gpu_frame || gpu_frame.events.length() == 0)
 		{
 			const char* message = gpu_timings_available
@@ -550,16 +912,21 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 		for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
 		{
 			const GpuTimingEvent& event = gpu_frame.events[event_index];
-			if (!event.valid || event.elapsed_ms <= 0.0)
+			if (!gpu_profiler_event_is_drawable(event))
 			{
 				continue;
 			}
 
-			const f32 raw_x = (f32)(event.start_offset_ms / frame_elapsed_ms) * frame_width;
-			const f32 raw_w = (f32)(event.elapsed_ms / frame_elapsed_ms) * frame_width;
+			const GpuProfilerTimelineRange& range = event_ranges[event_index];
+			const i32 row_index = range.row_index >= 0
+				? range.row_index
+				: 0;
+			const f64 display_elapsed_ms = std::max(range.display_end_ms - range.display_start_ms, 0.0);
+			const f32 raw_x = (f32)(range.display_start_ms / frame_elapsed_ms) * frame_width;
+			const f32 raw_w = (f32)(display_elapsed_ms / frame_elapsed_ms) * frame_width;
 			const f32 x0 = frame_x + CLAMP(raw_x, 0.0f, frame_width);
 			const f32 x1 = std::min(frame_x + frame_width, x0 + std::max(raw_w, PROFILER_MIN_BOX_WIDTH));
-			const f32 y0 = frame_y + event.depth * PROFILER_ROW_HEIGHT + 2.0f;
+			const f32 y0 = frame_y + row_index * PROFILER_ROW_HEIGHT + 2.0f;
 			const f32 y1 = y0 + PROFILER_BOX_HEIGHT;
 			if (x1 <= x0 || y1 <= y0)
 			{
@@ -568,16 +935,32 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 
 			const ImVec2 rect_min = ImVec2(x0, y0);
 			const ImVec2 rect_max = ImVec2(x1, y1);
-			draw_list->AddRectFilled(rect_min, rect_max, IM_COL32(0x4B, 0xA7, 0xA0, 255), 2.0f);
+			draw_list->AddRectFilled(rect_min, rect_max, gpu_profiler_event_color(event), 2.0f);
 			draw_list->AddRect(rect_min, rect_max, IM_COL32(12, 18, 18, 190), 2.0f);
 
 			char label[256];
-			snprintf(label, sizeof(label), "%s %.3f ms", event.name, event.elapsed_ms);
+			snprintf(label, sizeof(label), "[%s] %s %.3f ms", gpu_profiler_event_badge(event), event.name, event.elapsed_ms);
 			profiler_draw_clipped_label(draw_list, rect_min, rect_max, IM_COL32(255, 255, 255, 255), label);
 
 			const bool rect_hovered = profiler_rect_hovered(rect_min, rect_max);
 			char tooltip_frame[64];
 			snprintf(tooltip_frame, sizeof(tooltip_frame), "Frame %lld", (long long)cpu_frame_index);
+			char tooltip_details[1024];
+			gpu_profiler_build_event_details(event, tooltip_details, sizeof(tooltip_details));
+			if (range.adjusted_for_order)
+			{
+				const size_t detail_length = strlen(tooltip_details);
+				if (detail_length < sizeof(tooltip_details) - 1)
+				{
+					snprintf(
+						tooltip_details + detail_length,
+						sizeof(tooltip_details) - detail_length,
+						"Display interval: %.3f - %.3f ms\nDraw adjusted to preserve command-buffer order\n",
+						range.display_start_ms,
+						range.display_end_ms
+					);
+				}
+			}
 			profiler_consider_tooltip(
 				hovered_tooltip,
 				rect_hovered,
@@ -587,8 +970,12 @@ static void draw_gpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 				event.elapsed_ms,
 				(event.elapsed_ms / frame_elapsed_ms) * 100.0,
 				"% of GPU frame",
-				event.depth,
-				tooltip_draw_order++
+				row_index,
+				tooltip_draw_order++,
+				event.start_offset_ms,
+				event.start_offset_ms + event.elapsed_ms,
+				true,
+				tooltip_details
 			);
 		}
 	}
@@ -648,7 +1035,7 @@ static void draw_cpu_profiler_window()
 		(visible_width - PROFILER_FRAME_GAP * (f32)(display_frame_count - 1)) / (f32)display_frame_count
 	);
 	draw_cpu_profiler_flamegraph(display_frame_count, base_frame_width);
-	draw_gpu_profiler_flamegraph(display_frame_count, base_frame_width);
+	draw_gpu_profiler_timeline(display_frame_count, base_frame_width);
 
 	ImGui::End();
 }

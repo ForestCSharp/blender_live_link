@@ -588,7 +588,7 @@ namespace Tessellation
 				GpuDebugScope debug_scope(debug_label);
 				sg_apply_pipeline(pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) dispatch_count, 1, 1);
 			}
 			{
@@ -633,7 +633,7 @@ namespace Tessellation
 				GpuDebugScope debug_scope(debug_label);
 				sg_apply_pipeline(weld_edges_pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) group_count, 1, 1);
 			}
 			{

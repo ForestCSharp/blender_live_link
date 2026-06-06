@@ -1,3 +1,74 @@
+/*
+    blender_live_link local GPU profiler patch
+
+    This vendored Sokol header has Metal-only debug hooks for our in-app GPU
+    profiler. If sokol_gfx.h is upgraded, reapply the following local changes:
+
+    - Public Metal profiler API near the existing Metal accessors:
+        sg_mtl_set_gpu_frame_timing_callback()
+        sg_mtl_set_gpu_frame_timing_frame_index()
+        sg_mtl_set_gpu_frame_lifecycle_callback()
+        sg_mtl_set_gpu_frame_wait_callback()
+        sg_mtl_init_gpu_scope_timing()
+        sg_mtl_shutdown_gpu_scope_timing()
+        sg_mtl_query_gpu_scope_timing_caps()
+        sg_mtl_set_gpu_scope_timing_callback()
+        sg_mtl_begin_gpu_scope_timing()
+        sg_mtl_end_gpu_scope_timing()
+
+    - sg_mtl_gpu_timing_event carries name, depth, parent_index, lane_index,
+      event_index, event type, start offset, elapsed time, and valid flag.
+      Event types are frame, render pass, compute pass, and manual scope.
+
+    - _sg_mtl_backend_t stores profiler callbacks, current frame id,
+      command-buffer/submission ids, Metal counter sample buffers, per-frame
+      scope events, start/end sample indices, active scope stacks, and sampling
+      capability flags.
+
+    - Command-buffer lifecycle reporting:
+      created in _sg_mtl_begin_pass(), committed in _sg_mtl_commit(), scheduled
+      and completed via Metal command-buffer handlers. Completion also reports
+      MTLCommandBuffer.GPUStartTime/GPUEndTime and resolves counter samples.
+
+    - Frame wait reporting wraps Sokol's in-flight-frame semaphore wait in the
+      first Metal begin-pass of each frame.
+
+    - Counter-sample setup finds MTLCommonCounterSetTimestamp, creates one
+      MTLCounterSampleBuffer per in-flight frame, and checks render, compute,
+      and stage counter-sampling support. Stage-only support is enough to
+      initialize timing because Apple Silicon exposes pass-level stage samples
+      even when draw/dispatch boundary sampling is unavailable.
+
+    - Stage-boundary pass timing:
+      _sg_mtl_begin_render_pass() calls
+      _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(), which attaches
+      an MTLRenderPassSampleBufferAttachmentDescriptor to the pass descriptor.
+      It samples startOfVertexSampleIndex and endOfFragmentSampleIndex and
+      emits SG_MTL_GPU_TIMING_EVENT_RENDER_PASS.
+
+      _sg_mtl_begin_compute_pass() creates an MTLComputePassDescriptor and
+      calls _sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor(), which
+      attaches an MTLComputePassSampleBufferAttachmentDescriptor using
+      startOfEncoderSampleIndex/endOfEncoderSampleIndex and emits
+      SG_MTL_GPU_TIMING_EVENT_COMPUTE_PASS.
+
+    - Manual GPU scopes use sampleCountersInBuffer inside the active
+      render/compute encoder and require draw/dispatch boundary sampling. On
+      Apple Silicon machines that only expose stage-boundary sampling, manual
+      scopes fail cleanly and game/src/render/sokol_helpers.h emits CPU-only
+      fallback markers instead.
+
+      Higher-level pass names, event type policy, source/confidence labels,
+      duplicate filtering, and CPU-only fallback marker behavior live in
+      game/src/render/sokol_helpers.h.
+
+    - sg_mtl_query_gpu_scope_timing_caps() exposes the detected Metal counter
+      sampling support so the helper/UI layer can explain whether pass rows are
+      real Metal samples or CPU-only markers.
+
+    After changing this implementation header, rebuild game/bin/libsokol.a.
+*/
+
 #if defined(SOKOL_IMPL) && !defined(SOKOL_GFX_IMPL)
 #define SOKOL_GFX_IMPL
 #endif
@@ -5343,23 +5414,49 @@ SOKOL_GFX_API_DECL const void* sg_mtl_command_queue(void);
 typedef void (*sg_mtl_gpu_frame_timing_cb)(int64_t frame_index, double gpu_start_sec, double gpu_end_sec, void* user_data);
 SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_timing_callback(sg_mtl_gpu_frame_timing_cb callback, void* user_data);
 SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_timing_frame_index(int64_t frame_index);
+typedef enum sg_mtl_gpu_frame_lifecycle_event {
+    SG_MTL_GPU_FRAME_LIFECYCLE_CREATED,
+    SG_MTL_GPU_FRAME_LIFECYCLE_COMMITTED,
+    SG_MTL_GPU_FRAME_LIFECYCLE_SCHEDULED,
+    SG_MTL_GPU_FRAME_LIFECYCLE_COMPLETED
+} sg_mtl_gpu_frame_lifecycle_event;
+typedef void (*sg_mtl_gpu_frame_lifecycle_cb)(int64_t frame_index, int64_t command_buffer_id, int64_t submission_id, sg_mtl_gpu_frame_lifecycle_event event, void* user_data);
+SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_lifecycle_callback(sg_mtl_gpu_frame_lifecycle_cb callback, void* user_data);
 // Metal: optional callback around Sokol's in-flight-frame semaphore wait in the first begin-pass of a frame
 typedef void (*sg_mtl_gpu_frame_wait_cb)(bool waiting, void* user_data);
 SOKOL_GFX_API_DECL void sg_mtl_set_gpu_frame_wait_callback(sg_mtl_gpu_frame_wait_cb callback, void* user_data);
 // Metal: optional timestamp-counter scopes for GPU flame graphs
 #define SG_MTL_GPU_TIMING_MAX_NAME_LENGTH (128)
 #define SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS (128)
+typedef enum sg_mtl_gpu_timing_event_type {
+    SG_MTL_GPU_TIMING_EVENT_UNKNOWN,
+    SG_MTL_GPU_TIMING_EVENT_FRAME,
+    SG_MTL_GPU_TIMING_EVENT_RENDER_PASS,
+    SG_MTL_GPU_TIMING_EVENT_COMPUTE_PASS,
+    SG_MTL_GPU_TIMING_EVENT_SCOPE
+} sg_mtl_gpu_timing_event_type;
 typedef struct sg_mtl_gpu_timing_event {
     char name[SG_MTL_GPU_TIMING_MAX_NAME_LENGTH];
     int depth;
     int parent_index;
+    int lane_index;
+    int event_index;
+    sg_mtl_gpu_timing_event_type type;
     double start_offset_ms;
     double elapsed_ms;
     bool valid;
 } sg_mtl_gpu_timing_event;
 typedef void (*sg_mtl_gpu_scope_timing_cb)(int64_t frame_index, const sg_mtl_gpu_timing_event* events, int event_count, void* user_data);
+typedef struct sg_mtl_gpu_scope_timing_caps {
+    bool initialized;
+    bool timestamp_counter_set;
+    bool render_boundary;
+    bool compute_boundary;
+    bool stage_boundary;
+} sg_mtl_gpu_scope_timing_caps;
 SOKOL_GFX_API_DECL bool sg_mtl_init_gpu_scope_timing(void);
 SOKOL_GFX_API_DECL void sg_mtl_shutdown_gpu_scope_timing(void);
+SOKOL_GFX_API_DECL sg_mtl_gpu_scope_timing_caps sg_mtl_query_gpu_scope_timing_caps(void);
 SOKOL_GFX_API_DECL void sg_mtl_set_gpu_scope_timing_callback(sg_mtl_gpu_scope_timing_cb callback, void* user_data);
 SOKOL_GFX_API_DECL int sg_mtl_begin_gpu_scope_timing(const char* name);
 SOKOL_GFX_API_DECL void sg_mtl_end_gpu_scope_timing(int scope_index);
@@ -6799,6 +6896,12 @@ typedef struct {
     sg_mtl_gpu_frame_timing_cb gpu_frame_timing_cb;
     void* gpu_frame_timing_user_data;
     int64_t gpu_frame_timing_frame_index;
+    sg_mtl_gpu_frame_lifecycle_cb gpu_frame_lifecycle_cb;
+    void* gpu_frame_lifecycle_user_data;
+    int64_t gpu_frame_timing_next_command_buffer_id;
+    int64_t gpu_frame_timing_current_command_buffer_id;
+    int64_t gpu_frame_timing_next_submission_id;
+    int64_t gpu_frame_timing_current_submission_id;
     sg_mtl_gpu_frame_wait_cb gpu_frame_wait_cb;
     void* gpu_frame_wait_user_data;
     id<MTLCounterSampleBuffer> gpu_scope_sample_buffers[SG_NUM_INFLIGHT_FRAMES];
@@ -6813,6 +6916,7 @@ typedef struct {
     int gpu_scope_next_sample_indices[SG_NUM_INFLIGHT_FRAMES];
     int64_t gpu_scope_frame_indices[SG_NUM_INFLIGHT_FRAMES];
     bool gpu_scope_timing_available;
+    bool gpu_scope_timestamp_counter_set_available;
     bool gpu_scope_render_sampling_available;
     bool gpu_scope_compute_sampling_available;
     bool gpu_scope_stage_sampling_available;
@@ -15215,7 +15319,22 @@ _SOKOL_PRIVATE id<MTLCounterSet> _sg_mtl_gpu_scope_timing_find_timestamp_counter
     return nil;
 }
 
-_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_alloc_event(int slot_index, const char* name) {
+_SOKOL_PRIVATE void _sg_mtl_gpu_scope_timing_query_sampling_caps(void) {
+    _sg.mtl.gpu_scope_timestamp_counter_set_available = (nil != _sg_mtl_gpu_scope_timing_find_timestamp_counter_set());
+    _sg.mtl.gpu_scope_render_sampling_available = false;
+    _sg.mtl.gpu_scope_compute_sampling_available = false;
+    _sg.mtl.gpu_scope_stage_sampling_available = false;
+    if (!_sg.mtl.gpu_scope_timestamp_counter_set_available) {
+        return;
+    }
+    if (@available(macOS 10.15, iOS 14.0, *)) {
+        _sg.mtl.gpu_scope_render_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+        _sg.mtl.gpu_scope_compute_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+        _sg.mtl.gpu_scope_stage_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+    }
+}
+
+_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_alloc_event(int slot_index, const char* name, sg_mtl_gpu_timing_event_type event_type) {
     SOKOL_ASSERT((slot_index >= 0) && (slot_index < SG_NUM_INFLIGHT_FRAMES));
     const int event_index = _sg.mtl.gpu_scope_event_counts[slot_index];
     const int next_sample_index = _sg.mtl.gpu_scope_next_sample_indices[slot_index];
@@ -15229,6 +15348,9 @@ _SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_alloc_event(int slot_index, const ch
     event->parent_index = (_sg.mtl.gpu_scope_active_stack_counts[slot_index] > 0)
         ? _sg.mtl.gpu_scope_active_stacks[slot_index][_sg.mtl.gpu_scope_active_stack_counts[slot_index] - 1] + 1
         : 0;
+    event->lane_index = 0;
+    event->event_index = event_index;
+    event->type = event_type;
     event->start_offset_ms = 0.0;
     event->elapsed_ms = 0.0;
     event->valid = false;
@@ -15266,13 +15388,13 @@ _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_sample(int slot_index, int sample_i
     return false;
 }
 
-_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_begin_stage_event(const char* name) {
+_SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_begin_stage_event(const char* name, sg_mtl_gpu_timing_event_type event_type) {
     if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available) {
         return -1;
     }
 
     const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
-    const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name);
+    const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name, event_type);
     if (event_index < 0) {
         return -1;
     }
@@ -15282,10 +15404,7 @@ _SOKOL_PRIVATE int _sg_mtl_gpu_scope_timing_begin_stage_event(const char* name) 
 }
 
 _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(MTLRenderPassDescriptor* pass_desc, const char* name) {
-    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || _sg.mtl.gpu_scope_render_sampling_available) {
-        return false;
-    }
-    if (!pass_desc || !name) {
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || !pass_desc || !name) {
         return false;
     }
     if (@available(macOS 11.0, iOS 14.0, *)) {
@@ -15295,7 +15414,7 @@ _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(MTLRe
             return false;
         }
 
-        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name);
+        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name, SG_MTL_GPU_TIMING_EVENT_RENDER_PASS);
         if (event_index < 0) {
             return false;
         }
@@ -15312,10 +15431,7 @@ _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_render_pass_descriptor(MTLRe
 }
 
 _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor(MTLComputePassDescriptor* pass_desc, const char* name) {
-    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || _sg.mtl.gpu_scope_compute_sampling_available) {
-        return false;
-    }
-    if (!pass_desc || !name) {
+    if (!_sg.mtl.gpu_scope_timing_available || !_sg.mtl.gpu_scope_stage_sampling_available || !pass_desc || !name) {
         return false;
     }
     if (@available(macOS 11.0, iOS 14.0, *)) {
@@ -15325,7 +15441,7 @@ _SOKOL_PRIVATE bool _sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor(MTLC
             return false;
         }
 
-        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name);
+        const int event_index = _sg_mtl_gpu_scope_timing_begin_stage_event(name, SG_MTL_GPU_TIMING_EVENT_COMPUTE_PASS);
         if (event_index < 0) {
             return false;
         }
@@ -15344,6 +15460,12 @@ _SOKOL_PRIVATE double _sg_mtl_gpu_scope_timing_delta_ms(uint64_t start_timestamp
         return 0.0;
     }
     return (double)(end_timestamp - start_timestamp) / 1000000.0;
+}
+
+_SOKOL_PRIVATE void _sg_mtl_gpu_frame_lifecycle_notify(int64_t frame_index, int64_t command_buffer_id, int64_t submission_id, sg_mtl_gpu_frame_lifecycle_event event) {
+    if (_sg.mtl.gpu_frame_lifecycle_cb && (frame_index >= 0)) {
+        _sg.mtl.gpu_frame_lifecycle_cb(frame_index, command_buffer_id, submission_id, event, _sg.mtl.gpu_frame_lifecycle_user_data);
+    }
 }
 
 _SOKOL_PRIVATE void _sg_mtl_gpu_scope_timing_report_completed_frame(int slot_index, int64_t frame_index, id<MTLCommandBuffer> cmd_buf) {
@@ -15403,6 +15525,9 @@ _SOKOL_PRIVATE void _sg_mtl_gpu_scope_timing_report_completed_frame(int slot_ind
     snprintf(root_event->name, sizeof(root_event->name), "%s", "GPU Frame");
     root_event->depth = 0;
     root_event->parent_index = -1;
+    root_event->lane_index = 0;
+    root_event->event_index = -1;
+    root_event->type = SG_MTL_GPU_TIMING_EVENT_FRAME;
     root_event->start_offset_ms = 0.0;
     const double command_buffer_elapsed_ms = ((cmd_buf.GPUEndTime > 0.0) && (cmd_buf.GPUStartTime > 0.0) && (cmd_buf.GPUEndTime >= cmd_buf.GPUStartTime))
         ? (cmd_buf.GPUEndTime - cmd_buf.GPUStartTime) * 1000.0
@@ -16196,7 +16321,6 @@ _SOKOL_PRIVATE void _sg_mtl_begin_compute_pass(const sg_pass* pass) {
         _sg.cur_pass.valid = false;
         return;
     }
-
     #if defined(SOKOL_DEBUG)
     if (pass->label) {
         _sg.mtl.compute_cmd_encoder.label = [NSString stringWithUTF8String:pass->label];
@@ -16357,7 +16481,6 @@ _SOKOL_PRIVATE void _sg_mtl_begin_render_pass(const sg_pass* pass, const _sg_att
         _sg.cur_pass.valid = false;
         return;
     }
-
     #if defined(SOKOL_DEBUG)
     if (pass->label) {
         _sg.mtl.render_cmd_encoder.label = [NSString stringWithUTF8String:pass->label];
@@ -16392,12 +16515,49 @@ _SOKOL_PRIVATE void _sg_mtl_begin_pass(const sg_pass* pass, const _sg_attachment
         }
         [_sg.mtl.cmd_buffer enqueue];
         const int64_t gpu_frame_timing_frame_index = _sg.mtl.gpu_frame_timing_frame_index;
+        const int64_t gpu_frame_timing_command_buffer_id = _sg.mtl.gpu_frame_timing_next_command_buffer_id++;
+        const int64_t gpu_frame_timing_submission_id = _sg.mtl.gpu_frame_timing_next_submission_id++;
+        _sg.mtl.gpu_frame_timing_current_command_buffer_id = gpu_frame_timing_command_buffer_id;
+        _sg.mtl.gpu_frame_timing_current_submission_id = gpu_frame_timing_submission_id;
+        sg_mtl_gpu_frame_lifecycle_cb gpu_frame_lifecycle_cb = _sg.mtl.gpu_frame_lifecycle_cb;
+        void* gpu_frame_lifecycle_user_data = _sg.mtl.gpu_frame_lifecycle_user_data;
+        if ((gpu_frame_timing_frame_index >= 0) && gpu_frame_lifecycle_cb) {
+            gpu_frame_lifecycle_cb(
+                gpu_frame_timing_frame_index,
+                gpu_frame_timing_command_buffer_id,
+                gpu_frame_timing_submission_id,
+                SG_MTL_GPU_FRAME_LIFECYCLE_CREATED,
+                gpu_frame_lifecycle_user_data
+            );
+        }
         sg_mtl_gpu_frame_timing_cb gpu_frame_timing_cb = _sg.mtl.gpu_frame_timing_cb;
         void* gpu_frame_timing_user_data = _sg.mtl.gpu_frame_timing_user_data;
         const int gpu_scope_timing_slot = (int)_sg.mtl.cur_frame_rotate_index;
         _sg_mtl_gpu_scope_timing_reset_frame(gpu_scope_timing_slot, gpu_frame_timing_frame_index);
+        [_sg.mtl.cmd_buffer addScheduledHandler:^(id<MTLCommandBuffer> cmd_buf) {
+            // NOTE: this code is called on a different thread!
+            _SOKOL_UNUSED(cmd_buf);
+            if ((gpu_frame_timing_frame_index >= 0) && gpu_frame_lifecycle_cb) {
+                gpu_frame_lifecycle_cb(
+                    gpu_frame_timing_frame_index,
+                    gpu_frame_timing_command_buffer_id,
+                    gpu_frame_timing_submission_id,
+                    SG_MTL_GPU_FRAME_LIFECYCLE_SCHEDULED,
+                    gpu_frame_lifecycle_user_data
+                );
+            }
+        }];
         [_sg.mtl.cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> cmd_buf) {
             // NOTE: this code is called on a different thread!
+            if ((gpu_frame_timing_frame_index >= 0) && gpu_frame_lifecycle_cb) {
+                gpu_frame_lifecycle_cb(
+                    gpu_frame_timing_frame_index,
+                    gpu_frame_timing_command_buffer_id,
+                    gpu_frame_timing_submission_id,
+                    SG_MTL_GPU_FRAME_LIFECYCLE_COMPLETED,
+                    gpu_frame_lifecycle_user_data
+                );
+            }
             if ((gpu_frame_timing_frame_index >= 0) && gpu_frame_timing_cb) {
                 const double gpu_start_sec = cmd_buf.GPUStartTime;
                 const double gpu_end_sec = cmd_buf.GPUEndTime;
@@ -16452,6 +16612,12 @@ _SOKOL_PRIVATE void _sg_mtl_commit(void) {
     SOKOL_ASSERT(nil != _sg.mtl.cmd_buffer);
 
     // commit the frame's command buffer
+    _sg_mtl_gpu_frame_lifecycle_notify(
+        _sg.mtl.gpu_frame_timing_frame_index,
+        _sg.mtl.gpu_frame_timing_current_command_buffer_id,
+        _sg.mtl.gpu_frame_timing_current_submission_id,
+        SG_MTL_GPU_FRAME_LIFECYCLE_COMMITTED
+    );
     [_sg.mtl.cmd_buffer commit];
 
     // garbage-collect resources pending for release
@@ -26583,6 +26749,16 @@ SOKOL_API_IMPL void sg_mtl_set_gpu_frame_timing_frame_index(int64_t frame_index)
     #endif
 }
 
+SOKOL_API_IMPL void sg_mtl_set_gpu_frame_lifecycle_callback(sg_mtl_gpu_frame_lifecycle_cb callback, void* user_data) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.gpu_frame_lifecycle_cb = callback;
+        _sg.mtl.gpu_frame_lifecycle_user_data = user_data;
+    #else
+        _SOKOL_UNUSED(callback);
+        _SOKOL_UNUSED(user_data);
+    #endif
+}
+
 SOKOL_API_IMPL void sg_mtl_set_gpu_frame_wait_callback(sg_mtl_gpu_frame_wait_cb callback, void* user_data) {
     #if defined(SOKOL_METAL)
         _sg.mtl.gpu_frame_wait_cb = callback;
@@ -26602,14 +26778,12 @@ SOKOL_API_IMPL bool sg_mtl_init_gpu_scope_timing(void) {
             return false;
         }
         if (@available(macOS 11.0, iOS 14.0, *)) {
+            _sg_mtl_gpu_scope_timing_query_sampling_caps();
             id<MTLCounterSet> timestamp_counter_set = _sg_mtl_gpu_scope_timing_find_timestamp_counter_set();
             if (nil == timestamp_counter_set) {
                 return false;
             }
 
-            _sg.mtl.gpu_scope_render_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
-            _sg.mtl.gpu_scope_compute_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
-            _sg.mtl.gpu_scope_stage_sampling_available = [_sg.mtl.device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
             if (!_sg.mtl.gpu_scope_render_sampling_available && !_sg.mtl.gpu_scope_compute_sampling_available && !_sg.mtl.gpu_scope_stage_sampling_available) {
                 return false;
             }
@@ -26643,6 +26817,21 @@ SOKOL_API_IMPL bool sg_mtl_init_gpu_scope_timing(void) {
     #endif
 }
 
+SOKOL_API_IMPL sg_mtl_gpu_scope_timing_caps sg_mtl_query_gpu_scope_timing_caps(void) {
+    _SG_STRUCT(sg_mtl_gpu_scope_timing_caps, caps);
+    #if defined(SOKOL_METAL)
+        if (nil != _sg.mtl.device) {
+            _sg_mtl_gpu_scope_timing_query_sampling_caps();
+        }
+        caps.initialized = _sg.mtl.gpu_scope_timing_available;
+        caps.timestamp_counter_set = _sg.mtl.gpu_scope_timestamp_counter_set_available;
+        caps.render_boundary = _sg.mtl.gpu_scope_render_sampling_available;
+        caps.compute_boundary = _sg.mtl.gpu_scope_compute_sampling_available;
+        caps.stage_boundary = _sg.mtl.gpu_scope_stage_sampling_available;
+    #endif
+    return caps;
+}
+
 SOKOL_API_IMPL void sg_mtl_shutdown_gpu_scope_timing(void) {
     #if defined(SOKOL_METAL)
         for (int slot_index = 0; slot_index < SG_NUM_INFLIGHT_FRAMES; ++slot_index) {
@@ -26653,6 +26842,7 @@ SOKOL_API_IMPL void sg_mtl_shutdown_gpu_scope_timing(void) {
             _sg.mtl.gpu_scope_frame_indices[slot_index] = -1;
         }
         _sg.mtl.gpu_scope_timing_available = false;
+        _sg.mtl.gpu_scope_timestamp_counter_set_available = false;
         _sg.mtl.gpu_scope_render_sampling_available = false;
         _sg.mtl.gpu_scope_compute_sampling_available = false;
         _sg.mtl.gpu_scope_stage_sampling_available = false;
@@ -26685,7 +26875,7 @@ SOKOL_API_IMPL int sg_mtl_begin_gpu_scope_timing(const char* name) {
         }
 
         const int slot_index = (int)_sg.mtl.cur_frame_rotate_index;
-        const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name);
+        const int event_index = _sg_mtl_gpu_scope_timing_alloc_event(slot_index, name, SG_MTL_GPU_TIMING_EVENT_SCOPE);
         if (event_index < 0) {
             return -1;
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "render/gpu_profiler_resources.h"
 #include "sokol/sokol_gfx.h"
 
 #include <cassert>
@@ -115,6 +116,15 @@ public:
 					.slices = { .base = slice_idx, .count = 1, },
 				},
 			});
+			char view_label[GPU_PROFILER_MAX_RESOURCE_NAME_LENGTH] = {};
+			snprintf(
+				view_label,
+				sizeof(view_label),
+				"%s texture[%d]",
+				desc.label ? desc.label : "(unnamed image)",
+				slice_idx
+			);
+			gpu_profiler_register_view_name(texture_views[slice_idx].value(), view_label);
 		}
 
 		return texture_views[slice_idx].value();
@@ -134,6 +144,14 @@ public:
 					.slices = { .base = 0, .count = desc.num_slices, },
 				},
 			});
+			char view_label[GPU_PROFILER_MAX_RESOURCE_NAME_LENGTH] = {};
+			snprintf(
+				view_label,
+				sizeof(view_label),
+				"%s texture array",
+				desc.label ? desc.label : "(unnamed image)"
+			);
+			gpu_profiler_register_view_name(texture_array_view.value(), view_label);
 		}
 
 		return texture_array_view.value();
@@ -168,6 +186,15 @@ public:
 					},
 				});
 			}
+			char view_label[GPU_PROFILER_MAX_RESOURCE_NAME_LENGTH] = {};
+			snprintf(
+				view_label,
+				sizeof(view_label),
+				"%s attachment[%d]",
+				desc.label ? desc.label : "(unnamed image)",
+				slice_idx
+			);
+			gpu_profiler_register_view_name(attachment_views[slice_idx].value(), view_label);
 		}
 
 		return attachment_views[slice_idx].value();

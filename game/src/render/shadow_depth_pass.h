@@ -267,7 +267,7 @@ namespace ShadowDepthPass
 						bindings.vertex_buffers[0] = render_view.vertex_buffer;
 						bindings.index_buffer = render_view.index_buffer;
 						bindings.views[0] = object.storage_buffer.get_storage_view();
-						sg_apply_bindings(&bindings);
+						gpu_apply_bindings(&bindings);
 						sg_draw(0, render_view.index_count, 1);
 					}
 				}
@@ -368,7 +368,7 @@ namespace ShadowDepthPass
 					bindings.vertex_buffers[0] = render_view.vertex_buffer;
 					bindings.index_buffer = render_view.index_buffer;
 					bindings.views[0] = object.storage_buffer.get_storage_view();
-					sg_apply_bindings(&bindings);
+					gpu_apply_bindings(&bindings);
 					sg_draw(0, render_view.index_count, 1);
 				}
 			}

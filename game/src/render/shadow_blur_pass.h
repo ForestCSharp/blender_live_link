@@ -79,7 +79,7 @@ namespace ShadowBlurPass
 					},
 					.samplers[0] = in_sampler,
 				};
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 				sg_draw(0, 6, 1);
 			}
 		);
@@ -101,7 +101,7 @@ namespace ShadowBlurPass
 					},
 					.samplers[0] = in_sampler,
 				};
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 				sg_draw(0, 6, 1);
 			}
 		);

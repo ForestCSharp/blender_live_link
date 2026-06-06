@@ -246,7 +246,7 @@ public:
 								},
 								.samplers[0] = in_state.gpu.linear_sampler,
 							};
-							sg_apply_bindings(&bindings);
+							gpu_apply_bindings(&bindings);
 							sg_draw(0, render_view.index_count, 1);
 						}
 					}
@@ -305,7 +305,7 @@ public:
 						[1] = in_state.gpu.nearest_sampler,
 					},
 				};
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 
 				sg_draw(0,6,1);
 			}
@@ -333,7 +333,7 @@ public:
 					},
 					.samplers[0] = in_state.gpu.nearest_sampler,
 				};
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 
 				sg_draw(0,6,1);
 			}
@@ -382,7 +382,7 @@ public:
 							[1] = in_state.gpu.nearest_sampler,
 						},
 					};
-					sg_apply_bindings(&bindings);
+					gpu_apply_bindings(&bindings);
 
 				sg_draw(0,6,1);
 			}
@@ -427,7 +427,7 @@ public:
 					},
 					.samplers[0] = in_state.gpu.linear_sampler,
 				};
-				sg_apply_bindings(&bindings);
+				gpu_apply_bindings(&bindings);
 				sg_dispatch(1, 1, 1);
 			}
 			{

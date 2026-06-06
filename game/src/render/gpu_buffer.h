@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "render/gpu_profiler_resources.h"
 #include "sokol/sokol_gfx.h"
 
 #include <cassert>
@@ -157,6 +158,14 @@ public:
 					.buffer = get_gpu_buffer(),
 				}
 			});
+			char view_label[GPU_PROFILER_MAX_RESOURCE_NAME_LENGTH] = {};
+			snprintf(
+				view_label,
+				sizeof(view_label),
+				"%s storage",
+				label.has_value() ? label->c_str() : "(unnamed buffer)"
+			);
+			gpu_profiler_register_view_name(storage_view.value(), view_label);
 		}
 		return storage_view.value();
 	}

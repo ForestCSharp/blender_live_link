@@ -37,6 +37,51 @@ static const char* render_pass_format_cascade_debug_label(const char* base_label
 	return out_label;
 }
 
+static void render_pass_format_attachment_writes(const sg_attachments& in_attachments, bool in_swapchain, char* out_writes, size_t in_writes_size)
+{
+	if (!out_writes || in_writes_size == 0)
+	{
+		return;
+	}
+
+	out_writes[0] = '\0';
+	if (in_swapchain)
+	{
+		snprintf(out_writes, in_writes_size, "%s", "Swapchain");
+		return;
+	}
+
+	for (i32 color_index = 0; color_index < SG_MAX_COLOR_ATTACHMENTS; ++color_index)
+	{
+		const sg_view view = in_attachments.colors[color_index];
+		if (view.id == SG_INVALID_ID)
+		{
+			continue;
+		}
+
+		const char* view_name = gpu_profiler_lookup_view_name(view);
+		char fallback_name[64] = {};
+		if (!view_name)
+		{
+			snprintf(fallback_name, sizeof(fallback_name), "color attachment:%u", view.id);
+			view_name = fallback_name;
+		}
+		gpu_profiler_append_dependency_name(out_writes, in_writes_size, view_name);
+	}
+
+	if (in_attachments.depth_stencil.id != SG_INVALID_ID)
+	{
+		const char* view_name = gpu_profiler_lookup_view_name(in_attachments.depth_stencil);
+		char fallback_name[64] = {};
+		if (!view_name)
+		{
+			snprintf(fallback_name, sizeof(fallback_name), "depth attachment:%u", in_attachments.depth_stencil.id);
+			view_name = fallback_name;
+		}
+		gpu_profiler_append_dependency_name(out_writes, in_writes_size, view_name);
+	}
+}
+
 struct RenderPassOutputDesc {
 	sg_pixel_format pixel_format	= SG_PIXELFORMAT_NONE;
 	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
@@ -513,6 +558,9 @@ public: // Functions
 
 			{
 				CPU_TIMING_SCOPE(pass_debug_label);
+				char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
+				render_pass_format_attachment_writes(pass.attachments, render_to_swapchain, writes, sizeof(writes));
+				gpu_frame_timings_set_next_scope_writes(writes);
 				GpuDebugScope debug_scope(pass_debug_label);
 
 				if (pipeline.id != SG_INVALID_ID)
@@ -570,6 +618,9 @@ public: // Functions
 
 			{
 				CPU_TIMING_SCOPE(pass_debug_label);
+				char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
+				render_pass_format_attachment_writes(scratch_attachment, false, writes, sizeof(writes));
+				gpu_frame_timings_set_next_scope_writes(writes);
 				GpuDebugScope debug_scope(pass_debug_label);
 
 				if (pipeline.id != SG_INVALID_ID)
