@@ -470,20 +470,6 @@ static bool gpu_profiler_event_is_drawable(const GpuTimingEvent& event)
 	return event.valid && !gpu_profiler_is_root_event(event) && (event.elapsed_ms > 0.0 || gpu_profiler_is_cpu_marker(event));
 }
 
-static const char* gpu_profiler_event_badge(const GpuTimingEvent& event)
-{
-	switch (event.timestamp_source)
-	{
-		case GpuTimingTimestampSource::CommandBuffer: return "CB";
-		case GpuTimingTimestampSource::D3D11Timestamp: return "D3D";
-		case GpuTimingTimestampSource::MetalEncoderSample: return "MTL";
-		case GpuTimingTimestampSource::MetalStageSample: return "STG";
-		case GpuTimingTimestampSource::CpuOnlyMarker: return "MARK";
-		case GpuTimingTimestampSource::Unknown:
-		default: return "?";
-	}
-}
-
 static ImU32 gpu_profiler_event_color(const GpuTimingEvent& event)
 {
 	switch (event.timestamp_confidence)
@@ -939,7 +925,7 @@ static void draw_gpu_profiler_timeline(i32 in_display_frame_count, f32 in_base_f
 			draw_list->AddRect(rect_min, rect_max, IM_COL32(12, 18, 18, 190), 2.0f);
 
 			char label[256];
-			snprintf(label, sizeof(label), "[%s] %s %.3f ms", gpu_profiler_event_badge(event), event.name, event.elapsed_ms);
+			snprintf(label, sizeof(label), "%s %.3f ms", event.name, event.elapsed_ms);
 			profiler_draw_clipped_label(draw_list, rect_min, rect_max, IM_COL32(255, 255, 255, 255), label);
 
 			const bool rect_hovered = profiler_rect_hovered(rect_min, rect_max);
