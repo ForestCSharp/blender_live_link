@@ -29,6 +29,10 @@ struct TessellationVertex
 };
 #endif
 
+/**
+ * TessellationPatch represents a single patch of tessellated geometry that will be emitted by the GPU.
+ * Each patch corresponds to a single triangle in the source mesh, and contains metadata about where to read source data and write generated data.
+ */
 struct TessellationPatch
 {
 	TESS_U32 source_index_offset TESS_INIT(0);
@@ -41,6 +45,10 @@ struct TessellationPatch
 	TESS_U32 padding0 TESS_INIT(0);
 };
 
+/**
+ * TessellationWeldPair represents a pair of vertices that should be welded together during tessellation to ensure a watertight result.
+ * Each edge in the source mesh that is shared by two triangles will produce one weld pair, and the GPU will use these pairs to identify which vertices to weld.
+ */
 struct TessellationWeldPair
 {
 	TESS_U32 vertex_index_a TESS_INIT(0);

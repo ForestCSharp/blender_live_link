@@ -53,21 +53,25 @@ void main()
 
 	for (uint local_vertex_index = gl_LocalInvocationID.x; local_vertex_index < tess_patch.vertex_count; local_vertex_index += gl_WorkGroupSize.x)
 	{
-		float b0;
-		float b1;
-		float b2;
+        // Compute the barycentric coordinates for the current vertex index
+		float b0, b1, b2;
 		tess_barycentric_from_index(n, local_vertex_index, b0, b1, b2);
 
+        // Get input vertex position
 		vec3 p0 = v0.position.xyz;
 		vec3 p1 = v1.position.xyz;
 		vec3 p2 = v2.position.xyz;
 
+        // Interpolate the vertex position using the barycentric coordinates
 		vec3 linear_position = p0 * b0 + p1 * b1 + p2 * b2;
+
+        // Compute the Phong projected position for the current vertex
 		vec3 projected_position =
 			phong_project(linear_position, p0, v0.normal.xyz) * b0 +
 			phong_project(linear_position, p1, v1.normal.xyz) * b1 +
 			phong_project(linear_position, p2, v2.normal.xyz) * b2;
 
+        // Interpolate the normal and texcoord attributes using the barycentric coordinates
 		TessellationVertex out_vertex;
 		out_vertex.position = vec4(mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0)), 1.0);
 		out_vertex.normal = vec4(normalize(v0.normal.xyz * b0 + v1.normal.xyz * b1 + v2.normal.xyz * b2), 0.0);
@@ -75,6 +79,7 @@ void main()
 		out_vertex.padding0 = 0.0;
 		out_vertex.padding1 = 0.0;
 
+        // Write the generated vertex to the output buffer
 		generated_vertices[tess_patch.generated_vertex_offset + local_vertex_index] = out_vertex;
 	}
 }
@@ -113,10 +118,12 @@ void main()
 		return;
 	}
 
+    // Get the tessellation patch for the current workgroup
 	TessellationPatch tess_patch = index_patches[patch_index];
 	uint n = max(tess_patch.tess_factor, 1u);
 	uint tri_count = n * n;
 
+    // For each triangle in the tessellated patch, compute the vertex indices and write them to the output buffers
 	for (uint local_tri_index = gl_LocalInvocationID.x; local_tri_index < tri_count; local_tri_index += gl_WorkGroupSize.x)
 	{
 		uint row = 0u;
@@ -136,9 +143,8 @@ void main()
 		uint col = tri_in_row / 2u;
 		bool upper = (tri_in_row & 1u) == 0u;
 
-		uint a;
-		uint b;
-		uint c;
+        // use tess_vertex_index to compute the indices for the triangle based on its row + column in the tessellation pattern
+		uint a, b, c;
 		if (upper)
 		{
 			a = tess_vertex_index(n, row, col);
@@ -152,12 +158,14 @@ void main()
 			c = tess_vertex_index(n, row + 1u, col);
 		}
 
+        // Write generated triangle indices to the output index buffer
 		uint out_index = tess_patch.generated_index_offset + local_tri_index * 3u;
 		uint vertex_offset = tess_patch.generated_vertex_offset;
 		generated_indices[out_index + 0u].value = vertex_offset + a;
 		generated_indices[out_index + 1u].value = vertex_offset + b;
 		generated_indices[out_index + 2u].value = vertex_offset + c;
 
+        // Write debug wireframe indices to the output wire index buffer
 		uint out_wire_index = tess_patch.generated_index_offset * 2u + local_tri_index * 6u;
 		generated_wire_indices[out_wire_index + 0u].value = vertex_offset + a;
 		generated_wire_indices[out_wire_index + 1u].value = vertex_offset + b;
@@ -220,18 +228,6 @@ void main()
 }
 @end
 
-@cs weld_corners
-
-@include_block tessellation_types
-
-layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
-
-void main()
-{
-}
-@end
-
 @program emit_vertices emit_vertices
 @program emit_indices emit_indices
 @program weld_edges weld_edges
-@program weld_corners weld_corners

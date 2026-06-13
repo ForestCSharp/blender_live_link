@@ -445,6 +445,8 @@ namespace Tessellation
 				}
 
 				const TessellationPatch& other_patch = tessellated.patches[other_edge.patch_index];
+
+                // Setup weld pairs for all corresponding vertices along the edge
 				for (u32 canonical_t = 1; canonical_t < factor; ++canonical_t)
 				{
 					const u32 other_t = other_edge.forward_matches_key ? canonical_t : factor - canonical_t;
