@@ -63,9 +63,39 @@ struct RigidBody
 	JPH::Body* jolt_body = nullptr;
 };
 
+struct ArmatureBone
+{
+	char* name = nullptr;
+	i32 parent_index = -1;
+	HMM_Mat4 inverse_bind_matrix = HMM_M4D(1.0f);
+};
+
+struct AnimationClip
+{
+	char* name = nullptr;
+	f32 frame_rate = 0.0f;
+	f32 duration_seconds = 0.0f;
+	i32 frame_count = 0;
+	i32 bone_count = 0;
+	HMM_Mat4* skin_matrices = nullptr;
+};
+
+struct Armature
+{
+	u32 bone_count = 0;
+	ArmatureBone* bones = nullptr;
+
+	u32 animation_count = 0;
+	AnimationClip* animations = nullptr;
+	i32 active_animation_index = 0;
+	f32 playback_time = 0.0f;
+	i32 current_frame = 0;
+};
+
 struct Object 
 {
 	i32 unique_id;
+	char* name = nullptr;
 	bool visibility;
 
 	Transform initial_transform;
@@ -85,6 +115,10 @@ struct Object
 	// Rigid Body Data, stored inline
 	bool has_rigid_body = false;
 	RigidBody rigid_body;
+
+	// Armature Data, stored inline
+	bool has_armature = false;
+	Armature armature;
 
 	// Character Data, stored inline
 	bool has_character = false;
@@ -286,6 +320,7 @@ void object_update_storage_buffer(Object& in_object)
 // Partially creates an object, but doesn't set up optional data (mesh, light, etc.)
 Object object_create(
 	i32 unique_id,	
+	char* name,
 	bool visibility,
 	HMM_Vec4 location, 
 	HMM_Quat rotation,
@@ -300,6 +335,7 @@ Object object_create(
 
 	Object out_object = {
 		.unique_id = unique_id,
+		.name = name,
 		.visibility = visibility,
 		.initial_transform = transform,
 		.current_transform = transform,
@@ -327,15 +363,46 @@ Object object_create(
 		// No rigid body yet
 		.has_rigid_body = false,
 		.rigid_body = {},
+
+		// No armature yet
+		.has_armature = false,
+		.armature = {},
 	};
 
 	return out_object;
+}
+
+void object_cleanup_armature(Object& in_object)
+{
+	if (!in_object.has_armature)
+	{
+		return;
+	}
+
+	for (u32 bone_idx = 0; bone_idx < in_object.armature.bone_count; ++bone_idx)
+	{
+		free(in_object.armature.bones[bone_idx].name);
+	}
+	free(in_object.armature.bones);
+
+	for (u32 animation_idx = 0; animation_idx < in_object.armature.animation_count; ++animation_idx)
+	{
+		free(in_object.armature.animations[animation_idx].name);
+		free(in_object.armature.animations[animation_idx].skin_matrices);
+	}
+	free(in_object.armature.animations);
+
+	in_object.armature = {};
+	in_object.has_armature = false;
 }
 
 // Cleans up data on object
 void object_cleanup_gpu_resources(Object& in_object)
 {
 	in_object.storage_buffer.destroy_gpu_buffer();
+	free(in_object.name);
+	in_object.name = nullptr;
+
 	if (in_object.has_mesh)
 	{
 		mesh_cleanup_tessellated_geometry(in_object.mesh);
@@ -356,10 +423,14 @@ void object_cleanup_gpu_resources(Object& in_object)
 		{
 			free(in_object.mesh.skinned_vertices);
 			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
+			free(in_object.mesh.skin_matrices);
+			in_object.mesh.skin_matrix_buffer.destroy_gpu_buffer();
 		}
 
 		free(in_object.mesh.material_indices);
 	}
+
+	object_cleanup_armature(in_object);
 }
 
 void object_cleanup(Object& in_object)

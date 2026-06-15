@@ -17,12 +17,55 @@ layout(location = 2) in vec2 texcoord;
 out vec4 world_position;
 out vec4 world_normal;
 out vec2 pixel_texcoord;
+out vec4 skin_debug_color;
+out flat int is_skinned_mesh;
 out flat int material_index;
 
 void main() {
 	world_position = object_data_array[0].model_matrix * position;
 	world_normal = object_data_array[0].rotation_matrix * normal;
 	pixel_texcoord = texcoord;
+	skin_debug_color = vec4(0.0);
+	is_skinned_mesh = 0;
+	material_index = object_data_array[0].material_index;
+
+    gl_Position = projection * view * world_position;
+}
+@end
+
+@vs skinned_vs
+
+layout(binding=0) uniform vs_params {
+    mat4 view;
+	mat4 projection;
+};
+
+@include_block object_data
+@include_block skinning_data
+
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec4 normal;
+layout(location = 2) in vec2 texcoord;
+layout(location = 3) in vec4 joint_indices;
+layout(location = 4) in vec4 joint_weights;
+
+out vec4 world_position;
+out vec4 world_normal;
+out vec2 pixel_texcoord;
+out vec4 skin_debug_color;
+out flat int is_skinned_mesh;
+out flat int material_index;
+
+void main() {
+	mat4 skin_matrix = get_skin_matrix(joint_indices, joint_weights);
+	vec4 skinned_position = skin_matrix * position;
+	vec4 skinned_normal = vec4(normalize((skin_matrix * vec4(normal.xyz, 0.0)).xyz), 0.0);
+
+	world_position = object_data_array[0].model_matrix * skinned_position;
+	world_normal = object_data_array[0].rotation_matrix * skinned_normal;
+	pixel_texcoord = texcoord;
+	skin_debug_color = get_skin_debug_color(joint_indices, joint_weights);
+	is_skinned_mesh = 1;
 	material_index = object_data_array[0].material_index;
 
     gl_Position = projection * view * world_position;
@@ -31,6 +74,10 @@ void main() {
 
 @fs fs
 @include_block material
+
+layout(binding=1) uniform fs_params {
+	int skinning_debug_view;
+};
 
 layout(binding=0) uniform sampler smp;
 
@@ -46,6 +93,8 @@ layout(binding=5) uniform texture2D emission_texture;
 in vec4 world_position;
 in vec4 world_normal;
 in vec2 pixel_texcoord;
+in vec4 skin_debug_color;
+in flat int is_skinned_mesh;
 in flat int material_index;
 
 out vec4 out_color;
@@ -55,6 +104,15 @@ out vec4 out_roughness_metallic_emissive;
 
 void main()
 {
+	if (skinning_debug_view != 0 && is_skinned_mesh != 0)
+	{
+		out_color = skin_debug_color;
+		out_roughness_metallic_emissive = vec4(1.0, 0.0, 1.0, 0.0);
+		out_position = world_position;
+		out_normal = normalize(world_normal);
+		return;
+	}
+
 	if (material_index >= 0)
 	{	
 		Material material = material_data_array[material_index];
@@ -167,4 +225,5 @@ void main()
 @end
 
 @program geometry vs fs
+@program skinned_geometry skinned_vs fs
 @program wireframe wire_vs wire_fs

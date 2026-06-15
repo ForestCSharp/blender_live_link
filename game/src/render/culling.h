@@ -54,6 +54,13 @@ CullResult cull_objects(map<i32, Object>& in_objects, const HMM_Mat4& in_view_pr
 			continue;
 		}
 
+		// TODO: Compute animated bounds for skinned meshes so they can be frustum culled safely.
+		if (object.mesh.has_skinned_vertices)
+		{
+			out_cull_result.objects[unique_id] = &object;
+			continue;
+		}
+
 		// Frustum Cull
 		BoundingBox object_bounding_box = object_get_bounding_box(object);
 		if (in_bounds_padding > 0.0f)

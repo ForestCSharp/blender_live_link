@@ -710,6 +710,12 @@ namespace Tessellation
 				continue;
 			}
 
+			if (object.mesh.has_skinned_vertices)
+			{
+				mesh_cleanup_tessellated_geometry(object.mesh);
+				continue;
+			}
+
 			const u32 used_vertices = (u32) state.tessellation.generated_vertex_count;
 			const u32 used_indices = (u32) state.tessellation.generated_index_count;
 			const u32 max_vertices = (u32) state.tessellation.max_generated_vertices;

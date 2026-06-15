@@ -120,6 +120,13 @@ struct State
 		bool is_simulating = true;
 	} runtime;
 
+	struct AnimationState
+	{
+		bool is_playing = true;
+		f32 playback_rate = 1.0f;
+		bool skinning_debug_view = false;
+	} animation;
+
 	struct WindowState
 	{
 		int width = 0;

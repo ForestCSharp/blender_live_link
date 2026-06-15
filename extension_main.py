@@ -40,6 +40,7 @@ if path_to_append not in sys.path:
 
 from .compiled_schemas.python import flatbuffers
 from .compiled_schemas.python.Blender.LiveLink import Armature
+from .compiled_schemas.python.Blender.LiveLink import Animation
 from .compiled_schemas.python.Blender.LiveLink import Bone 
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
@@ -162,33 +163,55 @@ class LiveLinkConnection():
             print(traceback.format_exc())
             print("Error: LiveLinkConnection::send")
 
-    def get_mesh(self, obj, dependency_graph):
-        # Evaluate Modifiers
-        obj_evaluated = obj.evaluated_get(dependency_graph)
-        # Get a copy of the mesh data
-        mesh = obj_evaluated.data 
+    def matrix_to_column_major_array(self, matrix):
+        matrix_4x4 = matrix.to_4x4()
+        return np.array(
+            [matrix_4x4[row][col] for col in range(4) for row in range(4)],
+            dtype=np.float32
+        )
 
-        if obj.mode == 'EDIT':
-            # TODO: we shouldn't do this for meshes that are too complex
-            bm = bmesh.from_edit_mesh(mesh)
-            new_mesh = bpy.data.meshes.new("Modified_Mesh")
-            bm.to_mesh(new_mesh)
+    def make_flatbuffer_matrix(self, builder, matrix):
+        matrix_elements_fb = builder.CreateNumpyVector(self.matrix_to_column_major_array(matrix))
+        Matrix.Start(builder)
+        Matrix.AddElements(builder, matrix_elements_fb)
+        return Matrix.End(builder)
 
-            bm = bmesh.new()
-            bm.from_mesh(new_mesh)
-            bmesh.ops.triangulate(bm, faces=bm.faces[:])
-            bm.to_mesh(new_mesh)
+    def get_mesh(self, obj, dependency_graph, use_rest_pose=False):
+        disabled_modifiers = []
+        if use_rest_pose:
+            for modifier in obj.modifiers:
+                if modifier.type == 'ARMATURE' and modifier.show_viewport:
+                    disabled_modifiers.append(modifier)
+                    modifier.show_viewport = False
+            bpy.context.view_layer.update()
 
-            return new_mesh 
-        else:
-            # create a new bmesh and set its data from our mesh data
+        try:
+            if obj.mode == 'EDIT':
+                # TODO: we shouldn't do this for meshes that are too complex
+                bm = bmesh.from_edit_mesh(obj.data)
+                mesh = bpy.data.meshes.new("Modified_Mesh")
+                bm.to_mesh(mesh)
+            else:
+                # Evaluate non-armature modifiers, then copy into an owned mesh.
+                obj_evaluated = obj.evaluated_get(dependency_graph)
+                evaluated_mesh = obj_evaluated.to_mesh()
+                try:
+                    mesh = evaluated_mesh.copy()
+                    mesh.name = "LiveLink_Mesh"
+                finally:
+                    obj_evaluated.to_mesh_clear()
+
             bm = bmesh.new()
             bm.from_mesh(mesh)
-            # triangulate the mesh
             bmesh.ops.triangulate(bm, faces=bm.faces[:])
-            # assign back to mesh
             bm.to_mesh(mesh)
+            bm.free()
             return mesh
+        finally:
+            for modifier in disabled_modifiers:
+                modifier.show_viewport = True
+            if disabled_modifiers:
+                bpy.context.view_layer.update()
 
     def get_mesh_armature(self, in_object):
         if not in_object or in_object.type != 'MESH':
@@ -206,6 +229,117 @@ class LiveLinkConnection():
     
         # No armature found, return None
         return None
+
+    def iter_action_fcurves(self, action):
+        if not action:
+            return
+
+        seen = set()
+
+        def yield_fcurve(fcurve):
+            fcurve_id = id(fcurve)
+            if fcurve_id in seen:
+                return
+            seen.add(fcurve_id)
+            yield fcurve
+
+        try:
+            for fcurve in action.fcurves:
+                yield from yield_fcurve(fcurve)
+        except Exception:
+            pass
+
+        # Blender's newer layered Action data can keep fcurves under strips and
+        # channel bags instead of the legacy action.fcurves collection.
+        for layer in getattr(action, "layers", []):
+            for strip in getattr(layer, "strips", []):
+                for channelbag in getattr(strip, "channelbags", []):
+                    for fcurve in getattr(channelbag, "fcurves", []):
+                        yield from yield_fcurve(fcurve)
+
+    def action_targets_armature(self, action, armature_obj):
+        if not action:
+            return False
+
+        bone_names = {bone.name for bone in armature_obj.data.bones}
+        for fcurve in self.iter_action_fcurves(action):
+            data_path = fcurve.data_path
+            if not data_path.startswith('pose.bones["'):
+                continue
+
+            # data_path format is usually pose.bones["Bone"].location, etc.
+            parts = data_path.split('"')
+            if len(parts) >= 2 and parts[1] in bone_names:
+                return True
+
+        return False
+
+    def get_armature_actions(self, armature_obj):
+        active_action = None
+        if armature_obj.animation_data:
+            active_action = armature_obj.animation_data.action
+
+        active_actions = []
+        if self.action_targets_armature(active_action, armature_obj):
+            active_actions.append(active_action)
+
+        remaining_actions = []
+        for action in bpy.data.actions:
+            if action == active_action:
+                continue
+            if self.action_targets_armature(action, armature_obj):
+                remaining_actions.append(action)
+
+        remaining_actions.sort(key=lambda action: action.name)
+        return active_actions + remaining_actions
+
+    def make_flatbuffer_animation(self, builder, armature_obj, action, bones):
+        scene = bpy.context.scene
+        frame_rate = scene.render.fps / scene.render.fps_base
+        frame_start = int(np.floor(action.frame_range[0]))
+        frame_end = int(np.ceil(action.frame_range[1]))
+        frame_count = max(1, frame_end - frame_start + 1)
+        bone_count = len(bones)
+
+        old_frame = scene.frame_current
+        old_subframe = scene.frame_subframe
+        if armature_obj.animation_data is None:
+            armature_obj.animation_data_create()
+        old_action = armature_obj.animation_data.action
+
+        skin_matrices = np.zeros(frame_count * bone_count * 16, dtype=np.float32)
+        try:
+            armature_obj.animation_data.action = action
+            for frame_idx, frame in enumerate(range(frame_start, frame_end + 1)):
+                scene.frame_set(frame)
+                bpy.context.view_layer.update()
+
+                for bone_idx, bone in enumerate(bones):
+                    pose_bone = armature_obj.pose.bones.get(bone.name)
+                    if pose_bone:
+                        skin_matrix = pose_bone.matrix @ bone.matrix_local.inverted()
+                    else:
+                        skin_matrix = bone.matrix_local @ bone.matrix_local.inverted()
+
+                    matrix_offset = (frame_idx * bone_count + bone_idx) * 16
+                    skin_matrices[matrix_offset:matrix_offset + 16] = self.matrix_to_column_major_array(skin_matrix)
+        finally:
+            armature_obj.animation_data.action = old_action
+            scene.frame_set(old_frame, subframe=old_subframe)
+            bpy.context.view_layer.update()
+
+        animation_name_fb = builder.CreateString(action.name)
+        skin_matrices_fb = builder.CreateNumpyVector(skin_matrices)
+        duration_seconds = frame_count / frame_rate if frame_rate > 0.0 else 0.0
+
+        Animation.Start(builder)
+        Animation.AddName(builder, animation_name_fb)
+        Animation.AddFrameRate(builder, frame_rate)
+        Animation.AddDurationSeconds(builder, duration_seconds)
+        Animation.AddFrameCount(builder, frame_count)
+        Animation.AddBoneCount(builder, bone_count)
+        Animation.AddSkinMatrices(builder, skin_matrices_fb)
+        return Animation.End(builder)
  
     def make_flatbuffer_object(self, builder, obj, dependency_graph, referenced_materials):
         # Allocate string for object name
@@ -214,7 +348,8 @@ class LiveLinkConnection():
         # Mesh Data
         mesh_fb = None
         if obj.type == 'MESH': 
-            mesh = self.get_mesh(obj, dependency_graph)
+            mesh_armature = self.get_mesh_armature(obj)
+            mesh = self.get_mesh(obj, dependency_graph, mesh_armature is not None)
 
             vertex_count = len(mesh.vertices)
             loop_count = len(mesh.loops)
@@ -278,16 +413,17 @@ class LiveLinkConnection():
             mesh_indices_fb   = builder.CreateNumpyVector(indices)
 
             # --- Optional skinning data prep ---
-            mesh_armature = self.get_mesh_armature(obj)
             mesh_joint_indices_fb = None
             mesh_joint_weights_fb = None
+            mesh_to_armature_fb = None
+            armature_to_mesh_fb = None
             if mesh_armature:
                 # Map bone -> index
                 bone_index_map = {bone.name: i for i, bone in enumerate(mesh_armature.data.bones)}
                 group_names = {vg.index: vg.name for vg in obj.vertex_groups}
 
                 # Temporary arrays (per original vertex)
-                joints_per_vert  = np.zeros((vertex_count, 4), dtype=np.uint16)
+                joints_per_vert  = np.zeros((vertex_count, 4), dtype=np.int32)
                 weights_per_vert = np.zeros((vertex_count, 4), dtype=np.float32)
 
                 # Iterate over vertices and determine bone influences
@@ -317,6 +453,15 @@ class LiveLinkConnection():
                 mesh_joint_weights  = weights_per_vert[unique_keys['v']]
                 mesh_joint_indices_fb = builder.CreateNumpyVector(mesh_joint_indices.flatten())
                 mesh_joint_weights_fb = builder.CreateNumpyVector(mesh_joint_weights.flatten())
+
+                mesh_to_armature_fb = self.make_flatbuffer_matrix(
+                    builder,
+                    mesh_armature.matrix_world.inverted() @ obj.matrix_world
+                )
+                armature_to_mesh_fb = self.make_flatbuffer_matrix(
+                    builder,
+                    obj.matrix_world.inverted() @ mesh_armature.matrix_world
+                )
 
             # --- Material IDs (optional) ---
             # Get Materials
@@ -350,6 +495,8 @@ class LiveLinkConnection():
             # Optional armature id
             if mesh_armature is not None:
                 Mesh.AddArmatureId(builder, mesh_armature.session_uid)
+                Mesh.AddMeshToArmature(builder, mesh_to_armature_fb)
+                Mesh.AddArmatureToMesh(builder, armature_to_mesh_fb)
             else:
                 Mesh.AddArmatureId(builder, -1)
 
@@ -359,28 +506,15 @@ class LiveLinkConnection():
         armature_fb = None
         if obj.type == 'ARMATURE':
             print("Found Armature!")
-            armature = obj.data
-            #FCS TODO: HERE!!!!!!!
-
-            # Dictionary to store inverse bind matrices
-            inverse_bind_matrices = {}
-
-            # Iterate through all bones in the armature
+            bone_index_map = {bone.name: i for i, bone in enumerate(obj.data.bones)}
             bones_fb = []
             for bone in obj.data.bones:
-
-                # Create flatbuffer string for bone name
                 bone_name_fb = builder.CreateString(bone.name)
 
-                # Create optional flatbuffer string for parent bone name
                 bone_parent_name = bone.parent.name if bone.parent else None
-                bone_parent_name_fb = builder.CreateString(bone.name) if bone_parent_name else None
-
-                # Get the bone's world-space matrix in the bind pose
-                # bone.matrix_local is the bone's transformation in armature space
-                bone_matrix = obj.matrix_world @ bone.matrix_local 
-                # Compute the inverse bind matrix
-                bone_inverse_bind_matrix = bone_matrix.inverted()
+                bone_parent_name_fb = builder.CreateString(bone_parent_name) if bone_parent_name else None
+                bone_parent_index = bone_index_map.get(bone_parent_name, -1)
+                bone_inverse_bind_matrix_fb = self.make_flatbuffer_matrix(builder, bone.matrix_local.inverted())
 
                 print(f"Bone: {bone.name} Parent: {bone_parent_name}")
 
@@ -388,7 +522,8 @@ class LiveLinkConnection():
                 Bone.AddName(builder, bone_name_fb)
                 if bone_parent_name_fb:
                     Bone.AddParentName(builder, bone_parent_name_fb)
-                #FCS TODO: Bone.AddInverseBindMatrix
+                Bone.AddParentIndex(builder, bone_parent_index)
+                Bone.AddInverseBindMatrix(builder, bone_inverse_bind_matrix_fb)
                 bones_fb.append(Bone.End(builder))
 
             # Create flatbuffers vector of bones
@@ -397,9 +532,25 @@ class LiveLinkConnection():
                 builder.PrependUOffsetTRelative(bone_fb)
             armature_bones_fb = builder.EndVector()
 
+            actions = self.get_armature_actions(obj)
+            if actions:
+                print(f"Armature {obj.name}: exporting {len(actions)} animation(s): {', '.join(action.name for action in actions)}")
+            else:
+                print(f"Armature {obj.name}: no compatible pose-bone actions found")
+
+            animations_fb = []
+            for action in actions:
+                animations_fb.append(self.make_flatbuffer_animation(builder, obj, action, obj.data.bones))
+
+            Armature.ArmatureStartAnimationsVector(builder, len(animations_fb))
+            for animation_fb in reversed(animations_fb):
+                builder.PrependUOffsetTRelative(animation_fb)
+            armature_animations_fb = builder.EndVector()
+
             # Add Bones to armature object when creating it
             Armature.Start(builder)
             Armature.AddBones(builder, armature_bones_fb)
+            Armature.AddAnimations(builder, armature_animations_fb)
             armature_fb = Armature.End(builder) 
 
         # Light Info
@@ -532,19 +683,52 @@ class LiveLinkConnection():
         # referenced materials, keyed by session_uid and updated in self.make_flatbuffer_object
         referenced_materials = {}
 
-        # Build up objects to be added to scene objects vector
-        live_link_objects = []
+        # Build up objects to be added to scene objects vector. A live-linked
+        # skinned mesh needs its armature data even when the armature object is
+        # hidden or not explicitly live-linked in Blender.
+        objects_to_export = []
+        exported_object_ids = set()
+
+        def queue_export_object(blender_object):
+            if not blender_object:
+                return
+            object_id = blender_object.session_uid
+            if object_id in exported_object_ids:
+                return
+            exported_object_ids.add(object_id)
+            objects_to_export.append(blender_object)
+
+        def armature_is_referenced_by_live_linked_mesh(armature_object):
+            for scene_object in bpy.context.scene.objects:
+                if scene_object.type != 'MESH':
+                    continue
+                if not scene_object.live_link_settings.enable_live_link:
+                    continue
+                if self.get_mesh_armature(scene_object) == armature_object:
+                    return True
+            return False
+
         for blender_object in in_object_list: 
-            # Only add if enable_live_link is set
-            if (blender_object.live_link_settings.enable_live_link):
-                live_link_objects.append(
-                    self.make_flatbuffer_object(
-                        builder, 
-                        blender_object, 
-                        dependency_graph, 
-                        referenced_materials
-                    )
+            if blender_object.live_link_settings.enable_live_link:
+                queue_export_object(blender_object)
+
+                if blender_object.type == 'MESH':
+                    mesh_armature = self.get_mesh_armature(blender_object)
+                    if mesh_armature:
+                        queue_export_object(mesh_armature)
+            elif blender_object.type == 'ARMATURE' and armature_is_referenced_by_live_linked_mesh(blender_object):
+                queue_export_object(blender_object)
+
+        live_link_objects = []
+        for blender_object in objects_to_export:
+            live_link_objects.append(
+                self.make_flatbuffer_object(
+                    builder,
+                    blender_object,
+                    dependency_graph,
+                    referenced_materials
                 )
+            )
 
         # actually create the scene objects vector
         Update.UpdateStartObjectsVector(builder, len(live_link_objects))
@@ -1169,4 +1353,3 @@ def unregister():
 # This allows you to run the script directly from Blender's Text editor
 if __name__ == "__main__":
     register()
-

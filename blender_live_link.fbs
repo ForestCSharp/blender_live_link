@@ -56,18 +56,32 @@ table Mesh
 
 	// Armature this mesh is bound to
 	armature_id		: int = -1;
+	mesh_to_armature : Matrix;
+	armature_to_mesh : Matrix;
 }
 
 table Bone
 {
 	name				: string;
 	parent_name			: string;
+	parent_index		: int = -1;
 	inverse_bind_matrix	: Matrix;
+}
+
+table Animation
+{
+	name				: string;
+	frame_rate			: float;
+	duration_seconds	: float;
+	frame_count			: int;
+	bone_count			: int;
+	skin_matrices		: [float]; // frame-major, bone-major, column-major 4x4 armature-space matrices
 }
 
 table Armature
 {
-	bones : [Bone];
+	bones		: [Bone];
+	animations	: [Animation];
 }
 
 struct RigidBody

@@ -27,6 +27,9 @@ namespace ShadowDepthPass
 	}
 
 	optional<sg_shader> shader;
+	optional<sg_shader> skinned_shader;
+	optional<sg_pipeline> pipeline;
+	optional<sg_pipeline> skinned_pipeline;
 
 	const i32 num_pass_outputs = 1;
 	const i32 ShadowMapResolution = 2048;
@@ -147,6 +150,50 @@ namespace ShadowDepthPass
 		return desc;
 	}
 
+	sg_pipeline get_pipeline(sg_pixel_format depth_format)
+	{
+		if (!pipeline.has_value())
+		{
+			pipeline = sg_make_pipeline(make_pipeline_desc(depth_format));
+		}
+
+		return pipeline.value();
+	}
+
+	sg_pipeline get_skinned_pipeline(sg_pixel_format depth_format)
+	{
+		if (!skinned_shader.has_value())
+		{
+			skinned_shader = sg_make_shader(shadow_depth_skinned_shadow_depth_shader_desc(sg_query_backend()));
+		}
+
+		if (!skinned_pipeline.has_value())
+		{
+			sg_pipeline_desc desc = {};
+			desc.shader = skinned_shader.value();
+			desc.layout.buffers[0].stride = sizeof(Vertex);
+			desc.layout.buffers[1].stride = sizeof(SkinnedVertex);
+			desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT2;
+			desc.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[3].buffer_index = 1;
+			desc.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[4].buffer_index = 1;
+			desc.depth.pixel_format = depth_format;
+			desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
+			desc.depth.write_enabled = true;
+			desc.color_count = num_pass_outputs;
+			desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
+			desc.index_type = SG_INDEXTYPE_UINT32;
+			desc.cull_mode = SG_CULLMODE_NONE;
+			desc.label = "skinned-shadow-depth-pipeline";
+			skinned_pipeline = sg_make_pipeline(desc);
+		}
+
+		return skinned_pipeline.value();
+	}
+
 	RenderPassDesc make_render_pass_desc(sg_pixel_format depth_format)
 	{
 		RenderPassDesc desc = {};
@@ -264,9 +311,13 @@ namespace ShadowDepthPass
 						MeshRenderView render_view = mesh_get_render_view(mesh);
 
 						sg_bindings bindings = {};
-						bindings.vertex_buffers[0] = render_view.vertex_buffer;
-						bindings.index_buffer = render_view.index_buffer;
 						bindings.views[0] = object.storage_buffer.get_storage_view();
+						const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
+						sg_apply_pipeline(uses_skinning
+							? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
+							: get_pipeline(SG_PIXELFORMAT_DEPTH));
+						sg_apply_uniforms(0, SG_RANGE(vs_params));
+						mesh_apply_render_bindings(bindings, mesh, render_view);
 						gpu_apply_bindings(&bindings);
 						sg_draw(0, render_view.index_count, 1);
 					}
@@ -365,9 +416,13 @@ namespace ShadowDepthPass
 					MeshRenderView render_view = mesh_get_render_view(mesh);
 
 					sg_bindings bindings = {};
-					bindings.vertex_buffers[0] = render_view.vertex_buffer;
-					bindings.index_buffer = render_view.index_buffer;
 					bindings.views[0] = object.storage_buffer.get_storage_view();
+					const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
+					sg_apply_pipeline(uses_skinning
+						? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
+						: get_pipeline(SG_PIXELFORMAT_DEPTH));
+					sg_apply_uniforms(0, SG_RANGE(vs_params));
+					mesh_apply_render_bindings(bindings, mesh, render_view);
 					gpu_apply_bindings(&bindings);
 					sg_draw(0, render_view.index_count, 1);
 				}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/stretchy_buffer.h"
+#include "render/gpu_buffer.h"
 #include "render/render_types.h"
 #include "shaders/tessellation_common.h"
 
@@ -16,6 +17,10 @@ struct MeshInitData
 	u32 num_vertices = 0;
 	Vertex* vertices = nullptr;
 	SkinnedVertex* skinned_vertices = nullptr;
+	u32 skin_matrix_count = 0;
+	i32 armature_id = -1;
+	HMM_Mat4 mesh_to_armature = HMM_M4D(1.0f);
+	HMM_Mat4 armature_to_mesh = HMM_M4D(1.0f);
 
 	u32 num_material_indices = 0;
 	i32* material_indices = nullptr;
@@ -147,6 +152,10 @@ MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 
 		// Unused data
 		.skinned_vertices = nullptr,
+		.skin_matrix_count = 0,
+		.armature_id = -1,
+		.mesh_to_armature = HMM_M4D(1.0f),
+		.armature_to_mesh = HMM_M4D(1.0f),
 		.num_material_indices = 0,
 		.material_indices = nullptr,
 	};
@@ -169,6 +178,12 @@ struct Mesh
 	bool has_skinned_vertices;
 	SkinnedVertex* skinned_vertices;
 	GpuBuffer<SkinnedVertex> skinned_vertex_buffer;
+	u32 skin_matrix_count;
+	HMM_Mat4* skin_matrices;
+	GpuBuffer<HMM_Mat4> skin_matrix_buffer;
+	i32 armature_id;
+	HMM_Mat4 mesh_to_armature;
+	HMM_Mat4 armature_to_mesh;
 
 	u32 material_indices_count;
 	i32* material_indices;
@@ -244,6 +259,11 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 		}),	
 		.has_skinned_vertices = false,
 		.skinned_vertices = in_init_data.skinned_vertices,
+		.skin_matrix_count = 0,
+		.skin_matrices = nullptr,
+		.armature_id = in_init_data.armature_id,
+		.mesh_to_armature = in_init_data.mesh_to_armature,
+		.armature_to_mesh = in_init_data.armature_to_mesh,
 		.material_indices_count = in_init_data.num_material_indices,
 		.material_indices = in_init_data.material_indices,
 		.bounding_box = bounding_box,
@@ -252,6 +272,13 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 	if (in_init_data.skinned_vertices != nullptr)
 	{
 		u64 skinned_vertices_size = sizeof(SkinnedVertex) * in_init_data.num_vertices;
+		out_mesh.skin_matrix_count = MAX(in_init_data.skin_matrix_count, 1);
+		out_mesh.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * out_mesh.skin_matrix_count);
+		for (u32 matrix_idx = 0; matrix_idx < out_mesh.skin_matrix_count; ++matrix_idx)
+		{
+			out_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+		}
+
 		out_mesh.has_skinned_vertices = true;
 		out_mesh.skinned_vertex_buffer = GpuBuffer((GpuBufferDesc<SkinnedVertex>){
 			.data = in_init_data.skinned_vertices,
@@ -261,6 +288,15 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 				.storage_buffer = true,
 			},
 			.label = "Mesh::skinned_vertex_buffer",
+		});
+		out_mesh.skin_matrix_buffer = GpuBuffer((GpuBufferDesc<HMM_Mat4>){
+			.data = nullptr,
+			.size = sizeof(HMM_Mat4) * out_mesh.skin_matrix_count,
+			.usage = {
+				.storage_buffer = true,
+				.stream_update = true,
+			},
+			.label = "Mesh::skin_matrix_buffer",
 		});
 	}
 
@@ -289,6 +325,23 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 		.wire_index_count = in_mesh.wire_index_count,
 		.is_tessellated = false,
 	};
+}
+
+bool mesh_render_view_uses_skinning(const Mesh& in_mesh, const MeshRenderView& in_render_view)
+{
+	return in_mesh.has_skinned_vertices && !in_render_view.is_tessellated;
+}
+
+void mesh_apply_render_bindings(sg_bindings& out_bindings, Mesh& in_mesh, const MeshRenderView& in_render_view)
+{
+	out_bindings.vertex_buffers[0] = in_render_view.vertex_buffer;
+	out_bindings.index_buffer = in_render_view.index_buffer;
+
+	if (mesh_render_view_uses_skinning(in_mesh, in_render_view))
+	{
+		out_bindings.vertex_buffers[1] = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
+		out_bindings.views[6] = in_mesh.skin_matrix_buffer.get_storage_view();
+	}
 }
 
 void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)

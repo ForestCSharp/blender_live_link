@@ -20,6 +20,30 @@ void main() {
 }
 @end
 
+@vs skinned_vs
+
+layout(binding=0) uniform vs_params {
+    mat4 view;
+	mat4 projection;
+};
+
+@include_block object_data
+@include_block skinning_data
+
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec4 normal;
+layout(location = 2) in vec2 texcoord;
+layout(location = 3) in vec4 joint_indices;
+layout(location = 4) in vec4 joint_weights;
+
+void main() {
+	mat4 skin_matrix = get_skin_matrix(joint_indices, joint_weights);
+	vec4 skinned_position = skin_matrix * position;
+	vec4 world_position = object_data_array[0].model_matrix * skinned_position;
+    gl_Position = projection * view * world_position;
+}
+@end
+
 @fs fs
 out vec4 frag_color;
 
@@ -52,3 +76,4 @@ void main() {
 @end
 
 @program shadow_depth vs fs
+@program skinned_shadow_depth skinned_vs fs

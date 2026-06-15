@@ -11,6 +11,8 @@ namespace GeometryPass
 {
 	// this is lazily created the first time we request the GeometryPass desc
 	optional<sg_shader> shader;		
+	optional<sg_shader> skinned_shader;
+	map<sg_pixel_format, sg_pipeline> skinned_pipelines;
 	optional<sg_shader> wireframe_shader;
 	optional<sg_pipeline> wireframe_pipeline;
 
@@ -94,6 +96,47 @@ namespace GeometryPass
 			},
 			.debug_label = "Geometry",
 		};
+	}
+
+	sg_pipeline get_skinned_pipeline(sg_pixel_format depth_format)
+	{
+		if (!skinned_shader.has_value())
+		{
+			skinned_shader = sg_make_shader(geometry_skinned_geometry_shader_desc(sg_query_backend()));
+		}
+
+		if (skinned_pipelines.find(depth_format) != skinned_pipelines.end())
+		{
+			return skinned_pipelines[depth_format];
+		}
+
+		{
+			sg_pipeline_desc desc = {};
+			desc.shader = skinned_shader.value();
+			desc.layout.buffers[0].stride = sizeof(Vertex);
+			desc.layout.buffers[1].stride = sizeof(SkinnedVertex);
+			desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT2;
+			desc.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[3].buffer_index = 1;
+			desc.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT4;
+			desc.layout.attrs[4].buffer_index = 1;
+			desc.depth.pixel_format = depth_format;
+			desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
+			desc.depth.write_enabled = true;
+			desc.color_count = num_pass_outputs;
+			desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA32F;
+			desc.colors[1].pixel_format = SG_PIXELFORMAT_RGBA32F;
+			desc.colors[2].pixel_format = SG_PIXELFORMAT_RGBA32F;
+			desc.colors[3].pixel_format = SG_PIXELFORMAT_RGBA32F;
+			desc.index_type = SG_INDEXTYPE_UINT32;
+			desc.cull_mode = SG_CULLMODE_NONE;
+			desc.label = "skinned-geometry-pipeline";
+			skinned_pipelines[depth_format] = sg_make_pipeline(desc);
+		}
+
+		return skinned_pipelines[depth_format];
 	}
 
 	sg_pipeline get_wireframe_pipeline(sg_pixel_format depth_format)

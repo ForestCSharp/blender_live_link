@@ -1,6 +1,7 @@
 // C std lib I/O and stdlib
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #ifndef WITH_DEBUG_UI
 #define WITH_DEBUG_UI 1
@@ -209,6 +210,40 @@ namespace flatbuffer_helpers
 			in_flatbuffers_quat->w()
 		);
 	}
+
+	HMM_Mat4 to_hmm_mat4(const Blender::LiveLink::Matrix* in_flatbuffers_matrix)
+	{
+		HMM_Mat4 out_matrix = HMM_M4D(1.0f);
+		if (!in_flatbuffers_matrix || !in_flatbuffers_matrix->elements() || in_flatbuffers_matrix->elements()->size() < 16)
+		{
+			return out_matrix;
+		}
+
+		auto elements = in_flatbuffers_matrix->elements();
+		for (i32 col = 0; col < 4; ++col)
+		{
+			for (i32 row = 0; row < 4; ++row)
+			{
+				out_matrix.Elements[col][row] = elements->Get(col * 4 + row);
+			}
+		}
+
+		return out_matrix;
+	}
+}
+
+char* copy_flatbuffer_string(const flatbuffers::String* in_string)
+{
+	if (!in_string)
+	{
+		return nullptr;
+	}
+
+	const char* source = in_string->c_str();
+	const size_t length = strlen(source);
+	char* result = (char*) malloc(length + 1);
+	memcpy(result, source, length + 1);
+	return result;
 }
 
 static void draw_debug_text(int font_index, const char* title, uint8_t r, uint8_t g, uint8_t b)
@@ -337,6 +372,126 @@ bool object_is_sun_light(const Object& in_object)
 	return in_object.has_light && in_object.light.type == LightType::Sun;
 }
 
+AnimationClip* armature_get_active_animation(Armature& in_armature)
+{
+	if (in_armature.animation_count == 0 || !in_armature.animations)
+	{
+		return nullptr;
+	}
+
+	in_armature.active_animation_index = CLAMP(in_armature.active_animation_index, 0, (i32)in_armature.animation_count - 1);
+	return &in_armature.animations[in_armature.active_animation_index];
+}
+
+void mesh_reset_skin_matrices(Mesh& in_mesh)
+{
+	if (!in_mesh.has_skinned_vertices || !in_mesh.skin_matrices)
+	{
+		return;
+	}
+
+	for (u32 matrix_idx = 0; matrix_idx < in_mesh.skin_matrix_count; ++matrix_idx)
+	{
+		in_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+	}
+}
+
+void mesh_upload_skin_matrices(Mesh& in_mesh)
+{
+	if (!in_mesh.has_skinned_vertices || !in_mesh.skin_matrices || in_mesh.skin_matrix_count == 0)
+	{
+		return;
+	}
+
+	in_mesh.skin_matrix_buffer.update_gpu_buffer((sg_range) {
+		.ptr = in_mesh.skin_matrices,
+		.size = sizeof(HMM_Mat4) * in_mesh.skin_matrix_count,
+	});
+}
+
+void rewind_skinned_animations()
+{
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		if (!object.has_armature)
+		{
+			continue;
+		}
+
+		object.armature.playback_time = 0.0f;
+		object.armature.current_frame = 0;
+	}
+}
+
+void update_skinned_animations(f32 delta_time)
+{
+	state.animation.playback_rate = fmaxf(0.0f, state.animation.playback_rate);
+
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		if (!object.has_armature)
+		{
+			continue;
+		}
+
+		AnimationClip* animation = armature_get_active_animation(object.armature);
+		if (!animation || animation->frame_count <= 0 || animation->frame_rate <= 0.0f)
+		{
+			object.armature.current_frame = 0;
+			continue;
+		}
+
+		if (state.runtime.is_simulating && state.animation.is_playing && state.animation.playback_rate > 0.0f)
+		{
+			const f32 duration = animation->duration_seconds > 0.0f
+				? animation->duration_seconds
+				: (f32)animation->frame_count / animation->frame_rate;
+			object.armature.playback_time += delta_time * state.animation.playback_rate;
+			if (duration > 0.0f)
+			{
+				object.armature.playback_time = fmodf(object.armature.playback_time, duration);
+			}
+		}
+
+		object.armature.current_frame = CLAMP((i32)(object.armature.playback_time * animation->frame_rate), 0, animation->frame_count - 1);
+	}
+
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		if (!object.has_mesh || !object.mesh.has_skinned_vertices)
+		{
+			continue;
+		}
+
+		Mesh& mesh = object.mesh;
+		mesh_reset_skin_matrices(mesh);
+
+		if (state.scene.objects.contains(mesh.armature_id))
+		{
+			Object& armature_object = state.scene.objects[mesh.armature_id];
+			if (armature_object.has_armature)
+			{
+				AnimationClip* animation = armature_get_active_animation(armature_object.armature);
+				if (animation && animation->skin_matrices && animation->frame_count > 0 && animation->bone_count > 0)
+				{
+					const i32 frame_idx = CLAMP(armature_object.armature.current_frame, 0, animation->frame_count - 1);
+					const u32 bone_count = (u32)MIN(animation->bone_count, (i32)mesh.skin_matrix_count);
+					for (u32 bone_idx = 0; bone_idx < bone_count; ++bone_idx)
+					{
+						const HMM_Mat4& armature_skin_matrix = animation->skin_matrices[frame_idx * animation->bone_count + bone_idx];
+						mesh.skin_matrices[bone_idx] = HMM_MulM4(
+							mesh.armature_to_mesh,
+							HMM_MulM4(armature_skin_matrix, mesh.mesh_to_armature)
+						);
+					}
+				}
+			}
+		}
+
+		mesh_upload_skin_matrices(mesh);
+	}
+}
+
 void refresh_primary_sun_id()
 {
 	if (state.scene.primary_sun_id.has_value())
@@ -435,6 +590,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 				Object game_object = object_create(
 					unique_id,
+					copy_flatbuffer_string(object->name()),
 					visibility,
 					location,
 					rotation,
@@ -446,6 +602,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					u32 num_vertices = 0;
 					Vertex* vertices = nullptr;
 					SkinnedVertex* skinned_vertices = nullptr;
+					u32 skin_matrix_count = 0;
 
 					auto flatbuffer_positions = object_mesh->positions();
 					auto flatbuffer_normals = object_mesh->normals();
@@ -496,9 +653,15 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 						printf("We have skinning data!\n");
 
+						i32 max_joint_index = 0;
 						skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 						{
+							for (i32 influence_idx = 0; influence_idx < 4; ++influence_idx)
+							{
+								max_joint_index = MAX(max_joint_index, flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx));
+							}
+
 							skinned_vertices[vertex_idx] = {
 								.joint_indices = {
 									.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
@@ -516,6 +679,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 							//FCS TODO: PRINT
 						}
+						skin_matrix_count = (u32) max_joint_index + 1;
 					}
 
 					u32 num_indices = 0;
@@ -558,6 +722,10 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							.num_vertices = num_vertices,
 							.vertices = vertices,
 							.skinned_vertices = skinned_vertices,
+							.skin_matrix_count = skin_matrix_count,
+							.armature_id = armature_id,
+							.mesh_to_armature = flatbuffer_helpers::to_hmm_mat4(object_mesh->mesh_to_armature()),
+							.armature_to_mesh = flatbuffer_helpers::to_hmm_mat4(object_mesh->armature_to_mesh()),
 
 							.num_material_indices = num_material_indices,
 							.material_indices = material_indices,
@@ -571,6 +739,86 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						free(vertices);
 						free(skinned_vertices);
 						free(material_indices);
+					}
+				}
+
+				if (auto object_armature = object->armature())
+				{
+					game_object.has_armature = true;
+					game_object.armature = {};
+
+					if (auto flatbuffer_bones = object_armature->bones())
+					{
+						game_object.armature.bone_count = flatbuffer_bones->size();
+						game_object.armature.bones = (ArmatureBone*) calloc(game_object.armature.bone_count, sizeof(ArmatureBone));
+
+						for (u32 bone_idx = 0; bone_idx < game_object.armature.bone_count; ++bone_idx)
+						{
+							auto flatbuffer_bone = flatbuffer_bones->Get(bone_idx);
+							if (!flatbuffer_bone)
+							{
+								continue;
+							}
+
+							game_object.armature.bones[bone_idx] = {
+								.name = copy_flatbuffer_string(flatbuffer_bone->name()),
+								.parent_index = flatbuffer_bone->parent_index(),
+								.inverse_bind_matrix = flatbuffer_helpers::to_hmm_mat4(flatbuffer_bone->inverse_bind_matrix()),
+							};
+						}
+					}
+
+					if (auto flatbuffer_animations = object_armature->animations())
+					{
+						game_object.armature.animation_count = flatbuffer_animations->size();
+						game_object.armature.animations = (AnimationClip*) calloc(game_object.armature.animation_count, sizeof(AnimationClip));
+
+						for (u32 animation_idx = 0; animation_idx < game_object.armature.animation_count; ++animation_idx)
+						{
+							auto flatbuffer_animation = flatbuffer_animations->Get(animation_idx);
+							if (!flatbuffer_animation)
+							{
+								continue;
+							}
+
+							AnimationClip& animation = game_object.armature.animations[animation_idx];
+							animation.name = copy_flatbuffer_string(flatbuffer_animation->name());
+							animation.frame_rate = flatbuffer_animation->frame_rate();
+							animation.duration_seconds = flatbuffer_animation->duration_seconds();
+							animation.frame_count = flatbuffer_animation->frame_count();
+							animation.bone_count = flatbuffer_animation->bone_count();
+
+							const i32 matrix_count = MAX(0, animation.frame_count * animation.bone_count);
+							if (matrix_count > 0)
+							{
+								animation.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * matrix_count);
+								for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+								{
+									animation.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+								}
+
+								if (auto flatbuffer_skin_matrices = flatbuffer_animation->skin_matrices())
+								{
+									const i32 available_float_count = flatbuffer_skin_matrices->size();
+									for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+									{
+										const i32 base_float_idx = matrix_idx * 16;
+										if (base_float_idx + 15 >= available_float_count)
+										{
+											break;
+										}
+
+										for (i32 col = 0; col < 4; ++col)
+										{
+											for (i32 row = 0; row < 4; ++row)
+											{
+												animation.skin_matrices[matrix_idx].Elements[col][row] = flatbuffer_skin_matrices->Get(base_float_idx + col * 4 + row);
+											}
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 
@@ -1531,6 +1779,92 @@ void frame(void)
 		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
 		}
 
+		if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			if (ImGui::Button("Play"))
+			{
+				state.animation.is_playing = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Pause"))
+			{
+				state.animation.is_playing = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Rewind"))
+			{
+				rewind_skinned_animations();
+			}
+
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::DragFloat("Playback Rate", &state.animation.playback_rate, 0.01f, 0.0f, 4.0f, "%.2fx");
+			ImGui::Checkbox("Skinning Debug View", &state.animation.skinning_debug_view);
+
+			f32 animation_label_width = 0.0f;
+			for (auto& [unique_id, object] : state.scene.objects)
+			{
+				if (!object.has_armature || object.armature.animation_count == 0 || !object.armature.animations)
+				{
+					continue;
+				}
+
+				const char* object_name = object.name ? object.name : "<Unnamed Object>";
+				const std::string animation_label = std::string(object_name) + " Animation:";
+				const f32 label_width = ImGui::CalcTextSize(animation_label.c_str()).x;
+				if (label_width > animation_label_width)
+				{
+					animation_label_width = label_width;
+				}
+			}
+
+			const f32 animation_combo_x = ImGui::GetCursorPosX() + animation_label_width + ImGui::GetStyle().ItemSpacing.x;
+			for (auto& [unique_id, object] : state.scene.objects)
+			{
+				if (!object.has_armature || object.armature.animation_count == 0 || !object.armature.animations)
+				{
+					continue;
+				}
+
+				const char* object_name = object.name ? object.name : "<Unnamed Object>";
+				const std::string animation_label = std::string(object_name) + " Animation:";
+				ImGui::PushID(unique_id);
+				ImGui::TextUnformatted(animation_label.c_str());
+				ImGui::SameLine(animation_combo_x);
+				ImGui::SetNextItemWidth(180.0f);
+
+				i32 selected_animation_index = CLAMP(
+					object.armature.active_animation_index,
+					0,
+					(i32)object.armature.animation_count - 1
+				);
+				const char* selected_animation_name = object.armature.animations[selected_animation_index].name
+					? object.armature.animations[selected_animation_index].name
+					: "<Unnamed Animation>";
+
+				if (ImGui::BeginCombo("##Animation", selected_animation_name))
+				{
+					for (u32 animation_idx = 0; animation_idx < object.armature.animation_count; ++animation_idx)
+					{
+						const AnimationClip& animation = object.armature.animations[animation_idx];
+						const char* animation_name = animation.name ? animation.name : "<Unnamed Animation>";
+						const bool is_selected = selected_animation_index == (i32)animation_idx;
+						if (ImGui::Selectable(animation_name, is_selected))
+						{
+							object.armature.active_animation_index = (i32)animation_idx;
+							object.armature.playback_time = 0.0f;
+							object.armature.current_frame = 0;
+						}
+						if (is_selected)
+						{
+							ImGui::SetItemDefaultFocus();
+						}
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::PopID();
+			}
+		}
+
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Indent();
@@ -1844,6 +2178,11 @@ void frame(void)
 			// Jolt Physics Update
 			jolt_update(delta_time);
 		}
+	}
+
+	{
+		CPU_TIMING_SCOPE("Skinned Animation");
+		update_skinned_animations((f32)delta_time);
 	}
 
 	{
@@ -2299,10 +2638,12 @@ void frame(void)
 				[&](const i32)
 				{
 				    geometry_vs_params_t vs_params;
+					geometry_fs_params_t fs_params;
 					{
 						CPU_TIMING_SCOPE("Geometry Uniforms");
 						vs_params.view = view_matrix;
 						vs_params.projection = projection_matrix;
+						fs_params.skinning_debug_view = state.animation.skinning_debug_view ? 1 : 0;
 
 						// Apply Vertex Uniforms
 						sg_apply_uniforms(0, SG_RANGE(vs_params));
@@ -2374,8 +2715,6 @@ void frame(void)
 								GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
 
 								sg_bindings bindings = {
-									.vertex_buffers[0] = render_view.vertex_buffer,
-									.index_buffer = render_view.index_buffer,
 									.views = {
 										[0] = object.storage_buffer.get_storage_view(),
 										[1] = get_materials_buffer().get_storage_view(),
@@ -2386,6 +2725,13 @@ void frame(void)
 									},
 									.samplers[0] = state.gpu.linear_sampler,
 								};
+								const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
+								sg_apply_pipeline(uses_skinning
+									? GeometryPass::get_skinned_pipeline(sglue_swapchain().depth_format)
+									: get_render_pass(ERenderPass::Geometry).pipeline);
+								sg_apply_uniforms(0, SG_RANGE(vs_params));
+								sg_apply_uniforms(1, SG_RANGE(fs_params));
+								mesh_apply_render_bindings(bindings, mesh, render_view);
 								gpu_apply_bindings(&bindings);
 								sg_draw(0, render_view.index_count, 1);
 							}
@@ -2405,8 +2751,13 @@ void frame(void)
 
 							if (object.has_mesh)
 							{
-								MeshRenderView render_view = mesh_get_render_view(object.mesh);
+								Mesh& mesh = object.mesh;
+								MeshRenderView render_view = mesh_get_render_view(mesh);
 								if (render_view.wire_index_count == 0)
+								{
+									continue;
+								}
+								if (mesh_render_view_uses_skinning(mesh, render_view))
 								{
 									continue;
 								}

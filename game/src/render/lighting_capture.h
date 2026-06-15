@@ -203,6 +203,9 @@ public:
 				geometry_vs_params_t vs_params;
 				vs_params.view = view_matrix;
 				vs_params.projection = projection_matrix;
+				geometry_fs_params_t geometry_fs_params = {
+					.skinning_debug_view = 0,
+				};
 
 				// Apply Vertex Uniforms
 				sg_apply_uniforms(0, SG_RANGE(vs_params));
@@ -234,8 +237,6 @@ public:
 							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images.items[material.emission_color_image_index] : in_state.gpu.default_image;
 
 							sg_bindings bindings = {
-								.vertex_buffers[0] = render_view.vertex_buffer,
-								.index_buffer = render_view.index_buffer,
 								.views = {
 									[0] = object.storage_buffer.get_storage_view(),
 									[1] = get_materials_buffer().get_storage_view(),
@@ -246,6 +247,13 @@ public:
 								},
 								.samplers[0] = in_state.gpu.linear_sampler,
 							};
+							const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
+							sg_apply_pipeline(uses_skinning
+								? GeometryPass::get_skinned_pipeline(geometry_pass.get_depth_output().get_desc().pixel_format)
+								: geometry_pass.pipeline);
+							sg_apply_uniforms(0, SG_RANGE(vs_params));
+							sg_apply_uniforms(1, SG_RANGE(geometry_fs_params));
+							mesh_apply_render_bindings(bindings, mesh, render_view);
 							gpu_apply_bindings(&bindings);
 							sg_draw(0, render_view.index_count, 1);
 						}
