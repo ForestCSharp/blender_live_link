@@ -4,3 +4,6 @@
 /flatbuffers/build/*
 
 .DS_Store
+
+# Blender backup files
+*.blend1
