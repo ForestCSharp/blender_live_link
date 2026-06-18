@@ -35,6 +35,26 @@ namespace Tessellation
 		i32 _padding0 = 0;
 	};
 
+	struct PlanParams
+	{
+		HMM_Mat4 model_matrix = HMM_M4D(1.0f);
+		HMM_Vec4 camera_position = HMM_V4(0, 0, 0, 1);
+		i32 source_triangle_count = 0;
+		i32 base_triangle_index = 0;
+		i32 max_patch_count = 0;
+		i32 max_vertex_count = 0;
+		i32 max_index_count = 0;
+		i32 max_factor = 1;
+		i32 virtual_patches_enabled = 0;
+		i32 virtual_patch_max_depth = 0;
+		f32 fov_radians = 0.0f;
+		f32 render_height = 0.0f;
+		f32 target_pixels_per_segment = 1.0f;
+		f32 padding0 = 0.0f;
+	};
+
+	static_assert(sizeof(PlanParams) == 128, "PlanParams must match tessellation plan_params shader layout.");
+
 	struct QuantizedPosition
 	{
 		i32 x = 0;
@@ -109,10 +129,18 @@ namespace Tessellation
 
 	std::optional<sg_shader> emit_vertices_shader;
 	std::optional<sg_shader> emit_indices_shader;
+	std::optional<sg_shader> clear_counters_shader;
+	std::optional<sg_shader> plan_patches_shader;
+	std::optional<sg_shader> emit_vertices_gpu_shader;
+	std::optional<sg_shader> emit_indices_gpu_shader;
 	std::optional<sg_shader> weld_edges_shader;
 
 	sg_pipeline emit_vertices_pipeline = {};
 	sg_pipeline emit_indices_pipeline = {};
+	sg_pipeline clear_counters_pipeline = {};
+	sg_pipeline plan_patches_pipeline = {};
+	sg_pipeline emit_vertices_gpu_pipeline = {};
+	sg_pipeline emit_indices_gpu_pipeline = {};
 	sg_pipeline weld_edges_pipeline = {};
 
 	FactorLookupEntry factor_lookup_entries[MAX_FACTOR + 1] = {};
@@ -185,6 +213,14 @@ namespace Tessellation
 		local_position.Z *= transform.scale.Z;
 		HMM_Vec3 rotated_position = HMM_RotateV3Q(local_position, transform.rotation);
 		return rotated_position + transform.location.XYZ;
+	}
+
+	HMM_Mat4 transform_matrix(const Transform& transform)
+	{
+		HMM_Mat4 scale_matrix = HMM_Scale(transform.scale);
+		HMM_Mat4 rotation_matrix = HMM_QToM4(transform.rotation);
+		HMM_Mat4 translation_matrix = HMM_Translate(transform.location.XYZ);
+		return HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));
 	}
 
 	PatchDomain full_patch_domain()
@@ -525,19 +561,43 @@ namespace Tessellation
 		});
 		factor_lookup_buffer.get_storage_view();
 
+		clear_counters_shader = sg_make_shader(tessellation_clear_counters_shader_desc(sg_query_backend()));
+		plan_patches_shader = sg_make_shader(tessellation_plan_patches_shader_desc(sg_query_backend()));
 		emit_vertices_shader = sg_make_shader(tessellation_emit_vertices_shader_desc(sg_query_backend()));
+		emit_vertices_gpu_shader = sg_make_shader(tessellation_emit_vertices_gpu_shader_desc(sg_query_backend()));
 		emit_indices_shader = sg_make_shader(tessellation_emit_indices_shader_desc(sg_query_backend()));
+		emit_indices_gpu_shader = sg_make_shader(tessellation_emit_indices_gpu_shader_desc(sg_query_backend()));
 		weld_edges_shader = sg_make_shader(tessellation_weld_edges_shader_desc(sg_query_backend()));
 
+		clear_counters_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = clear_counters_shader.value(),
+			.label = "tessellation-clear-counters-pipeline",
+		});
+		plan_patches_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = plan_patches_shader.value(),
+			.label = "tessellation-plan-patches-pipeline",
+		});
 		emit_vertices_pipeline = sg_make_pipeline((sg_pipeline_desc) {
 			.compute = true,
 			.shader = emit_vertices_shader.value(),
 			.label = "tessellation-emit-vertices-pipeline",
 		});
+		emit_vertices_gpu_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = emit_vertices_gpu_shader.value(),
+			.label = "tessellation-emit-vertices-gpu-pipeline",
+		});
 		emit_indices_pipeline = sg_make_pipeline((sg_pipeline_desc) {
 			.compute = true,
 			.shader = emit_indices_shader.value(),
 			.label = "tessellation-emit-indices-pipeline",
+		});
+		emit_indices_gpu_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = emit_indices_gpu_shader.value(),
+			.label = "tessellation-emit-indices-gpu-pipeline",
 		});
 		weld_edges_pipeline = sg_make_pipeline((sg_pipeline_desc) {
 			.compute = true,
@@ -547,6 +607,8 @@ namespace Tessellation
 
 		initialized = true;
 	}
+
+	bool buffer_readback_supported();
 
 	void reset_stats(State& state)
 	{
@@ -558,6 +620,8 @@ namespace Tessellation
 		state.tessellation.mesh_count = 0;
 		state.tessellation.overflowed_mesh_count = 0;
 		state.tessellation.max_factor_seen = 1;
+		state.tessellation.readback_supported = buffer_readback_supported();
+		state.tessellation.readback_age = 0;
 	}
 
 	void disable_all_meshes(State& state)
@@ -660,6 +724,209 @@ namespace Tessellation
 		}
 	}
 
+	bool buffer_readback_supported()
+	{
+		const sg_backend backend = sg_query_backend();
+		return backend == SG_BACKEND_D3D11 ||
+			backend == SG_BACKEND_METAL_IOS ||
+			backend == SG_BACKEND_METAL_MACOS ||
+			backend == SG_BACKEND_METAL_SIMULATOR;
+	}
+
+	void cleanup_gpu_slot(TessellatedGeometry::GpuSlot& slot)
+	{
+		slot.counters_buffer.destroy_gpu_buffer();
+		slot.patch_buffer.destroy_gpu_buffer();
+		slot.vertex_buffer.destroy_gpu_buffer();
+		slot.index_buffer.destroy_gpu_buffer();
+		slot.wire_index_buffer.destroy_gpu_buffer();
+		if (slot.counters_readback.impl)
+		{
+			sg_destroy_buffer_readback(slot.counters_readback);
+		}
+		slot = {};
+	}
+
+	bool ensure_gpu_slot(
+		TessellatedGeometry::GpuSlot& slot,
+		const u32 patch_capacity,
+		const u32 vertex_capacity,
+		const u32 index_capacity)
+	{
+		const u32 safe_patch_capacity = MAX(patch_capacity, 1u);
+		const u32 safe_vertex_capacity = MAX(vertex_capacity, 3u);
+		const u32 safe_index_capacity = MAX(index_capacity, 3u);
+		const u32 safe_wire_index_capacity = safe_index_capacity * 2u;
+		if (slot.patch_capacity >= safe_patch_capacity &&
+			slot.vertex_capacity >= safe_vertex_capacity &&
+			slot.index_capacity >= safe_index_capacity &&
+			slot.wire_index_capacity >= safe_wire_index_capacity &&
+			slot.counters_buffer.is_gpu_buffer_valid() &&
+			slot.counters_readback.impl)
+		{
+			return true;
+		}
+
+		cleanup_gpu_slot(slot);
+		slot.patch_capacity = safe_patch_capacity;
+		slot.vertex_capacity = safe_vertex_capacity;
+		slot.index_capacity = safe_index_capacity;
+		slot.wire_index_capacity = safe_wire_index_capacity;
+		slot.counters_buffer = GpuBuffer((GpuBufferDesc<TessellationCounters>) {
+			.data = nullptr,
+			.size = sizeof(TessellationCounters),
+			.usage = {
+				.storage_buffer = true,
+			},
+			.label = "TessellatedGeometry::gpu_slot::counters_buffer",
+		});
+		slot.patch_buffer = GpuBuffer((GpuBufferDesc<TessellationPatch>) {
+			.data = nullptr,
+			.size = sizeof(TessellationPatch) * slot.patch_capacity,
+			.usage = {
+				.storage_buffer = true,
+			},
+			.label = "TessellatedGeometry::gpu_slot::patch_buffer",
+		});
+		slot.vertex_buffer = GpuBuffer((GpuBufferDesc<Vertex>) {
+			.data = nullptr,
+			.size = sizeof(Vertex) * slot.vertex_capacity,
+			.usage = {
+				.vertex_buffer = true,
+				.storage_buffer = true,
+			},
+			.label = "TessellatedGeometry::gpu_slot::vertex_buffer",
+		});
+		slot.index_buffer = GpuBuffer((GpuBufferDesc<u32>) {
+			.data = nullptr,
+			.size = sizeof(u32) * slot.index_capacity,
+			.usage = {
+				.index_buffer = true,
+				.storage_buffer = true,
+			},
+			.label = "TessellatedGeometry::gpu_slot::index_buffer",
+		});
+		slot.wire_index_buffer = GpuBuffer((GpuBufferDesc<u32>) {
+			.data = nullptr,
+			.size = sizeof(u32) * slot.wire_index_capacity,
+			.usage = {
+				.index_buffer = true,
+				.storage_buffer = true,
+			},
+			.label = "TessellatedGeometry::gpu_slot::wire_index_buffer",
+		});
+		slot.counters_buffer.get_storage_view();
+		slot.patch_buffer.get_storage_view();
+		slot.vertex_buffer.get_storage_view();
+		slot.index_buffer.get_storage_view();
+		slot.wire_index_buffer.get_storage_view();
+		sg_buffer_readback_desc readback_desc = {
+			.size = sizeof(TessellationCounters),
+			.label = "TessellatedGeometry::gpu_slot::counters_readback",
+		};
+		slot.counters_readback = sg_make_buffer_readback(&readback_desc);
+		return slot.counters_readback.impl != 0;
+	}
+
+	void accumulate_gpu_slot_stats(State& state, TessellatedGeometry& tessellated)
+	{
+		if (!tessellated.active ||
+			!tessellated.gpu_planned ||
+			tessellated.active_gpu_slot >= TessellatedGeometry::GPU_SLOT_COUNT)
+		{
+			return;
+		}
+
+		const TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[tessellated.active_gpu_slot];
+		state.tessellation.source_triangle_count += (i32) slot.counters.source_triangle_count;
+		state.tessellation.patch_count += (i32) tessellated.patch_count;
+		state.tessellation.generated_vertex_count += (i32) tessellated.vertex_count;
+		state.tessellation.generated_index_count += (i32) tessellated.index_count;
+		state.tessellation.max_factor_seen = MAX(state.tessellation.max_factor_seen, (i32) slot.counters.max_factor_seen);
+		state.tessellation.mesh_count += 1;
+		state.tessellation.readback_age = MAX(state.tessellation.readback_age, (i32) tessellated.readback_age);
+	}
+
+	void poll_gpu_readbacks(State& state, Mesh& mesh)
+	{
+		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
+		if (!tessellated.gpu_planned)
+		{
+			return;
+		}
+
+		bool consumed_new_counts = false;
+		for (u32 slot_index = 0; slot_index < TessellatedGeometry::GPU_SLOT_COUNT; ++slot_index)
+		{
+			TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[slot_index];
+			if (!slot.readback_requested || !slot.counters_readback.impl)
+			{
+				continue;
+			}
+
+			const sg_buffer_readback_state readback_state = sg_query_buffer_readback_state(slot.counters_readback);
+			if (readback_state == SG_BUFFER_READBACKSTATE_PENDING)
+			{
+				continue;
+			}
+
+			slot.readback_requested = false;
+			if (readback_state != SG_BUFFER_READBACKSTATE_READY ||
+				!sg_consume_buffer_readback(slot.counters_readback, &slot.counters, sizeof(TessellationCounters)))
+			{
+				tessellated.readback_supported = false;
+				tessellated.active = false;
+				continue;
+			}
+
+			slot.has_counts = true;
+			consumed_new_counts = true;
+			tessellated.readback_supported = true;
+			if (slot.counters.overflowed ||
+				slot.counters.vertex_count == 0 ||
+				slot.counters.index_count == 0 ||
+				slot.counters.vertex_count > slot.vertex_capacity ||
+				slot.counters.index_count > slot.index_capacity ||
+				slot.counters.wire_index_count > slot.wire_index_capacity)
+			{
+				tessellated.active = false;
+				tessellated.overflowed = true;
+				state.tessellation.overflowed_mesh_count += 1;
+				continue;
+			}
+
+			tessellated.active_gpu_slot = slot_index;
+			tessellated.active = true;
+			tessellated.overflowed = false;
+			tessellated.patch_count = MIN(slot.counters.patch_count, slot.patch_capacity);
+			tessellated.vertex_count = slot.counters.vertex_count;
+			tessellated.index_count = slot.counters.index_count;
+			tessellated.wire_index_count = slot.counters.wire_index_count;
+			tessellated.readback_age = 0;
+		}
+
+		if (!consumed_new_counts && tessellated.active)
+		{
+			tessellated.readback_age += 1;
+		}
+		accumulate_gpu_slot_stats(state, tessellated);
+	}
+
+	u32 choose_gpu_plan_slot(TessellatedGeometry& tessellated)
+	{
+		for (u32 attempt = 0; attempt < TessellatedGeometry::GPU_SLOT_COUNT; ++attempt)
+		{
+			const u32 slot_index = (tessellated.next_gpu_slot + attempt) % TessellatedGeometry::GPU_SLOT_COUNT;
+			TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[slot_index];
+			if (slot_index != tessellated.active_gpu_slot && !slot.readback_requested)
+			{
+				tessellated.next_gpu_slot = (slot_index + 1u) % TessellatedGeometry::GPU_SLOT_COUNT;
+				return slot_index;
+			}
+		}
+		return TessellatedGeometry::GPU_SLOT_COUNT;
+	}
+
 	void build_edge_weld_pairs(Mesh& mesh)
 	{
 		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
@@ -741,7 +1008,7 @@ namespace Tessellation
 		tessellated.edge_weld_pair_count = (u32) tessellated.edge_weld_pairs.length();
 	}
 
-	bool prepare_mesh(
+	bool prepare_mesh_cpu(
 		State& state,
 		Object& object,
 		const Camera& camera,
@@ -754,6 +1021,7 @@ namespace Tessellation
 
 		tessellated.active = false;
 		tessellated.overflowed = false;
+		tessellated.gpu_planned = false;
 		tessellated.patches.reset();
 		tessellated.patch_count = 0;
 		tessellated.vertex_count = 0;
@@ -769,7 +1037,7 @@ namespace Tessellation
 		const u32 source_triangle_count = mesh.index_count / 3;
 		state.tessellation.source_triangle_count += source_triangle_count;
 
-		const bool use_per_triangle_factors = state.tessellation.mode == ETessellationMode::AdaptiveAngularPerTriangle;
+		const bool use_per_triangle_factors = false;
 		const PatchFactors mesh_factors = use_per_triangle_factors
 			? PatchFactors {}
 			: object_tessellation_factors(object, state, camera, fov_radians);
@@ -924,6 +1192,206 @@ namespace Tessellation
 		}
 	}
 
+	void dispatch_clear_counters(TessellatedGeometry::GpuSlot& slot)
+	{
+		sg_bindings bindings = {
+			.views = {
+				[0] = slot.counters_buffer.get_storage_view(),
+			},
+		};
+		const char* debug_label = "Tessellation Clear Counters";
+		{
+			CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
+			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+		}
+		{
+			GpuDebugScope debug_scope(debug_label);
+			sg_apply_pipeline(clear_counters_pipeline);
+			gpu_apply_bindings(&bindings);
+			sg_dispatch(1, 1, 1);
+		}
+		{
+			CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
+			sg_end_pass();
+		}
+	}
+
+	void dispatch_plan_patches(
+		State& state,
+		Object& object,
+		const Camera& camera,
+		const f32 fov_radians,
+		TessellatedGeometry::GpuSlot& slot,
+		const u32 source_triangle_count)
+	{
+		const char* debug_label = "Tessellation Plan Patches";
+		for (u32 base_triangle = 0; base_triangle < source_triangle_count; base_triangle += MAX_COMPUTE_GROUPS_PER_DISPATCH)
+		{
+			const u32 dispatch_count = MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, source_triangle_count - base_triangle);
+			PlanParams params = {
+				.model_matrix = transform_matrix(object.current_transform),
+				.camera_position = HMM_V4V(camera.location, 1.0f),
+				.source_triangle_count = (i32) source_triangle_count,
+				.base_triangle_index = (i32) base_triangle,
+				.max_patch_count = (i32) slot.patch_capacity,
+				.max_vertex_count = (i32) slot.vertex_capacity,
+				.max_index_count = (i32) slot.index_capacity,
+				.max_factor = state.tessellation.max_factor,
+				.virtual_patches_enabled = state.tessellation.virtual_patches_enabled ? 1 : 0,
+				.virtual_patch_max_depth = state.tessellation.virtual_patch_max_depth,
+				.fov_radians = fov_radians,
+				.render_height = (f32) state.window.render_height,
+				.target_pixels_per_segment = state.tessellation.target_pixels_per_segment,
+			};
+
+			sg_bindings bindings = {
+				.views = {
+					[0] = object.mesh.vertex_buffer.get_storage_view(),
+					[1] = object.mesh.index_buffer.get_storage_view(),
+					[2] = slot.patch_buffer.get_storage_view(),
+					[3] = slot.counters_buffer.get_storage_view(),
+				},
+			};
+
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
+				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
+			}
+			{
+				GpuDebugScope debug_scope(debug_label);
+				sg_apply_pipeline(plan_patches_pipeline);
+				sg_apply_uniforms(0, SG_RANGE(params));
+				gpu_apply_bindings(&bindings);
+				sg_dispatch((i32) dispatch_count, 1, 1);
+			}
+			{
+				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
+				sg_end_pass();
+			}
+		}
+	}
+
+	void emit_mesh_gpu(State& state, Mesh& mesh, TessellatedGeometry::GpuSlot& slot)
+	{
+		if (slot.patch_capacity == 0 || slot.vertex_capacity == 0 || slot.index_capacity == 0)
+		{
+			return;
+		}
+
+		{
+			sg_bindings bindings = {
+				.views = {
+					[0] = mesh.vertex_buffer.get_storage_view(),
+					[1] = mesh.index_buffer.get_storage_view(),
+					[2] = slot.patch_buffer.get_storage_view(),
+					[3] = slot.vertex_buffer.get_storage_view(),
+					[4] = slot.counters_buffer.get_storage_view(),
+				},
+			};
+			dispatch_patch_pipeline(emit_vertices_gpu_pipeline, "Tessellation Emit Vertices GPU", slot.patch_capacity, state.tessellation.phong_strength, bindings);
+		}
+
+		{
+			sg_bindings bindings = {
+				.views = {
+					[0] = slot.patch_buffer.get_storage_view(),
+					[1] = slot.index_buffer.get_storage_view(),
+					[2] = slot.wire_index_buffer.get_storage_view(),
+					[3] = slot.counters_buffer.get_storage_view(),
+				},
+			};
+			dispatch_patch_pipeline(emit_indices_gpu_pipeline, "Tessellation Emit Indices GPU", slot.patch_capacity, state.tessellation.phong_strength, bindings);
+		}
+	}
+
+	bool prepare_mesh_gpu(
+		State& state,
+		Object& object,
+		const Camera& camera,
+		const f32 fov_radians)
+	{
+		static bool unsupported_readback_warning_emitted = false;
+		Mesh& mesh = object.mesh;
+		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
+		tessellated.gpu_planned = true;
+		tessellated.readback_supported = buffer_readback_supported();
+		if (!tessellated.readback_supported)
+		{
+			if (!unsupported_readback_warning_emitted)
+			{
+				sg_buffer_readback_desc unsupported_readback_desc = {
+					.size = sizeof(TessellationCounters),
+					.label = "Tessellation unsupported readback probe",
+				};
+				sg_buffer_readback unsupported_readback = sg_make_buffer_readback(&unsupported_readback_desc);
+				if (unsupported_readback.impl)
+				{
+					sg_destroy_buffer_readback(unsupported_readback);
+				}
+				unsupported_readback_warning_emitted = true;
+			}
+			tessellated.active = false;
+			return false;
+		}
+
+		if (mesh.index_count < 3 || mesh.vertex_count == 0)
+		{
+			tessellated.active = false;
+			return false;
+		}
+
+		const u32 plan_slot_index = choose_gpu_plan_slot(tessellated);
+		if (plan_slot_index >= TessellatedGeometry::GPU_SLOT_COUNT)
+		{
+			return tessellated.active;
+		}
+
+		const u32 source_triangle_count = mesh.index_count / 3;
+		const u32 max_depth = state.tessellation.virtual_patches_enabled
+			? (u32) CLAMP(state.tessellation.virtual_patch_max_depth, 0, 4)
+			: 0u;
+		const u32 max_split_segments = 1u << max_depth;
+		const u64 worst_case_patch_count = (u64) source_triangle_count * (u64) max_split_segments * (u64) max_split_segments;
+		const u32 patch_capacity = (u32) MIN(worst_case_patch_count, (u64) state.tessellation.max_generated_patches);
+		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
+		const u64 worst_case_vertex_count = (u64) patch_capacity * (u64) vertex_count_for_factor(max_factor);
+		const u64 worst_case_index_count = (u64) patch_capacity * (u64) index_count_for_factor(max_factor);
+		const u32 vertex_capacity = (u32) MIN(worst_case_vertex_count, (u64) state.tessellation.max_generated_vertices);
+		const u32 index_capacity = (u32) MIN(worst_case_index_count, (u64) state.tessellation.max_generated_indices);
+
+		if (patch_capacity == 0 || vertex_capacity < 3 || index_capacity < 3)
+		{
+			tessellated.active = false;
+			return false;
+		}
+
+		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[plan_slot_index];
+		if (!ensure_gpu_slot(slot, patch_capacity, vertex_capacity, index_capacity))
+		{
+			tessellated.readback_supported = false;
+			tessellated.active = false;
+			return false;
+		}
+
+		slot.readback_requested = false;
+		slot.has_counts = false;
+		slot.counters = {};
+		dispatch_clear_counters(slot);
+		dispatch_plan_patches(state, object, camera, fov_radians, slot, source_triangle_count);
+		emit_mesh_gpu(state, mesh, slot);
+
+		if (sg_request_buffer_readback(slot.counters_readback, slot.counters_buffer.get_gpu_buffer(), 0, sizeof(TessellationCounters)))
+		{
+			slot.readback_requested = true;
+		}
+		else
+		{
+			tessellated.readback_supported = false;
+		}
+
+		return tessellated.active;
+	}
+
 	void dispatch_edge_weld(Mesh& mesh)
 	{
 		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
@@ -1016,6 +1484,7 @@ namespace Tessellation
 		state.tessellation.target_pixels_per_segment = fmaxf(state.tessellation.target_pixels_per_segment, 1.0f);
 		state.tessellation.phong_strength = CLAMP(state.tessellation.phong_strength, 0.0f, 1.0f);
 		state.tessellation.virtual_patch_max_depth = CLAMP(state.tessellation.virtual_patch_max_depth, 0, 4);
+		state.tessellation.max_generated_patches = MAX(state.tessellation.max_generated_patches, 1);
 		state.tessellation.max_generated_vertices = MAX(state.tessellation.max_generated_vertices, 3);
 		state.tessellation.max_generated_indices = MAX(state.tessellation.max_generated_indices, 3);
 		state.tessellation.bounds_padding = fmaxf(state.tessellation.bounds_padding, 0.0f);
@@ -1041,16 +1510,24 @@ namespace Tessellation
 				continue;
 			}
 
-			const u32 used_vertices = (u32) state.tessellation.generated_vertex_count;
-			const u32 used_indices = (u32) state.tessellation.generated_index_count;
-			const u32 max_vertices = (u32) state.tessellation.max_generated_vertices;
-			const u32 max_indices = (u32) state.tessellation.max_generated_indices;
-			const u32 remaining_vertices = used_vertices < max_vertices ? max_vertices - used_vertices : 0;
-			const u32 remaining_indices = used_indices < max_indices ? max_indices - used_indices : 0;
-
-			if (prepare_mesh(state, object, camera, fov_radians, remaining_vertices, remaining_indices))
+			if (state.tessellation.mode == ETessellationMode::AdaptiveAngularPerTriangle)
 			{
-				emit_mesh(state, object.mesh);
+				poll_gpu_readbacks(state, object.mesh);
+				prepare_mesh_gpu(state, object, camera, fov_radians);
+			}
+			else
+			{
+				const u32 used_vertices = (u32) state.tessellation.generated_vertex_count;
+				const u32 used_indices = (u32) state.tessellation.generated_index_count;
+				const u32 max_vertices = (u32) state.tessellation.max_generated_vertices;
+				const u32 max_indices = (u32) state.tessellation.max_generated_indices;
+				const u32 remaining_vertices = used_vertices < max_vertices ? max_vertices - used_vertices : 0;
+				const u32 remaining_indices = used_indices < max_indices ? max_indices - used_indices : 0;
+
+				if (prepare_mesh_cpu(state, object, camera, fov_radians, remaining_vertices, remaining_indices))
+				{
+					emit_mesh(state, object.mesh);
+				}
 			}
 		}
 	}

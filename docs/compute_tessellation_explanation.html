@@ -182,16 +182,16 @@
   <section class="card">
     <h2>Executive Summary</h2>
     <p>
-      Tessellation is a frame-local GPU geometry generation path. The CPU decides how many subdivisions each mesh gets,
-      allocates enough generated buffers, and uploads compact patch metadata. Compute shaders then emit vertices,
-      triangle indices, and wireframe line indices. Draw passes ask each mesh for a <code>MeshRenderView</code>, so the
-      same downstream rendering code can use either source geometry or tessellated geometry.
+      Tessellation is a frame-local GPU geometry generation path. Fixed and per-mesh adaptive modes still use CPU patch
+      planning, while per-triangle adaptive mode plans patches in compute and reads back a tiny counter buffer for draw
+      counts. Draw passes ask each mesh for a <code>MeshRenderView</code>, so the same downstream rendering code can use
+      either source geometry or tessellated geometry.
     </p>
     <div class="grid">
       <div class="card">
         <h3>Planning</h3>
-        <p><span class="tag">CPU</span><span class="tag">per frame</span></p>
-        <p>Choose a tessellation factor, count output vertices and indices, apply budgets, and prepare patch metadata.</p>
+        <p><span class="tag">CPU or compute</span><span class="tag">per frame</span></p>
+        <p>Choose patch factors, reserve generated ranges, apply budgets, and prepare compact patch metadata.</p>
       </div>
       <div class="card">
         <h3>Emission</h3>
@@ -231,11 +231,13 @@ SSAO reads geometry pass position/normal outputs</code></pre>
     the original live-link vertex and index buffers.
   </section>
 
-  <h2>CPU Planning</h2>
+  <h2>Patch Planning</h2>
   <p>
-    The renderer treats each source triangle as one or more tessellation patches. The CPU picks a factor for each patch,
-    computes exact output counts, checks the global budgets, builds patch records, and uploads them to
-    <code>TessellatedGeometry::patch_buffer</code>.
+    The renderer treats each source triangle as one or more tessellation patches. In <code>Fixed</code> and
+    <code>Adaptive Angular (Per Mesh)</code>, the CPU picks factors, computes exact output counts, checks budgets, and
+    uploads patch records. In <code>Adaptive Angular (Per Triangle)</code>, a compute shader performs the per-source-triangle
+    walk, chooses virtual patch splits, reserves output ranges with atomics, writes patch records, and fills a
+    <code>TessellationCounters</code> buffer.
   </p>
   <pre><code>vertices_per_patch = ((factor + 1) * (factor + 2)) / 2;
 indices_per_patch = factor * factor * 3;
@@ -244,13 +246,14 @@ generated_vertex_count += vertices_per_patch;
 generated_index_count += indices_per_patch;
 generated_wire_index_count = generated_index_count * 2;</code></pre>
   <p>
-    Buffer capacity grows only when needed. Once a mesh has enough GPU memory for the current counts, later frames can
-    reuse those buffers and only refresh patch data and generated contents.
+    CPU-planned buffer capacity grows from exact counts. GPU-planned per-triangle mode uses two in-flight slot buffers
+    sized by patch, vertex, and index budgets; rendering uses the most recent completed readback slot while the next slot
+    is planned and emitted.
   </p>
   <p>
-    In per-triangle mode, large source triangles can split into virtual patches before factor selection. A virtual patch
-    stores a smaller barycentric domain inside the original source triangle, so the shader can still read the same three
-    source vertices while generating denser local geometry.
+    In per-triangle mode, large source triangles split into virtual patches inside the planner shader before factor
+    selection. A virtual patch stores a smaller barycentric domain inside the original source triangle, so emission can
+    still read the same three source vertices while generating denser local geometry.
   </p>
 
   <h2>Tessellation Factors</h2>
@@ -523,9 +526,14 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
         <td>Caps virtual split density. Depth <code>2</code> allows up to <code>16</code> patches per source triangle.</td>
       </tr>
       <tr>
+        <td><code>Max Patches</code></td>
+        <td><code>256K</code></td>
+        <td>GPU-planned patch record capacity. Per-triangle planning overflows and falls back when this is exceeded.</td>
+      </tr>
+      <tr>
         <td><code>Max Vertices</code>, <code>Max Indices</code></td>
         <td><code>4M</code>, <code>12M</code></td>
-        <td>Global frame budgets. Meshes that would exceed remaining budget overflow and fall back.</td>
+        <td>Generated buffer budgets. Meshes that exceed their available generated range overflow and fall back.</td>
       </tr>
       <tr>
         <td><code>Bounds Padding</code></td>
@@ -539,8 +547,8 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     <h3>Debug Stats</h3>
     <p>
       The UI reports mesh count, overflow count, source triangle count, patch count, generated vertex/index counts,
-      edge weld pair count, and the maximum factor seen this frame. These numbers are reset and rebuilt every
-      <code>Tessellation::update()</code>.
+      edge weld pair count, maximum factor seen, readback backend support, and readback age. These numbers are reset and
+      rebuilt every <code>Tessellation::update()</code> from CPU-planned counts or the latest completed GPU counter readback.
     </p>
   </section>
 
@@ -561,16 +569,17 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       </p>
     </div>
     <div class="card">
-      <h3>CPU Counts</h3>
+      <h3>Readback Counts</h3>
       <p>
-        Sokol draw calls still use CPU-known counts. Compute emits geometry, but the CPU owns factor selection, counts,
-        budgets, and draw sizes.
+        Sokol draw calls still use CPU-visible counts. Per-triangle mode now selects factors and writes patch records in
+        compute, then reads back a tiny <code>TessellationCounters</code> buffer on Metal and D3D11. Unsupported backends
+        warn and fall back until their readback paths or indirect draw are implemented.
       </p>
     </div>
     <div class="card">
       <h3>Edge Morphing Only</h3>
       <p>
-        Per-triangle mode reduces visible boundary cracks, but it is not a full indirect allocation, occlusion culling,
+        Per-triangle mode reduces visible boundary cracks, but it is not an indirect draw path, occlusion culling,
         layered displacement, or mesh-shader compression path.
       </p>
     </div>

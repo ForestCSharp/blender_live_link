@@ -238,6 +238,7 @@ struct State
 		bool edge_welding = false;
 		bool virtual_patches_enabled = true;
 		i32 virtual_patch_max_depth = 2;
+		i32 max_generated_patches = 256 * 1024;
 		i32 max_generated_vertices = 4 * 1024 * 1024;
 		i32 max_generated_indices = 12 * 1024 * 1024;
 		f32 bounds_padding = 0.0f;
@@ -250,6 +251,8 @@ struct State
 		i32 mesh_count = 0;
 		i32 overflowed_mesh_count = 0;
 		i32 max_factor_seen = 1;
+		bool readback_supported = false;
+		i32 readback_age = 0;
 	} tessellation;
 
 	struct SkyState

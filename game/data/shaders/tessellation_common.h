@@ -9,11 +9,13 @@
 #if !defined(__cplusplus) || !defined(__STDC__)
 #define TESS_SHADER 1
 #define TESS_U32 uint
+#define TESS_I32 int
 #define TESS_F32 float
 #define TESS_INIT(value)
 #else
 #define TESS_SHADER 0
 #define TESS_U32 u32
+#define TESS_I32 i32
 #define TESS_F32 f32
 #define TESS_INIT(value) = value
 #endif
@@ -71,11 +73,35 @@ struct TessellationWeldPair
 	TESS_U32 padding1 TESS_INIT(0);
 };
 
+struct TessellationCounters
+{
+	TESS_U32 patch_count TESS_INIT(0);
+	TESS_U32 vertex_count TESS_INIT(0);
+	TESS_U32 index_count TESS_INIT(0);
+	TESS_U32 wire_index_count TESS_INIT(0);
+	TESS_U32 source_triangle_count TESS_INIT(0);
+	TESS_U32 overflowed TESS_INIT(0);
+	TESS_U32 max_factor_seen TESS_INIT(1);
+	TESS_U32 padding0 TESS_INIT(0);
+};
+
 #if TESS_SHADER
 struct TessellationIndex
 {
 	uint value;
 };
+
+uint tess_vertex_count_for_factor(uint factor)
+{
+	uint n = clamp(factor, 1u, 31u);
+	return ((n + 1u) * (n + 2u)) / 2u;
+}
+
+uint tess_index_count_for_factor(uint factor)
+{
+	uint n = clamp(factor, 1u, 31u);
+	return n * n * 3u;
+}
 
 uint tess_row_prefix(uint n, uint row)
 {

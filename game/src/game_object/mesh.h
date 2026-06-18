@@ -8,6 +8,7 @@
 static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout.");
 static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch must match shader storage layout.");
 static_assert(sizeof(TessellationWeldPair) == 16, "TessellationWeldPair must match shader storage layout.");
+static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters must match shader storage layout.");
 
 struct MeshInitData
 {	
@@ -28,8 +29,33 @@ struct MeshInitData
 
 struct TessellatedGeometry
 {
+	static constexpr u32 GPU_SLOT_COUNT = 2;
+
+	struct GpuSlot
+	{
+		bool readback_requested = false;
+		bool has_counts = false;
+		u32 patch_capacity = 0;
+		u32 vertex_capacity = 0;
+		u32 index_capacity = 0;
+		u32 wire_index_capacity = 0;
+		TessellationCounters counters = {};
+
+		GpuBuffer<TessellationCounters> counters_buffer;
+		GpuBuffer<TessellationPatch> patch_buffer;
+		GpuBuffer<Vertex> vertex_buffer;
+		GpuBuffer<u32> index_buffer;
+		GpuBuffer<u32> wire_index_buffer;
+		sg_buffer_readback counters_readback = {};
+	};
+
 	bool active = false;
 	bool overflowed = false;
+	bool gpu_planned = false;
+	bool readback_supported = false;
+	u32 active_gpu_slot = GPU_SLOT_COUNT;
+	u32 next_gpu_slot = 0;
+	u32 readback_age = 0;
 
 	u32 patch_count = 0;
 	u32 vertex_count = 0;
@@ -51,6 +77,8 @@ struct TessellatedGeometry
 	GpuBuffer<Vertex> vertex_buffer;
 	GpuBuffer<u32> index_buffer;
 	GpuBuffer<u32> wire_index_buffer;
+
+	GpuSlot gpu_slots[GPU_SLOT_COUNT];
 };
 
 struct MeshRenderView
@@ -307,6 +335,20 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 {
 	if (in_mesh.tessellated_geometry.active && in_mesh.tessellated_geometry.index_count > 0)
 	{
+		if (in_mesh.tessellated_geometry.gpu_planned &&
+			in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
+		{
+			TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
+			return (MeshRenderView) {
+				.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
+				.index_buffer = slot.index_buffer.get_gpu_buffer(),
+				.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
+				.index_count = in_mesh.tessellated_geometry.index_count,
+				.wire_index_count = in_mesh.tessellated_geometry.wire_index_count,
+				.is_tessellated = true,
+			};
+		}
+
 		return (MeshRenderView) {
 			.vertex_buffer = in_mesh.tessellated_geometry.vertex_buffer.get_gpu_buffer(),
 			.index_buffer = in_mesh.tessellated_geometry.index_buffer.get_gpu_buffer(),
@@ -352,6 +394,19 @@ void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
 	tessellated.vertex_buffer.destroy_gpu_buffer();
 	tessellated.index_buffer.destroy_gpu_buffer();
 	tessellated.wire_index_buffer.destroy_gpu_buffer();
+	for (u32 slot_index = 0; slot_index < TessellatedGeometry::GPU_SLOT_COUNT; ++slot_index)
+	{
+		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[slot_index];
+		slot.counters_buffer.destroy_gpu_buffer();
+		slot.patch_buffer.destroy_gpu_buffer();
+		slot.vertex_buffer.destroy_gpu_buffer();
+		slot.index_buffer.destroy_gpu_buffer();
+		slot.wire_index_buffer.destroy_gpu_buffer();
+		if (slot.counters_readback.impl)
+		{
+			sg_destroy_buffer_readback(slot.counters_readback);
+		}
+	}
 	tessellated.patches.reset();
 	tessellated.edge_weld_pairs.reset();
 	tessellated = {};

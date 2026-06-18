@@ -66,6 +66,18 @@
       sampling support so the helper/UI layer can explain whether pass rows are
       real Metal samples or CPU-only markers.
 
+    - Local buffer readback API for GPU-generated counts:
+        sg_make_buffer_readback()
+        sg_destroy_buffer_readback()
+        sg_request_buffer_readback()
+        sg_query_buffer_readback_state()
+        sg_consume_buffer_readback()
+
+      This is used by GPU-planned tessellation to read tiny counter buffers
+      until a future indirect draw path removes CPU-visible draw counts.
+      Metal and D3D11 are implemented first. Other backends warn/assert and
+      report SG_BUFFER_READBACKSTATE_UNSUPPORTED.
+
     After changing this implementation header, rebuild game/bin/libsokol.a.
 */
 
@@ -2073,6 +2085,7 @@ typedef struct sg_sampler       { uint32_t id; } sg_sampler;
 typedef struct sg_shader        { uint32_t id; } sg_shader;
 typedef struct sg_pipeline      { uint32_t id; } sg_pipeline;
 typedef struct sg_view          { uint32_t id; } sg_view;
+typedef struct sg_buffer_readback { uintptr_t impl; } sg_buffer_readback;
 
 /*
     sg_range is a pointer-size-pair struct used to pass memory blobs into
@@ -3321,6 +3334,21 @@ typedef struct sg_buffer_desc {
     uint32_t _end_canary;
 } sg_buffer_desc;
 
+typedef enum sg_buffer_readback_state {
+    SG_BUFFER_READBACKSTATE_INITIAL,
+    SG_BUFFER_READBACKSTATE_PENDING,
+    SG_BUFFER_READBACKSTATE_READY,
+    SG_BUFFER_READBACKSTATE_FAILED,
+    SG_BUFFER_READBACKSTATE_UNSUPPORTED,
+} sg_buffer_readback_state;
+
+typedef struct sg_buffer_readback_desc {
+    uint32_t _start_canary;
+    size_t size;
+    const char* label;
+    uint32_t _end_canary;
+} sg_buffer_readback_desc;
+
 /*
     sg_image_usage
 
@@ -4476,7 +4504,10 @@ typedef struct sg_stats {
     _SG_LOGITEM_XMACRO(D3D11_MAP_FOR_UPDATE_BUFFER_FAILED, "Map() failed when updating buffer (d3d11)") \
     _SG_LOGITEM_XMACRO(D3D11_MAP_FOR_APPEND_BUFFER_FAILED, "Map() failed when appending to buffer (d3d11)") \
     _SG_LOGITEM_XMACRO(D3D11_MAP_FOR_UPDATE_IMAGE_FAILED, "Map() failed when updating image (d3d11)") \
+    _SG_LOGITEM_XMACRO(D3D11_CREATE_READBACK_BUFFER_FAILED, "CreateBuffer() failed for buffer readback staging buffer (d3d11)") \
+    _SG_LOGITEM_XMACRO(D3D11_MAP_FOR_READBACK_BUFFER_FAILED, "Map() failed for buffer readback staging buffer (d3d11)") \
     _SG_LOGITEM_XMACRO(METAL_CREATE_BUFFER_FAILED, "failed to create buffer object (metal)") \
+    _SG_LOGITEM_XMACRO(METAL_CREATE_READBACK_BUFFER_FAILED, "failed to create buffer readback staging buffer (metal)") \
     _SG_LOGITEM_XMACRO(METAL_TEXTURE_FORMAT_NOT_SUPPORTED, "pixel format not supported for texture (metal)") \
     _SG_LOGITEM_XMACRO(METAL_CREATE_TEXTURE_FAILED, "failed to create texture object (metal)") \
     _SG_LOGITEM_XMACRO(METAL_CREATE_SAMPLER_FAILED, "failed to create sampler object (metal)") \
@@ -4547,6 +4578,7 @@ typedef struct sg_stats {
     _SG_LOGITEM_XMACRO(VULKAN_WAIT_FOR_FENCE_FAILED, "vulkan: vkWaitForFence() failed!") \
     _SG_LOGITEM_XMACRO(VULKAN_UNIFORM_BUFFER_OVERFLOW, "vulkan: uniform buffer has overflown (increase sg_desc.uniform_buffer_size)") \
     _SG_LOGITEM_XMACRO(VULKAN_DESCRIPTOR_BUFFER_OVERFLOW, "vulkan: desccriptor buffer has overflown (increase sg_desc.vulkan.descriptor_buffer_size)") \
+    _SG_LOGITEM_XMACRO(BUFFER_READBACK_UNSUPPORTED_BACKEND, "buffer readback is only implemented for Metal and D3D11 in this local Sokol patch") \
     _SG_LOGITEM_XMACRO(IDENTICAL_COMMIT_LISTENER, "attempting to add identical commit listener") \
     _SG_LOGITEM_XMACRO(COMMIT_LISTENER_ARRAY_FULL, "commit listener array full") \
     _SG_LOGITEM_XMACRO(TRACE_HOOKS_NOT_ENABLED, "sg_install_trace_hooks() called, but SOKOL_TRACE_HOOKS is not defined") \
@@ -5151,17 +5183,22 @@ SOKOL_GFX_API_DECL sg_sampler sg_make_sampler(const sg_sampler_desc* desc);
 SOKOL_GFX_API_DECL sg_shader sg_make_shader(const sg_shader_desc* desc);
 SOKOL_GFX_API_DECL sg_pipeline sg_make_pipeline(const sg_pipeline_desc* desc);
 SOKOL_GFX_API_DECL sg_view sg_make_view(const sg_view_desc* desc);
+SOKOL_GFX_API_DECL sg_buffer_readback sg_make_buffer_readback(const sg_buffer_readback_desc* desc);
 SOKOL_GFX_API_DECL void sg_destroy_buffer(sg_buffer buf);
 SOKOL_GFX_API_DECL void sg_destroy_image(sg_image img);
 SOKOL_GFX_API_DECL void sg_destroy_sampler(sg_sampler smp);
 SOKOL_GFX_API_DECL void sg_destroy_shader(sg_shader shd);
 SOKOL_GFX_API_DECL void sg_destroy_pipeline(sg_pipeline pip);
 SOKOL_GFX_API_DECL void sg_destroy_view(sg_view view);
+SOKOL_GFX_API_DECL void sg_destroy_buffer_readback(sg_buffer_readback readback);
 SOKOL_GFX_API_DECL void sg_update_buffer(sg_buffer buf, const sg_range* data);
 SOKOL_GFX_API_DECL void sg_update_image(sg_image img, const sg_image_data* data);
 SOKOL_GFX_API_DECL int sg_append_buffer(sg_buffer buf, const sg_range* data);
 SOKOL_GFX_API_DECL bool sg_query_buffer_overflow(sg_buffer buf);
 SOKOL_GFX_API_DECL bool sg_query_buffer_will_overflow(sg_buffer buf, size_t size);
+SOKOL_GFX_API_DECL bool sg_request_buffer_readback(sg_buffer_readback readback, sg_buffer buf, size_t offset, size_t size);
+SOKOL_GFX_API_DECL sg_buffer_readback_state sg_query_buffer_readback_state(sg_buffer_readback readback);
+SOKOL_GFX_API_DECL bool sg_consume_buffer_readback(sg_buffer_readback readback, void* dst, size_t size);
 
 // render and compute functions
 SOKOL_GFX_API_DECL void sg_begin_pass(const sg_pass* pass);
@@ -7848,6 +7885,288 @@ _SOKOL_PRIVATE _sg_view_t* _sg_lookup_view(uint32_t view_id) {
         }
     }
     return 0;
+}
+
+// ██████  ███████  █████  ██████  ██████   █████   ██████ ██   ██
+// ██   ██ ██      ██   ██ ██   ██ ██   ██ ██   ██ ██      ██  ██
+// ██████  █████   ███████ ██   ██ ██████  ███████ ██      █████
+// ██   ██ ██      ██   ██ ██   ██ ██   ██ ██   ██ ██      ██  ██
+// ██   ██ ███████ ██   ██ ██████  ██████  ██   ██  ██████ ██   ██
+//
+// >>buffer-readback
+#if defined(SOKOL_METAL)
+_SOKOL_PRIVATE id _sg_mtl_id(int slot_index);
+#endif
+
+typedef struct _sg_buffer_readback_t {
+    sg_buffer_readback_state state;
+    size_t size;
+    size_t requested_size;
+    bool unsupported_warning_emitted;
+    bool destroy_requested;
+#if defined(SOKOL_METAL)
+    id<MTLBuffer> mtl_buffer;
+#endif
+#if defined(SOKOL_D3D11)
+    ID3D11Buffer* d3d11_buffer;
+    uint8_t* d3d11_cpu_data;
+#endif
+} _sg_buffer_readback_t;
+
+_SOKOL_PRIVATE _sg_buffer_readback_t* _sg_buffer_readback_ptr(sg_buffer_readback readback) {
+    return (_sg_buffer_readback_t*) readback.impl;
+}
+
+_SOKOL_PRIVATE bool _sg_buffer_readback_backend_supported(void) {
+#if defined(SOKOL_METAL) || defined(SOKOL_D3D11)
+    return true;
+#else
+    return false;
+#endif
+}
+
+_SOKOL_PRIVATE void _sg_warn_buffer_readback_unsupported(_sg_buffer_readback_t* rb) {
+    if (rb && !rb->unsupported_warning_emitted) {
+        rb->unsupported_warning_emitted = true;
+        _SG_WARN(BUFFER_READBACK_UNSUPPORTED_BACKEND);
+    }
+}
+
+_SOKOL_PRIVATE sg_buffer_readback _sg_make_buffer_readback(const sg_buffer_readback_desc* desc) {
+    sg_buffer_readback readback = { 0 };
+    if (!desc || desc->size == 0) {
+        return readback;
+    }
+
+    _sg_buffer_readback_t* rb = (_sg_buffer_readback_t*) _sg_malloc_clear(sizeof(_sg_buffer_readback_t));
+    if (!rb) {
+        _SG_ERROR(MALLOC_FAILED);
+        return readback;
+    }
+    rb->size = desc->size;
+    rb->state = _sg_buffer_readback_backend_supported()
+        ? SG_BUFFER_READBACKSTATE_INITIAL
+        : SG_BUFFER_READBACKSTATE_UNSUPPORTED;
+
+#if defined(SOKOL_METAL)
+    rb->mtl_buffer = [_sg.mtl.device newBufferWithLength:(NSUInteger)desc->size options:MTLResourceStorageModeShared];
+    if (nil == rb->mtl_buffer) {
+        _SG_ERROR(METAL_CREATE_READBACK_BUFFER_FAILED);
+        rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+    }
+    #if defined(SOKOL_DEBUG)
+    if (rb->mtl_buffer && desc->label) {
+        rb->mtl_buffer.label = [NSString stringWithUTF8String:desc->label];
+    }
+    #endif
+#elif defined(SOKOL_D3D11)
+    D3D11_BUFFER_DESC d3d11_desc;
+    _sg_clear(&d3d11_desc, sizeof(d3d11_desc));
+    d3d11_desc.ByteWidth = (UINT) desc->size;
+    d3d11_desc.Usage = D3D11_USAGE_STAGING;
+    d3d11_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    HRESULT hr;
+    #ifdef __cplusplus
+        hr = _sg.d3d11.dev->CreateBuffer(&d3d11_desc, NULL, &rb->d3d11_buffer);
+    #else
+        hr = _sg.d3d11.dev->lpVtbl->CreateBuffer(_sg.d3d11.dev, &d3d11_desc, NULL, &rb->d3d11_buffer);
+    #endif
+    if (FAILED(hr) || !rb->d3d11_buffer) {
+        _SG_ERROR(D3D11_CREATE_READBACK_BUFFER_FAILED);
+        rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+    } else {
+        rb->d3d11_cpu_data = (uint8_t*) _sg_malloc(desc->size);
+        if (!rb->d3d11_cpu_data) {
+            _SG_ERROR(MALLOC_FAILED);
+            rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+        }
+    }
+#else
+    _sg_warn_buffer_readback_unsupported(rb);
+#endif
+
+    readback.impl = (uintptr_t) rb;
+    return readback;
+}
+
+_SOKOL_PRIVATE void _sg_destroy_buffer_readback(sg_buffer_readback readback) {
+    _sg_buffer_readback_t* rb = _sg_buffer_readback_ptr(readback);
+    if (!rb) {
+        return;
+    }
+    if (rb->state == SG_BUFFER_READBACKSTATE_PENDING) {
+        rb->destroy_requested = true;
+    #if defined(SOKOL_METAL)
+        return;
+    #elif defined(SOKOL_D3D11)
+        if (rb->d3d11_buffer) {
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            _sg_clear(&mapped, sizeof(mapped));
+            HRESULT hr;
+            #ifdef __cplusplus
+                hr = _sg.d3d11.ctx->Map((ID3D11Resource*)rb->d3d11_buffer, 0, D3D11_MAP_READ, 0, &mapped);
+            #else
+                hr = _sg.d3d11.ctx->lpVtbl->Map(_sg.d3d11.ctx, (ID3D11Resource*)rb->d3d11_buffer, 0, D3D11_MAP_READ, 0, &mapped);
+            #endif
+            if (SUCCEEDED(hr)) {
+                #ifdef __cplusplus
+                    _sg.d3d11.ctx->Unmap((ID3D11Resource*)rb->d3d11_buffer, 0);
+                #else
+                    _sg.d3d11.ctx->lpVtbl->Unmap(_sg.d3d11.ctx, (ID3D11Resource*)rb->d3d11_buffer, 0);
+                #endif
+            }
+        }
+    #endif
+    }
+#if defined(SOKOL_METAL)
+    #if __has_feature(objc_arc)
+        rb->mtl_buffer = nil;
+    #else
+        [rb->mtl_buffer release];
+        rb->mtl_buffer = nil;
+    #endif
+#elif defined(SOKOL_D3D11)
+    if (rb->d3d11_buffer) {
+        #ifdef __cplusplus
+            rb->d3d11_buffer->Release();
+        #else
+            rb->d3d11_buffer->lpVtbl->Release(rb->d3d11_buffer);
+        #endif
+        rb->d3d11_buffer = 0;
+    }
+    if (rb->d3d11_cpu_data) {
+        _sg_free(rb->d3d11_cpu_data);
+        rb->d3d11_cpu_data = 0;
+    }
+#endif
+    _sg_free(rb);
+}
+
+_SOKOL_PRIVATE bool _sg_request_buffer_readback(sg_buffer_readback readback, sg_buffer buf_id, size_t offset, size_t size) {
+    _sg_buffer_readback_t* rb = _sg_buffer_readback_ptr(readback);
+    _sg_buffer_t* buf = _sg_lookup_buffer(buf_id.id);
+    if (!rb || !buf || size == 0 || offset + size > buf->cmn.size || size > rb->size) {
+        return false;
+    }
+    if (rb->state == SG_BUFFER_READBACKSTATE_UNSUPPORTED) {
+        _sg_warn_buffer_readback_unsupported(rb);
+        SOKOL_ASSERT(false && "buffer readback unsupported on this backend");
+        return false;
+    }
+    if (rb->state == SG_BUFFER_READBACKSTATE_PENDING || rb->state == SG_BUFFER_READBACKSTATE_FAILED) {
+        return false;
+    }
+
+    rb->requested_size = size;
+
+#if defined(SOKOL_METAL)
+    if ((nil == _sg.mtl.cmd_buffer) || (nil != _sg.mtl.render_cmd_encoder) || (nil != _sg.mtl.compute_cmd_encoder) || !rb->mtl_buffer) {
+        rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+        return false;
+    }
+
+    __unsafe_unretained id<MTLBuffer> src_buffer = _sg_mtl_id(buf->mtl.buf[buf->cmn.active_slot]);
+    if (!src_buffer) {
+        rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+        return false;
+    }
+
+    id<MTLBlitCommandEncoder> blit_encoder = [_sg.mtl.cmd_buffer blitCommandEncoder];
+    [blit_encoder copyFromBuffer:src_buffer sourceOffset:(NSUInteger)offset toBuffer:rb->mtl_buffer destinationOffset:0 size:(NSUInteger)size];
+    [blit_encoder endEncoding];
+    rb->state = SG_BUFFER_READBACKSTATE_PENDING;
+    [_sg.mtl.cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> command_buffer) {
+        rb->state = (command_buffer.status == MTLCommandBufferStatusCompleted)
+            ? SG_BUFFER_READBACKSTATE_READY
+            : SG_BUFFER_READBACKSTATE_FAILED;
+        if (rb->destroy_requested) {
+        #if __has_feature(objc_arc)
+            rb->mtl_buffer = nil;
+        #else
+            [rb->mtl_buffer release];
+            rb->mtl_buffer = nil;
+        #endif
+            _sg_free(rb);
+        }
+    }];
+    return true;
+#elif defined(SOKOL_D3D11)
+    if (!rb->d3d11_buffer || !buf->d3d11.buf) {
+        rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+        return false;
+    }
+    D3D11_BOX src_box;
+    _sg_clear(&src_box, sizeof(src_box));
+    src_box.left = (UINT) offset;
+    src_box.right = (UINT) (offset + size);
+    src_box.top = 0;
+    src_box.bottom = 1;
+    src_box.front = 0;
+    src_box.back = 1;
+    #ifdef __cplusplus
+        _sg.d3d11.ctx->CopySubresourceRegion(rb->d3d11_buffer, 0, 0, 0, 0, (ID3D11Resource*)buf->d3d11.buf, 0, &src_box);
+    #else
+        _sg.d3d11.ctx->lpVtbl->CopySubresourceRegion(_sg.d3d11.ctx, (ID3D11Resource*)rb->d3d11_buffer, 0, 0, 0, 0, (ID3D11Resource*)buf->d3d11.buf, 0, &src_box);
+    #endif
+    rb->state = SG_BUFFER_READBACKSTATE_PENDING;
+    return true;
+#else
+    rb->state = SG_BUFFER_READBACKSTATE_UNSUPPORTED;
+    _sg_warn_buffer_readback_unsupported(rb);
+    SOKOL_ASSERT(false && "buffer readback unsupported on this backend");
+    return false;
+#endif
+}
+
+_SOKOL_PRIVATE sg_buffer_readback_state _sg_query_buffer_readback_state(sg_buffer_readback readback) {
+    _sg_buffer_readback_t* rb = _sg_buffer_readback_ptr(readback);
+    if (!rb) {
+        return SG_BUFFER_READBACKSTATE_FAILED;
+    }
+#if defined(SOKOL_D3D11)
+    if (rb->state == SG_BUFFER_READBACKSTATE_PENDING) {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        _sg_clear(&mapped, sizeof(mapped));
+        HRESULT hr;
+        #ifdef __cplusplus
+            hr = _sg.d3d11.ctx->Map((ID3D11Resource*)rb->d3d11_buffer, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+        #else
+            hr = _sg.d3d11.ctx->lpVtbl->Map(_sg.d3d11.ctx, (ID3D11Resource*)rb->d3d11_buffer, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+        #endif
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+            return SG_BUFFER_READBACKSTATE_PENDING;
+        }
+        if (SUCCEEDED(hr)) {
+            memcpy(rb->d3d11_cpu_data, mapped.pData, rb->requested_size);
+            #ifdef __cplusplus
+                _sg.d3d11.ctx->Unmap((ID3D11Resource*)rb->d3d11_buffer, 0);
+            #else
+                _sg.d3d11.ctx->lpVtbl->Unmap(_sg.d3d11.ctx, (ID3D11Resource*)rb->d3d11_buffer, 0);
+            #endif
+            rb->state = SG_BUFFER_READBACKSTATE_READY;
+        } else {
+            _SG_ERROR(D3D11_MAP_FOR_READBACK_BUFFER_FAILED);
+            rb->state = SG_BUFFER_READBACKSTATE_FAILED;
+        }
+    }
+#endif
+    return rb->state;
+}
+
+_SOKOL_PRIVATE bool _sg_consume_buffer_readback(sg_buffer_readback readback, void* dst, size_t size) {
+    _sg_buffer_readback_t* rb = _sg_buffer_readback_ptr(readback);
+    if (!rb || !dst || rb->state != SG_BUFFER_READBACKSTATE_READY || size < rb->requested_size) {
+        return false;
+    }
+#if defined(SOKOL_METAL)
+    memcpy(dst, [rb->mtl_buffer contents], rb->requested_size);
+#elif defined(SOKOL_D3D11)
+    memcpy(dst, rb->d3d11_cpu_data, rb->requested_size);
+#else
+    return false;
+#endif
+    rb->state = SG_BUFFER_READBACKSTATE_INITIAL;
+    return true;
 }
 
 // ████████ ██████   █████   ██████ ██   ██
@@ -25631,6 +25950,11 @@ SOKOL_API_IMPL sg_view sg_make_view(const sg_view_desc* desc) {
     return view_id;
 }
 
+SOKOL_API_IMPL sg_buffer_readback sg_make_buffer_readback(const sg_buffer_readback_desc* desc) {
+    SOKOL_ASSERT(_sg.valid);
+    return _sg_make_buffer_readback(desc);
+}
+
 SOKOL_API_IMPL void sg_destroy_buffer(sg_buffer buf_id) {
     SOKOL_ASSERT(_sg.valid);
     _SG_TRACE_ARGS(destroy_buffer, buf_id);
@@ -25725,6 +26049,11 @@ SOKOL_API_IMPL void sg_destroy_view(sg_view view_id) {
             SOKOL_ASSERT(view->slot.state == SG_RESOURCESTATE_INITIAL);
         }
     }
+}
+
+SOKOL_API_IMPL void sg_destroy_buffer_readback(sg_buffer_readback readback) {
+    SOKOL_ASSERT(_sg.valid);
+    _sg_destroy_buffer_readback(readback);
 }
 
 SOKOL_API_IMPL void sg_begin_pass(const sg_pass* pass) {
@@ -26104,6 +26433,21 @@ SOKOL_API_IMPL bool sg_query_buffer_will_overflow(sg_buffer buf_id, size_t size)
         }
     }
     return result;
+}
+
+SOKOL_API_IMPL bool sg_request_buffer_readback(sg_buffer_readback readback, sg_buffer buf, size_t offset, size_t size) {
+    SOKOL_ASSERT(_sg.valid);
+    return _sg_request_buffer_readback(readback, buf, offset, size);
+}
+
+SOKOL_API_IMPL sg_buffer_readback_state sg_query_buffer_readback_state(sg_buffer_readback readback) {
+    SOKOL_ASSERT(_sg.valid);
+    return _sg_query_buffer_readback_state(readback);
+}
+
+SOKOL_API_IMPL bool sg_consume_buffer_readback(sg_buffer_readback readback, void* dst, size_t size) {
+    SOKOL_ASSERT(_sg.valid);
+    return _sg_consume_buffer_readback(readback, dst, size);
 }
 
 SOKOL_API_IMPL void sg_update_image(sg_image img_id, const sg_image_data* data) {
