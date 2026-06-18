@@ -161,6 +161,48 @@
     .warn { color: var(--warn); font-weight: 650; }
     .bad { color: var(--bad); font-weight: 650; }
 
+    .tab-control {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      margin: -8px 0 26px;
+      overflow-x: auto;
+    }
+
+    .tab-button {
+      display: inline-block;
+      padding: 10px 16px;
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+      background: #eef2f8;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .tab-panel { display: none; }
+
+    #tab-overview:checked ~ .tabs label[for="tab-overview"],
+    #tab-walkthrough:checked ~ .tabs label[for="tab-walkthrough"] {
+      background: var(--paper);
+      color: var(--ink);
+      border-color: var(--line);
+      box-shadow: 0 -2px 0 var(--accent) inset;
+    }
+
+    #tab-overview:checked ~ #overview-panel,
+    #tab-walkthrough:checked ~ #walkthrough-panel {
+      display: block;
+    }
+
     @media (max-width: 760px) {
       main { padding: 32px 18px 56px; }
       .grid { grid-template-columns: 1fr; }
@@ -179,6 +221,14 @@
     </p>
   </header>
 
+  <input class="tab-control" type="radio" name="tessellation-tab" id="tab-overview" checked>
+  <input class="tab-control" type="radio" name="tessellation-tab" id="tab-walkthrough">
+  <nav class="tabs" aria-label="Tessellation explainer tabs">
+    <label class="tab-button" for="tab-overview">Overview</label>
+    <label class="tab-button" for="tab-walkthrough">CPU + GPU Walkthrough</label>
+  </nav>
+
+  <section class="tab-panel" id="overview-panel">
   <section class="card">
     <h2>Executive Summary</h2>
     <p>
@@ -593,6 +643,200 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     start with <code>Fixed</code> mode at factor <code>1</code> to confirm source parity, switch to factors
     <code>2</code>, <code>4</code>, or <code>8</code> to inspect counts, then enable <code>Shaded Wireframe</code> and
     <code>Phong Strength</code> to see where smoothing changes the generated mesh.
+  </section>
+  </section>
+
+  <section class="tab-panel" id="walkthrough-panel">
+    <section class="card">
+      <h2>From One Triangle To Tessellated Geometry</h2>
+      <p>
+        This walkthrough follows one source triangle through the exact CPU and GPU handoff. A source triangle starts as
+        three indices in the mesh index buffer. Tessellation turns that triangle into one or more patch records, emits a
+        triangular grid of generated vertices for each patch, emits triangle indices for that grid, then lets normal
+        render passes draw the generated buffers through <code>MeshRenderView</code>.
+      </p>
+      <pre><code>source index buffer:
+    tri_index = N
+    source_index_offset = N * 3
+    i0 = indices[source_index_offset + 0]
+    i1 = indices[source_index_offset + 1]
+    i2 = indices[source_index_offset + 2]
+
+source vertex buffer:
+    v0 = vertices[i0]
+    v1 = vertices[i1]
+    v2 = vertices[i2]</code></pre>
+    </section>
+
+    <h2>Sequential Frame Flow</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Step</th>
+          <th>CPU work</th>
+          <th>GPU work</th>
+          <th>Output</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1. Frame prep</td>
+          <td>
+            Object transforms, material buffers, camera matrices, and live-link mesh buffers are current before
+            <code>Tessellation::update()</code> runs.
+          </td>
+          <td>None.</td>
+          <td>Source <code>Vertex</code> and <code>u32</code> index buffers are ready.</td>
+        </tr>
+        <tr>
+          <td>2. Eligibility</td>
+          <td>
+            If tessellation is disabled, the mesh is skinned, the mesh has no triangles, or the last GPU-planned result
+            overflowed, the mesh stays on the source buffers.
+          </td>
+          <td>None.</td>
+          <td>Either fallback source rendering, or a mesh eligible for patch planning.</td>
+        </tr>
+        <tr>
+          <td>3A. CPU planning path</td>
+          <td>
+            <code>Fixed</code> and <code>Adaptive Angular (Per Mesh)</code> iterate source triangles on the CPU. The CPU
+            chooses each patch factor, computes exact generated counts, checks budgets, accumulates generated offsets,
+            and uploads <code>TessellationPatch</code> records.
+          </td>
+          <td>None yet.</td>
+          <td>CPU-owned patch list and exact generated vertex/index counts.</td>
+        </tr>
+        <tr>
+          <td>3B. GPU planning path</td>
+          <td>
+            <code>Adaptive Angular (Per Triangle)</code> allocates a budgeted in-flight GPU slot, clears counters, and
+            dispatches <code>plan_patches</code>. The CPU does not walk source triangles in this mode.
+          </td>
+          <td>
+            One workgroup handles each source triangle. The shader reads <code>i0/i1/i2</code>, transforms positions to
+            world space, estimates screen-space LOD, chooses virtual splits, atomically reserves generated ranges, writes
+            patch records, and sets overflow flags.
+          </td>
+          <td>GPU-owned patch buffer plus <code>TessellationCounters</code>.</td>
+        </tr>
+        <tr>
+          <td>4. Patch record</td>
+          <td>
+            CPU mode writes this directly. GPU mode writes it in <code>plan_patches</code> and later reads back only the
+            small counter buffer.
+          </td>
+          <td>
+            Each patch stores source triangle identity, generated vertex/index offsets, factor, per-edge LODs, counts,
+            and a barycentric sub-domain. Full source triangles use corners <code>(0,0)</code>, <code>(1,0)</code>,
+            <code>(0,1)</code>; virtual patches store smaller domains.
+          </td>
+          <td>One compact description of how to tessellate a source-triangle region.</td>
+        </tr>
+        <tr>
+          <td>5. Vertex emission</td>
+          <td>Dispatches <code>emit_vertices</code> for CPU-planned patches or <code>emit_vertices_gpu</code> for GPU-planned slots.</td>
+          <td>
+            For each patch-local grid vertex, the shader converts local vertex index to triangular-grid barycentrics,
+            morphs boundary coordinates by edge LOD, remaps through the patch sub-domain, interpolates source position,
+            normal, and UV, applies optional Phong projection, then writes a generated <code>Vertex</code>.
+          </td>
+          <td>Generated vertex buffer filled at <code>generated_vertex_offset + local_vertex_index</code>.</td>
+        </tr>
+        <tr>
+          <td>6. Index emission</td>
+          <td>Dispatches <code>emit_indices</code> or <code>emit_indices_gpu</code>.</td>
+          <td>
+            The shader walks each patch's triangular grid cells and emits <code>factor * factor</code> tiny triangles.
+            Indices are patch-local plus the patch's generated vertex offset. Legacy/debug line indices are also emitted.
+          </td>
+          <td>Generated triangle index buffer filled at <code>generated_index_offset</code>.</td>
+        </tr>
+        <tr>
+          <td>7. Optional welding</td>
+          <td>
+            CPU-planned modes can build same-factor edge weld pairs. GPU-planned per-triangle mode relies on edge LOD
+            morphing for mismatched boundaries in this pass.
+          </td>
+          <td><code>weld_edges</code> averages matching generated edge vertex position and normal pairs when enabled.</td>
+          <td>Generated edge vertices can be made watertight for same-factor neighbors.</td>
+        </tr>
+        <tr>
+          <td>8. Counter readback</td>
+          <td>
+            GPU-planned mode requests async readback of <code>TessellationCounters</code>. Rendering uses the latest
+            completed non-overflowed slot; if no slot is ready, it renders the source mesh.
+          </td>
+          <td>Metal/D3D11 copy the counter buffer to CPU-readable staging memory.</td>
+          <td>CPU-visible draw counts for the generated slot.</td>
+        </tr>
+        <tr>
+          <td>9. Rendering</td>
+          <td>
+            Render passes call <code>mesh_get_render_view()</code>. If tessellation is active and valid, the view points
+            at generated buffers; otherwise it points at source buffers.
+          </td>
+          <td>Geometry, shadow depth, GI capture, and related passes draw the returned buffers normally.</td>
+          <td>Tessellated triangles appear anywhere normal mesh rendering is used.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>What Happens Inside One Patch</h2>
+    <p>
+      A patch with factor <code>n</code> becomes a triangular grid with <code>((n + 1) * (n + 2)) / 2</code> vertices and
+      <code>n * n</code> output triangles. The GPU never invents new source topology; every generated point is still
+      derived from the original three source vertices and the patch's barycentric domain.
+    </p>
+    <pre><code>for local_vertex_index in patch.vertex_count:
+    row, col = triangular_grid_position(local_vertex_index)
+    local_bary = barycentric_from_grid(row, col, patch.factor)
+
+    if local_bary is on a patch edge:
+        local_bary = morph_edge_coordinate(local_bary, patch.edge_lod_for_that_edge)
+
+    source_uv = remap_local_bary_through_patch_domain(local_bary)
+    source_bary = (1 - source_uv.x - source_uv.y, source_uv.x, source_uv.y)
+
+    linear_position = p0 * source_bary.x + p1 * source_bary.y + p2 * source_bary.z
+    projected_position = phong_project(linear_position, p0, n0) * source_bary.x
+                     + phong_project(linear_position, p1, n1) * source_bary.y
+                     + phong_project(linear_position, p2, n2) * source_bary.z
+
+    out.position = mix(linear_position, projected_position, phong_strength)
+    out.normal = normalize(n0 * source_bary.x + n1 * source_bary.y + n2 * source_bary.z)
+    out.texcoord = uv0 * source_bary.x + uv1 * source_bary.y + uv2 * source_bary.z</code></pre>
+
+    <h2>Virtual Patch Example</h2>
+    <p>
+      For a huge source triangle, per-triangle GPU planning may decide that one factor-31 patch is not dense enough.
+      Instead of raising the per-patch max factor, it splits the triangle into a power-of-two grid of virtual patches.
+      Each virtual patch stores three barycentric domain corners inside the original triangle.
+    </p>
+    <pre><code>source triangle domain:
+    A = (0, 0)
+    B = (1, 0)
+    C = (0, 1)
+
+depth 0:
+    1 virtual patch covers A-B-C
+
+depth 2:
+    split_segments = 4
+    up to 16 virtual patches cover smaller domains inside A-B-C
+
+each virtual patch:
+    reads the same source i0/i1/i2
+    computes its own edge LODs and factor
+    reserves its own generated vertex/index ranges
+    emits its own local triangular grid</code></pre>
+
+    <section class="note">
+      <strong>Key mental model:</strong>
+      CPU or GPU planning decides <em>how many patches exist and where their generated ranges live</em>. GPU emission
+      decides <em>the actual generated vertices and triangle indices</em>. Rendering does not know which path produced
+      the buffers; it only draws the active <code>MeshRenderView</code>.
+    </section>
   </section>
 </main>
 </body>
