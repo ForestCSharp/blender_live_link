@@ -93,6 +93,7 @@ using ankerl::unordered_dense::map;
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
 #include "render/blur_pass.h"
+#include "render/wire_overlay_pass.h"
 #include "render/sky_pass.h"
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
@@ -365,6 +366,14 @@ void reset_materials()
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
 	return state.render_passes.passes[static_cast<int>(in_pass_id)];
+}
+
+HMM_Mat4 transform_model_matrix(const Transform& transform)
+{
+	HMM_Mat4 scale_matrix = HMM_Scale(transform.scale);
+	HMM_Mat4 rotation_matrix = HMM_QToM4(transform.rotation);
+	HMM_Mat4 translation_matrix = HMM_Translate(transform.location.XYZ);
+	return HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));
 }
 
 bool object_is_sun_light(const Object& in_object)
@@ -1367,6 +1376,8 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::DOF_Combine).init(dof_combine_pass_desc);
 
+	get_render_pass(ERenderPass::WireOverlay).init(WireOverlayPass::make_render_pass_desc(swapchain.color_format));
+
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
 			.shader = sg_make_shader(tonemapping_tonemapping_shader_desc(sg_query_backend())),
@@ -1872,7 +1883,6 @@ void frame(void)
 			{
 				bool tessellation_changed = false;
 				tessellation_changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
-				ImGui::Checkbox("Shaded Wireframe", &state.tessellation.shaded_wireframe);
 				tessellation_changed |= ImGui::Combo("Mode", (i32*) &state.tessellation.mode, ETessellationModeNames, IM_ARRAYSIZE(ETessellationModeNames));
 				tessellation_changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
 				tessellation_changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32) Tessellation::MAX_FACTOR);
@@ -1899,6 +1909,15 @@ void frame(void)
 					state.shadow.force_recapture = true;
 					state.gi.is_updating = true;
 				}
+			}
+
+			if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe);
+				ImGui::SliderFloat("Wire Width", &state.wireframe.width, 0.5f, 4.0f, "%.2f px");
+				ImGui::SliderFloat("Wire Softness", &state.wireframe.softness, 0.25f, 3.0f, "%.2f px");
+				ImGui::SliderFloat("Wire Opacity", &state.wireframe.opacity, 0.0f, 1.0f, "%.2f");
+				ImGui::ColorEdit3("Wire Color", &state.wireframe.color.X);
 			}
 
 			ImGui::Separator();
@@ -2637,6 +2656,13 @@ void frame(void)
 			ShadowDepthPass::has_valid_shadow_blur = false;
 		}
 
+		const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
+		CullResult cull_result;
+		{
+			CPU_TIMING_SCOPE("Geometry Culling");
+			cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
+		}
+
 		{ // Geometry Pass
 			get_render_pass(ERenderPass::Geometry).execute(
 				[&](const i32)
@@ -2651,14 +2677,6 @@ void frame(void)
 
 						// Apply Vertex Uniforms
 						sg_apply_uniforms(0, SG_RANGE(vs_params));
-					}
-
-					// Cull objects
-					const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
-					CullResult cull_result;
-					{
-						CPU_TIMING_SCOPE("Geometry Culling");
-						cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
 					}
 
 					DEBUG_UI(
@@ -2738,43 +2756,6 @@ void frame(void)
 								mesh_apply_render_bindings(bindings, mesh, render_view);
 								gpu_apply_bindings(&bindings);
 								sg_draw(0, render_view.index_count, 1);
-							}
-						}
-					}
-
-					if (state.tessellation.shaded_wireframe)
-					{
-						CPU_TIMING_SCOPE("Geometry Wireframe");
-						sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(sglue_swapchain().depth_format));
-						sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-						for (auto& [unique_id, object_ptr] : cull_result.objects)
-						{
-							assert(object_ptr);
-							Object& object = *object_ptr;
-
-							if (object.has_mesh)
-							{
-								Mesh& mesh = object.mesh;
-								MeshRenderView render_view = mesh_get_render_view(mesh);
-								if (render_view.wire_index_count == 0)
-								{
-									continue;
-								}
-								if (mesh_render_view_uses_skinning(mesh, render_view))
-								{
-									continue;
-								}
-
-								sg_bindings wire_bindings = {
-									.vertex_buffers[0] = render_view.vertex_buffer,
-									.index_buffer = render_view.wire_index_buffer,
-									.views = {
-										[0] = object.storage_buffer.get_storage_view(),
-									},
-								};
-								gpu_apply_bindings(&wire_bindings);
-								sg_draw(0, render_view.wire_index_count, 1);
 							}
 						}
 					}
@@ -2967,18 +2948,108 @@ void frame(void)
 			}
 		}
 
+		if (state.wireframe.shaded_wireframe)
+		{
+			get_render_pass(ERenderPass::WireOverlay).execute(
+				[&](const i32)
+				{
+					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+
+					GpuImage& source_color_image = state.dof.enable
+						? dof_combine_pass.get_color_output(0)
+						: lighting_pass.get_color_output(0);
+
+					{
+						sg_bindings copy_bindings = {
+							.views = {
+								[0] = source_color_image.get_texture_view(0),
+							},
+							.samplers[0] = state.gpu.nearest_sampler,
+						};
+						gpu_apply_bindings(&copy_bindings);
+						sg_draw(0, 6, 1);
+					}
+
+					{
+						CPU_TIMING_SCOPE("Wire Overlay Meshes");
+						sg_apply_pipeline(WireOverlayPass::get_mesh_overlay_pipeline(sglue_swapchain().color_format));
+
+						wire_overlay_mesh_fs_params_t mesh_fs_params = {
+							.color = state.wireframe.color,
+							.camera_position = HMM_V4V(camera.location, 1.0f),
+							.camera_forward = HMM_V4V(HMM_NormV3(camera.forward), 0.0f),
+							.screen_size = HMM_V2((f32) state.window.render_width, (f32) state.window.render_height),
+							.width = state.wireframe.width,
+							.softness = state.wireframe.softness,
+							.opacity = state.wireframe.opacity,
+							.visibility_tolerance = state.wireframe.visibility_tolerance,
+						};
+						sg_apply_uniforms(1, SG_RANGE(mesh_fs_params));
+
+						GpuImage& position_texture = geometry_pass.get_color_output(1);
+						for (auto& [unique_id, object_ptr] : cull_result.objects)
+						{
+							assert(object_ptr);
+							Object& object = *object_ptr;
+							if (!object.has_mesh)
+							{
+								continue;
+							}
+
+							Mesh& mesh = object.mesh;
+							MeshRenderView render_view = mesh_get_render_view(mesh);
+							if (render_view.index_count == 0 ||
+								mesh_render_view_uses_skinning(mesh, render_view))
+							{
+								continue;
+							}
+							mesh_populate_render_storage_views(mesh, render_view);
+							if (render_view.vertex_storage_view.id == SG_INVALID_ID ||
+								render_view.index_storage_view.id == SG_INVALID_ID)
+							{
+								continue;
+							}
+
+							wire_overlay_mesh_vs_params_t mesh_vs_params = {
+								.view = view_matrix,
+								.projection = projection_matrix,
+								.model = transform_model_matrix(object.current_transform),
+							};
+							sg_apply_uniforms(0, SG_RANGE(mesh_vs_params));
+
+							sg_bindings mesh_bindings = {
+								.views = {
+									[0] = render_view.vertex_storage_view,
+									[1] = render_view.index_storage_view,
+									[2] = position_texture.get_texture_view(0),
+								},
+								.samplers[0] = state.gpu.nearest_sampler,
+							};
+							gpu_apply_bindings(&mesh_bindings);
+							sg_draw(0, render_view.index_count, 1);
+						}
+					}
+				}
+			);
+		}
+
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&](const i32)
 				{
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
+					RenderPass& wire_overlay_pass = get_render_pass(ERenderPass::WireOverlay);
 
 					sg_apply_uniforms(0, SG_RANGE(state.tonemapping.fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = state.dof.enable
+							[0] = state.wireframe.shaded_wireframe
+								? wire_overlay_pass.get_color_output(0).get_texture_view(0)
+								: state.dof.enable
 								? dof_combine_pass.get_color_output(0).get_texture_view(0)
 								: lighting_pass.get_color_output(0).get_texture_view(0),
 						},

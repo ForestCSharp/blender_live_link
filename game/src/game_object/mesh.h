@@ -86,6 +86,8 @@ struct MeshRenderView
 	sg_buffer vertex_buffer = {};
 	sg_buffer index_buffer = {};
 	sg_buffer wire_index_buffer = {};
+	sg_view vertex_storage_view = {};
+	sg_view index_storage_view = {};
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
 	bool is_tessellated = false;
@@ -367,6 +369,28 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 		.wire_index_count = in_mesh.wire_index_count,
 		.is_tessellated = false,
 	};
+}
+
+void mesh_populate_render_storage_views(Mesh& in_mesh, MeshRenderView& in_render_view)
+{
+	if (in_mesh.tessellated_geometry.active && in_render_view.is_tessellated)
+	{
+		if (in_mesh.tessellated_geometry.gpu_planned &&
+			in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
+		{
+			TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
+			in_render_view.vertex_storage_view = slot.vertex_buffer.get_storage_view();
+			in_render_view.index_storage_view = slot.index_buffer.get_storage_view();
+			return;
+		}
+
+		in_render_view.vertex_storage_view = in_mesh.tessellated_geometry.vertex_buffer.get_storage_view();
+		in_render_view.index_storage_view = in_mesh.tessellated_geometry.index_buffer.get_storage_view();
+		return;
+	}
+
+	in_render_view.vertex_storage_view = in_mesh.vertex_buffer.get_storage_view();
+	in_render_view.index_storage_view = in_mesh.index_buffer.get_storage_view();
 }
 
 bool mesh_render_view_uses_skinning(const Mesh& in_mesh, const MeshRenderView& in_render_view)

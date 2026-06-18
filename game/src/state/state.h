@@ -28,6 +28,7 @@ enum class ERenderPass : int
 	SSAO_Blur,
 	Lighting,
 	DOF_Combine,
+	WireOverlay,
 	Tonemapping,
 	DebugText,
 	CopyToSwapchain,
@@ -230,7 +231,6 @@ struct State
 	{
 		bool enabled = false;
 		ETessellationMode mode = ETessellationMode::AdaptiveAngularPerTriangle;
-		bool shaded_wireframe = false;
 		i32 fixed_factor = 4;
 		i32 max_factor = 24;
 		f32 target_pixels_per_segment = 20.0f;
@@ -254,6 +254,16 @@ struct State
 		bool readback_supported = false;
 		i32 readback_age = 0;
 	} tessellation;
+
+	struct WireframeState
+	{
+		bool shaded_wireframe = false;
+		f32 width = 0.5f;
+		f32 softness = 1.0f;
+		f32 opacity = 0.75f;
+		HMM_Vec4 color = HMM_V4(0.01f, 0.01f, 0.01f, 1.0f);
+		f32 visibility_tolerance = 0.02f;
+	} wireframe;
 
 	struct SkyState
 	{

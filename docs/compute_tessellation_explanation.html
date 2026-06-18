@@ -196,7 +196,7 @@
       <div class="card">
         <h3>Emission</h3>
         <p><span class="tag">compute</span><span class="tag">storage buffers</span></p>
-        <p>Generate interpolated vertices, Phong-smoothed positions, triangle indices, and wireframe line indices.</p>
+        <p>Generate interpolated vertices, Phong-smoothed positions, and triangle indices. Wire line indices are retained for legacy/debug paths.</p>
       </div>
       <div class="card">
         <h3>Rendering</h3>
@@ -342,7 +342,7 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
       <tr>
         <td>Generated wire indices</td>
         <td><code>u32</code> / <code>TessellationIndex</code></td>
-        <td>Line index buffer used by the shaded wireframe overlay.</td>
+        <td>Legacy/debug line index buffer. The anti-aliased shaded wireframe overlay reads triangle indices directly.</td>
       </tr>
     </tbody>
   </table>
@@ -365,7 +365,7 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
       <h3><code>emit_indices</code></h3>
       <p>
         Walks the triangular grid and emits <code>factor * factor</code> small triangles. It also emits three line
-        segments per generated triangle for wireframe visualization.
+        segments per generated triangle for legacy/debug wireframe data.
       </p>
     </div>
     <div class="card">
@@ -450,19 +450,22 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
 
   <h2>Shaded Wireframe</h2>
   <p>
-    The visualization mode draws normal shaded geometry first, then overlays a line pass using the render view's
-    <code>wire_index_buffer</code>. When tessellation is active, those lines come from generated triangles; otherwise
-    they come from source triangle edges.
+    The visualization mode now runs after lighting and depth of field, before tonemapping. It copies the lit HDR image,
+    draws the active mesh triangles again, and computes wire coverage analytically from per-corner barycentric values
+    in the fragment shader.
   </p>
-  <pre><code>if (visualization_mode == ShadedWireframe)
+  <pre><code>if (wireframe.shaded_wireframe)
 {
-    sg_apply_pipeline(GeometryPass::get_wireframe_pipeline(...));
-    bindings.index_buffer = render_view.wire_index_buffer;
-    sg_draw(0, render_view.wire_index_count, 1);
+    copy_lit_color_to_wire_overlay();
+    sg_apply_pipeline(WireOverlayPass::get_mesh_overlay_pipeline(...));
+    bindings.views[0] = render_view.vertex_storage_view;
+    bindings.views[1] = render_view.index_storage_view;
+    sg_draw(0, render_view.index_count, 1);
 }</code></pre>
   <p>
-    The wireframe shader lives in the geometry shader module because it shares the same vertex/object inputs and writes
-    to the same G-buffer attachments as the shaded pass.
+    The overlay samples the geometry position buffer for visibility rejection, so hidden triangles do not draw over
+    foreground geometry. It no longer writes fake wire material into the G-buffer or depends on hardware line
+    rasterization.
   </p>
 
   <h2>Controls And Stats</h2>
@@ -486,9 +489,9 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
         <td>Selects fixed, per-mesh adaptive, or per-triangle adaptive factor selection.</td>
       </tr>
       <tr>
-        <td><code>Visualization</code></td>
+        <td><code>Wireframe</code></td>
         <td><code>Off</code></td>
-        <td>Can draw the shaded wireframe overlay.</td>
+        <td>Controls shaded wireframe, wire width, softness, opacity, and color.</td>
       </tr>
       <tr>
         <td><code>Fixed Factor</code></td>
