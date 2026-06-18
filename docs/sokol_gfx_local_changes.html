@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sokol_gfx.h Local Changes</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --good: #0b7f56;
+      --warn: #a15c00;
+      --bad: #a32929;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.2rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    ul, ol {
+      margin: 10px 0 18px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 880px;
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 18px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .summary {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      min-height: 100%;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin: 0 6px 6px 0;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 18px 0;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+
+    th {
+      background: #f1f4f9;
+      font-weight: 650;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 0.1em 0.35em;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 14px 0 20px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+      line-height: 1.48;
+    }
+
+    .good { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+    .bad { color: var(--bad); font-weight: 650; }
+    .muted { color: var(--muted); }
+
+    @media (max-width: 850px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 32px 18px 56px;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>sokol_gfx.h Local Changes</h1>
+    <p class="subtitle">
+      Reference notes for the project-specific changes in
+      <a href="../game/src/extern/sokol/sokol_gfx.h">game/src/extern/sokol/sokol_gfx.h</a>.
+      Use this when replacing Sokol with a newer upstream version so the profiler and
+      GPU tessellation readback support do not disappear during the vendor update.
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>Executive Summary</h2>
+    <p>
+      This repository does not use a completely vanilla <code>sokol_gfx.h</code>.
+      The current header includes a local patch set with two main responsibilities:
+      Metal GPU profiler hooks and a tiny buffer readback API for GPU-generated tessellation counts.
+    </p>
+    <div class="grid">
+      <div class="summary">
+        <h3>Metal Profiler Hooks</h3>
+        <p><span class="tag">Metal only</span><span class="tag">debug UI</span></p>
+        <p>
+          Adds frame lifecycle callbacks, command buffer GPU start/end timing, semaphore wait
+          reporting, pass timing, and manual GPU scopes for the ImGui profiler.
+        </p>
+      </div>
+      <div class="summary">
+        <h3>Counter-Sampled Scopes</h3>
+        <p><span class="tag">MTLCounterSampleBuffer</span><span class="tag">stage samples</span></p>
+        <p>
+          Uses Metal timestamp counters to report render-pass, compute-pass, and explicit scope
+          events. Stage-boundary sampling is enough for pass rows on Apple Silicon.
+        </p>
+      </div>
+      <div class="summary">
+        <h3>Buffer Readback</h3>
+        <p><span class="tag">Metal</span><span class="tag">D3D11</span><span class="tag">tessellation</span></p>
+        <p>
+          Adds a local <code>sg_buffer_readback</code> handle so compute-generated counter buffers
+          can be copied back to the CPU until an indirect draw path exists.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Patch History Snapshot</h2>
+    <p>
+      In the current Git history, the local patch set sits on top of
+      <code>edada93 Update Sokol. (sg_views support)</code>. The Sokol header diff from that
+      baseline to the current tree is roughly one thousand inserted lines:
+    </p>
+    <pre><code>git diff --stat edada93..HEAD -- game/src/extern/sokol/sokol_gfx.h
+
+game/src/extern/sokol/sokol_gfx.h | 1031 ++++++++++++++++++++++++++++++++++++-
+1 file changed, 1027 insertions(+), 4 deletions(-)</code></pre>
+    <table>
+      <thead>
+        <tr>
+          <th>Commit</th>
+          <th>What It Added To <code>sokol_gfx.h</code></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>a4d9048</code></td>
+          <td>Initial CPU/GPU profiler integration and Metal frame timing hooks.</td>
+        </tr>
+        <tr>
+          <td><code>8643d55</code></td>
+          <td>Additional debug CPU/GPU profiler support and timeline lifecycle reporting.</td>
+        </tr>
+        <tr>
+          <td><code>20d3a5d</code></td>
+          <td>Local buffer readback API for GPU-planned tessellation counter buffers.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note">
+      These hashes are repository-local breadcrumbs. During a future Sokol update, they are useful
+      with <code>git show &lt;hash&gt; -- game/src/extern/sokol/sokol_gfx.h</code>, but the code will
+      still need to be merged against whatever upstream Sokol changed around the same areas.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Public API Additions</h2>
+
+    <h3>Buffer Readback API</h3>
+    <p>
+      The patch adds an opaque readback handle beside the normal Sokol resource handles:
+      <code>typedef struct sg_buffer_readback { uintptr_t impl; } sg_buffer_readback;</code>.
+      It also adds a state enum and descriptor:
+    </p>
+    <pre><code>typedef enum sg_buffer_readback_state {
+    SG_BUFFER_READBACKSTATE_INITIAL,
+    SG_BUFFER_READBACKSTATE_PENDING,
+    SG_BUFFER_READBACKSTATE_READY,
+    SG_BUFFER_READBACKSTATE_FAILED,
+    SG_BUFFER_READBACKSTATE_UNSUPPORTED,
+} sg_buffer_readback_state;
+
+typedef struct sg_buffer_readback_desc {
+    uint32_t _start_canary;
+    size_t size;
+    const char* label;
+    uint32_t _end_canary;
+} sg_buffer_readback_desc;</code></pre>
+    <p>The public functions are:</p>
+    <ul>
+      <li><code>sg_make_buffer_readback(const sg_buffer_readback_desc* desc)</code></li>
+      <li><code>sg_destroy_buffer_readback(sg_buffer_readback readback)</code></li>
+      <li><code>sg_request_buffer_readback(sg_buffer_readback readback, sg_buffer buf, size_t offset, size_t size)</code></li>
+      <li><code>sg_query_buffer_readback_state(sg_buffer_readback readback)</code></li>
+      <li><code>sg_consume_buffer_readback(sg_buffer_readback readback, void* dst, size_t size)</code></li>
+    </ul>
+
+    <h3>Metal Frame Timing API</h3>
+    <p>
+      These functions are declared near the existing Metal accessors and are only meaningful for
+      <code>SOKOL_METAL</code> builds:
+    </p>
+    <ul>
+      <li><code>sg_mtl_set_gpu_frame_timing_callback()</code></li>
+      <li><code>sg_mtl_set_gpu_frame_timing_frame_index()</code></li>
+      <li><code>sg_mtl_set_gpu_frame_lifecycle_callback()</code></li>
+      <li><code>sg_mtl_set_gpu_frame_wait_callback()</code></li>
+    </ul>
+    <p>
+      The timing callback reports the app frame index plus <code>MTLCommandBuffer.GPUStartTime</code>
+      and <code>GPUEndTime</code>. The lifecycle callback reports <code>CREATED</code>,
+      <code>COMMITTED</code>, <code>SCHEDULED</code>, and <code>COMPLETED</code> events with
+      command-buffer and submission ids. The wait callback brackets Sokol's in-flight-frame
+      semaphore wait in the first Metal begin-pass of a frame.
+    </p>
+
+    <h3>Metal Scope Timing API</h3>
+    <p>
+      Scope timing adds <code>sg_mtl_gpu_timing_event</code> rows and exposes detected Metal counter
+      sampling capabilities through <code>sg_mtl_gpu_scope_timing_caps</code>.
+    </p>
+    <ul>
+      <li><code>sg_mtl_init_gpu_scope_timing()</code></li>
+      <li><code>sg_mtl_shutdown_gpu_scope_timing()</code></li>
+      <li><code>sg_mtl_query_gpu_scope_timing_caps()</code></li>
+      <li><code>sg_mtl_set_gpu_scope_timing_callback()</code></li>
+      <li><code>sg_mtl_begin_gpu_scope_timing(const char* name)</code></li>
+      <li><code>sg_mtl_end_gpu_scope_timing(int scope_index)</code></li>
+    </ul>
+    <p>
+      Event rows carry a name, tree depth, parent index, lane index, event index, event type,
+      start offset in milliseconds, elapsed milliseconds, and a validity flag. Event types are
+      frame, render pass, compute pass, and manual scope.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Implementation Touch Points</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Search For</th>
+          <th>Why It Matters During A Sokol Update</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>blender_live_link local GPU profiler patch</code></td>
+          <td>Top-of-file banner summarizing the local patch. Keep or refresh it after merging.</td>
+        </tr>
+        <tr>
+          <td><code>sg_buffer_readback</code></td>
+          <td>Opaque handle, descriptor, state enum, declarations, implementation, and public wrappers.</td>
+        </tr>
+        <tr>
+          <td><code>D3D11_CREATE_READBACK_BUFFER_FAILED</code></td>
+          <td>Log items for readback allocation/map failures and unsupported backends.</td>
+        </tr>
+        <tr>
+          <td><code>sg_mtl_gpu_frame_timing_cb</code></td>
+          <td>Public callback typedefs and Metal backend fields for frame timing and lifecycle reporting.</td>
+        </tr>
+        <tr>
+          <td><code>SG_MTL_GPU_SCOPE_TIMING_MAX_EVENTS</code></td>
+          <td>Fixed-size per-frame event arrays used by the profiler and helper metadata.</td>
+        </tr>
+        <tr>
+          <td><code>_sg_mtl_gpu_scope_timing_find_timestamp_counter_set</code></td>
+          <td>Metal timestamp counter discovery using <code>MTLCommonCounterSetTimestamp</code>.</td>
+        </tr>
+        <tr>
+          <td><code>_sg_mtl_gpu_scope_timing_attach_render_pass_descriptor</code></td>
+          <td>Render pass descriptor instrumentation for stage-boundary pass timing.</td>
+        </tr>
+        <tr>
+          <td><code>_sg_mtl_gpu_scope_timing_attach_compute_pass_descriptor</code></td>
+          <td>Compute pass descriptor instrumentation for stage-boundary pass timing.</td>
+        </tr>
+        <tr>
+          <td><code>_sg_mtl_begin_pass</code></td>
+          <td>Command-buffer creation, semaphore wait reporting, lifecycle handlers, and completed-frame timing.</td>
+        </tr>
+        <tr>
+          <td><code>_sg_mtl_commit</code></td>
+          <td>Reports <code>SG_MTL_GPU_FRAME_LIFECYCLE_COMMITTED</code> before committing the command buffer.</td>
+        </tr>
+        <tr>
+          <td><code>sg_mtl_init_gpu_scope_timing</code></td>
+          <td>Public initializer that allocates one <code>MTLCounterSampleBuffer</code> per in-flight frame.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Metal Profiler Details</h2>
+    <h3>Frame Timing</h3>
+    <p>
+      The patch tracks the app's frame index separately from Sokol's internal frame counter. The game
+      calls <code>sg_mtl_set_gpu_frame_timing_frame_index()</code> from
+      <a href="../game/src/render/sokol_helpers.h">game/src/render/sokol_helpers.h</a> at frame begin.
+      When the first Metal pass creates a command buffer, the patch captures that frame index, assigns
+      monotonically increasing command-buffer and submission ids, and reports lifecycle events.
+    </p>
+    <p>
+      Completion handlers call the frame timing callback with <code>GPUStartTime</code> and
+      <code>GPUEndTime</code> when Metal provides valid values. They also resolve any counter-sampled
+      scope events before signaling Sokol's in-flight-frame semaphore.
+    </p>
+
+    <h3>Scope Timing</h3>
+    <p>
+      <code>sg_mtl_init_gpu_scope_timing()</code> finds the Metal timestamp counter set, checks draw,
+      dispatch, and stage-boundary sampling support, and creates counter sample buffers. The important
+      compatibility behavior is that stage-boundary support alone is considered enough to initialize
+      scope timing because current Apple Silicon systems can expose pass-level stage samples even when
+      explicit draw/dispatch boundary samples are unavailable.
+    </p>
+    <p>
+      Render and compute passes are automatically represented as GPU events. Render passes attach
+      <code>MTLRenderPassSampleBufferAttachmentDescriptor</code> to the pass descriptor and sample from
+      <code>startOfVertexSampleIndex</code> to <code>endOfFragmentSampleIndex</code>. Compute passes use
+      <code>MTLComputePassSampleBufferAttachmentDescriptor</code> from
+      <code>startOfEncoderSampleIndex</code> to <code>endOfEncoderSampleIndex</code>.
+    </p>
+    <p>
+      Manual scopes call <code>sampleCountersInBuffer</code> inside the active render or compute encoder.
+      Those scopes require draw-boundary or dispatch-boundary counter sampling. When a machine only
+      supports stage-boundary samples, manual scope begin returns a negative result and the helper layer
+      records CPU-only fallback markers instead.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Buffer Readback Details</h2>
+    <p>
+      The readback API is intentionally small and currently exists for
+      <a href="../game/src/render/tessellation.h">game/src/render/tessellation.h</a>. GPU tessellation
+      writes counters in a storage buffer. The CPU then reads those counters to know how many generated
+      vertices and indices are valid.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>Behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Metal</td>
+          <td>
+            Allocates a shared <code>MTLBuffer</code> as staging memory. A readback request must happen
+            while a command buffer exists and no render or compute encoder is active. It opens a blit
+            encoder, copies from the source buffer to staging memory, and marks the readback ready from
+            a command-buffer completed handler.
+          </td>
+        </tr>
+        <tr>
+          <td>D3D11</td>
+          <td>
+            Allocates a staging <code>ID3D11Buffer</code> with CPU read access. A request uses
+            <code>CopySubresourceRegion</code>. Querying the state attempts a non-blocking
+            <code>Map(..., D3D11_MAP_FLAG_DO_NOT_WAIT)</code> and copies data into CPU memory when ready.
+          </td>
+        </tr>
+        <tr>
+          <td>Other Backends</td>
+          <td>
+            Reports <code>SG_BUFFER_READBACKSTATE_UNSUPPORTED</code>, emits a single warning, and asserts
+            if code tries to request a readback. Tessellation checks backend support before depending on it.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      The readback object can be destroyed while a Metal copy is pending. In that case the patch marks
+      <code>destroy_requested</code> and frees the object from the command-buffer completed handler.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Game Code That Depends On This Patch</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Dependency</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><a href="../game/src/render/sokol_helpers.h">game/src/render/sokol_helpers.h</a></td>
+          <td>
+            Initializes Metal GPU timing, registers callbacks, wraps GPU scopes, merges Metal pass
+            events with CPU metadata, and emits CPU-only fallback markers when explicit Metal samples
+            are unavailable.
+          </td>
+        </tr>
+        <tr>
+          <td><a href="../game/src/render/tessellation.h">game/src/render/tessellation.h</a></td>
+          <td>
+            Creates <code>sg_buffer_readback</code> objects, requests readback of tessellation counters,
+            polls readiness, consumes counter data, and disables GPU-planned tessellation if readback fails.
+          </td>
+        </tr>
+        <tr>
+          <td><a href="../game/src/game_object/mesh.h">game/src/game_object/mesh.h</a></td>
+          <td>Stores <code>sg_buffer_readback</code> handles in tessellation GPU slots.</td>
+        </tr>
+        <tr>
+          <td><a href="../game/src/state/state.h">game/src/state/state.h</a></td>
+          <td>Tracks readback support and readback age for renderer state/UI reporting.</td>
+        </tr>
+        <tr>
+          <td><a href="../game/src/main.cpp">game/src/main.cpp</a></td>
+          <td>Displays tessellation readback support and profiler output in the debug UI.</td>
+        </tr>
+        <tr>
+          <td><a href="../game/src/extern/sokol/sokol_single_file.c">game/src/extern/sokol/sokol_single_file.c</a></td>
+          <td>Includes <code>sokol_gfx.h</code> into the compiled Sokol static library.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Upgrade Checklist</h2>
+    <ol>
+      <li>
+        Replace the vendored Sokol files with the desired upstream version, including any associated
+        utility headers or tools needed by the project.
+      </li>
+      <li>
+        Reapply or manually merge the local <code>sokol_gfx.h</code> patch groups described above:
+        top banner, readback API, Metal profiler API, log items, backend storage, readback implementation,
+        Metal scope helpers, command-buffer lifecycle hooks, and public API implementations.
+      </li>
+      <li>
+        Search for every token in the touch-point table. Each one should either exist in the updated
+        header or have an intentional replacement with the same behavior.
+      </li>
+      <li>
+        Rebuild Sokol through the game build script. On macOS this regenerates
+        <code>game/bin/libsokol.a</code>; on Windows it regenerates <code>game/bin/sokol.lib</code>.
+      </li>
+      <li>
+        Run the game and inspect the profiler UI. Metal should report GPU frame timing, lifecycle
+        progression, pass events, and a clear status message for the available counter sampling mode.
+      </li>
+      <li>
+        Exercise GPU-planned tessellation on a Metal or D3D11 backend. The debug UI should show readback
+        as supported, readback age should update, and generated mesh counts should not stick at zero.
+      </li>
+      <li>
+        If testing another backend, confirm that readback is reported as unsupported once and that GPU
+        tessellation falls back or disables itself cleanly instead of spinning on pending readbacks.
+      </li>
+    </ol>
+    <pre><code># Useful review commands after merging a new Sokol version:
+git diff -- game/src/extern/sokol/sokol_gfx.h
+rg "sg_mtl_set_gpu_frame_timing_callback|sg_mtl_init_gpu_scope_timing|sg_make_buffer_readback" game/src
+./game/build.sh Mac
+
+# On Windows, the equivalent build should regenerate game/bin/sokol.lib:
+./game/build.sh Windows</code></pre>
+  </section>
+
+  <section class="card">
+    <h2>Known Limits</h2>
+    <ul>
+      <li>
+        The profiler patch is Metal-specific. D3D11 has separate timing support in
+        <code>sokol_helpers.h</code>, not through these Metal callbacks.
+      </li>
+      <li>
+        Manual Metal GPU scopes need draw-boundary or dispatch-boundary counter sampling. Stage-only
+        hardware still gets pass-level rows, while explicit scopes become CPU-only markers.
+      </li>
+      <li>
+        <code>sg_buffer_readback</code> is implemented only for Metal and D3D11. The API is local to this
+        project and should not be treated as upstream Sokol behavior.
+      </li>
+      <li>
+        Readback is a temporary bridge for GPU-generated counts. If the renderer later moves to indirect
+        draw/dispatch, this patch may become smaller or unnecessary.
+      </li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
