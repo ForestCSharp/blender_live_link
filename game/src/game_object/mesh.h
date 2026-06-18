@@ -6,7 +6,7 @@
 #include "shaders/tessellation_common.h"
 
 static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout.");
-static_assert(sizeof(TessellationPatch) == 32, "TessellationPatch must match shader storage layout.");
+static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch must match shader storage layout.");
 static_assert(sizeof(TessellationWeldPair) == 16, "TessellationWeldPair must match shader storage layout.");
 
 struct MeshInitData

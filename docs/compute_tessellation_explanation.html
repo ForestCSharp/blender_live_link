@@ -233,19 +233,24 @@ SSAO reads geometry pass position/normal outputs</code></pre>
 
   <h2>CPU Planning</h2>
   <p>
-    The renderer currently treats each source triangle as a tessellation patch. For each mesh, the CPU picks one factor,
+    The renderer treats each source triangle as one or more tessellation patches. The CPU picks a factor for each patch,
     computes exact output counts, checks the global budgets, builds patch records, and uploads them to
     <code>TessellatedGeometry::patch_buffer</code>.
   </p>
   <pre><code>vertices_per_patch = ((factor + 1) * (factor + 2)) / 2;
 indices_per_patch = factor * factor * 3;
 
-generated_vertex_count = source_triangle_count * vertices_per_patch;
-generated_index_count = source_triangle_count * indices_per_patch;
+generated_vertex_count += vertices_per_patch;
+generated_index_count += indices_per_patch;
 generated_wire_index_count = generated_index_count * 2;</code></pre>
   <p>
     Buffer capacity grows only when needed. Once a mesh has enough GPU memory for the current counts, later frames can
     reuse those buffers and only refresh patch data and generated contents.
+  </p>
+  <p>
+    In per-triangle mode, large source triangles can split into virtual patches before factor selection. A virtual patch
+    stores a smaller barycentric domain inside the original source triangle, so the shader can still read the same three
+    source vertices while generating denser local geometry.
   </p>
 
   <h2>Tessellation Factors</h2>
@@ -264,18 +269,28 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
         <td>Deterministic inspection, debugging counts, and comparing factor levels.</td>
       </tr>
       <tr>
-        <td><code>AdaptiveAngular</code></td>
+        <td><code>AdaptiveAngularPerMesh</code></td>
         <td>
           Measures world-space edge angular size relative to the active camera, converts that to approximate pixels,
-          and chooses enough segments to hit <code>target_pixels_per_segment</code>.
+          and gives every patch in the mesh the highest factor needed by any mesh edge.
         </td>
-        <td>Keeping nearby or large-on-screen meshes denser than distant meshes.</td>
+        <td>Keeping the legacy one-factor-per-mesh behavior for comparison and debugging.</td>
+      </tr>
+      <tr>
+        <td><code>AdaptiveAngularPerTriangle</code></td>
+        <td>
+          Measures world-space edge angular size relative to the active camera, converts that to approximate pixels,
+          stores fractional per-edge LODs, optionally splits large triangles into virtual patches, and gives each patch
+          the ceiling of its highest edge LOD.
+        </td>
+        <td>Keeping nearby or large-on-screen triangles denser without over-tessellating the whole mesh.</td>
       </tr>
     </tbody>
   </table>
   <p>
-    The current implementation uses one factor per object: the maximum factor needed by any source edge in the mesh.
-    This keeps patch borders consistent without per-edge crack handling becoming the primary problem in v1.
+    Per-triangle mode is the default selected mode. It also stores three edge LODs per patch so generated boundary
+    vertices can morph toward the lower-density edge grid instead of leaving obvious T-junctions when neighboring
+    triangles choose different factors.
   </p>
 
   <h2>Shared Buffer Layouts</h2>
@@ -285,7 +300,7 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
     static assertions near <code>mesh.h</code> to catch layout drift.
   </p>
   <pre><code>static_assert(sizeof(Vertex) == 48);
-static_assert(sizeof(TessellationPatch) == 32);
+static_assert(sizeof(TessellationPatch) == 80);
 static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
   <table>
     <thead>
@@ -309,7 +324,7 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
       <tr>
         <td>Patch metadata</td>
         <td><code>TessellationPatch</code></td>
-        <td>Stores source offsets, generated offsets, factor, and per-patch counts.</td>
+        <td>Stores source offsets, generated offsets, factor, edge LODs, barycentric patch domain, and per-patch counts.</td>
       </tr>
       <tr>
         <td>Generated vertices</td>
@@ -339,7 +354,8 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
       <h3><code>emit_vertices</code></h3>
       <p>
         Builds each patch's triangular grid. It converts a local vertex index to barycentric coordinates, interpolates
-        position, normal, and UV, then optionally applies Phong tessellation.
+        boundary coordinates by edge LOD, remaps through the patch barycentric domain, then interpolates source
+        position, normal, and UV before optional Phong tessellation.
       </p>
     </div>
     <div class="card">
@@ -352,8 +368,8 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
     <div class="card">
       <h3><code>weld_edges</code></h3>
       <p>
-        Averages position and normal across generated edge vertex pairs. UVs remain separate because the pair writes
-        back each side's original vertex payload except for position and normal.
+        Averages position and normal across same-factor generated edge vertex pairs. Mismatched factors rely on edge
+        LOD morphing instead of pairwise welding.
       </p>
     </div>
   </div>
@@ -463,8 +479,8 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       </tr>
       <tr>
         <td><code>Mode</code></td>
-        <td><code>Adaptive Angular</code></td>
-        <td>Selects fixed factor or camera-size-driven factor selection.</td>
+        <td><code>Adaptive Angular (Per Triangle)</code></td>
+        <td>Selects fixed, per-mesh adaptive, or per-triangle adaptive factor selection.</td>
       </tr>
       <tr>
         <td><code>Visualization</code></td>
@@ -484,7 +500,7 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       <tr>
         <td><code>Target Segment</code></td>
         <td><code>20.0 px</code></td>
-        <td>Adaptive mode tries to keep generated segments near this screen-space length.</td>
+        <td>Adaptive modes try to keep generated segments near this screen-space length.</td>
       </tr>
       <tr>
         <td><code>Phong Strength</code></td>
@@ -494,7 +510,17 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       <tr>
         <td><code>Edge Welding</code></td>
         <td><code>false</code></td>
-        <td>Enables generated edge vertex position/normal averaging across matching source edges.</td>
+        <td>Enables generated edge vertex position/normal averaging across matching patch edges.</td>
+      </tr>
+      <tr>
+        <td><code>Virtual Patches</code></td>
+        <td><code>true</code></td>
+        <td>Allows per-triangle mode to split large source triangles into smaller barycentric patch domains.</td>
+      </tr>
+      <tr>
+        <td><code>Virtual Patch Depth</code></td>
+        <td><code>2</code></td>
+        <td>Caps virtual split density. Depth <code>2</code> allows up to <code>16</code> patches per source triangle.</td>
       </tr>
       <tr>
         <td><code>Max Vertices</code>, <code>Max Indices</code></td>
@@ -530,8 +556,8 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     <div class="card">
       <h3>Triangle Patches</h3>
       <p>
-        Live-link meshes arrive triangulated, so v1 subdivides triangle patches. Quad-aware topology is deferred until
-        source polygon metadata exists.
+        Live-link meshes arrive triangulated, so tessellation still starts from triangles. Virtual patches split large
+        triangles in barycentric space, but quad-aware topology is deferred until source polygon metadata exists.
       </p>
     </div>
     <div class="card">
@@ -539,6 +565,13 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       <p>
         Sokol draw calls still use CPU-known counts. Compute emits geometry, but the CPU owns factor selection, counts,
         budgets, and draw sizes.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Edge Morphing Only</h3>
+      <p>
+        Per-triangle mode reduces visible boundary cracks, but it is not a full indirect allocation, occlusion culling,
+        layered displacement, or mesh-shader compression path.
       </p>
     </div>
   </div>

@@ -1879,6 +1879,8 @@ void frame(void)
 				tessellation_changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
 				tessellation_changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
 				tessellation_changed |= ImGui::Checkbox("Edge Welding", &state.tessellation.edge_welding);
+				tessellation_changed |= ImGui::Checkbox("Virtual Patches", &state.tessellation.virtual_patches_enabled);
+				tessellation_changed |= ImGui::SliderInt("Virtual Patch Depth", &state.tessellation.virtual_patch_max_depth, 0, 4);
 				tessellation_changed |= ImGui::DragInt("Max Vertices", &state.tessellation.max_generated_vertices, 1024.0f, 3, 64 * 1024 * 1024);
 				tessellation_changed |= ImGui::DragInt("Max Indices", &state.tessellation.max_generated_indices, 1024.0f, 3, 128 * 1024 * 1024);
 				tessellation_changed |= ImGui::SliderFloat("Bounds Padding", &state.tessellation.bounds_padding, 0.0f, 10.0f, "%.2f");

@@ -56,6 +56,27 @@ namespace Tessellation
 		u32 tess_factor = 1;
 	};
 
+	struct PatchFactors
+	{
+		u32 tess_factor = 1;
+		f32 edge_lods[3] = { 1.0f, 1.0f, 1.0f };
+	};
+
+	struct SourceBarycentric
+	{
+		f32 u = 0.0f;
+		f32 v = 0.0f;
+	};
+
+	struct PatchDomain
+	{
+		SourceBarycentric corners[3] = {
+			{ 0.0f, 0.0f },
+			{ 1.0f, 0.0f },
+			{ 0.0f, 1.0f },
+		};
+	};
+
 	struct EdgeKeyHash
 	{
 		size_t operator()(const EdgeKey& key) const
@@ -166,7 +187,120 @@ namespace Tessellation
 		return rotated_position + transform.location.XYZ;
 	}
 
-	u32 angular_factor_for_edge(
+	PatchDomain full_patch_domain()
+	{
+		return (PatchDomain) {};
+	}
+
+	PatchDomain patch_domain_from_patch(const TessellationPatch& patch)
+	{
+		PatchDomain domain = {};
+		domain.corners[0] = (SourceBarycentric) { .u = patch.domain_u0, .v = patch.domain_v0 };
+		domain.corners[1] = (SourceBarycentric) { .u = patch.domain_u1, .v = patch.domain_v1 };
+		domain.corners[2] = (SourceBarycentric) { .u = patch.domain_u2, .v = patch.domain_v2 };
+		return domain;
+	}
+
+	SourceBarycentric domain_grid_point(const u32 split_segments, const u32 row, const u32 col)
+	{
+		const f32 inv_segments = 1.0f / (f32) MAX(split_segments, 1u);
+		return (SourceBarycentric) {
+			.u = (f32) col * inv_segments,
+			.v = (f32) row * inv_segments,
+		};
+	}
+
+	PatchDomain virtual_patch_domain(const u32 split_segments, const u32 patch_index)
+	{
+		u32 row = 0;
+		u32 tri_start = 0;
+		for (u32 r = 0; r < split_segments; ++r)
+		{
+			const u32 row_tri_count = 2u * (split_segments - r) - 1u;
+			if (patch_index < tri_start + row_tri_count)
+			{
+				row = r;
+				break;
+			}
+			tri_start += row_tri_count;
+		}
+
+		const u32 tri_in_row = patch_index - tri_start;
+		const u32 col = tri_in_row / 2u;
+		const bool upper = (tri_in_row & 1u) == 0u;
+
+		PatchDomain domain = {};
+		if (upper)
+		{
+			domain.corners[0] = domain_grid_point(split_segments, row, col);
+			domain.corners[1] = domain_grid_point(split_segments, row, col + 1u);
+			domain.corners[2] = domain_grid_point(split_segments, row + 1u, col);
+		}
+		else
+		{
+			domain.corners[0] = domain_grid_point(split_segments, row, col + 1u);
+			domain.corners[1] = domain_grid_point(split_segments, row + 1u, col + 1u);
+			domain.corners[2] = domain_grid_point(split_segments, row + 1u, col);
+		}
+		return domain;
+	}
+
+	HMM_Vec3 source_triangle_local_position(const Mesh& mesh, const u32 source_index_offset, const SourceBarycentric barycentric)
+	{
+		const u32 i0 = mesh.indices[source_index_offset + 0];
+		const u32 i1 = mesh.indices[source_index_offset + 1];
+		const u32 i2 = mesh.indices[source_index_offset + 2];
+
+		const f32 b1 = barycentric.u;
+		const f32 b2 = barycentric.v;
+		const f32 b0 = 1.0f - b1 - b2;
+
+		const HMM_Vec3 p0 = mesh.vertices[i0].position.XYZ;
+		const HMM_Vec3 p1 = mesh.vertices[i1].position.XYZ;
+		const HMM_Vec3 p2 = mesh.vertices[i2].position.XYZ;
+		return p0 * b0 + p1 * b1 + p2 * b2;
+	}
+
+	HMM_Vec3 patch_domain_local_position(const Mesh& mesh, const u32 source_index_offset, const PatchDomain& domain, const u32 corner_index)
+	{
+		return source_triangle_local_position(mesh, source_index_offset, domain.corners[corner_index]);
+	}
+
+	HMM_Vec3 patch_domain_world_position(const Object& object, const u32 source_index_offset, const PatchDomain& domain, const u32 corner_index)
+	{
+		return transform_position(object.current_transform, patch_domain_local_position(object.mesh, source_index_offset, domain, corner_index));
+	}
+
+	f32 raw_angular_lod_for_edge_at_distance(
+		const f32 edge_length,
+		const f32 distance_to_camera,
+		const f32 fov_radians,
+		const f32 render_height,
+		const f32 target_pixels_per_segment)
+	{
+		const f32 safe_distance = fmaxf(distance_to_camera, 0.001f);
+		const f32 sine_half_angle = CLAMP(edge_length / (2.0f * safe_distance), 0.0f, 1.0f);
+		const f32 angular_length = 2.0f * asinf(sine_half_angle);
+		const f32 pixel_length = (angular_length / fmaxf(fov_radians, 0.001f)) * render_height;
+		const f32 target_pixels = fmaxf(target_pixels_per_segment, 1.0f);
+		return fmaxf(pixel_length / target_pixels, 1.0f);
+	}
+
+	f32 raw_angular_lod_for_edge(
+		const HMM_Vec3 a,
+		const HMM_Vec3 b,
+		const Camera& camera,
+		const f32 fov_radians,
+		const f32 render_height,
+		const f32 target_pixels_per_segment)
+	{
+		HMM_Vec3 midpoint = (a + b) * 0.5f;
+		const f32 distance_to_camera = fmaxf(HMM_LenV3(midpoint - camera.location), 0.001f);
+		const f32 edge_length = HMM_LenV3(b - a);
+		return raw_angular_lod_for_edge_at_distance(edge_length, distance_to_camera, fov_radians, render_height, target_pixels_per_segment);
+	}
+
+	f32 angular_lod_for_edge(
 		const HMM_Vec3 a,
 		const HMM_Vec3 b,
 		const Camera& camera,
@@ -175,19 +309,165 @@ namespace Tessellation
 		const f32 target_pixels_per_segment,
 		const u32 max_factor)
 	{
-		HMM_Vec3 midpoint = (a + b) * 0.5f;
-		const f32 distance_to_camera = fmaxf(HMM_LenV3(midpoint - camera.location), 0.001f);
-		const f32 edge_length = HMM_LenV3(b - a);
-		const f32 sine_half_angle = CLAMP(edge_length / (2.0f * distance_to_camera), 0.0f, 1.0f);
-		const f32 angular_length = 2.0f * asinf(sine_half_angle);
-		const f32 pixel_length = (angular_length / fmaxf(fov_radians, 0.001f)) * render_height;
-		const f32 target_pixels = fmaxf(target_pixels_per_segment, 1.0f);
-		const u32 factor = (u32) ceilf(pixel_length / target_pixels);
-		return CLAMP(factor, 1u, max_factor);
+		return CLAMP(raw_angular_lod_for_edge(a, b, camera, fov_radians, render_height, target_pixels_per_segment), 1.0f, (f32) max_factor);
+	}
+
+	u32 factor_for_lod(const f32 lod, const u32 max_factor)
+	{
+		return CLAMP((u32) ceilf(lod), 1u, max_factor);
+	}
+
+	HMM_Vec3 closest_point_on_triangle(const HMM_Vec3 point, const HMM_Vec3 a, const HMM_Vec3 b, const HMM_Vec3 c)
+	{
+		const HMM_Vec3 ab = b - a;
+		const HMM_Vec3 ac = c - a;
+		const HMM_Vec3 ap = point - a;
+		const f32 d1 = HMM_DotV3(ab, ap);
+		const f32 d2 = HMM_DotV3(ac, ap);
+		if (d1 <= 0.0f && d2 <= 0.0f) { return a; }
+
+		const HMM_Vec3 bp = point - b;
+		const f32 d3 = HMM_DotV3(ab, bp);
+		const f32 d4 = HMM_DotV3(ac, bp);
+		if (d3 >= 0.0f && d4 <= d3) { return b; }
+
+		const f32 vc = d1 * d4 - d3 * d2;
+		if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+		{
+			const f32 v = d1 / (d1 - d3);
+			return a + ab * v;
+		}
+
+		const HMM_Vec3 cp = point - c;
+		const f32 d5 = HMM_DotV3(ab, cp);
+		const f32 d6 = HMM_DotV3(ac, cp);
+		if (d6 >= 0.0f && d5 <= d6) { return c; }
+
+		const f32 vb = d5 * d2 - d1 * d6;
+		if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+		{
+			const f32 w = d2 / (d2 - d6);
+			return a + ac * w;
+		}
+
+		const f32 va = d3 * d6 - d5 * d4;
+		if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f)
+		{
+			const f32 w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+			return b + (c - b) * w;
+		}
+
+		const f32 denom = 1.0f / fmaxf(va + vb + vc, 0.000001f);
+		const f32 v = vb * denom;
+		const f32 w = vc * denom;
+		return a + ab * v + ac * w;
+	}
+
+	u32 next_power_of_two(const u32 value)
+	{
+		u32 result = 1;
+		while (result < value)
+		{
+			result <<= 1u;
+		}
+		return result;
+	}
+
+	f32 raw_triangle_split_lod(
+		const Object& object,
+		const State& state,
+		const Camera& camera,
+		const f32 fov_radians,
+		const u32 source_index_offset)
+	{
+		const Mesh& mesh = object.mesh;
+		const u32 i0 = mesh.indices[source_index_offset + 0];
+		const u32 i1 = mesh.indices[source_index_offset + 1];
+		const u32 i2 = mesh.indices[source_index_offset + 2];
+
+		const HMM_Vec3 p0 = transform_position(object.current_transform, mesh.vertices[i0].position.XYZ);
+		const HMM_Vec3 p1 = transform_position(object.current_transform, mesh.vertices[i1].position.XYZ);
+		const HMM_Vec3 p2 = transform_position(object.current_transform, mesh.vertices[i2].position.XYZ);
+		const f32 render_height = (f32) state.window.render_height;
+
+		const f32 edge_lod = fmaxf(
+			raw_angular_lod_for_edge(p0, p1, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment),
+			fmaxf(
+				raw_angular_lod_for_edge(p1, p2, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment),
+				raw_angular_lod_for_edge(p2, p0, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment)));
+
+		const HMM_Vec3 closest_point = closest_point_on_triangle(camera.location, p0, p1, p2);
+		const f32 closest_distance = HMM_LenV3(closest_point - camera.location);
+		const f32 max_edge_length = fmaxf(HMM_LenV3(p1 - p0), fmaxf(HMM_LenV3(p2 - p1), HMM_LenV3(p0 - p2)));
+		const f32 closest_lod = raw_angular_lod_for_edge_at_distance(
+			max_edge_length,
+			closest_distance,
+			fov_radians,
+			render_height,
+			state.tessellation.target_pixels_per_segment);
+
+		return fmaxf(edge_lod, closest_lod);
+	}
+
+	u32 virtual_patch_split_segments(
+		const Object& object,
+		const State& state,
+		const Camera& camera,
+		const f32 fov_radians,
+		const u32 source_index_offset)
+	{
+		if (state.tessellation.mode != ETessellationMode::AdaptiveAngularPerTriangle || !state.tessellation.virtual_patches_enabled)
+		{
+			return 1;
+		}
+
+		const u32 max_depth = (u32) CLAMP(state.tessellation.virtual_patch_max_depth, 0, 4);
+		if (max_depth == 0)
+		{
+			return 1;
+		}
+
+		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
+		const f32 raw_lod = raw_triangle_split_lod(object, state, camera, fov_radians, source_index_offset);
+		const u32 requested_segments = MAX((u32) ceilf(raw_lod / (f32) max_factor), 1u);
+		const u32 max_segments = 1u << max_depth;
+		return MIN(next_power_of_two(requested_segments), max_segments);
+	}
+
+	PatchFactors uniform_patch_factors(const u32 factor)
+	{
+		PatchFactors factors = {
+			.tess_factor = factor,
+			.edge_lods = { (f32) factor, (f32) factor, (f32) factor },
+		};
+		return factors;
+	}
+
+	PatchFactors domain_tessellation_factors(
+		const Object& object,
+		const State& state,
+		const Camera& camera,
+		const f32 fov_radians,
+		const u32 source_index_offset,
+		const PatchDomain& domain)
+	{
+		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
+		const f32 render_height = (f32) state.window.render_height;
+		const HMM_Vec3 p0 = patch_domain_world_position(object, source_index_offset, domain, 0);
+		const HMM_Vec3 p1 = patch_domain_world_position(object, source_index_offset, domain, 1);
+		const HMM_Vec3 p2 = patch_domain_world_position(object, source_index_offset, domain, 2);
+
+		PatchFactors factors = {};
+		factors.edge_lods[0] = angular_lod_for_edge(p0, p1, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor);
+		factors.edge_lods[1] = angular_lod_for_edge(p1, p2, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor);
+		factors.edge_lods[2] = angular_lod_for_edge(p2, p0, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor);
+		const f32 max_edge_lod = fmaxf(factors.edge_lods[0], fmaxf(factors.edge_lods[1], factors.edge_lods[2]));
+		factors.tess_factor = factor_for_lod(max_edge_lod, max_factor);
+		return factors;
 	}
 
     // FCS TODO: this looks expensive. Should either use some other heuristic or do in a compute shader
-	u32 object_tessellation_factor(
+	PatchFactors object_tessellation_factors(
 		const Object& object,
 		const State& state,
 		const Camera& camera,
@@ -196,15 +476,12 @@ namespace Tessellation
 		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
 		if (state.tessellation.mode == ETessellationMode::Fixed)
 		{
-			return CLAMP((u32) state.tessellation.fixed_factor, 1u, max_factor);
+			return uniform_patch_factors(CLAMP((u32) state.tessellation.fixed_factor, 1u, max_factor));
 		}
 
-		// V1 keeps one factor per object so every generated triangle edge uses
-		// matching subdivisions. The factor is still camera-adaptive: it is the
-		// maximum angular edge factor observed in the source mesh this frame.
 		const Mesh& mesh = object.mesh;
 		const f32 render_height = (f32) state.window.render_height;
-		u32 factor = 1;
+		f32 max_lod = 1.0f;
 		for (u32 index_idx = 0; index_idx + 2 < mesh.index_count; index_idx += 3)
 		{
 			const u32 i0 = mesh.indices[index_idx + 0];
@@ -215,11 +492,11 @@ namespace Tessellation
 			const HMM_Vec3 p1 = transform_position(object.current_transform, mesh.vertices[i1].position.XYZ);
 			const HMM_Vec3 p2 = transform_position(object.current_transform, mesh.vertices[i2].position.XYZ);
 
-			factor = MAX(factor, angular_factor_for_edge(p0, p1, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
-			factor = MAX(factor, angular_factor_for_edge(p1, p2, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
-			factor = MAX(factor, angular_factor_for_edge(p2, p0, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
+			max_lod = fmaxf(max_lod, angular_lod_for_edge(p0, p1, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
+			max_lod = fmaxf(max_lod, angular_lod_for_edge(p1, p2, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
+			max_lod = fmaxf(max_lod, angular_lod_for_edge(p2, p0, camera, fov_radians, render_height, state.tessellation.target_pixels_per_segment, max_factor));
 		}
-		return CLAMP(factor, 1u, max_factor);
+		return uniform_patch_factors(factor_for_lod(max_lod, max_factor));
 	}
 
 	void init()
@@ -383,16 +660,10 @@ namespace Tessellation
 		}
 	}
 
-	void build_edge_weld_pairs(Mesh& mesh, const u32 factor)
+	void build_edge_weld_pairs(Mesh& mesh)
 	{
 		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
 		tessellated.edge_weld_pairs.reset();
-
-		if (factor <= 1)
-		{
-			tessellated.edge_weld_pair_count = 0;
-			return;
-		}
 
 		map<EdgeKey, EdgeRef, EdgeKeyHash> edge_map;
 		edge_map.reserve(mesh.index_count);
@@ -400,23 +671,24 @@ namespace Tessellation
 		for (u32 patch_index = 0; patch_index < tessellated.patch_count; ++patch_index)
 		{
 			const TessellationPatch& patch = tessellated.patches[patch_index];
-			const u32 source_index_offset = patch.source_index_offset;
-			const u32 source_indices[3] = {
-				mesh.indices[source_index_offset + 0],
-				mesh.indices[source_index_offset + 1],
-				mesh.indices[source_index_offset + 2],
-			};
+			const u32 factor = patch.tess_factor;
+			if (factor <= 1)
+			{
+				continue;
+			}
 
-			const u32 edge_vertices[3][2] = {
-				{ source_indices[0], source_indices[1] },
-				{ source_indices[1], source_indices[2] },
-				{ source_indices[2], source_indices[0] },
+			const u32 source_index_offset = patch.source_index_offset;
+			const PatchDomain domain = patch_domain_from_patch(patch);
+			const HMM_Vec3 edge_positions[3] = {
+				patch_domain_local_position(mesh, source_index_offset, domain, 0),
+				patch_domain_local_position(mesh, source_index_offset, domain, 1),
+				patch_domain_local_position(mesh, source_index_offset, domain, 2),
 			};
 
 			for (u32 local_edge = 0; local_edge < 3; ++local_edge)
 			{
-				const HMM_Vec3 edge_start = mesh.vertices[edge_vertices[local_edge][0]].position.XYZ;
-				const HMM_Vec3 edge_end = mesh.vertices[edge_vertices[local_edge][1]].position.XYZ;
+				const HMM_Vec3 edge_start = edge_positions[local_edge];
+				const HMM_Vec3 edge_end = edge_positions[(local_edge + 1u) % 3u];
 				const QuantizedPosition qa = quantize_position(edge_start);
 				const QuantizedPosition qb = quantize_position(edge_end);
 				if (qa == qb)
@@ -433,13 +705,13 @@ namespace Tessellation
 						.patch_index = patch_index,
 						.local_edge = local_edge,
 						.forward_matches_key = forward_matches_key,
-						.tess_factor = factor,
+						.tess_factor = patch.tess_factor,
 					};
 					continue;
 				}
 
 				const EdgeRef& other_edge = found_edge->second;
-				if (other_edge.tess_factor != factor)
+				if (other_edge.tess_factor != patch.tess_factor)
 				{
 					continue;
 				}
@@ -495,50 +767,102 @@ namespace Tessellation
 		}
 
 		const u32 source_triangle_count = mesh.index_count / 3;
-		const u32 factor = object_tessellation_factor(object, state, camera, fov_radians);
-		const u32 vertices_per_patch = vertex_count_for_factor(factor);
-		const u32 indices_per_patch = index_count_for_factor(factor);
-		const u64 generated_vertex_count = (u64) source_triangle_count * (u64) vertices_per_patch;
-		const u64 generated_index_count = (u64) source_triangle_count * (u64) indices_per_patch;
-		const u64 generated_wire_index_count = generated_index_count * 2u;
-
 		state.tessellation.source_triangle_count += source_triangle_count;
-		state.tessellation.max_factor_seen = MAX(state.tessellation.max_factor_seen, (i32) factor);
 
-		if (generated_vertex_count == 0 || generated_index_count == 0 ||
+		const bool use_per_triangle_factors = state.tessellation.mode == ETessellationMode::AdaptiveAngularPerTriangle;
+		const PatchFactors mesh_factors = use_per_triangle_factors
+			? PatchFactors {}
+			: object_tessellation_factors(object, state, camera, fov_radians);
+
+		u64 generated_vertex_count = 0;
+		u64 generated_index_count = 0;
+		u32 vertex_offset = 0;
+		u32 index_offset = 0;
+		bool overflowed = false;
+		for (u32 tri_idx = 0; tri_idx < source_triangle_count; ++tri_idx)
+		{
+			const u32 source_index_offset = tri_idx * 3u;
+			const u32 split_segments = use_per_triangle_factors
+				? virtual_patch_split_segments(object, state, camera, fov_radians, source_index_offset)
+				: 1u;
+			const u32 virtual_patch_count = split_segments * split_segments;
+
+			for (u32 virtual_patch_index = 0; virtual_patch_index < virtual_patch_count; ++virtual_patch_index)
+			{
+				const PatchDomain domain = split_segments > 1u
+					? virtual_patch_domain(split_segments, virtual_patch_index)
+					: full_patch_domain();
+				const PatchFactors patch_factors = use_per_triangle_factors
+					? domain_tessellation_factors(object, state, camera, fov_radians, source_index_offset, domain)
+					: mesh_factors;
+				const u32 vertices_per_patch = vertex_count_for_factor(patch_factors.tess_factor);
+				const u32 indices_per_patch = index_count_for_factor(patch_factors.tess_factor);
+
+				state.tessellation.max_factor_seen = MAX(state.tessellation.max_factor_seen, (i32) patch_factors.tess_factor);
+
+				tessellated.patches.add((TessellationPatch) {
+					.source_index_offset = source_index_offset,
+					.source_triangle_index = tri_idx,
+					.generated_vertex_offset = vertex_offset,
+					.generated_index_offset = index_offset,
+					.tess_factor = patch_factors.tess_factor,
+					.vertex_count = vertices_per_patch,
+					.index_count = indices_per_patch,
+					.edge_lod0 = patch_factors.edge_lods[0],
+					.edge_lod1 = patch_factors.edge_lods[1],
+					.edge_lod2 = patch_factors.edge_lods[2],
+					.domain_u0 = domain.corners[0].u,
+					.domain_v0 = domain.corners[0].v,
+					.domain_u1 = domain.corners[1].u,
+					.domain_v1 = domain.corners[1].v,
+					.domain_u2 = domain.corners[2].u,
+					.domain_v2 = domain.corners[2].v,
+				});
+
+				generated_vertex_count += vertices_per_patch;
+				generated_index_count += indices_per_patch;
+				vertex_offset += vertices_per_patch;
+				index_offset += indices_per_patch;
+
+				if (generated_vertex_count > remaining_vertex_budget ||
+					generated_index_count > remaining_index_budget ||
+					generated_index_count * 2ull > (u64) state.tessellation.max_generated_indices * 2ull)
+				{
+					overflowed = true;
+					break;
+				}
+			}
+
+			if (overflowed)
+			{
+				break;
+			}
+		}
+
+		tessellated.patch_count = (u32) tessellated.patches.length();
+		const u64 generated_wire_index_count = generated_index_count * 2ull;
+
+		if (overflowed ||
+			generated_vertex_count == 0 || generated_index_count == 0 ||
 			generated_vertex_count > remaining_vertex_budget ||
 			generated_index_count > remaining_index_budget ||
 			generated_wire_index_count > (u64) state.tessellation.max_generated_indices * 2u)
 		{
 			tessellated.overflowed = true;
+			tessellated.patches.reset();
+			tessellated.patch_count = 0;
+			tessellated.vertex_count = 0;
+			tessellated.index_count = 0;
+			tessellated.wire_index_count = 0;
 			state.tessellation.overflowed_mesh_count += 1;
 			return false;
 		}
 
-		tessellated.patch_count = source_triangle_count;
 		tessellated.vertex_count = (u32) generated_vertex_count;
 		tessellated.index_count = (u32) generated_index_count;
 		tessellated.wire_index_count = (u32) generated_wire_index_count;
 
-		tessellated.patches.add_uninitialized(source_triangle_count);
-		u32 vertex_offset = 0;
-		u32 index_offset = 0;
-		for (u32 tri_idx = 0; tri_idx < source_triangle_count; ++tri_idx)
-		{
-			tessellated.patches[tri_idx] = (TessellationPatch) {
-				.source_index_offset = tri_idx * 3u,
-				.source_triangle_index = tri_idx,
-				.generated_vertex_offset = vertex_offset,
-				.generated_index_offset = index_offset,
-				.tess_factor = factor,
-				.vertex_count = vertices_per_patch,
-				.index_count = indices_per_patch,
-			};
-			vertex_offset += vertices_per_patch;
-			index_offset += indices_per_patch;
-		}
-
-		build_edge_weld_pairs(mesh, factor);
+		build_edge_weld_pairs(mesh);
 
 		ensure_patch_buffer(tessellated);
 		ensure_generated_buffers(tessellated);
@@ -691,6 +1015,7 @@ namespace Tessellation
 		state.tessellation.fixed_factor = CLAMP(state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
 		state.tessellation.target_pixels_per_segment = fmaxf(state.tessellation.target_pixels_per_segment, 1.0f);
 		state.tessellation.phong_strength = CLAMP(state.tessellation.phong_strength, 0.0f, 1.0f);
+		state.tessellation.virtual_patch_max_depth = CLAMP(state.tessellation.virtual_patch_max_depth, 0, 4);
 		state.tessellation.max_generated_vertices = MAX(state.tessellation.max_generated_vertices, 3);
 		state.tessellation.max_generated_indices = MAX(state.tessellation.max_generated_indices, 3);
 		state.tessellation.bounds_padding = fmaxf(state.tessellation.bounds_padding, 0.0f);

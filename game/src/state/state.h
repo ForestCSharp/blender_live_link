@@ -101,13 +101,15 @@ const char* EShadowCascadePlacementModeNames[(i32)EShadowCascadePlacementMode::M
 enum class ETessellationMode : i32
 {
 	Fixed = 0,
-	AdaptiveAngular = 1,
+	AdaptiveAngularPerMesh = 1,
+	AdaptiveAngularPerTriangle = 2,
 	MAX,
 };
 
 const char* ETessellationModeNames[(i32)ETessellationMode::MAX] = {
 	"Fixed",
-	"Adaptive Angular",
+	"Adaptive Angular (Per Mesh)",
+	"Adaptive Angular (Per Triangle)",
 };
 
 struct State
@@ -227,13 +229,15 @@ struct State
 	struct TessellationState
 	{
 		bool enabled = false;
-		ETessellationMode mode = ETessellationMode::AdaptiveAngular;
+		ETessellationMode mode = ETessellationMode::AdaptiveAngularPerTriangle;
 		bool shaded_wireframe = false;
 		i32 fixed_factor = 4;
 		i32 max_factor = 24;
 		f32 target_pixels_per_segment = 20.0f;
 		f32 phong_strength = 0.5f;
 		bool edge_welding = false;
+		bool virtual_patches_enabled = true;
+		i32 virtual_patch_max_depth = 2;
 		i32 max_generated_vertices = 4 * 1024 * 1024;
 		i32 max_generated_indices = 12 * 1024 * 1024;
 		f32 bounds_padding = 0.0f;

@@ -50,32 +50,40 @@ void main()
 	TessellationVertex v0 = source_vertices[i0];
 	TessellationVertex v1 = source_vertices[i1];
 	TessellationVertex v2 = source_vertices[i2];
+	vec3 p0 = v0.position.xyz;
+	vec3 p1 = v1.position.xyz;
+	vec3 p2 = v2.position.xyz;
+	vec3 domain_p0 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u0, tess_patch.domain_v0));
+	vec3 domain_p1 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u1, tess_patch.domain_v1));
+	vec3 domain_p2 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u2, tess_patch.domain_v2));
 
 	for (uint local_vertex_index = gl_LocalInvocationID.x; local_vertex_index < tess_patch.vertex_count; local_vertex_index += gl_WorkGroupSize.x)
 	{
         // Compute the barycentric coordinates for the current vertex index
+		uint row, col;
 		float b0, b1, b2;
-		tess_barycentric_from_index(n, local_vertex_index, b0, b1, b2);
+		tess_grid_from_index(n, local_vertex_index, row, col);
+		tess_barycentric_from_grid(n, row, col, b0, b1, b2);
+		tess_apply_edge_lod_morph(n, row, col, domain_p0, domain_p1, domain_p2, tess_patch.edge_lod0, tess_patch.edge_lod1, tess_patch.edge_lod2, b0, b1, b2);
 
-        // Get input vertex position
-		vec3 p0 = v0.position.xyz;
-		vec3 p1 = v1.position.xyz;
-		vec3 p2 = v2.position.xyz;
+		vec2 source_uv = tess_patch_domain_uv(tess_patch, b0, b1, b2);
+		float source_b0, source_b1, source_b2;
+		tess_source_barycentric_from_uv(source_uv, source_b0, source_b1, source_b2);
 
         // Interpolate the vertex position using the barycentric coordinates
-		vec3 linear_position = p0 * b0 + p1 * b1 + p2 * b2;
+		vec3 linear_position = p0 * source_b0 + p1 * source_b1 + p2 * source_b2;
 
         // Compute the Phong projected position for the current vertex
 		vec3 projected_position =
-			phong_project(linear_position, p0, v0.normal.xyz) * b0 +
-			phong_project(linear_position, p1, v1.normal.xyz) * b1 +
-			phong_project(linear_position, p2, v2.normal.xyz) * b2;
+			phong_project(linear_position, p0, v0.normal.xyz) * source_b0 +
+			phong_project(linear_position, p1, v1.normal.xyz) * source_b1 +
+			phong_project(linear_position, p2, v2.normal.xyz) * source_b2;
 
         // Interpolate the normal and texcoord attributes using the barycentric coordinates
 		TessellationVertex out_vertex;
 		out_vertex.position = vec4(mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0)), 1.0);
-		out_vertex.normal = vec4(normalize(v0.normal.xyz * b0 + v1.normal.xyz * b1 + v2.normal.xyz * b2), 0.0);
-		out_vertex.texcoord = v0.texcoord * b0 + v1.texcoord * b1 + v2.texcoord * b2;
+		out_vertex.normal = vec4(normalize(v0.normal.xyz * source_b0 + v1.normal.xyz * source_b1 + v2.normal.xyz * source_b2), 0.0);
+		out_vertex.texcoord = v0.texcoord * source_b0 + v1.texcoord * source_b1 + v2.texcoord * source_b2;
 		out_vertex.padding0 = 0.0;
 		out_vertex.padding1 = 0.0;
 
