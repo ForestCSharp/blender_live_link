@@ -1,13 +1,11 @@
 #pragma once
 
-#include "core/stretchy_buffer.h"
 #include "render/gpu_buffer.h"
 #include "render/render_types.h"
 #include "shaders/tessellation_common.h"
 
 static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout.");
 static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch must match shader storage layout.");
-static_assert(sizeof(TessellationWeldPair) == 16, "TessellationWeldPair must match shader storage layout.");
 static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters must match shader storage layout.");
 
 struct MeshInitData
@@ -61,22 +59,6 @@ struct TessellatedGeometry
 	u32 vertex_count = 0;
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
-	u32 edge_weld_pair_count = 0;
-
-	u32 patch_capacity = 0;
-	u32 vertex_capacity = 0;
-	u32 index_capacity = 0;
-	u32 wire_index_capacity = 0;
-	u32 edge_weld_pair_capacity = 0;
-
-	StretchyBuffer<TessellationPatch> patches;
-	StretchyBuffer<TessellationWeldPair> edge_weld_pairs;
-
-	GpuBuffer<TessellationPatch> patch_buffer;
-	GpuBuffer<TessellationWeldPair> edge_weld_pair_buffer;
-	GpuBuffer<Vertex> vertex_buffer;
-	GpuBuffer<u32> index_buffer;
-	GpuBuffer<u32> wire_index_buffer;
 
 	GpuSlot gpu_slots[GPU_SLOT_COUNT];
 };
@@ -335,26 +317,16 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 
 MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 {
-	if (in_mesh.tessellated_geometry.active && in_mesh.tessellated_geometry.index_count > 0)
+	if (in_mesh.tessellated_geometry.active &&
+		in_mesh.tessellated_geometry.index_count > 0 &&
+		in_mesh.tessellated_geometry.gpu_planned &&
+		in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
 	{
-		if (in_mesh.tessellated_geometry.gpu_planned &&
-			in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
-		{
-			TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
-			return (MeshRenderView) {
-				.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
-				.index_buffer = slot.index_buffer.get_gpu_buffer(),
-				.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
-				.index_count = in_mesh.tessellated_geometry.index_count,
-				.wire_index_count = in_mesh.tessellated_geometry.wire_index_count,
-				.is_tessellated = true,
-			};
-		}
-
+		TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
 		return (MeshRenderView) {
-			.vertex_buffer = in_mesh.tessellated_geometry.vertex_buffer.get_gpu_buffer(),
-			.index_buffer = in_mesh.tessellated_geometry.index_buffer.get_gpu_buffer(),
-			.wire_index_buffer = in_mesh.tessellated_geometry.wire_index_buffer.get_gpu_buffer(),
+			.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
+			.index_buffer = slot.index_buffer.get_gpu_buffer(),
+			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
 			.index_count = in_mesh.tessellated_geometry.index_count,
 			.wire_index_count = in_mesh.tessellated_geometry.wire_index_count,
 			.is_tessellated = true,
@@ -373,19 +345,14 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 
 void mesh_populate_render_storage_views(Mesh& in_mesh, MeshRenderView& in_render_view)
 {
-	if (in_mesh.tessellated_geometry.active && in_render_view.is_tessellated)
+	if (in_mesh.tessellated_geometry.active &&
+		in_render_view.is_tessellated &&
+		in_mesh.tessellated_geometry.gpu_planned &&
+		in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
 	{
-		if (in_mesh.tessellated_geometry.gpu_planned &&
-			in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
-		{
-			TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
-			in_render_view.vertex_storage_view = slot.vertex_buffer.get_storage_view();
-			in_render_view.index_storage_view = slot.index_buffer.get_storage_view();
-			return;
-		}
-
-		in_render_view.vertex_storage_view = in_mesh.tessellated_geometry.vertex_buffer.get_storage_view();
-		in_render_view.index_storage_view = in_mesh.tessellated_geometry.index_buffer.get_storage_view();
+		TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
+		in_render_view.vertex_storage_view = slot.vertex_buffer.get_storage_view();
+		in_render_view.index_storage_view = slot.index_buffer.get_storage_view();
 		return;
 	}
 
@@ -413,11 +380,6 @@ void mesh_apply_render_bindings(sg_bindings& out_bindings, Mesh& in_mesh, const 
 void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
 {
 	TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
-	tessellated.patch_buffer.destroy_gpu_buffer();
-	tessellated.edge_weld_pair_buffer.destroy_gpu_buffer();
-	tessellated.vertex_buffer.destroy_gpu_buffer();
-	tessellated.index_buffer.destroy_gpu_buffer();
-	tessellated.wire_index_buffer.destroy_gpu_buffer();
 	for (u32 slot_index = 0; slot_index < TessellatedGeometry::GPU_SLOT_COUNT; ++slot_index)
 	{
 		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[slot_index];
@@ -431,7 +393,5 @@ void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
 			sg_destroy_buffer_readback(slot.counters_readback);
 		}
 	}
-	tessellated.patches.reset();
-	tessellated.edge_weld_pairs.reset();
 	tessellated = {};
 }

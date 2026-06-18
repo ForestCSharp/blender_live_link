@@ -61,18 +61,6 @@ struct TessellationPatch
 	TESS_F32 padding3 TESS_INIT(0.0f);
 };
 
-/**
- * TessellationWeldPair represents a pair of vertices that should be welded together during tessellation to ensure a watertight result.
- * Each edge in the source mesh that is shared by two triangles will produce one weld pair, and the GPU will use these pairs to identify which vertices to weld.
- */
-struct TessellationWeldPair
-{
-	TESS_U32 vertex_index_a TESS_INIT(0);
-	TESS_U32 vertex_index_b TESS_INIT(0);
-	TESS_U32 padding0 TESS_INIT(0);
-	TESS_U32 padding1 TESS_INIT(0);
-};
-
 struct TessellationCounters
 {
 	TESS_U32 patch_count TESS_INIT(0);

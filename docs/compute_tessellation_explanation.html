@@ -232,16 +232,17 @@
   <section class="card">
     <h2>Executive Summary</h2>
     <p>
-      Tessellation is a frame-local GPU geometry generation path. Fixed and per-mesh adaptive modes still use CPU patch
-      planning, while per-triangle adaptive mode plans patches in compute and reads back a tiny counter buffer for draw
-      counts. Draw passes ask each mesh for a <code>MeshRenderView</code>, so the same downstream rendering code can use
-      either source geometry or tessellated geometry.
+      Tessellation is a frame-local GPU geometry generation path. All tessellation modes now plan patch records in
+      compute. Fixed mode computes exact draw counts on the CPU from source triangle count and factor, while adaptive
+      modes read back a tiny counter buffer for GPU-chosen counts. Draw passes ask each mesh for a
+      <code>MeshRenderView</code>, so the same downstream rendering code can use either source geometry or tessellated
+      geometry.
     </p>
     <div class="grid">
       <div class="card">
         <h3>Planning</h3>
-        <p><span class="tag">CPU or compute</span><span class="tag">per frame</span></p>
-        <p>Choose patch factors, reserve generated ranges, apply budgets, and prepare compact patch metadata.</p>
+        <p><span class="tag">compute</span><span class="tag">per frame</span></p>
+        <p>Choose patch factors, reserve generated ranges with atomics, apply budgets, and write compact patch metadata.</p>
       </div>
       <div class="card">
         <h3>Emission</h3>
@@ -283,11 +284,11 @@ SSAO reads geometry pass position/normal outputs</code></pre>
 
   <h2>Patch Planning</h2>
   <p>
-    The renderer treats each source triangle as one or more tessellation patches. In <code>Fixed</code> and
-    <code>Adaptive Angular (Per Mesh)</code>, the CPU picks factors, computes exact output counts, checks budgets, and
-    uploads patch records. In <code>Adaptive Angular (Per Triangle)</code>, a compute shader performs the per-source-triangle
-    walk, chooses virtual patch splits, reserves output ranges with atomics, writes patch records, and fills a
-    <code>TessellationCounters</code> buffer.
+    The renderer treats each source triangle as one or more tessellation patches, and <code>plan_patches</code> now writes
+    those patch records for every mode. Fixed mode uses a uniform factor supplied by the CPU. Per-mesh adaptive mode runs
+    <code>measure_mesh_factor</code> first, then writes one patch per source triangle using that mesh-wide factor.
+    Per-triangle adaptive mode chooses per-edge LODs, optional virtual patch splits, and per-patch factors directly in
+    <code>plan_patches</code>.
   </p>
   <pre><code>vertices_per_patch = ((factor + 1) * (factor + 2)) / 2;
 indices_per_patch = factor * factor * 3;
@@ -296,9 +297,9 @@ generated_vertex_count += vertices_per_patch;
 generated_index_count += indices_per_patch;
 generated_wire_index_count = generated_index_count * 2;</code></pre>
   <p>
-    CPU-planned buffer capacity grows from exact counts. GPU-planned per-triangle mode uses two in-flight slot buffers
-    sized by patch, vertex, and index budgets; rendering uses the most recent completed readback slot while the next slot
-    is planned and emitted.
+    All modes use the GPU slot buffers. Fixed mode sizes them from exact counts and can activate the generated slot
+    immediately after dispatch. Adaptive modes size them from worst-case budgets; rendering uses the most recent
+    completed readback slot while the next slot is planned and emitted.
   </p>
   <p>
     In per-triangle mode, large source triangles split into virtual patches inside the planner shader before factor
@@ -349,12 +350,12 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
   <h2>Shared Buffer Layouts</h2>
   <p>
     Tessellation buffer structs are shared between C++ and GLSL through <code>tessellation_common.h</code>. C++ uses the
-    same <code>TessellationPatch</code> and <code>TessellationWeldPair</code> declarations as the compute shader, with
+    same <code>TessellationPatch</code> and <code>TessellationCounters</code> declarations as the compute shader, with
     static assertions near <code>mesh.h</code> to catch layout drift.
   </p>
   <pre><code>static_assert(sizeof(Vertex) == 48);
 static_assert(sizeof(TessellationPatch) == 80);
-static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
+static_assert(sizeof(TessellationCounters) == 32);</code></pre>
   <table>
     <thead>
       <tr>
@@ -399,12 +400,26 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
 
   <h2>Compute Shader Flow</h2>
   <p>
-    <code>tessellation.glsl</code> contains four compute entry points. Three currently do meaningful work; the corner
-    weld pass exists as a reserved hook for a fuller crack-reduction path.
+    <code>tessellation.glsl</code> contains the compute entry points that plan and emit generated geometry. The CPU no
+    longer uploads patch records.
   </p>
   <div class="grid">
     <div class="card">
-      <h3><code>emit_vertices</code></h3>
+      <h3><code>measure_mesh_factor</code></h3>
+      <p>
+        Runs only for <code>Adaptive Angular (Per Mesh)</code>. It dispatches over source triangles, computes the maximum
+        angular edge factor seen by the mesh, and stores that value in <code>TessellationCounters.max_factor_seen</code>.
+      </p>
+    </div>
+    <div class="card">
+      <h3><code>plan_patches</code></h3>
+      <p>
+        Dispatches over source triangles for every mode. It writes <code>TessellationPatch</code> records, atomically
+        reserves generated vertex/index ranges, and marks overflow when patch or generated buffer budgets are exceeded.
+      </p>
+    </div>
+    <div class="card">
+      <h3><code>emit_vertices_gpu</code></h3>
       <p>
         Builds each patch's triangular grid. It converts a local vertex index to barycentric coordinates, interpolates
         boundary coordinates by edge LOD, remaps through the patch barycentric domain, then interpolates source
@@ -412,25 +427,20 @@ static_assert(sizeof(TessellationWeldPair) == 16);</code></pre>
       </p>
     </div>
     <div class="card">
-      <h3><code>emit_indices</code></h3>
+      <h3><code>emit_indices_gpu</code></h3>
       <p>
         Walks the triangular grid and emits <code>factor * factor</code> small triangles. It also emits three line
         segments per generated triangle for legacy/debug wireframe data.
       </p>
     </div>
-    <div class="card">
-      <h3><code>weld_edges</code></h3>
-      <p>
-        Averages position and normal across same-factor generated edge vertex pairs. Mismatched factors rely on edge
-        LOD morphing instead of pairwise welding.
-      </p>
-    </div>
   </div>
   <pre><code>for each mesh:
-    emit_vertices(source vertices, source indices, patches -> generated vertices)
-    emit_indices(patches -> generated triangle indices, generated wire indices)
-    if edge_welding:
-        weld_edges(generated vertices, weld pairs)</code></pre>
+    clear_counters()
+    if mode == Adaptive Angular (Per Mesh):
+        measure_mesh_factor(source vertices, source indices -> counters.max_factor_seen)
+    plan_patches(source vertices, source indices, counters -> patches)
+    emit_vertices_gpu(source vertices, source indices, patches -> generated vertices)
+    emit_indices_gpu(patches -> generated triangle indices, generated wire indices)</code></pre>
 
   <h2>Phong Tessellation</h2>
   <p>
@@ -564,11 +574,6 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
         <td>Blends generated positions between flat linear interpolation and Phong projection.</td>
       </tr>
       <tr>
-        <td><code>Edge Welding</code></td>
-        <td><code>false</code></td>
-        <td>Enables generated edge vertex position/normal averaging across matching patch edges.</td>
-      </tr>
-      <tr>
         <td><code>Virtual Patches</code></td>
         <td><code>true</code></td>
         <td>Allows per-triangle mode to split large source triangles into smaller barycentric patch domains.</td>
@@ -581,7 +586,7 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
       <tr>
         <td><code>Max Patches</code></td>
         <td><code>256K</code></td>
-        <td>GPU-planned patch record capacity. Per-triangle planning overflows and falls back when this is exceeded.</td>
+        <td>GPU-planned patch record capacity. Planning overflows and falls back when this is exceeded.</td>
       </tr>
       <tr>
         <td><code>Max Vertices</code>, <code>Max Indices</code></td>
@@ -600,8 +605,8 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     <h3>Debug Stats</h3>
     <p>
       The UI reports mesh count, overflow count, source triangle count, patch count, generated vertex/index counts,
-      edge weld pair count, maximum factor seen, readback backend support, and readback age. These numbers are reset and
-      rebuilt every <code>Tessellation::update()</code> from CPU-planned counts or the latest completed GPU counter readback.
+      maximum factor seen, readback backend support, and readback age. These numbers are reset and rebuilt every
+      <code>Tessellation::update()</code> from fixed-mode exact counts or the latest completed adaptive GPU counter readback.
     </p>
   </section>
 
@@ -624,16 +629,17 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     <div class="card">
       <h3>Readback Counts</h3>
       <p>
-        Sokol draw calls still use CPU-visible counts. Per-triangle mode now selects factors and writes patch records in
-        compute, then reads back a tiny <code>TessellationCounters</code> buffer on Metal and D3D11. Unsupported backends
-        warn and fall back until their readback paths or indirect draw are implemented.
+        Sokol draw calls still use CPU-visible counts. Adaptive modes select factors and write patch records in compute,
+        then read back a tiny <code>TessellationCounters</code> buffer on Metal and D3D11. Fixed mode avoids readback
+        because its counts are exact from <code>source_triangle_count</code> and <code>fixed_factor</code>. Unsupported
+        backends warn and fall back for adaptive modes until their readback paths or indirect draw are implemented.
       </p>
     </div>
     <div class="card">
       <h3>Edge Morphing Only</h3>
       <p>
-        Per-triangle mode reduces visible boundary cracks, but it is not an indirect draw path, occlusion culling,
-        layered displacement, or mesh-shader compression path.
+        Per-triangle mode reduces visible boundary cracks with edge LOD morphing, but it is not an indirect draw path,
+        occlusion culling, layered displacement, or mesh-shader compression path.
       </p>
     </div>
   </div>
@@ -698,34 +704,45 @@ source vertex buffer:
           <td>Either fallback source rendering, or a mesh eligible for patch planning.</td>
         </tr>
         <tr>
-          <td>3A. CPU planning path</td>
+          <td>3. Slot setup</td>
           <td>
-            <code>Fixed</code> and <code>Adaptive Angular (Per Mesh)</code> iterate source triangles on the CPU. The CPU
-            chooses each patch factor, computes exact generated counts, checks budgets, accumulates generated offsets,
-            and uploads <code>TessellationPatch</code> records.
+            The CPU computes <code>source_triangle_count = index_count / 3</code>, chooses an in-flight GPU slot, and
+            sizes patch, vertex, index, and wire-index buffers. Fixed mode also computes exact generated counts from
+            <code>source_triangle_count</code> and <code>fixed_factor</code>; adaptive modes allocate worst-case capacity
+            from budgets and require readback support.
           </td>
-          <td>None yet.</td>
-          <td>CPU-owned patch list and exact generated vertex/index counts.</td>
+          <td><code>clear_counters</code> resets patch, generated-count, overflow, and max-factor counters.</td>
+          <td>Empty GPU slot ready for planning.</td>
         </tr>
         <tr>
-          <td>3B. GPU planning path</td>
+          <td>4. Per-mesh measure</td>
           <td>
-            <code>Adaptive Angular (Per Triangle)</code> allocates a budgeted in-flight GPU slot, clears counters, and
-            dispatches <code>plan_patches</code>. The CPU does not walk source triangles in this mode.
+            Only <code>Adaptive Angular (Per Mesh)</code> dispatches this pass. <code>Fixed</code> and
+            <code>Adaptive Angular (Per Triangle)</code> skip it.
           </td>
           <td>
-            One workgroup handles each source triangle. The shader reads <code>i0/i1/i2</code>, transforms positions to
-            world space, estimates screen-space LOD, chooses virtual splits, atomically reserves generated ranges, writes
-            patch records, and sets overflow flags.
+            <code>measure_mesh_factor</code> dispatches over source triangles, reads <code>i0/i1/i2</code>, transforms
+            positions to world space, computes angular edge LOD, and atomically updates
+            <code>counters.max_factor_seen</code>.
+          </td>
+          <td>One mesh-wide adaptive factor stored in the counter buffer.</td>
+        </tr>
+        <tr>
+          <td>5. Patch planning</td>
+          <td>
+            The CPU dispatches <code>plan_patches</code>. It does not iterate source triangles in any tessellation mode.
+          </td>
+          <td>
+            One workgroup handles each source triangle. Fixed mode writes one patch with uniform edge LODs from
+            <code>fixed_factor</code>. Per-mesh mode writes one patch with uniform edge LODs from
+            <code>max_factor_seen</code>. Per-triangle mode estimates per-edge LOD, chooses virtual splits when enabled,
+            atomically reserves generated ranges, writes patch records, and sets overflow flags.
           </td>
           <td>GPU-owned patch buffer plus <code>TessellationCounters</code>.</td>
         </tr>
         <tr>
-          <td>4. Patch record</td>
-          <td>
-            CPU mode writes this directly. GPU mode writes it in <code>plan_patches</code> and later reads back only the
-            small counter buffer.
-          </td>
+          <td>6. Patch record</td>
+          <td>The CPU never uploads patch records; it only supplies planner uniforms and buffer capacities.</td>
           <td>
             Each patch stores source triangle identity, generated vertex/index offsets, factor, per-edge LODs, counts,
             and a barycentric sub-domain. Full source triangles use corners <code>(0,0)</code>, <code>(1,0)</code>,
@@ -734,8 +751,8 @@ source vertex buffer:
           <td>One compact description of how to tessellate a source-triangle region.</td>
         </tr>
         <tr>
-          <td>5. Vertex emission</td>
-          <td>Dispatches <code>emit_vertices</code> for CPU-planned patches or <code>emit_vertices_gpu</code> for GPU-planned slots.</td>
+          <td>7. Vertex emission</td>
+          <td>Dispatches <code>emit_vertices_gpu</code> across the slot's patch capacity.</td>
           <td>
             For each patch-local grid vertex, the shader converts local vertex index to triangular-grid barycentrics,
             morphs boundary coordinates by edge LOD, remaps through the patch sub-domain, interpolates source position,
@@ -744,8 +761,8 @@ source vertex buffer:
           <td>Generated vertex buffer filled at <code>generated_vertex_offset + local_vertex_index</code>.</td>
         </tr>
         <tr>
-          <td>6. Index emission</td>
-          <td>Dispatches <code>emit_indices</code> or <code>emit_indices_gpu</code>.</td>
+          <td>8. Index emission</td>
+          <td>Dispatches <code>emit_indices_gpu</code> across the slot's patch capacity.</td>
           <td>
             The shader walks each patch's triangular grid cells and emits <code>factor * factor</code> tiny triangles.
             Indices are patch-local plus the patch's generated vertex offset. Legacy/debug line indices are also emitted.
@@ -753,25 +770,17 @@ source vertex buffer:
           <td>Generated triangle index buffer filled at <code>generated_index_offset</code>.</td>
         </tr>
         <tr>
-          <td>7. Optional welding</td>
+          <td>9. Counts</td>
           <td>
-            CPU-planned modes can build same-factor edge weld pairs. GPU-planned per-triangle mode relies on edge LOD
-            morphing for mismatched boundaries in this pass.
+            Fixed mode activates the slot immediately using its exact CPU-known counts. Adaptive modes request async
+            readback of <code>TessellationCounters</code>; rendering uses the latest completed non-overflowed slot, or
+            the source mesh if no valid slot is ready.
           </td>
-          <td><code>weld_edges</code> averages matching generated edge vertex position and normal pairs when enabled.</td>
-          <td>Generated edge vertices can be made watertight for same-factor neighbors.</td>
-        </tr>
-        <tr>
-          <td>8. Counter readback</td>
-          <td>
-            GPU-planned mode requests async readback of <code>TessellationCounters</code>. Rendering uses the latest
-            completed non-overflowed slot; if no slot is ready, it renders the source mesh.
-          </td>
-          <td>Metal/D3D11 copy the counter buffer to CPU-readable staging memory.</td>
+          <td>Metal/D3D11 copy the counter buffer to CPU-readable staging memory for adaptive modes.</td>
           <td>CPU-visible draw counts for the generated slot.</td>
         </tr>
         <tr>
-          <td>9. Rendering</td>
+          <td>10. Rendering</td>
           <td>
             Render passes call <code>mesh_get_render_view()</code>. If tessellation is active and valid, the view points
             at generated buffers; otherwise it points at source buffers.
@@ -833,7 +842,7 @@ each virtual patch:
 
     <section class="note">
       <strong>Key mental model:</strong>
-      CPU or GPU planning decides <em>how many patches exist and where their generated ranges live</em>. GPU emission
+      GPU planning decides <em>how many patches exist and where their generated ranges live</em>. GPU emission
       decides <em>the actual generated vertices and triangle indices</em>. Rendering does not know which path produced
       the buffers; it only draws the active <code>MeshRenderView</code>.
     </section>

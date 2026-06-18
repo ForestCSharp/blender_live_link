@@ -30,6 +30,88 @@ void main()
 }
 @end
 
+@cs measure_mesh_factor
+
+@include_block tessellation_types
+
+layout(binding=0) uniform plan_params {
+	mat4 model_matrix;
+	vec4 camera_position;
+	int source_triangle_count;
+	int base_triangle_index;
+	int max_patch_count;
+	int max_vertex_count;
+	int max_index_count;
+	int max_factor;
+	int virtual_patches_enabled;
+	int virtual_patch_max_depth;
+	int tessellation_mode;
+	int fixed_factor;
+	int plan_padding0;
+	int plan_padding1;
+	float fov_radians;
+	float render_height;
+	float target_pixels_per_segment;
+	float padding0;
+};
+
+layout(binding=0) readonly buffer MeasureSourceVerticesBuffer {
+	TessellationVertex measure_source_vertices[];
+};
+
+layout(binding=1) readonly buffer MeasureSourceIndicesBuffer {
+	TessellationIndex measure_source_indices[];
+};
+
+layout(binding=2) buffer MeasureCountersBuffer {
+	TessellationCounters measure_counters[];
+};
+
+layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+
+vec3 measure_world_position(vec3 local_position)
+{
+	return (model_matrix * vec4(local_position, 1.0)).xyz;
+}
+
+float measure_raw_lod_for_edge_at_distance(float edge_length, float distance_to_camera)
+{
+	float safe_distance = max(distance_to_camera, 0.001);
+	float sine_half_angle = clamp(edge_length / (2.0 * safe_distance), 0.0, 1.0);
+	float angular_length = 2.0 * asin(sine_half_angle);
+	float pixel_length = (angular_length / max(fov_radians, 0.001)) * render_height;
+	return max(pixel_length / max(target_pixels_per_segment, 1.0), 1.0);
+}
+
+float measure_raw_lod_for_edge(vec3 a, vec3 b)
+{
+	vec3 midpoint = (a + b) * 0.5;
+	float distance_to_camera = max(length(midpoint - camera_position.xyz), 0.001);
+	return measure_raw_lod_for_edge_at_distance(length(b - a), distance_to_camera);
+}
+
+void main()
+{
+	uint source_triangle_index = uint(base_triangle_index) + gl_WorkGroupID.x;
+	if (source_triangle_index >= uint(max(source_triangle_count, 0)) || gl_LocalInvocationID.x != 0u)
+	{
+		return;
+	}
+
+	uint source_index_offset = source_triangle_index * 3u;
+	uint i0 = measure_source_indices[source_index_offset + 0u].value;
+	uint i1 = measure_source_indices[source_index_offset + 1u].value;
+	uint i2 = measure_source_indices[source_index_offset + 2u].value;
+	vec3 p0 = measure_world_position(measure_source_vertices[i0].position.xyz);
+	vec3 p1 = measure_world_position(measure_source_vertices[i1].position.xyz);
+	vec3 p2 = measure_world_position(measure_source_vertices[i2].position.xyz);
+	uint max_factor_u = uint(clamp(max_factor, 1, 31));
+	float max_lod = max(measure_raw_lod_for_edge(p0, p1), max(measure_raw_lod_for_edge(p1, p2), measure_raw_lod_for_edge(p2, p0)));
+	uint factor = clamp(uint(ceil(max_lod)), 1u, max_factor_u);
+	atomicMax(measure_counters[0].max_factor_seen, factor);
+}
+@end
+
 @cs plan_patches
 
 @include_block tessellation_types
@@ -45,6 +127,10 @@ layout(binding=0) uniform plan_params {
 	int max_factor;
 	int virtual_patches_enabled;
 	int virtual_patch_max_depth;
+	int tessellation_mode;
+	int fixed_factor;
+	int plan_padding0;
+	int plan_padding1;
 	float fov_radians;
 	float render_height;
 	float target_pixels_per_segment;
@@ -68,6 +154,10 @@ layout(binding=3) buffer PlanCountersBuffer {
 };
 
 layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+
+const int TESS_MODE_FIXED = 0;
+const int TESS_MODE_ADAPTIVE_PER_MESH = 1;
+const int TESS_MODE_ADAPTIVE_PER_TRIANGLE = 2;
 
 vec3 plan_world_position(vec3 local_position)
 {
@@ -148,7 +238,7 @@ uint plan_next_power_of_two(uint value)
 
 uint plan_split_segments(vec3 p0, vec3 p1, vec3 p2)
 {
-	if (virtual_patches_enabled == 0)
+	if (tessellation_mode != TESS_MODE_ADAPTIVE_PER_TRIANGLE || virtual_patches_enabled == 0)
 	{
 		return 1u;
 	}
@@ -237,6 +327,30 @@ vec3 plan_source_position_from_domain(vec3 p0, vec3 p1, vec3 p2, vec2 uv)
 void plan_fill_patch_lods(inout TessellationPatch out_patch, vec3 source_p0, vec3 source_p1, vec3 source_p2)
 {
 	uint max_factor_u = uint(clamp(max_factor, 1, 31));
+	if (tessellation_mode == TESS_MODE_FIXED)
+	{
+		uint factor = uint(clamp(fixed_factor, 1, max_factor));
+		out_patch.edge_lod0 = float(factor);
+		out_patch.edge_lod1 = float(factor);
+		out_patch.edge_lod2 = float(factor);
+		out_patch.tess_factor = factor;
+		out_patch.vertex_count = tess_vertex_count_for_factor(out_patch.tess_factor);
+		out_patch.index_count = tess_index_count_for_factor(out_patch.tess_factor);
+		return;
+	}
+
+	if (tessellation_mode == TESS_MODE_ADAPTIVE_PER_MESH)
+	{
+		uint factor = clamp(plan_counters[0].max_factor_seen, 1u, max_factor_u);
+		out_patch.edge_lod0 = float(factor);
+		out_patch.edge_lod1 = float(factor);
+		out_patch.edge_lod2 = float(factor);
+		out_patch.tess_factor = factor;
+		out_patch.vertex_count = tess_vertex_count_for_factor(out_patch.tess_factor);
+		out_patch.index_count = tess_index_count_for_factor(out_patch.tess_factor);
+		return;
+	}
+
 	vec3 p0 = plan_source_position_from_domain(source_p0, source_p1, source_p2, vec2(out_patch.domain_u0, out_patch.domain_v0));
 	vec3 p1 = plan_source_position_from_domain(source_p0, source_p1, source_p2, vec2(out_patch.domain_u1, out_patch.domain_v1));
 	vec3 p2 = plan_source_position_from_domain(source_p0, source_p1, source_p2, vec2(out_patch.domain_u2, out_patch.domain_v2));
@@ -312,97 +426,6 @@ void main()
 		out_patch.generated_vertex_offset = vertex_offset;
 		out_patch.generated_index_offset = index_offset;
 		plan_patches[patch_slot] = out_patch;
-	}
-}
-@end
-
-@cs emit_vertices
-
-@include_block tessellation_types
-
-layout(binding=0) uniform cs_params {
-	int count;
-	int base_index;
-	float phong_strength;
-	int padding0;
-};
-
-layout(binding=0) readonly buffer SourceVerticesBuffer {
-	TessellationVertex source_vertices[];
-};
-
-layout(binding=1) readonly buffer SourceIndicesBuffer {
-	TessellationIndex source_indices[];
-};
-
-layout(binding=2) readonly buffer PatchesBuffer {
-	TessellationPatch patches[];
-};
-
-layout(binding=3) buffer GeneratedVerticesBuffer {
-	TessellationVertex generated_vertices[];
-};
-
-layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
-
-void main()
-{
-	uint patch_index = uint(base_index) + gl_WorkGroupID.x;
-	if (patch_index >= uint(count))
-	{
-		return;
-	}
-
-	TessellationPatch tess_patch = patches[patch_index];
-	uint n = max(tess_patch.tess_factor, 1u);
-	uint source_index_offset = tess_patch.source_index_offset;
-
-	uint i0 = source_indices[source_index_offset + 0u].value;
-	uint i1 = source_indices[source_index_offset + 1u].value;
-	uint i2 = source_indices[source_index_offset + 2u].value;
-
-	TessellationVertex v0 = source_vertices[i0];
-	TessellationVertex v1 = source_vertices[i1];
-	TessellationVertex v2 = source_vertices[i2];
-	vec3 p0 = v0.position.xyz;
-	vec3 p1 = v1.position.xyz;
-	vec3 p2 = v2.position.xyz;
-	vec3 domain_p0 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u0, tess_patch.domain_v0));
-	vec3 domain_p1 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u1, tess_patch.domain_v1));
-	vec3 domain_p2 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u2, tess_patch.domain_v2));
-
-	for (uint local_vertex_index = gl_LocalInvocationID.x; local_vertex_index < tess_patch.vertex_count; local_vertex_index += gl_WorkGroupSize.x)
-	{
-        // Compute the barycentric coordinates for the current vertex index
-		uint row, col;
-		float b0, b1, b2;
-		tess_grid_from_index(n, local_vertex_index, row, col);
-		tess_barycentric_from_grid(n, row, col, b0, b1, b2);
-		tess_apply_edge_lod_morph(n, row, col, domain_p0, domain_p1, domain_p2, tess_patch.edge_lod0, tess_patch.edge_lod1, tess_patch.edge_lod2, b0, b1, b2);
-
-		vec2 source_uv = tess_patch_domain_uv(tess_patch, b0, b1, b2);
-		float source_b0, source_b1, source_b2;
-		tess_source_barycentric_from_uv(source_uv, source_b0, source_b1, source_b2);
-
-        // Interpolate the vertex position using the barycentric coordinates
-		vec3 linear_position = p0 * source_b0 + p1 * source_b1 + p2 * source_b2;
-
-        // Compute the Phong projected position for the current vertex
-		vec3 projected_position =
-			phong_project(linear_position, p0, v0.normal.xyz) * source_b0 +
-			phong_project(linear_position, p1, v1.normal.xyz) * source_b1 +
-			phong_project(linear_position, p2, v2.normal.xyz) * source_b2;
-
-        // Interpolate the normal and texcoord attributes using the barycentric coordinates
-		TessellationVertex out_vertex;
-		out_vertex.position = vec4(mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0)), 1.0);
-		out_vertex.normal = vec4(normalize(v0.normal.xyz * source_b0 + v1.normal.xyz * source_b1 + v2.normal.xyz * source_b2), 0.0);
-		out_vertex.texcoord = v0.texcoord * source_b0 + v1.texcoord * source_b1 + v2.texcoord * source_b2;
-		out_vertex.padding0 = 0.0;
-		out_vertex.padding1 = 0.0;
-
-        // Write the generated vertex to the output buffer
-		generated_vertices[tess_patch.generated_vertex_offset + local_vertex_index] = out_vertex;
 	}
 }
 @end
@@ -495,98 +518,6 @@ void main()
 		out_vertex.padding0 = 0.0;
 		out_vertex.padding1 = 0.0;
 		gpu_generated_vertices[tess_patch.generated_vertex_offset + local_vertex_index] = out_vertex;
-	}
-}
-@end
-
-@cs emit_indices
-
-@include_block tessellation_types
-
-layout(binding=0) uniform cs_params {
-	int count;
-	int base_index;
-	float phong_strength;
-	int padding0;
-};
-
-layout(binding=0) readonly buffer IndexPatchesBuffer {
-	TessellationPatch index_patches[];
-};
-
-layout(binding=1) buffer GeneratedIndicesBuffer {
-	TessellationIndex generated_indices[];
-};
-
-layout(binding=2) buffer GeneratedWireIndicesBuffer {
-	TessellationIndex generated_wire_indices[];
-};
-
-layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
-
-void main()
-{
-	uint patch_index = uint(base_index) + gl_WorkGroupID.x;
-	if (patch_index >= uint(count))
-	{
-		return;
-	}
-
-    // Get the tessellation patch for the current workgroup
-	TessellationPatch tess_patch = index_patches[patch_index];
-	uint n = max(tess_patch.tess_factor, 1u);
-	uint tri_count = n * n;
-
-    // For each triangle in the tessellated patch, compute the vertex indices and write them to the output buffers
-	for (uint local_tri_index = gl_LocalInvocationID.x; local_tri_index < tri_count; local_tri_index += gl_WorkGroupSize.x)
-	{
-		uint row = 0u;
-		uint tri_start = 0u;
-		for (uint r = 0u; r < 31u; ++r)
-		{
-			uint row_tri_count = 2u * (n - r) - 1u;
-			if (local_tri_index < tri_start + row_tri_count)
-			{
-				row = r;
-				break;
-			}
-			tri_start += row_tri_count;
-		}
-
-		uint tri_in_row = local_tri_index - tri_start;
-		uint col = tri_in_row / 2u;
-		bool upper = (tri_in_row & 1u) == 0u;
-
-        // use tess_vertex_index to compute the indices for the triangle based on its row + column in the tessellation pattern
-		uint a, b, c;
-		if (upper)
-		{
-			a = tess_vertex_index(n, row, col);
-			b = tess_vertex_index(n, row, col + 1u);
-			c = tess_vertex_index(n, row + 1u, col);
-		}
-		else
-		{
-			a = tess_vertex_index(n, row, col + 1u);
-			b = tess_vertex_index(n, row + 1u, col + 1u);
-			c = tess_vertex_index(n, row + 1u, col);
-		}
-
-        // Write generated triangle indices to the output index buffer
-		uint out_index = tess_patch.generated_index_offset + local_tri_index * 3u;
-		uint vertex_offset = tess_patch.generated_vertex_offset;
-		generated_indices[out_index + 0u].value = vertex_offset + a;
-		generated_indices[out_index + 1u].value = vertex_offset + b;
-		generated_indices[out_index + 2u].value = vertex_offset + c;
-
-        // Write debug wireframe indices to the output wire index buffer
-		uint out_wire_index = tess_patch.generated_index_offset * 2u + local_tri_index * 6u;
-		generated_wire_indices[out_wire_index + 0u].value = vertex_offset + a;
-		generated_wire_indices[out_wire_index + 1u].value = vertex_offset + b;
-		generated_wire_indices[out_wire_index + 2u].value = vertex_offset + b;
-		generated_wire_indices[out_wire_index + 3u].value = vertex_offset + c;
-		generated_wire_indices[out_wire_index + 4u].value = vertex_offset + c;
-		generated_wire_indices[out_wire_index + 5u].value = vertex_offset + a;
 	}
 }
 @end
@@ -686,61 +617,8 @@ void main()
 }
 @end
 
-@cs weld_edges
-
-@include_block tessellation_types
-
-layout(binding=0) uniform cs_params {
-	int count;
-	int base_index;
-	float phong_strength;
-	int padding0;
-};
-
-layout(binding=0) buffer WeldVerticesBuffer {
-	TessellationVertex weld_vertices[];
-};
-
-layout(binding=1) readonly buffer WeldPairsBuffer {
-	TessellationWeldPair weld_pairs[];
-};
-
-layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
-
-void main()
-{
-	uint pair_index = uint(base_index) + gl_GlobalInvocationID.x;
-	if (pair_index >= uint(count))
-	{
-		return;
-	}
-
-	TessellationWeldPair pair = weld_pairs[pair_index];
-	TessellationVertex a = weld_vertices[pair.vertex_index_a];
-	TessellationVertex b = weld_vertices[pair.vertex_index_b];
-
-	vec3 normal_sum = a.normal.xyz + b.normal.xyz;
-	if (dot(normal_sum, normal_sum) < 0.000001)
-	{
-		normal_sum = a.normal.xyz;
-	}
-	vec4 average_position = vec4((a.position.xyz + b.position.xyz) * 0.5, 1.0);
-	vec4 average_normal = vec4(normalize(normal_sum), 0.0);
-
-	a.position = average_position;
-	b.position = average_position;
-	a.normal = average_normal;
-	b.normal = average_normal;
-
-	weld_vertices[pair.vertex_index_a] = a;
-	weld_vertices[pair.vertex_index_b] = b;
-}
-@end
-
 @program clear_counters clear_counters
+@program measure_mesh_factor measure_mesh_factor
 @program plan_patches plan_patches
-@program emit_vertices emit_vertices
 @program emit_vertices_gpu emit_vertices_gpu
-@program emit_indices emit_indices
 @program emit_indices_gpu emit_indices_gpu
-@program weld_edges weld_edges

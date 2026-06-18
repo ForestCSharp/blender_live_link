@@ -1888,7 +1888,6 @@ void frame(void)
 				tessellation_changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32) Tessellation::MAX_FACTOR);
 				tessellation_changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
 				tessellation_changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
-				tessellation_changed |= ImGui::Checkbox("Edge Welding", &state.tessellation.edge_welding);
 				tessellation_changed |= ImGui::Checkbox("Virtual Patches", &state.tessellation.virtual_patches_enabled);
 				tessellation_changed |= ImGui::SliderInt("Virtual Patch Depth", &state.tessellation.virtual_patch_max_depth, 0, 4);
 				tessellation_changed |= ImGui::DragInt("Max Patches", &state.tessellation.max_generated_patches, 256.0f, 1, 1024 * 1024);
@@ -1899,7 +1898,7 @@ void frame(void)
 				ImGui::Text("Meshes: %d  Overflow: %d", state.tessellation.mesh_count, state.tessellation.overflowed_mesh_count);
 				ImGui::Text("Source Tris: %d  Patches: %d", state.tessellation.source_triangle_count, state.tessellation.patch_count);
 				ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
-				ImGui::Text("Weld Pairs: %d  Max Factor: %d", state.tessellation.edge_weld_pair_count, state.tessellation.max_factor_seen);
+				ImGui::Text("Max Factor: %d", state.tessellation.max_factor_seen);
 				ImGui::Text("Readback: %s  Age: %d", state.tessellation.readback_supported ? "Supported" : "Unsupported", state.tessellation.readback_age);
 
 				if (tessellation_changed)

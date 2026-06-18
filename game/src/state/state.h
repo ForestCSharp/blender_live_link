@@ -235,7 +235,6 @@ struct State
 		i32 max_factor = 24;
 		f32 target_pixels_per_segment = 20.0f;
 		f32 phong_strength = 0.5f;
-		bool edge_welding = false;
 		bool virtual_patches_enabled = true;
 		i32 virtual_patch_max_depth = 2;
 		i32 max_generated_patches = 256 * 1024;
@@ -247,7 +246,6 @@ struct State
 		i32 patch_count = 0;
 		i32 generated_vertex_count = 0;
 		i32 generated_index_count = 0;
-		i32 edge_weld_pair_count = 0;
 		i32 mesh_count = 0;
 		i32 overflowed_mesh_count = 0;
 		i32 max_factor_seen = 1;
