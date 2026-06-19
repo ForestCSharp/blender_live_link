@@ -193,6 +193,9 @@ struct Mesh
 	u32 skin_matrix_count;
 	HMM_Mat4* skin_matrices;
 	GpuBuffer<HMM_Mat4> skin_matrix_buffer;
+	bool skinned_vertex_cache_valid = false;
+	u32 skinned_vertex_cache_capacity = 0;
+	GpuBuffer<Vertex> skinned_vertex_cache_buffer;
 	i32 armature_id;
 	HMM_Mat4 mesh_to_armature;
 	HMM_Mat4 armature_to_mesh;
@@ -204,6 +207,31 @@ struct Mesh
 
 	TessellatedGeometry tessellated_geometry;
 };
+
+bool mesh_has_valid_skinned_vertex_cache(Mesh& in_mesh)
+{
+	return in_mesh.has_skinned_vertices &&
+		in_mesh.skinned_vertex_cache_valid &&
+		in_mesh.skinned_vertex_cache_buffer.is_gpu_buffer_valid();
+}
+
+bool mesh_has_deformed_vertex_source(Mesh& in_mesh)
+{
+	return !in_mesh.has_skinned_vertices || mesh_has_valid_skinned_vertex_cache(in_mesh);
+}
+
+GpuBuffer<Vertex>& mesh_get_deformed_vertex_buffer(Mesh& in_mesh)
+{
+	assert(mesh_has_deformed_vertex_source(in_mesh));
+	return in_mesh.has_skinned_vertices
+		? in_mesh.skinned_vertex_cache_buffer
+		: in_mesh.vertex_buffer;
+}
+
+sg_view mesh_get_deformed_vertex_storage_view(Mesh& in_mesh)
+{
+	return mesh_get_deformed_vertex_buffer(in_mesh).get_storage_view();
+}
 
 // Takes ownership of vertices and indices
 Mesh make_mesh(const MeshInitData& in_init_data)
@@ -357,6 +385,10 @@ void mesh_populate_render_storage_views(Mesh& in_mesh, MeshRenderView& in_render
 	}
 
 	in_render_view.vertex_storage_view = in_mesh.vertex_buffer.get_storage_view();
+	if (mesh_has_valid_skinned_vertex_cache(in_mesh))
+	{
+		in_render_view.vertex_storage_view = in_mesh.skinned_vertex_cache_buffer.get_storage_view();
+	}
 	in_render_view.index_storage_view = in_mesh.index_buffer.get_storage_view();
 }
 

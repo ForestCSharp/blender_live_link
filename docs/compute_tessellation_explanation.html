@@ -236,7 +236,8 @@
       compute. Fixed mode computes exact draw counts on the CPU from source triangle count and factor, while adaptive
       modes read back a tiny counter buffer for GPU-chosen counts. Draw passes ask each mesh for a
       <code>MeshRenderView</code>, so the same downstream rendering code can use either source geometry or tessellated
-      geometry.
+      geometry. Skinned meshes use a GPU pre-skin cache so tessellation and shaded wireframe consume the same plain
+      vertex layout as static meshes.
     </p>
     <div class="grid">
       <div class="card">
@@ -265,6 +266,7 @@
   <pre><code>object_copy_physics_transform(...)
 object_update_storage_buffer(...)
 
+GpuSkinning::update(state, tessellation_or_wireframe_needs_cache)
 Tessellation::update(state, camera, fov)
 
 ShadowDepthPass::render(...)
@@ -305,6 +307,10 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
     In per-triangle mode, large source triangles split into virtual patches inside the planner shader before factor
     selection. A virtual patch stores a smaller barycentric domain inside the original source triangle, so emission can
     still read the same three source vertices while generating denser local geometry.
+  </p>
+  <p>
+    Skinned source meshes are first converted into a mesh-local <code>Vertex</code> cache by a compute pass. The
+    tessellation planner and shaded wireframe overlay read that cache instead of the bind-pose vertex buffer.
   </p>
 
   <h2>Tessellation Factors</h2>
@@ -405,6 +411,13 @@ static_assert(sizeof(TessellationCounters) == 32);</code></pre>
   </p>
   <div class="grid">
     <div class="card">
+      <h3><code>skin_vertices</code></h3>
+      <p>
+        Runs before tessellation when a skinned mesh needs tessellation or shaded wireframe. It reads bind-pose
+        vertices, joint weights, and current skin matrices, then writes a deformed mesh-local <code>Vertex</code> cache.
+      </p>
+    </div>
+    <div class="card">
       <h3><code>measure_mesh_factor</code></h3>
       <p>
         Runs only for <code>Adaptive Angular (Per Mesh)</code>. It dispatches over source triangles, computes the maximum
@@ -416,6 +429,8 @@ static_assert(sizeof(TessellationCounters) == 32);</code></pre>
       <p>
         Dispatches over source triangles for every mode. It writes <code>TessellationPatch</code> records, atomically
         reserves generated vertex/index ranges, and marks overflow when patch or generated buffer budgets are exceeded.
+        Active adaptive skinned slots re-run emission against the current pre-skinned cache while waiting for newer
+        readback counts, so animation poses stay current even when topology/counts are one readback behind.
       </p>
     </div>
     <div class="card">
@@ -434,7 +449,10 @@ static_assert(sizeof(TessellationCounters) == 32);</code></pre>
       </p>
     </div>
   </div>
-  <pre><code>for each mesh:
+  <pre><code>for each skinned mesh that needs generated/debug geometry:
+    skin_vertices(source vertices, skin weights, skin matrices -> skinned vertex cache)
+
+for each tessellated mesh:
     clear_counters()
     if mode == Adaptive Angular (Per Mesh):
         measure_mesh_factor(source vertices, source indices -> counters.max_factor_seen)
@@ -697,8 +715,8 @@ source vertex buffer:
         <tr>
           <td>2. Eligibility</td>
           <td>
-            If tessellation is disabled, the mesh is skinned, the mesh has no triangles, or the last GPU-planned result
-            overflowed, the mesh stays on the source buffers.
+            If tessellation is disabled, the mesh has no triangles, the needed skinned cache is unavailable, or the last
+            GPU-planned result overflowed, the mesh stays on the source buffers.
           </td>
           <td>None.</td>
           <td>Either fallback source rendering, or a mesh eligible for patch planning.</td>

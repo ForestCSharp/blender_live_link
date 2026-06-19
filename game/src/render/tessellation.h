@@ -488,7 +488,7 @@ namespace Tessellation
 			PlanParams params = make_plan_params(state, object, camera, fov_radians, slot, source_triangle_count, base_triangle);
 			sg_bindings bindings = {
 				.views = {
-					[0] = object.mesh.vertex_buffer.get_storage_view(),
+					[0] = mesh_get_deformed_vertex_storage_view(object.mesh),
 					[1] = object.mesh.index_buffer.get_storage_view(),
 					[2] = slot.counters_buffer.get_storage_view(),
 				},
@@ -528,7 +528,7 @@ namespace Tessellation
 
 			sg_bindings bindings = {
 				.views = {
-					[0] = object.mesh.vertex_buffer.get_storage_view(),
+					[0] = mesh_get_deformed_vertex_storage_view(object.mesh),
 					[1] = object.mesh.index_buffer.get_storage_view(),
 					[2] = slot.patch_buffer.get_storage_view(),
 					[3] = slot.counters_buffer.get_storage_view(),
@@ -563,7 +563,7 @@ namespace Tessellation
 		{
 			sg_bindings bindings = {
 				.views = {
-					[0] = mesh.vertex_buffer.get_storage_view(),
+					[0] = mesh_get_deformed_vertex_storage_view(mesh),
 					[1] = mesh.index_buffer.get_storage_view(),
 					[2] = slot.patch_buffer.get_storage_view(),
 					[3] = slot.vertex_buffer.get_storage_view(),
@@ -618,6 +618,12 @@ namespace Tessellation
 		}
 
 		if (mesh.index_count < 3 || mesh.vertex_count == 0)
+		{
+			tessellated.active = false;
+			return false;
+		}
+
+		if (!mesh_has_deformed_vertex_source(mesh))
 		{
 			tessellated.active = false;
 			return false;
@@ -739,6 +745,21 @@ namespace Tessellation
 		return tessellated.active;
 	}
 
+	void refresh_active_skinned_mesh_gpu(State& state, Mesh& mesh)
+	{
+		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
+		if (!mesh.has_skinned_vertices ||
+			!mesh_has_deformed_vertex_source(mesh) ||
+			!tessellated.active ||
+			!tessellated.gpu_planned ||
+			tessellated.active_gpu_slot >= TessellatedGeometry::GPU_SLOT_COUNT)
+		{
+			return;
+		}
+
+		emit_mesh_gpu(state, mesh, tessellated.gpu_slots[tessellated.active_gpu_slot]);
+	}
+
 	void update(State& state, const Camera& camera, const f32 fov_radians)
 	{
 		reset_stats(state);
@@ -767,15 +788,10 @@ namespace Tessellation
 				continue;
 			}
 
-			if (object.mesh.has_skinned_vertices)
-			{
-				mesh_cleanup_tessellated_geometry(object.mesh);
-				continue;
-			}
-
 			if (state.tessellation.mode != ETessellationMode::Fixed)
 			{
 				poll_gpu_readbacks(state, object.mesh);
+				refresh_active_skinned_mesh_gpu(state, object.mesh);
 			}
 			prepare_mesh_gpu(state, object, camera, fov_radians);
 		}

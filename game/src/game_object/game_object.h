@@ -425,6 +425,7 @@ void object_cleanup_gpu_resources(Object& in_object)
 			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
 			free(in_object.mesh.skin_matrices);
 			in_object.mesh.skin_matrix_buffer.destroy_gpu_buffer();
+			in_object.mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
 		}
 
 		free(in_object.mesh.material_indices);

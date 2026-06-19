@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesh Pipeline Explainer</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --paper: #ffffff;
+      --ink: #1d2433;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --accent: #1f6feb;
+      --accent-soft: #e8f1ff;
+      --code-bg: #f0f3f8;
+      --code-border: #d8deea;
+      --warn: #a15c00;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 34px;
+      padding-bottom: 24px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.15;
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 840px;
+      margin: 0 0 10px;
+      font-size: 2.2rem;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 0.1em 0.35em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 20px;
+      padding: 14px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--code-border);
+      background: var(--code-bg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-size: 0.9rem;
+      line-height: 1.48;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 18px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      background: var(--paper);
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    th {
+      width: 24%;
+      background: #f1f4f9;
+      font-weight: 650;
+    }
+
+    tr:last-child th,
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .intro {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .note,
+    .warning {
+      margin: 18px 0;
+      padding: 14px 16px;
+      border-radius: 6px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+      background: #fff7e5;
+      color: #5f3c00;
+    }
+
+    .tab-control {
+      margin-top: 30px;
+    }
+
+    .tab-control input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .tabs label {
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #tab-static:checked ~ .tabs label[for="tab-static"],
+    #tab-skinned:checked ~ .tabs label[for="tab-skinned"] {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--ink);
+    }
+
+    .tab-panel {
+      display: none;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    #tab-static:checked ~ #static-panel,
+    #tab-skinned:checked ~ #skinned-panel {
+      display: block;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .card {
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .card p {
+      color: var(--muted);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      margin: 0 6px 6px 0;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--code-bg);
+      color: var(--muted);
+      font-size: 0.84rem;
+      white-space: nowrap;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+      counter-reset: step;
+    }
+
+    .flow-step {
+      position: relative;
+      padding: 14px 14px 14px 56px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    .flow-step::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .flow-step strong {
+      color: var(--ink);
+    }
+
+    .flow-step p {
+      color: var(--muted);
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        padding: 32px 18px 56px;
+      }
+
+      .tab-panel {
+        padding: 16px;
+      }
+
+      .split {
+        grid-template-columns: 1fr;
+      }
+
+      th,
+      td {
+        display: block;
+        width: 100%;
+      }
+
+      th {
+        border-bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Mesh Pipeline Explainer</h1>
+      <p class="intro">
+        This page follows mesh data from import-time CPU ownership through the per-frame GPU render views.
+        The static and skinned paths share the same render-view abstraction, but skinned meshes can take either
+        a direct skinning draw path or a pre-skinned cache path when tessellation or shaded wireframe needs plain vertices.
+      </p>
+    </header>
+
+    <section class="tab-control" aria-label="Mesh pipeline tabs">
+      <input id="tab-static" type="radio" name="mesh-pipeline-tab" checked>
+      <input id="tab-skinned" type="radio" name="mesh-pipeline-tab">
+
+      <nav class="tabs" aria-label="Pipeline views">
+        <label for="tab-static">Static Meshes</label>
+        <label for="tab-skinned">Skinned Meshes</label>
+      </nav>
+
+      <section id="static-panel" class="tab-panel">
+        <h2>Static Meshes</h2>
+        <p>
+          Static meshes are the baseline path. Their source vertex and triangle index buffers are uploaded once,
+          then each frame chooses whether passes should render those source buffers or a tessellated GPU output slot.
+          There is no per-triangle CPU planning in the tessellation path.
+        </p>
+
+        <div class="grid">
+          <article class="card">
+            <h3>CPU-Owned Mesh Data</h3>
+            <p>
+              <code>make_mesh()</code> builds persistent mesh state from imported mesh data: vertices, indices,
+              wire indices, meshlet metadata, material slots, and per-object references.
+            </p>
+            <p>
+              <span class="tag">vertices</span>
+              <span class="tag">indices</span>
+              <span class="tag">wire indices</span>
+              <span class="tag">materials</span>
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>GPU Source Buffers</h3>
+            <p>
+              The source <code>Mesh::vertex_buffer</code> and <code>Mesh::index_buffer</code> are both renderable
+              and storage-readable, so raster passes can bind them traditionally while compute and overlays can fetch them.
+            </p>
+            <p>
+              <span class="tag">vertex buffer</span>
+              <span class="tag">index buffer</span>
+              <span class="tag">storage views</span>
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Render View</h3>
+            <p>
+              <code>mesh_get_render_view()</code> is the handoff point. It returns source buffers when tessellation is
+              inactive, or generated tessellation buffers when an active slot is valid.
+            </p>
+            <p>
+              <span class="tag">source view</span>
+              <span class="tag">tessellated view</span>
+              <span class="tag">fallback</span>
+            </p>
+          </article>
+        </div>
+
+        <h2>Sequential Frame Flow</h2>
+        <div class="flow">
+          <div class="flow-step">
+            <strong>Object transforms are updated.</strong>
+            <p>
+              Physics and scene changes write the object's current transform. <code>object_update_storage_buffer()</code>
+              uploads object data used by later passes.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Optional tessellation plans patches on the GPU.</strong>
+            <p>
+              If tessellation is enabled, <code>Tessellation::update()</code> prepares GPU buffers, dispatches planning
+              compute, emits tessellated vertices and indices, and selects the newest valid output slot. Fixed mode has
+              CPU-known counts; adaptive modes use readback for temporary CPU-visible draw counts.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Passes ask the mesh for a render view.</strong>
+            <p>
+              Geometry, shadows, GI capture, and wire overlay all use <code>MeshRenderView</code>. This keeps pass code
+              from caring whether the mesh is still source topology or generated tessellation output.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Raster passes bind the active buffers.</strong>
+            <p>
+              <code>mesh_apply_render_bindings()</code> binds the active vertex and index buffers. Static meshes use the
+              non-skinned pipelines because positions and normals are already in mesh-local space.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Post-lighting wireframe fetches active triangle buffers.</strong>
+            <p>
+              The shaded wireframe overlay draws triangles after lighting and DOF. It fetches positions and indices from
+              storage views and computes anti-aliased edge coverage from barycentrics in the fragment shader.
+            </p>
+          </div>
+        </div>
+
+        <h2>Static Data Flow</h2>
+        <pre><code>MeshInitData
+  -> make_mesh()
+  -> Mesh::vertex_buffer / Mesh::index_buffer
+  -> optional Tessellation::update()
+       -> GPU patch planning
+       -> generated vertex/index buffers
+  -> mesh_get_render_view()
+  -> geometry, shadow, GI, wire overlay</code></pre>
+
+        <table>
+          <tr>
+            <th>Source rendering</th>
+            <td>
+              Uses <code>Mesh::vertex_buffer</code> and <code>Mesh::index_buffer</code> directly. This is the fallback path
+              whenever tessellation is disabled, unsupported, overflowing, or has no completed adaptive slot yet.
+            </td>
+          </tr>
+          <tr>
+            <th>Fixed tessellation</th>
+            <td>
+              CPU computes total patch and generated index counts from triangle count plus the fixed factor, then the GPU
+              writes the generated buffers. The slot can be activated immediately because counts are exact.
+            </td>
+          </tr>
+          <tr>
+            <th>Adaptive tessellation</th>
+            <td>
+              GPU compute measures and plans patch density. The CPU does not iterate source triangles; it consumes a small
+              counter readback on supported backends to know the completed draw sizes.
+            </td>
+          </tr>
+          <tr>
+            <th>Wire overlay</th>
+            <td>
+              Uses the same active render view as shaded rendering, but through storage views because the overlay shader
+              fetches vertices and indices manually with <code>gl_VertexIndex</code>.
+            </td>
+          </tr>
+        </table>
+
+        <div class="note">
+          Static meshes do not need a deformation cache. Their source vertex buffer is already the correct mesh-local
+          input for raster, compute tessellation, and the post-lighting wireframe overlay.
+        </div>
+      </section>
+
+      <section id="skinned-panel" class="tab-panel">
+        <h2>Skinned Meshes</h2>
+        <p>
+          Skinned meshes carry bind-pose vertices plus joint indices and weights. The default animated rendering path
+          skins in the draw shader. Tessellation and shaded wireframe use a separate GPU pre-skinning cache so they can
+          consume the same plain <code>Vertex</code> layout as static meshes.
+        </p>
+
+        <div class="grid">
+          <article class="card">
+            <h3>Animation Inputs</h3>
+            <p>
+              Each skinned mesh has bind-pose <code>Vertex</code> data, <code>SkinnedVertex</code> joint data, a skin
+              matrix buffer, and an armature mapping that converts animation pose into mesh-local deformation.
+            </p>
+            <p>
+              <span class="tag">bind pose</span>
+              <span class="tag">joint indices</span>
+              <span class="tag">weights</span>
+              <span class="tag">skin matrices</span>
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Direct Skinned Draw</h3>
+            <p>
+              With tessellation off and shaded wireframe off, passes can render the source buffers using skinned shader
+              variants. This preserves the existing animation path and skin debug behavior.
+            </p>
+            <p>
+              <span class="tag">skinned pipeline</span>
+              <span class="tag">source topology</span>
+              <span class="tag">no cache cost</span>
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Pre-Skinned Cache</h3>
+            <p>
+              When tessellation or shaded wireframe needs animated vertices, <code>GpuSkinning::update()</code> dispatches
+              <code>skin_vertices</code> and writes deformed mesh-local vertices into <code>skinned_vertex_cache_buffer</code>.
+            </p>
+            <p>
+              <span class="tag">plain Vertex output</span>
+              <span class="tag">mesh-local</span>
+              <span class="tag">compute generated</span>
+            </p>
+          </article>
+        </div>
+
+        <h2>Sequential Frame Flow</h2>
+        <div class="flow">
+          <div class="flow-step">
+            <strong>Animation matrices are updated.</strong>
+            <p>
+              <code>update_skinned_animations()</code> advances the animation pose, computes each mesh's current skin
+              matrices, and uploads them to the mesh skin matrix buffer.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Object storage is updated normally.</strong>
+            <p>
+              The object transform still applies after skinning. Skinning writes mesh-local deformed vertices, so world
+              transforms, camera transforms, shadows, and GI continue to use the same object data model.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>The optional pre-skin cache is refreshed.</strong>
+            <p>
+              <code>GpuSkinning::update()</code> runs only when tessellation is enabled or shaded wireframe is enabled.
+              If neither feature needs plain animated vertices, cache validity is cleared and static meshes pay no cost.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>The renderer chooses one of two skinned paths.</strong>
+            <p>
+              Without tessellation or wire overlay needs, passes render through skinned shader variants. With tessellation
+              active, tessellation reads the pre-skinned cache and emits generated geometry that is already deformed.
+            </p>
+          </div>
+
+          <div class="flow-step">
+            <strong>Wire overlay consumes the right animated source.</strong>
+            <p>
+              If tessellation is active, shaded wireframe draws generated tessellation buffers. If tessellation is inactive,
+              it draws the pre-skinned cache with the source index buffer so wires follow the animated pose.
+            </p>
+          </div>
+        </div>
+
+        <h2>Skinned Data Flow</h2>
+        <div class="split">
+          <article class="card">
+            <h3>Normal Animated Draw</h3>
+            <pre><code>bind-pose Vertex buffer
++ SkinnedVertex weights
++ skin matrix buffer
+  -> skinned geometry shader
+  -> geometry, shadow, GI</code></pre>
+          </article>
+
+          <article class="card">
+            <h3>Tessellation or Wireframe</h3>
+            <pre><code>bind-pose Vertex buffer
++ SkinnedVertex weights
++ skin matrix buffer
+  -> gpu_skinning skin_vertices
+  -> skinned_vertex_cache_buffer
+  -> tessellation or wire overlay
+  -> non-skinned generated render view</code></pre>
+          </article>
+        </div>
+
+        <table>
+          <tr>
+            <th>Tessellation off, wire off</th>
+            <td>
+              Uses the existing skinned draw path. The vertex shader reads bind-pose vertices, joint weights, and skin
+              matrices, then skins positions and normals during rendering.
+            </td>
+          </tr>
+          <tr>
+            <th>Tessellation off, wire on</th>
+            <td>
+              The pre-skin cache is generated for the current frame. The shaded wireframe overlay fetches deformed
+              <code>Vertex</code> data from that cache and source triangle indices from the original index buffer.
+            </td>
+          </tr>
+          <tr>
+            <th>Tessellation on</th>
+            <td>
+              Tessellation planning and emission read the pre-skinned cache as their source vertex buffer. Generated
+              tessellated vertices are already animated, so geometry, shadows, GI, and wire overlay use non-skinned render views.
+            </td>
+          </tr>
+          <tr>
+            <th>Adaptive readback latency</th>
+            <td>
+              Adaptive tessellation still uses completed counter readbacks for draw sizes. For active skinned slots, emission
+              is refreshed from the current pre-skinned cache so the visible pose does not wait on the readback.
+            </td>
+          </tr>
+        </table>
+
+        <h2>Why The Cache Exists</h2>
+        <p>
+          Tessellation planning, tessellation emission, and wire overlay all expect a plain <code>Vertex</code> storage
+          buffer. Putting skinning into each of those shaders would duplicate animation logic across several compute and
+          raster programs. The pre-skin cache centralizes deformation once per frame, then all downstream paths consume
+          animated meshes as if they were static.
+        </p>
+
+        <div class="warning">
+          The cache is deliberately scoped: it does not rewrite animated bounds, it does not add CPU skinning, and
+          tessellated generated geometry does not carry the existing skin debug color path in this first pass.
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

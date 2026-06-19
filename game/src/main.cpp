@@ -112,6 +112,7 @@ using ankerl::unordered_dense::map;
 #include "state/state.h"
 
 // Compute tessellation
+#include "render/gpu_skinning.h"
 #include "render/tessellation.h"
 
 // Macro to define an event and run code in __VA_ARGS__ when it triggers
@@ -2573,6 +2574,11 @@ void frame(void)
 			}
 
 			{
+				CPU_TIMING_SCOPE("GPU Skinning Cache");
+				GpuSkinning::update(state, state.tessellation.enabled || state.wireframe.shaded_wireframe);
+			}
+
+			{
 				CPU_TIMING_SCOPE("Tessellation Update");
 				Tessellation::update(state, camera, fov);
 			}
@@ -2999,8 +3005,13 @@ void frame(void)
 
 							Mesh& mesh = object.mesh;
 							MeshRenderView render_view = mesh_get_render_view(mesh);
-							if (render_view.index_count == 0 ||
-								mesh_render_view_uses_skinning(mesh, render_view))
+							if (render_view.index_count == 0)
+							{
+								continue;
+							}
+
+							if (mesh_render_view_uses_skinning(mesh, render_view) &&
+								!mesh_has_valid_skinned_vertex_cache(mesh))
 							{
 								continue;
 							}
