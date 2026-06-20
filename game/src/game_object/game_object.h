@@ -175,29 +175,6 @@ void object_add_jolt_body(Object& in_object)
 	// Create the settings object for a convex hull
     JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
 
-	{
-		// TODO: Will need to force mesh shapes to always be static...
-
-		//VertexList vertices;
-		//for (i32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
-		//{
-		//	Vertex& mesh_vertex = mesh.vertices[vertex_index];
-		//	HMM_Vec4 position = mesh_vertex.position;
-		//	vertices.emplace_back(Float3(position.X, position.Y, position.Z));
-		//}
-
-		//IndexedTriangleList triangles;
-		//for (i32 indices_index = 0; indices_index < mesh.index_count; indices_index += 3)
-		//{
-		//	u32 idx_0 = mesh.indices[indices_index + 0];
-		//	u32 idx_1 = mesh.indices[indices_index + 1];
-		//	u32 idx_2 = mesh.indices[indices_index + 2];
-		//	triangles.emplace_back(IndexedTriangle(idx_0, idx_1, idx_2));
-		//}
-
-		//MeshShapeSettings shape_settings(vertices, triangles);
-	}
-
 	// Create the shape
 	JPH::ShapeSettings::ShapeResult shape_result = shape_settings.Create();
 

@@ -219,12 +219,6 @@ void jolt_init()
 	jolt_state.physics_system.SetGravity(JPH::Vec3(0,0,-10));
 }
 
-//FCS TODO: Call this after adding/removing bodies?
-// Optional step: Before starting the physics simulation you can optimize the broad phase. This improves collision detection performance (it's pointless here because we only have 2 bodies).
-// You should definitely not call this every frame or when e.g. streaming in a new level section as it is an expensive operation.
-// Instead insert all new objects in batches instead of 1 at a time to keep the broad phase efficient.
-//physics_system.OptimizeBroadPhase();
-
 void jolt_update(float in_delta_time)
 {
 	/* 	If you take larger steps than 1 / 60th of a second you need to do multiple collision steps in order to 
@@ -246,4 +240,3 @@ void jolt_shutdown()
 	delete JPH::Factory::sInstance;
 	JPH::Factory::sInstance = nullptr;
 }
-

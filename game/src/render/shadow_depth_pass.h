@@ -5,6 +5,7 @@
 
 #include "shadow_depth.compiled.h"
 
+#include "render/culling.h"
 #include "render/render_types.h"
 #include "render/render_pass.h"
 #include "state/state.h"
@@ -217,6 +218,36 @@ namespace ShadowDepthPass
 		return desc;
 	}
 
+	void draw_shadow_meshes(const CullResult& cull_result, const shadow_depth_vs_params_t& vs_params)
+	{
+		CPU_TIMING_SCOPE("Shadow Draw Meshes");
+
+		for (auto& [unique_id, object_ptr] : cull_result.objects)
+		{
+			assert(object_ptr);
+			Object& object = *object_ptr;
+
+			if (!object.has_mesh)
+			{
+				continue;
+			}
+
+			Mesh& mesh = object.mesh;
+			MeshRenderView render_view = mesh_get_render_view(mesh);
+
+			sg_bindings bindings = {};
+			bindings.views[0] = object.storage_buffer.get_storage_view();
+			const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
+			sg_apply_pipeline(uses_skinning
+				? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
+				: get_pipeline(SG_PIXELFORMAT_DEPTH));
+			sg_apply_uniforms(0, SG_RANGE(vs_params));
+			mesh_apply_render_bindings(bindings, mesh, render_view);
+			gpu_apply_bindings(&bindings);
+			sg_draw(0, render_view.index_count, 1);
+		}
+	}
+
 	void render(State& in_state, i32 cascade_idx)
 	{
 		char cascade_timing_label[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
@@ -297,32 +328,7 @@ namespace ShadowDepthPass
 			}
 
 			// Submit draw calls for objects after culling
-			{
-				CPU_TIMING_SCOPE("Shadow Draw Meshes");
-
-				for (auto& [unique_id, object_ptr] : cull_result.objects)
-				{
-					assert(object_ptr);
-					Object& object = *object_ptr;
-
-					if (object.has_mesh)
-					{
-						Mesh& mesh = object.mesh;
-						MeshRenderView render_view = mesh_get_render_view(mesh);
-
-						sg_bindings bindings = {};
-						bindings.views[0] = object.storage_buffer.get_storage_view();
-						const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
-						sg_apply_pipeline(uses_skinning
-							? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
-							: get_pipeline(SG_PIXELFORMAT_DEPTH));
-						sg_apply_uniforms(0, SG_RANGE(vs_params));
-						mesh_apply_render_bindings(bindings, mesh, render_view);
-						gpu_apply_bindings(&bindings);
-						sg_draw(0, render_view.index_count, 1);
-					}
-				}
-			}
+			draw_shadow_meshes(cull_result, vs_params);
 
 			return;
 		}
@@ -402,31 +408,6 @@ namespace ShadowDepthPass
 		}
 
 		// Submit draw calls for objects after culling
-		{
-			CPU_TIMING_SCOPE("Shadow Draw Meshes");
-
-			for (auto& [unique_id, object_ptr] : cull_result.objects)
-			{
-				assert(object_ptr);
-				Object& object = *object_ptr;
-
-				if (object.has_mesh)
-				{
-					Mesh& mesh = object.mesh;
-					MeshRenderView render_view = mesh_get_render_view(mesh);
-
-					sg_bindings bindings = {};
-					bindings.views[0] = object.storage_buffer.get_storage_view();
-					const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
-					sg_apply_pipeline(uses_skinning
-						? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
-						: get_pipeline(SG_PIXELFORMAT_DEPTH));
-					sg_apply_uniforms(0, SG_RANGE(vs_params));
-					mesh_apply_render_bindings(bindings, mesh, render_view);
-					gpu_apply_bindings(&bindings);
-					sg_draw(0, render_view.index_count, 1);
-				}
-			}
-		}
+		draw_shadow_meshes(cull_result, vs_params);
 	}
 }

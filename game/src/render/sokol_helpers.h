@@ -1407,6 +1407,25 @@ private:
 	#endif
 };
 
+template<typename Callback>
+static void gpu_execute_compute_pass(const char* debug_label, sg_pipeline pipeline, Callback callback)
+{
+	const char* label = debug_label ? debug_label : "(unnamed compute)";
+	{
+		CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", label);
+		sg_begin_pass((sg_pass) { .compute = true, .label = label });
+	}
+	{
+		GpuDebugScope debug_scope(label);
+		sg_apply_pipeline(pipeline);
+		callback();
+	}
+	{
+		CPU_TIMING_BACKEND_SCOPE("sg_end_pass", label);
+		sg_end_pass();
+	}
+}
+
 #define GPU_DEBUG_SCOPE_JOIN_INNER(a, b) a##b
 #define GPU_DEBUG_SCOPE_JOIN(a, b) GPU_DEBUG_SCOPE_JOIN_INNER(a, b)
 #define GPU_DEBUG_SCOPE(name) GpuDebugScope GPU_DEBUG_SCOPE_JOIN(gpu_debug_scope_, __LINE__)(name)

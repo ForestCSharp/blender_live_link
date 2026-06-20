@@ -32,12 +32,6 @@ public:
 		recreate(in_desc);
 	}
 
-	~GpuImage()
-	{
-		//FCS TODO: Get move-semantics working
-		//cleanup();
-	}
-
 	void recreate(const GpuImageDesc& in_desc)
 	{
 		cleanup();

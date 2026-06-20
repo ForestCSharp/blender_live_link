@@ -1,9 +1,5 @@
 #pragma once
 
-// To Use: 
-//#define STB_DS_IMPLEMENTATION
-//#include "stretchy_buffer.h"
-
 // Types
 #include "core/types.h"
 

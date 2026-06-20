@@ -4,6 +4,7 @@
 #include "render/gpu_image.h"
 #include "render/render_pass.h"
 #include "render/geometry_pass.h"
+#include "render/geometry_mesh_draw.h"
 #include "render/lighting_pass.h"
 #include "render/shader_files.h"
 #include "state/state.h"
@@ -214,50 +215,16 @@ public:
 				const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
 				CullResult cull_result = cull_objects(in_state.scene.objects, view_projection_matrix, cull_bounds_padding);
 
-				// Submit draw calls for objects after culling
 				if (should_render_geometry)
 				{
-					for (auto& [unique_id, object_ptr] : cull_result.objects)
-					{
-						assert(object_ptr);
-						Object& object = *object_ptr;
-
-						if (object.has_mesh)
-						{
-							Mesh& mesh = object.mesh;
-							MeshRenderView render_view = mesh_get_render_view(mesh);
-
-							int mesh_material_idx = mesh.material_indices[0];
-							assert(mesh_material_idx >= 0);
-							const geometry_Material_t& material = in_state.materials.items[mesh_material_idx];
-
-							GpuImage& base_color_image = material.base_color_image_index >= 0 ? in_state.images.items[material.base_color_image_index] : in_state.gpu.default_image;
-							GpuImage& metallic_image = material.metallic_image_index >= 0 ? in_state.images.items[material.metallic_image_index] : in_state.gpu.default_image;
-							GpuImage& roughness_image = material.roughness_image_index >= 0 ? in_state.images.items[material.roughness_image_index] : in_state.gpu.default_image;
-							GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? in_state.images.items[material.emission_color_image_index] : in_state.gpu.default_image;
-
-							sg_bindings bindings = {
-								.views = {
-									[0] = object.storage_buffer.get_storage_view(),
-									[1] = get_materials_buffer().get_storage_view(),
-									[2] = base_color_image.get_texture_view(0),
-									[3] = metallic_image.get_texture_view(0),
-									[4] = roughness_image.get_texture_view(0),
-									[5] = emission_color_image.get_texture_view(0),
-								},
-								.samplers[0] = in_state.gpu.linear_sampler,
-							};
-							const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
-							sg_apply_pipeline(uses_skinning
-								? GeometryPass::get_skinned_pipeline(geometry_pass.get_depth_output().get_desc().pixel_format)
-								: geometry_pass.pipeline);
-							sg_apply_uniforms(0, SG_RANGE(vs_params));
-							sg_apply_uniforms(1, SG_RANGE(geometry_fs_params));
-							mesh_apply_render_bindings(bindings, mesh, render_view);
-							gpu_apply_bindings(&bindings);
-							sg_draw(0, render_view.index_count, 1);
-						}
-					}
+					draw_visible_geometry_meshes(
+						in_state,
+						cull_result,
+						geometry_pass,
+						vs_params,
+						geometry_fs_params,
+						geometry_pass.get_depth_output().get_desc().pixel_format
+					);
 				}
 
 				if (in_state.gi.render_sky_to_probes)
@@ -283,11 +250,6 @@ public:
 				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
 				GpuImage& normal_texture = geometry_pass.get_color_output(2, face_idx);
 				GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3, face_idx);
-
-				//RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
-				//sg_image blurred_ssao_texture = ssao_blur_pass.color_outputs[0];
-				// From below...
-				//[4] = blurred_ssao_texture.get_texture_view(0),
 
 				sg_bindings bindings = {
 					.views = {
@@ -333,7 +295,6 @@ public:
 				};
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
-				//GpuImage& depth_texture = geometry_pass.get_depth_output(face_idx);
 				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
 				sg_bindings bindings = {
 					.views = {
@@ -380,17 +341,17 @@ public:
 					: lighting_pass.get_color_output(0);
 				GpuImage& depth_cubemap_texture = radial_depth_pass.get_color_output(0);
 
-					sg_bindings bindings = {
-						.views = {
-							[0] = lighting_cubemap_texture.get_texture_view(0),
-							[1] = depth_cubemap_texture.get_texture_view(0),
-						},
-						.samplers = {
-							[0] = in_state.gpu.linear_sampler,
-							[1] = in_state.gpu.nearest_sampler,
-						},
-					};
-					gpu_apply_bindings(&bindings);
+				sg_bindings bindings = {
+					.views = {
+						[0] = lighting_cubemap_texture.get_texture_view(0),
+						[1] = depth_cubemap_texture.get_texture_view(0),
+					},
+					.samplers = {
+						[0] = in_state.gpu.linear_sampler,
+						[1] = in_state.gpu.nearest_sampler,
+					},
+				};
+				gpu_apply_bindings(&bindings);
 
 				sg_draw(0,6,1);
 			}
@@ -416,16 +377,8 @@ public:
 				: lighting_pass.get_color_output(0);
 
 			const char* debug_label = "Probe Radiance Projection";
+			gpu_execute_compute_pass(debug_label, radiance_projection_pipeline, [&]()
 			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-				sg_begin_pass((sg_pass) {
-					.compute = true,
-					.label = debug_label,
-				});
-			}
-			{
-				GpuDebugScope debug_scope(debug_label);
-				sg_apply_pipeline(radiance_projection_pipeline);
 				sg_apply_uniforms(0, SG_RANGE(cs_params));
 				sg_bindings bindings = {
 					.views = {
@@ -437,11 +390,7 @@ public:
 				};
 				gpu_apply_bindings(&bindings);
 				sg_dispatch(1, 1, 1);
-			}
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-				sg_end_pass();
-			}
+			});
 		};
 
 		if (should_project_sh9)

@@ -43,7 +43,6 @@ using std::atomic;
 #include "blender_live_link_generated.h"
 
 // Jolt Physics
-//#include "Jolt/jolt_single_file.cpp"
 #include "physics/physics_system.h"
 
 // Basic Types
@@ -110,6 +109,7 @@ using ankerl::unordered_dense::map;
 
 // Global State
 #include "state/state.h"
+#include "render/geometry_mesh_draw.h"
 
 // Compute tessellation
 #include "render/gpu_skinning.h"
@@ -367,6 +367,25 @@ void reset_materials()
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
 	return state.render_passes.passes[static_cast<int>(in_pass_id)];
+}
+
+void invalidate_shadow_cache()
+{
+	ShadowDepthPass::has_valid_shadow_map = false;
+	ShadowDepthPass::has_valid_shadow_blur = false;
+}
+
+void mark_scene_geometry_dirty()
+{
+	invalidate_shadow_cache();
+	state.shadow.force_recapture = true;
+	state.gi.layout_dirty = true;
+	state.gi.is_updating = true;
+}
+
+void mark_lighting_dirty()
+{
+	state.lighting.needs_data_update = true;
 }
 
 HMM_Mat4 transform_model_matrix(const Transform& transform)
@@ -877,7 +896,6 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						}
 						case LightType::Area:
 						{
-							//FCS TODO:
 							break;
 						}
 						default:
@@ -1091,7 +1109,6 @@ void live_link_thread_function()
 
 				total_bytes_read += current_bytes_read;
 				i32 next_idx = flatbuffer_data.length();
-				//arraddn(flatbuffer_data, current_bytes_read);
 				flatbuffer_data.add_uninitialized(current_bytes_read);
 				memcpy(&flatbuffer_data[next_idx], buffer, current_bytes_read);
 				++packets_read;
@@ -1628,7 +1645,7 @@ void frame(void)
 
 			if (updated_object.has_light)
 			{
-				state.lighting.needs_data_update = true;
+				mark_lighting_dirty();
 			}
 
 			if (updated_object.has_rigid_body)
@@ -1638,11 +1655,7 @@ void frame(void)
 
 			if (mesh_changed)
 			{
-				ShadowDepthPass::has_valid_shadow_map = false;
-				ShadowDepthPass::has_valid_shadow_blur = false;
-				state.shadow.force_recapture = true;
-				state.gi.layout_dirty = true;
-				state.gi.is_updating = true;
+				mark_scene_geometry_dirty();
 			}
 
 			state.scene.objects[updated_object_uid] = updated_object;
@@ -1659,16 +1672,12 @@ void frame(void)
 
 				if (object_to_delete.has_light)
 				{
-					state.lighting.needs_data_update = true;
+					mark_lighting_dirty();
 				}
 
 				if (object_to_delete.has_mesh)
 				{
-					ShadowDepthPass::has_valid_shadow_map = false;
-					ShadowDepthPass::has_valid_shadow_blur = false;
-					state.shadow.force_recapture = true;
-					state.gi.layout_dirty = true;
-					state.gi.is_updating = true;
+					mark_scene_geometry_dirty();
 				}
 
 				object_cleanup(object_to_delete);
@@ -1680,12 +1689,8 @@ void frame(void)
 		while(optional<bool> received_reset = state.live_link.reset.receive())
 		{
 			state.runtime.blender_data_loaded = false;
-			state.lighting.needs_data_update = true;
-			ShadowDepthPass::has_valid_shadow_map = false;
-			ShadowDepthPass::has_valid_shadow_blur = false;
-			state.shadow.force_recapture = true;
-			state.gi.layout_dirty = true;
-			state.gi.is_updating = true;
+			mark_lighting_dirty();
+			mark_scene_geometry_dirty();
 
 			for (auto& [unique_id, object] : state.scene.objects)
 			{
@@ -1697,7 +1702,6 @@ void frame(void)
 				object_cleanup_gpu_resources(object);
 			}
 
-			//FCS TODO: Should also reset these if they're equal to a removed object...
 			state.scene.objects.clear();
 			state.scene.camera_control_id.reset();
 			state.scene.player_character_id.reset();
@@ -1736,8 +1740,7 @@ void frame(void)
 				object_reset_jolt_body(object);
 			}
 		}
-		state.gi.layout_dirty = true;
-		state.gi.is_updating = true;
+		mark_scene_geometry_dirty();
 	);
 
 	DEBUG_UI(
@@ -1904,10 +1907,8 @@ void frame(void)
 
 				if (tessellation_changed)
 				{
-					ShadowDepthPass::has_valid_shadow_map = false;
-					ShadowDepthPass::has_valid_shadow_blur = false;
+					invalidate_shadow_cache();
 					state.shadow.force_recapture = true;
-					state.gi.is_updating = true;
 				}
 			}
 
@@ -1951,21 +1952,18 @@ void frame(void)
 				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow.depth_freeze);
 				if (ImGui::SliderInt("Num Cascades", &state.shadow.num_cascades, 1, MAX_SHADOW_CASCADES))
 				{
-					ShadowDepthPass::has_valid_shadow_map = false;
-					ShadowDepthPass::has_valid_shadow_blur = false;
+					invalidate_shadow_cache();
 				}
 				f32& active_cascade_distance_scale = state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
 					? state.shadow.centered_square_cascade_distance_scale
 					: state.shadow.frustum_cascade_distance_scale;
 				if (ImGui::SliderFloat("Cascade Distance Scale", &active_cascade_distance_scale, 0.25f, 4.0f, "%.2f"))
 				{
-					ShadowDepthPass::has_valid_shadow_map = false;
-					ShadowDepthPass::has_valid_shadow_blur = false;
+					invalidate_shadow_cache();
 				}
 				if (ImGui::Combo("Cascade Placement", (i32*) &state.shadow.cascade_placement_mode, EShadowCascadePlacementModeNames, IM_ARRAYSIZE(EShadowCascadePlacementModeNames)))
 				{
-					ShadowDepthPass::has_valid_shadow_map = false;
-					ShadowDepthPass::has_valid_shadow_blur = false;
+					invalidate_shadow_cache();
 				}
 				if (state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 				{
@@ -1973,8 +1971,7 @@ void frame(void)
 					{
 						if (!state.shadow.depth_freeze)
 						{
-							ShadowDepthPass::has_valid_shadow_map = false;
-							ShadowDepthPass::has_valid_shadow_blur = false;
+							invalidate_shadow_cache();
 						}
 					}
 					bool center_changed = false;
@@ -1984,8 +1981,7 @@ void frame(void)
 					if (center_changed)
 					{
 						state.shadow.force_recapture = true;
-						ShadowDepthPass::has_valid_shadow_map = false;
-						ShadowDepthPass::has_valid_shadow_blur = false;
+						invalidate_shadow_cache();
 					}
 				}
 				ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
@@ -2478,7 +2474,6 @@ void frame(void)
 							}
 							case LightType::Area:
 							{
-								//FCS TODO:
 								break;
 							}
 							default: break;
@@ -2594,8 +2589,7 @@ void frame(void)
 		{
 			if (!ShadowDepthPass::get_valid_shadow_sun(state))
 			{
-				ShadowDepthPass::has_valid_shadow_map = false;
-				ShadowDepthPass::has_valid_shadow_blur = false;
+				invalidate_shadow_cache();
 			}
 			else
 			{
@@ -2657,8 +2651,7 @@ void frame(void)
 		}
 		else
 		{
-			ShadowDepthPass::has_valid_shadow_map = false;
-			ShadowDepthPass::has_valid_shadow_blur = false;
+			invalidate_shadow_cache();
 		}
 
 		const f32 cull_bounds_padding = state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f;
@@ -2721,48 +2714,14 @@ void frame(void)
 					// Submit draw calls for objects after culling
 					{
 						CPU_TIMING_SCOPE("Geometry Draw Meshes");
-
-						for (auto& [unique_id, object_ptr] : cull_result.objects)
-						{
-							assert(object_ptr);
-							Object& object = *object_ptr;
-
-							if (object.has_mesh)
-							{
-								Mesh& mesh = object.mesh;
-								MeshRenderView render_view = mesh_get_render_view(mesh);
-
-								int mesh_material_idx = mesh.material_indices[0];
-								assert(mesh_material_idx >= 0);
-								const geometry_Material_t& material = state.materials.items[mesh_material_idx];
-
-								GpuImage& base_color_image = material.base_color_image_index >= 0 ? state.images.items[material.base_color_image_index] : state.gpu.default_image;
-								GpuImage& metallic_image = material.metallic_image_index >= 0 ? state.images.items[material.metallic_image_index] : state.gpu.default_image;
-								GpuImage& roughness_image = material.roughness_image_index >= 0 ? state.images.items[material.roughness_image_index] : state.gpu.default_image;
-								GpuImage& emission_color_image = material.emission_color_image_index >= 0 ? state.images.items[material.emission_color_image_index] : state.gpu.default_image;
-
-								sg_bindings bindings = {
-									.views = {
-										[0] = object.storage_buffer.get_storage_view(),
-										[1] = get_materials_buffer().get_storage_view(),
-										[2] = base_color_image.get_texture_view(0),
-										[3] = metallic_image.get_texture_view(0),
-										[4] = roughness_image.get_texture_view(0),
-										[5] = emission_color_image.get_texture_view(0),
-									},
-									.samplers[0] = state.gpu.linear_sampler,
-								};
-								const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
-								sg_apply_pipeline(uses_skinning
-									? GeometryPass::get_skinned_pipeline(sglue_swapchain().depth_format)
-									: get_render_pass(ERenderPass::Geometry).pipeline);
-								sg_apply_uniforms(0, SG_RANGE(vs_params));
-								sg_apply_uniforms(1, SG_RANGE(fs_params));
-								mesh_apply_render_bindings(bindings, mesh, render_view);
-								gpu_apply_bindings(&bindings);
-								sg_draw(0, render_view.index_count, 1);
-							}
-						}
+						draw_visible_geometry_meshes(
+							state,
+							cull_result,
+							get_render_pass(ERenderPass::Geometry),
+							vs_params,
+							fs_params,
+							sglue_swapchain().depth_format
+						);
 					}
 
 					if (state.gi.show_probes)

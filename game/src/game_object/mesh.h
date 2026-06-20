@@ -118,10 +118,6 @@ MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 
 			HMM_Vec3 world_normal = local_position *  1.0f / radius;
 			vertex.normal = HMM_V4V(world_normal, 0.0f);
-
-			//FCS TODO:
-			//vertex.uv.x = u;
-			//vertex.uv.y = v;
 		}
 	}
 

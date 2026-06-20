@@ -51,22 +51,6 @@ public:
 	~GpuBuffer()
 	{
 		// TODO: move semantics
-		// cleanup()
-	}
-
-	void cleanup()
-	{
-		if (storage_view.has_value())
-		{
-			sg_destroy_view(storage_view.value());
-			storage_view.reset();
-		}
-		
-		if (gpu_buffer.has_value())
-		{
-			sg_destroy_buffer(gpu_buffer.value());
-			gpu_buffer.reset();
-		}
 	}
 
 	bool is_gpu_buffer_valid()

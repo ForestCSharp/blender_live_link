@@ -100,21 +100,12 @@ namespace GpuSkinning
 				},
 			};
 
+			gpu_execute_compute_pass(debug_label, skin_vertices_pipeline, [&]()
 			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
-			}
-			{
-				GpuDebugScope debug_scope(debug_label);
-				sg_apply_pipeline(skin_vertices_pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
 				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) group_count, 1, 1);
-			}
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-				sg_end_pass();
-			}
+			});
 		}
 
 		mesh.skinned_vertex_cache_valid = true;

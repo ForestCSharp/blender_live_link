@@ -403,21 +403,12 @@ namespace Tessellation
 				.phong_strength = phong_strength,
 			};
 
+			gpu_execute_compute_pass(debug_label, pipeline, [&]()
 			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
-			}
-			{
-				GpuDebugScope debug_scope(debug_label);
-				sg_apply_pipeline(pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
 				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) dispatch_count, 1, 1);
-			}
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-				sg_end_pass();
-			}
+			});
 		}
 	}
 
@@ -429,20 +420,11 @@ namespace Tessellation
 			},
 		};
 		const char* debug_label = "Tessellation Clear Counters";
+		gpu_execute_compute_pass(debug_label, clear_counters_pipeline, [&]()
 		{
-			CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-			sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
-		}
-		{
-			GpuDebugScope debug_scope(debug_label);
-			sg_apply_pipeline(clear_counters_pipeline);
 			gpu_apply_bindings(&bindings);
 			sg_dispatch(1, 1, 1);
-		}
-		{
-			CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-			sg_end_pass();
-		}
+		});
 	}
 
 	PlanParams make_plan_params(
@@ -494,21 +476,12 @@ namespace Tessellation
 				},
 			};
 
+			gpu_execute_compute_pass(debug_label, measure_mesh_factor_pipeline, [&]()
 			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
-			}
-			{
-				GpuDebugScope debug_scope(debug_label);
-				sg_apply_pipeline(measure_mesh_factor_pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
 				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) dispatch_count, 1, 1);
-			}
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-				sg_end_pass();
-			}
+			});
 		}
 	}
 
@@ -535,21 +508,12 @@ namespace Tessellation
 				},
 			};
 
+			gpu_execute_compute_pass(debug_label, plan_patches_pipeline, [&]()
 			{
-				CPU_TIMING_BACKEND_SCOPE("sg_begin_pass", debug_label);
-				sg_begin_pass((sg_pass) { .compute = true, .label = debug_label });
-			}
-			{
-				GpuDebugScope debug_scope(debug_label);
-				sg_apply_pipeline(plan_patches_pipeline);
 				sg_apply_uniforms(0, SG_RANGE(params));
 				gpu_apply_bindings(&bindings);
 				sg_dispatch((i32) dispatch_count, 1, 1);
-			}
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", debug_label);
-				sg_end_pass();
-			}
+			});
 		}
 	}
 
