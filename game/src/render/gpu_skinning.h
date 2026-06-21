@@ -113,27 +113,37 @@ namespace GpuSkinning
 
 	void update(State& state, const bool required)
 	{
+		scene_ensure_indexes(state);
+		state.data_oriented.frame.gpu_skinning_candidate_count += (i32)state.scene.indexes.skinned_mesh_object_ids.length();
+
 		if (!required)
 		{
-			for (auto& [unique_id, object] : state.scene.objects)
+			for (const i32 unique_id : state.scene.indexes.skinned_mesh_object_ids)
 			{
-				if (object.has_mesh && object.mesh.has_skinned_vertices)
+				if (!state.scene.objects.contains(unique_id))
 				{
-					object.mesh.skinned_vertex_cache_valid = false;
+					continue;
 				}
+
+				Object& object = state.scene.objects[unique_id];
+				assert(object.has_mesh && object.mesh.has_skinned_vertices);
+				object.mesh.skinned_vertex_cache_valid = false;
 			}
 			return;
 		}
 
 		init();
-		for (auto& [unique_id, object] : state.scene.objects)
+		for (const i32 unique_id : state.scene.indexes.skinned_mesh_object_ids)
 		{
-			if (!object.has_mesh || !object.mesh.has_skinned_vertices)
+			if (!state.scene.objects.contains(unique_id))
 			{
 				continue;
 			}
 
+			Object& object = state.scene.objects[unique_id];
+			assert(object.has_mesh && object.mesh.has_skinned_vertices);
 			update_mesh(object.mesh);
+			state.data_oriented.frame.gpu_skinning_updated_count += 1;
 		}
 	}
 }

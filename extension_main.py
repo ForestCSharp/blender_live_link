@@ -92,6 +92,7 @@ def print(*args, **kwargs):
 # Class to manage our live link connection
 class LiveLinkConnection():
     def __init__(self):
+        self.update_sequence = 0
         self.create_socket()
         
     def __del__(self):
@@ -293,13 +294,16 @@ class LiveLinkConnection():
         remaining_actions.sort(key=lambda action: action.name)
         return active_actions + remaining_actions
 
-    def make_flatbuffer_animation(self, builder, armature_obj, action, bones):
+    def make_flatbuffer_animation(self, builder, armature_obj, action, bones, export_stats=None):
         scene = bpy.context.scene
         frame_rate = scene.render.fps / scene.render.fps_base
         frame_start = int(np.floor(action.frame_range[0]))
         frame_end = int(np.ceil(action.frame_range[1]))
         frame_count = max(1, frame_end - frame_start + 1)
         bone_count = len(bones)
+        if export_stats is not None:
+            export_stats["animation_count"] += 1
+            export_stats["animation_matrix_count"] += frame_count * bone_count
 
         old_frame = scene.frame_current
         old_subframe = scene.frame_subframe
@@ -341,7 +345,7 @@ class LiveLinkConnection():
         Animation.AddSkinMatrices(builder, skin_matrices_fb)
         return Animation.End(builder)
  
-    def make_flatbuffer_object(self, builder, obj, dependency_graph, referenced_materials):
+    def make_flatbuffer_object(self, builder, obj, dependency_graph, referenced_materials, export_stats=None):
         # Allocate string for object name
         object_name = builder.CreateString(obj.name)
 
@@ -393,6 +397,10 @@ class LiveLinkConnection():
             unique_keys, inverse_indices = np.unique(keys, return_inverse=True)
             new_indices = inverse_indices.astype(np.int32)
             new_vertex_count = len(unique_keys)
+            if export_stats is not None:
+                export_stats["mesh_count"] += 1
+                export_stats["mesh_vertex_count"] += int(new_vertex_count)
+                export_stats["mesh_index_count"] += int(loop_count)
 
             # --- Build new vertex buffers ---
             mesh_positions = positions[unique_keys['v']]
@@ -418,6 +426,8 @@ class LiveLinkConnection():
             mesh_to_armature_fb = None
             armature_to_mesh_fb = None
             if mesh_armature:
+                if export_stats is not None:
+                    export_stats["skinned_mesh_count"] += 1
                 # Map bone -> index
                 bone_index_map = {bone.name: i for i, bone in enumerate(mesh_armature.data.bones)}
                 group_names = {vg.index: vg.name for vg in obj.vertex_groups}
@@ -477,6 +487,8 @@ class LiveLinkConnection():
                     if referenced_materials.get(material_id) is None:
                         referenced_materials[material_id] = material
             material_ids_fb = builder.CreateNumpyVector(material_ids)
+            if export_stats is not None:
+                export_stats["material_slot_count"] += int(len(material_ids))
 
             # --- Build FlatBuffer Mesh ---
             Mesh.Start(builder)
@@ -506,6 +518,9 @@ class LiveLinkConnection():
         armature_fb = None
         if obj.type == 'ARMATURE':
             print("Found Armature!")
+            if export_stats is not None:
+                export_stats["armature_count"] += 1
+                export_stats["bone_count"] += len(obj.data.bones)
             bone_index_map = {bone.name: i for i, bone in enumerate(obj.data.bones)}
             bones_fb = []
             for bone in obj.data.bones:
@@ -540,7 +555,7 @@ class LiveLinkConnection():
 
             animations_fb = []
             for action in actions:
-                animations_fb.append(self.make_flatbuffer_animation(builder, obj, action, obj.data.bones))
+                animations_fb.append(self.make_flatbuffer_animation(builder, obj, action, obj.data.bones, export_stats))
 
             Armature.ArmatureStartAnimationsVector(builder, len(animations_fb))
             for animation_fb in reversed(animations_fb):
@@ -556,6 +571,8 @@ class LiveLinkConnection():
         # Light Info
         light_fb = None
         if obj.type == 'LIGHT':
+            if export_stats is not None:
+                export_stats["light_count"] += 1
             light_data = obj.data
 
             Light.Start(builder)
@@ -673,12 +690,36 @@ class LiveLinkConnection():
         return live_link_object
 
     # Creates an update for objects in in_object_list
-    def make_update(self, in_object_list, in_deleted_object_uids, reset=False):
+    def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+        self.update_sequence += 1
+
         # Evaluate Depsgraph
         dependency_graph = bpy.context.evaluated_depsgraph_get()
 
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
+        export_stats = {
+            "sequence": self.update_sequence,
+            "reason": update_reason,
+            "input_object_count": len(in_object_list),
+            "deleted_object_count": len(in_deleted_object_uids),
+            "exported_object_count": 0,
+            "mesh_count": 0,
+            "mesh_vertex_count": 0,
+            "mesh_index_count": 0,
+            "skinned_mesh_count": 0,
+            "light_count": 0,
+            "armature_count": 0,
+            "bone_count": 0,
+            "animation_count": 0,
+            "animation_matrix_count": 0,
+            "material_slot_count": 0,
+            "material_count": 0,
+            "image_count": 0,
+            "image_byte_count": 0,
+            "byte_count": 0,
+            "reset": reset,
+        }
 
         # referenced materials, keyed by session_uid and updated in self.make_flatbuffer_object
         referenced_materials = {}
@@ -720,13 +761,15 @@ class LiveLinkConnection():
                 queue_export_object(blender_object)
 
         live_link_objects = []
+        export_stats["exported_object_count"] = len(objects_to_export)
         for blender_object in objects_to_export:
             live_link_objects.append(
                 self.make_flatbuffer_object(
                     builder,
                     blender_object,
                     dependency_graph,
-                    referenced_materials
+                    referenced_materials,
+                    export_stats
                 )
             )
 
@@ -747,6 +790,7 @@ class LiveLinkConnection():
 
         # create flatbuffers materials
         flatbuffer_materials = []
+        export_stats["material_count"] = len(referenced_materials)
         for material_id, material in referenced_materials.items():
             class MaterialData:
                 def __init__(self):
@@ -868,6 +912,8 @@ class LiveLinkConnection():
 
             # Reinterpret the float32 array as uint8 bytes
             pixels_bytes = pixels_f32.view(np.uint8)
+            export_stats["image_count"] += 1
+            export_stats["image_byte_count"] += int(pixels_bytes.nbytes)
 
             # Now pass to FlatBuffers
             flatbuffer_image_data = builder.CreateNumpyVector(pixels_bytes)
@@ -904,18 +950,43 @@ class LiveLinkConnection():
         builder.FinishSizePrefixed(live_link_scene)
         
         # return flatbuffers binary output
-        return builder.Output() 
+        output = builder.Output()
+        export_stats["byte_count"] = len(output)
+        print(
+            "\nLive Link Export Stats: "
+            f"seq={export_stats['sequence']} "
+            f"reason={export_stats['reason']} "
+            f"bytes={export_stats['byte_count']} "
+            f"input_objects={export_stats['input_object_count']} "
+            f"exported_objects={export_stats['exported_object_count']} "
+            f"deleted={export_stats['deleted_object_count']} "
+            f"meshes={export_stats['mesh_count']} "
+            f"verts={export_stats['mesh_vertex_count']} "
+            f"indices={export_stats['mesh_index_count']} "
+            f"skinned={export_stats['skinned_mesh_count']} "
+            f"lights={export_stats['light_count']} "
+            f"armatures={export_stats['armature_count']} "
+            f"bones={export_stats['bone_count']} "
+            f"animations={export_stats['animation_count']} "
+            f"animation_matrices={export_stats['animation_matrix_count']} "
+            f"material_slots={export_stats['material_slot_count']} "
+            f"materials={export_stats['material_count']} "
+            f"images={export_stats['image_count']} "
+            f"image_bytes={export_stats['image_byte_count']} "
+            f"reset={export_stats['reset']}"
+        )
+        return output
 
-    def send_object_list(self, updated_objects, deleted_object_uids):
-        self.send(self.make_update(updated_objects, deleted_object_uids))
+    def send_object_list(self, updated_objects, deleted_object_uids, update_reason="object_list"):
+        self.send(self.make_update(updated_objects, deleted_object_uids, update_reason=update_reason))
 
-    def save_to_file(self, in_objects, in_filename):
-        update = self.make_update(in_objects, [])
+    def save_to_file(self, in_objects, in_filename, update_reason="save_to_file"):
+        update = self.make_update(in_objects, [], update_reason=update_reason)
         with open(in_filename, 'wb') as f:
             f.write(update)
 
-    def send_reset(self):
-        self.send(self.make_update([], [], True))
+    def send_reset(self, update_reason="manual_reset"):
+        self.send(self.make_update([], [], True, update_reason=update_reason))
 
 live_link_connection = []
 
@@ -928,12 +999,15 @@ def send_updates_timer():
 
     # No new updates in SEND_DELAY seconds → send batched data
     if batched_updates or batched_deleted:
+        update_reason = f"depsgraph_timer(updates={len(batched_updates)},deleted={len(batched_deleted)})"
+        print(f"\nLive Link Timer Send: reason={update_reason}")
 
         depsgraph_update_post_callback.enabled = False
 
         live_link_connection.send_object_list(
             updated_objects=list(batched_updates),
             deleted_object_uids=list(batched_deleted),
+            update_reason=update_reason,
         )
 
         depsgraph_update_post_callback.enabled = True
@@ -945,13 +1019,20 @@ def send_updates_timer():
     return None
 
 # Schedules send but doesn't actually send the objects to the game
-def schedule_send():
+def schedule_send(update_reason="depsgraph_update"):
     # unregister timer if currently active:
     if bpy.app.timers.is_registered(send_updates_timer):
         bpy.app.timers.unregister(send_updates_timer)
     # Schedule new timer
     SEND_DELAY = 0.25
     bpy.app.timers.register(send_updates_timer, first_interval=SEND_DELAY)
+    if batched_updates or batched_deleted:
+        print(
+            "\nLive Link Schedule Send: "
+            f"reason={update_reason} "
+            f"queued_updates={len(batched_updates)} "
+            f"queued_deleted={len(batched_deleted)}"
+        )
 
 # Callback when depsgraph has finished updating
 @persistent
@@ -983,7 +1064,7 @@ def depsgraph_update_post_callback(scene, depsgraph):
                 batched_updates.add(scene.objects[update_id.name])
 
     # Start/refresh the timer
-    schedule_send()
+    schedule_send(update_reason="depsgraph_update_post")
 
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
@@ -997,9 +1078,17 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
+        print(
+            "\nLive Link Manual Send Requested: "
+            f"reason=manual_full_update "
+            f"scene_objects={len(bpy.context.scene.objects)} "
+            f"queued_depsgraph_updates={len(batched_updates)} "
+            f"queued_deleted={len(batched_deleted)}"
+        )
         live_link_connection.send_object_list(
             updated_objects = list(bpy.context.scene.objects), 
-            deleted_object_uids = []
+            deleted_object_uids = [],
+            update_reason = "manual_full_update",
         ) 
         return {'FINISHED'}
 # End OpLiveLinkSendFullUpdate 
@@ -1013,7 +1102,7 @@ class OpLiveLinkSendReset(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        live_link_connection.send_reset()
+        live_link_connection.send_reset(update_reason="manual_reset")
         return {'FINISHED'}
 # End OpLiveLinkSendReset
 
@@ -1042,7 +1131,8 @@ class OpLiveLinkSaveToFile(bpy.types.Operator):
         print("Selected file path:", self.filepath)
         live_link_connection.save_to_file(
             list(bpy.context.scene.objects),
-            self.filepath
+            self.filepath,
+            update_reason="manual_save_to_file",
         )
         return {'FINISHED'}
 

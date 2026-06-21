@@ -153,6 +153,15 @@ struct State
 		optional<i32> player_character_id;
 		optional<i32> camera_control_id;
 		optional<i32> primary_sun_id;
+
+		struct IndexState
+		{
+			bool dirty = true;
+			StretchyBuffer<i32> mesh_object_ids;
+			StretchyBuffer<i32> light_object_ids;
+			StretchyBuffer<i32> armature_object_ids;
+			StretchyBuffer<i32> skinned_mesh_object_ids;
+		} indexes;
 	} scene;
 
 	struct LiveLinkState
@@ -319,6 +328,77 @@ struct State
 		i32 num_profiler_frames = 3;
 	} debug_ui;
 
+	struct DataOrientedState
+	{
+		struct LiveLinkImportStats
+		{
+			u64 update_index = 0;
+			u64 byte_count = 0;
+			i32 object_count = 0;
+			i32 deleted_object_count = 0;
+			i32 mesh_count = 0;
+			i32 mesh_vertex_count = 0;
+			i32 mesh_index_count = 0;
+			i32 skinned_mesh_count = 0;
+			i32 light_count = 0;
+			i32 armature_count = 0;
+			i32 animation_count = 0;
+			i32 animation_matrix_count = 0;
+			i32 material_count = 0;
+			i32 image_count = 0;
+			u64 image_byte_count = 0;
+			i32 malformed_object_count = 0;
+			bool reset = false;
+		};
+
+		struct FrameAccessStats
+		{
+			i32 scene_object_count = 0;
+			i32 mesh_object_count = 0;
+			i32 light_object_count = 0;
+			i32 armature_object_count = 0;
+			i32 skinned_mesh_object_count = 0;
+
+			i32 live_link_updated_objects = 0;
+			i32 live_link_deleted_objects = 0;
+			i32 live_link_reset_count = 0;
+
+			i32 animation_armature_candidates = 0;
+			i32 animation_armatures_updated = 0;
+			i32 animation_skinned_mesh_candidates = 0;
+			i32 animation_skin_matrix_uploads = 0;
+
+			i32 lighting_candidate_count = 0;
+			i32 lighting_processed_count = 0;
+
+			i32 object_update_scan_count = 0;
+			i32 object_update_storage_updates = 0;
+			i32 object_update_mesh_dirty_count = 0;
+
+			i32 cull_calls = 0;
+			i32 cull_candidate_count = 0;
+			i32 cull_visible_count = 0;
+			i32 cull_non_renderable_count = 0;
+			i32 cull_visibility_count = 0;
+			i32 cull_frustum_count = 0;
+			i32 cull_skinned_visible_count = 0;
+
+			i32 draw_calls = 0;
+			i32 draw_mesh_count = 0;
+
+			i32 gpu_skinning_candidate_count = 0;
+			i32 gpu_skinning_updated_count = 0;
+
+			i32 tessellation_candidate_count = 0;
+			i32 tessellation_processed_count = 0;
+		};
+
+		u64 frame_index = 0;
+		LiveLinkImportStats last_import;
+		FrameAccessStats frame;
+		FrameAccessStats previous_frame;
+	} data_oriented;
+
 	struct DebugCameraState
 	{
 		bool active = true;
@@ -329,6 +409,81 @@ struct State
 		};
 	} debug_camera;
 } state;
+
+void data_oriented_begin_frame(State& in_state)
+{
+	in_state.data_oriented.previous_frame = in_state.data_oriented.frame;
+	in_state.data_oriented.frame = {};
+	++in_state.data_oriented.frame_index;
+}
+
+void scene_record_index_counts(State& in_state)
+{
+	in_state.data_oriented.frame.scene_object_count = (i32)in_state.scene.objects.size();
+	in_state.data_oriented.frame.mesh_object_count = (i32)in_state.scene.indexes.mesh_object_ids.length();
+	in_state.data_oriented.frame.light_object_count = (i32)in_state.scene.indexes.light_object_ids.length();
+	in_state.data_oriented.frame.armature_object_count = (i32)in_state.scene.indexes.armature_object_ids.length();
+	in_state.data_oriented.frame.skinned_mesh_object_count = (i32)in_state.scene.indexes.skinned_mesh_object_ids.length();
+}
+
+void scene_mark_indexes_dirty(State& in_state)
+{
+	in_state.scene.indexes.dirty = true;
+}
+
+void scene_reset_indexes(State& in_state)
+{
+	in_state.scene.indexes.mesh_object_ids.reset();
+	in_state.scene.indexes.light_object_ids.reset();
+	in_state.scene.indexes.armature_object_ids.reset();
+	in_state.scene.indexes.skinned_mesh_object_ids.reset();
+	in_state.scene.indexes.dirty = true;
+	scene_record_index_counts(in_state);
+}
+
+void scene_rebuild_indexes(State& in_state)
+{
+	in_state.scene.indexes.mesh_object_ids.reset();
+	in_state.scene.indexes.light_object_ids.reset();
+	in_state.scene.indexes.armature_object_ids.reset();
+	in_state.scene.indexes.skinned_mesh_object_ids.reset();
+
+	for (auto const& [unique_id, object] : in_state.scene.objects)
+	{
+		if (object.has_mesh)
+		{
+			in_state.scene.indexes.mesh_object_ids.add(unique_id);
+			if (object.mesh.has_skinned_vertices)
+			{
+				in_state.scene.indexes.skinned_mesh_object_ids.add(unique_id);
+			}
+		}
+
+		if (object.has_light)
+		{
+			in_state.scene.indexes.light_object_ids.add(unique_id);
+		}
+
+		if (object.has_armature)
+		{
+			in_state.scene.indexes.armature_object_ids.add(unique_id);
+		}
+	}
+
+	in_state.scene.indexes.dirty = false;
+	scene_record_index_counts(in_state);
+}
+
+void scene_ensure_indexes(State& in_state)
+{
+	if (in_state.scene.indexes.dirty)
+	{
+		scene_rebuild_indexes(in_state);
+		return;
+	}
+
+	scene_record_index_counts(in_state);
+}
 
 void state_init()
 {

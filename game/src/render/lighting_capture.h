@@ -213,7 +213,7 @@ public:
 
 				// Cull objects
 				const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
-				CullResult cull_result = cull_objects(in_state.scene.objects, view_projection_matrix, cull_bounds_padding);
+				CullResult cull_result = cull_objects(in_state, view_projection_matrix, cull_bounds_padding);
 
 				if (should_render_geometry)
 				{

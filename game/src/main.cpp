@@ -440,13 +440,16 @@ void mesh_upload_skin_matrices(Mesh& in_mesh)
 
 void rewind_skinned_animations()
 {
-	for (auto& [unique_id, object] : state.scene.objects)
+	scene_ensure_indexes(state);
+	for (const i32 unique_id : state.scene.indexes.armature_object_ids)
 	{
-		if (!object.has_armature)
+		if (!state.scene.objects.contains(unique_id))
 		{
 			continue;
 		}
 
+		Object& object = state.scene.objects[unique_id];
+		assert(object.has_armature);
 		object.armature.playback_time = 0.0f;
 		object.armature.current_frame = 0;
 	}
@@ -455,14 +458,18 @@ void rewind_skinned_animations()
 void update_skinned_animations(f32 delta_time)
 {
 	state.animation.playback_rate = fmaxf(0.0f, state.animation.playback_rate);
+	scene_ensure_indexes(state);
+	state.data_oriented.frame.animation_armature_candidates += (i32)state.scene.indexes.armature_object_ids.length();
 
-	for (auto& [unique_id, object] : state.scene.objects)
+	for (const i32 unique_id : state.scene.indexes.armature_object_ids)
 	{
-		if (!object.has_armature)
+		if (!state.scene.objects.contains(unique_id))
 		{
 			continue;
 		}
 
+		Object& object = state.scene.objects[unique_id];
+		assert(object.has_armature);
 		AnimationClip* animation = armature_get_active_animation(object.armature);
 		if (!animation || animation->frame_count <= 0 || animation->frame_rate <= 0.0f)
 		{
@@ -483,15 +490,19 @@ void update_skinned_animations(f32 delta_time)
 		}
 
 		object.armature.current_frame = CLAMP((i32)(object.armature.playback_time * animation->frame_rate), 0, animation->frame_count - 1);
+		state.data_oriented.frame.animation_armatures_updated += 1;
 	}
 
-	for (auto& [unique_id, object] : state.scene.objects)
+	state.data_oriented.frame.animation_skinned_mesh_candidates += (i32)state.scene.indexes.skinned_mesh_object_ids.length();
+	for (const i32 unique_id : state.scene.indexes.skinned_mesh_object_ids)
 	{
-		if (!object.has_mesh || !object.mesh.has_skinned_vertices)
+		if (!state.scene.objects.contains(unique_id))
 		{
 			continue;
 		}
 
+		Object& object = state.scene.objects[unique_id];
+		assert(object.has_mesh && object.mesh.has_skinned_vertices);
 		Mesh& mesh = object.mesh;
 		mesh_reset_skin_matrices(mesh);
 
@@ -518,6 +529,7 @@ void update_skinned_animations(f32 delta_time)
 		}
 
 		mesh_upload_skin_matrices(mesh);
+		state.data_oriented.frame.animation_skin_matrix_uploads += 1;
 	}
 }
 
@@ -534,8 +546,15 @@ void refresh_primary_sun_id()
 		state.scene.primary_sun_id.reset();
 	}
 
-	for (auto const& [unique_id, object] : state.scene.objects)
+	scene_ensure_indexes(state);
+	for (const i32 unique_id : state.scene.indexes.light_object_ids)
 	{
+		if (!state.scene.objects.contains(unique_id))
+		{
+			continue;
+		}
+
+		const Object& object = state.scene.objects[unique_id];
 		if (object_is_sun_light(object))
 		{
 			state.scene.primary_sun_id = unique_id;
@@ -549,6 +568,10 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 {
 	if (flatbuffer_data.length() > 0)
 	{
+		State::DataOrientedState::LiveLinkImportStats import_stats = {};
+		import_stats.update_index = state.data_oriented.last_import.update_index + 1;
+		import_stats.byte_count = (u64)flatbuffer_data.length();
+
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 		assert(update);
@@ -556,10 +579,15 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// process images from update
 		if (auto images = update->images())
 		{
+			import_stats.image_count = images->size();
 			for (i32 idx = 0; idx < images->size(); ++idx)
 			{
 				auto image = images->Get(idx);
 				assert(image);
+				if (auto data = image->data())
+				{
+					import_stats.image_byte_count += data->size();
+				}
 				register_image(*image);
 			}
 		}
@@ -567,12 +595,13 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// process materials from update
 		if (auto materials = update->materials())
 		{
+			import_stats.material_count = materials->size();
 			bool needs_buffer_update = false;
 			for (i32 idx = 0; idx < materials->size(); ++idx)
 			{
 				auto material = materials->Get(idx);
 				assert(material);
-				needs_buffer_update = register_material(*material);
+				needs_buffer_update = register_material(*material) || needs_buffer_update;
 			}
 
 			if (needs_buffer_update)
@@ -584,6 +613,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// process objects from update
 		if (auto objects = update->objects())
 		{
+			import_stats.object_count = objects->size();
 			for (i32 idx = 0; idx < objects->size(); ++idx)
 			{
 				auto object = objects->Get(idx);
@@ -598,18 +628,21 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				auto object_location = object->location();
 				if (!object_location)
 				{
+					import_stats.malformed_object_count += 1;
 					continue;
 				}
 
 				auto object_scale = object->scale();
 				if (!object_scale)
 				{
+					import_stats.malformed_object_count += 1;
 					continue;
 				}
 
 				auto object_rotation = object->rotation();
 				if (!object_rotation)
 				{
+					import_stats.malformed_object_count += 1;
 					continue;
 				}
 
@@ -636,9 +669,18 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					auto flatbuffer_positions = object_mesh->positions();
 					auto flatbuffer_normals = object_mesh->normals();
 					auto flatbuffer_texcoords = object_mesh->texcoords();
-					if (flatbuffer_positions && flatbuffer_normals && flatbuffer_texcoords)
+					const bool has_valid_vertex_streams =
+						flatbuffer_positions &&
+						flatbuffer_normals &&
+						flatbuffer_texcoords &&
+						(flatbuffer_positions->size() % 3) == 0 &&
+						flatbuffer_normals->size() >= flatbuffer_positions->size() &&
+						flatbuffer_texcoords->size() >= (flatbuffer_positions->size() / 3) * 2;
+					if (has_valid_vertex_streams)
 					{
 						num_vertices = flatbuffer_positions->size() / 3;
+						import_stats.mesh_count += 1;
+						import_stats.mesh_vertex_count += (i32)num_vertices;
 
 						vertices = (Vertex*) malloc(sizeof(Vertex) * num_vertices);
 						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
@@ -663,6 +705,11 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							};
 						}
 					}
+					else
+					{
+						printf("\tDropping malformed mesh vertex streams on object UID: %i\n", unique_id);
+						import_stats.malformed_object_count += 1;
+					}
 
 					// Check for skinning data
 					i32 armature_id = object_mesh->armature_id();
@@ -670,56 +717,68 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					auto flatbuffer_joint_weights = object_mesh->joint_weights();
 					if (armature_id > 0 && flatbuffer_joint_indices && flatbuffer_joint_weights)
 					{
-						// Make sure we already set up regular vertices and the skinned data matches that count
-						assert(num_vertices > 0);
-
 						const u32 num_joint_indices = flatbuffer_joint_indices->size();
 						const u32 num_joint_weights = flatbuffer_joint_weights->size();
-						assert(num_joint_indices == num_joint_weights);
-
 						u32 num_skinned_vertices = num_joint_indices / 4;
-						assert(num_vertices == num_skinned_vertices);
-
-						printf("We have skinning data!\n");
-
-						i32 max_joint_index = 0;
-						skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
-						for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
+						if (num_vertices == 0 ||
+							num_joint_indices != num_joint_weights ||
+							(num_joint_indices % 4) != 0 ||
+							num_vertices != num_skinned_vertices)
 						{
-							for (i32 influence_idx = 0; influence_idx < 4; ++influence_idx)
-							{
-								max_joint_index = MAX(max_joint_index, flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx));
-							}
-
-							skinned_vertices[vertex_idx] = {
-								.joint_indices = {
-									.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
-									.Y = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 1),
-									.Z = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 2),
-									.W = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 3),
-								},
-								.joint_weights = {
-									.X = flatbuffer_joint_weights->Get(vertex_idx * 4 + 0),
-									.Y = flatbuffer_joint_weights->Get(vertex_idx * 4 + 1),
-									.Z = flatbuffer_joint_weights->Get(vertex_idx * 4 + 2),
-									.W = flatbuffer_joint_weights->Get(vertex_idx * 4 + 3),
-								},
-							};
-
-							//FCS TODO: PRINT
+							printf("\tDropping malformed skinning data on object UID: %i\n", unique_id);
+							import_stats.malformed_object_count += 1;
 						}
-						skin_matrix_count = (u32) max_joint_index + 1;
+						else
+						{
+							printf("We have skinning data!\n");
+							import_stats.skinned_mesh_count += 1;
+
+							i32 max_joint_index = 0;
+							skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
+							for (i32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
+							{
+								for (i32 influence_idx = 0; influence_idx < 4; ++influence_idx)
+								{
+									max_joint_index = MAX(max_joint_index, flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx));
+								}
+
+								skinned_vertices[vertex_idx] = {
+									.joint_indices = {
+										.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
+										.Y = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 1),
+										.Z = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 2),
+										.W = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 3),
+									},
+									.joint_weights = {
+										.X = flatbuffer_joint_weights->Get(vertex_idx * 4 + 0),
+										.Y = flatbuffer_joint_weights->Get(vertex_idx * 4 + 1),
+										.Z = flatbuffer_joint_weights->Get(vertex_idx * 4 + 2),
+										.W = flatbuffer_joint_weights->Get(vertex_idx * 4 + 3),
+									},
+								};
+							}
+							skin_matrix_count = (u32) max_joint_index + 1;
+						}
 					}
 
 					u32 num_indices = 0;
 					u32* indices = nullptr;
 					if (auto flatbuffer_indices = object_mesh->indices())
 					{
-						num_indices = flatbuffer_indices->size();
-						indices = (u32*) malloc(sizeof(u32) * num_indices);
-						for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
+						if ((flatbuffer_indices->size() % 3) != 0)
 						{
-							indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+							printf("\tDropping malformed triangle index stream on object UID: %i\n", unique_id);
+							import_stats.malformed_object_count += 1;
+						}
+						else
+						{
+							num_indices = flatbuffer_indices->size();
+							import_stats.mesh_index_count += (i32)num_indices;
+							indices = (u32*) malloc(sizeof(u32) * num_indices);
+							for (i32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
+							{
+								indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+							}
 						}
 					}
 
@@ -731,6 +790,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						material_indices = (i32*) malloc(sizeof(i32) * num_material_indices);
 						for (i32 material_id_idx = 0; material_id_idx < num_material_indices; ++material_id_idx)
 						{
+							material_indices[material_id_idx] = -1;
 		   					const int material_id = flatbuffer_material_ids->Get(material_id_idx);
 							if (!state.materials.id_to_index.contains(material_id))
 							{
@@ -773,6 +833,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 				if (auto object_armature = object->armature())
 				{
+					import_stats.armature_count += 1;
 					game_object.has_armature = true;
 					game_object.armature = {};
 
@@ -800,6 +861,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					if (auto flatbuffer_animations = object_armature->animations())
 					{
 						game_object.armature.animation_count = flatbuffer_animations->size();
+						import_stats.animation_count += flatbuffer_animations->size();
 						game_object.armature.animations = (AnimationClip*) calloc(game_object.armature.animation_count, sizeof(AnimationClip));
 
 						for (u32 animation_idx = 0; animation_idx < game_object.armature.animation_count; ++animation_idx)
@@ -818,6 +880,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							animation.bone_count = flatbuffer_animation->bone_count();
 
 							const i32 matrix_count = MAX(0, animation.frame_count * animation.bone_count);
+							import_stats.animation_matrix_count += matrix_count;
 							if (matrix_count > 0)
 							{
 								animation.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * matrix_count);
@@ -853,6 +916,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 				if (auto object_light = object->light())
 				{
+					import_stats.light_count += 1;
 					LightType light_type = (LightType) object_light->type();
 
 					game_object.has_light = true;
@@ -998,6 +1062,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 		if (auto deleted_object_uids = update->deleted_object_uids())
 		{
+			import_stats.deleted_object_count = deleted_object_uids->size();
 			for (i32 deleted_object_uid : *deleted_object_uids)
 			{
 				state.live_link.deleted_objects.send(deleted_object_uid);
@@ -1006,8 +1071,31 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 		if (update->reset())
 		{
+			import_stats.reset = true;
 			state.live_link.reset.send(true);
 		}
+
+		state.data_oriented.last_import = import_stats;
+		printf(
+			"Live Link Import Stats #%llu: bytes=%llu objects=%i deleted=%i meshes=%i verts=%i indices=%i skinned=%i lights=%i armatures=%i animations=%i matrices=%i materials=%i images=%i image_bytes=%llu malformed=%i reset=%s\n",
+			(unsigned long long)import_stats.update_index,
+			(unsigned long long)import_stats.byte_count,
+			import_stats.object_count,
+			import_stats.deleted_object_count,
+			import_stats.mesh_count,
+			import_stats.mesh_vertex_count,
+			import_stats.mesh_index_count,
+			import_stats.skinned_mesh_count,
+			import_stats.light_count,
+			import_stats.armature_count,
+			import_stats.animation_count,
+			import_stats.animation_matrix_count,
+			import_stats.material_count,
+			import_stats.image_count,
+			(unsigned long long)import_stats.image_byte_count,
+			import_stats.malformed_object_count,
+			import_stats.reset ? "true" : "false"
+		);
 	}
 }
 
@@ -1597,6 +1685,7 @@ void frame(void)
 	const u64 lap_time = stm_laptime(&last_frame_time);
 	const double delta_time = stm_sec(lap_time);
     const float ui_dpi_scale = sapp_dpi_scale();
+	data_oriented_begin_frame(state);
 
 	state.debug_ui.stats_sample_elapsed += delta_time;
 	state.debug_ui.stats_sample_count += 1;
@@ -1631,6 +1720,7 @@ void frame(void)
 		{
 			Object& updated_object = *received_updated_object;
 			i32 updated_object_uid = updated_object.unique_id;
+			state.data_oriented.frame.live_link_updated_objects += 1;
 
 			printf("Updating Object. UID: %i\n", updated_object_uid);
 
@@ -1659,12 +1749,14 @@ void frame(void)
 			}
 
 			state.scene.objects[updated_object_uid] = updated_object;
+			scene_mark_indexes_dirty(state);
 		}
 
 		// Receive Any Deleted Objects
 		while (optional<i32> received_deleted_object = state.live_link.deleted_objects.receive())
 		{
 			i32 deleted_object_uid = *received_deleted_object;
+			state.data_oriented.frame.live_link_deleted_objects += 1;
 			if (state.scene.objects.contains(deleted_object_uid))
 			{
 				printf("Removing object. UID: %i\n", deleted_object_uid);
@@ -1682,12 +1774,14 @@ void frame(void)
 
 				object_cleanup(object_to_delete);
 				state.scene.objects.erase(deleted_object_uid);
+				scene_mark_indexes_dirty(state);
 			}
 		}
 
 		// Receive any Reset Messages
 		while(optional<bool> received_reset = state.live_link.reset.receive())
 		{
+			state.data_oriented.frame.live_link_reset_count += 1;
 			state.runtime.blender_data_loaded = false;
 			mark_lighting_dirty();
 			mark_scene_geometry_dirty();
@@ -1706,10 +1800,13 @@ void frame(void)
 			state.scene.camera_control_id.reset();
 			state.scene.player_character_id.reset();
 			state.scene.primary_sun_id.reset();
+			scene_reset_indexes(state);
 
 			reset_materials();
 			reset_images();
 		}
+
+		scene_ensure_indexes(state);
 	}
 
 	refresh_primary_sun_id();
@@ -1746,7 +1843,7 @@ void frame(void)
 	DEBUG_UI(
 		ImGui::Begin("DEBUG");
 
-		if (ImGui::CollapsingHeader("General Stats", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Text("Window Resolution: %d x %d", state.window.width, state.window.height);
 			ImGui::Text("Render Resolution: %d x %d", state.window.render_width, state.window.render_height);
@@ -1792,6 +1889,62 @@ void frame(void)
 			ImGui::Text("FPS: %.1f", state.debug_ui.fps);
 			ImGui::Spacing();
 		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
+			ImGui::Spacing();
+
+			const auto& import = state.data_oriented.last_import;
+			const auto& previous = state.data_oriented.previous_frame;
+			ImGui::Text(
+				"Last Import #%llu: %llu bytes, objects %i, meshes %i, verts %i, indices %i",
+				(unsigned long long)import.update_index,
+				(unsigned long long)import.byte_count,
+				import.object_count,
+				import.mesh_count,
+				import.mesh_vertex_count,
+				import.mesh_index_count
+			);
+			ImGui::Text(
+				"Import Assets: materials %i, images %i, image bytes %llu, malformed %i",
+				import.material_count,
+				import.image_count,
+				(unsigned long long)import.image_byte_count,
+				import.malformed_object_count
+			);
+			ImGui::Text(
+				"Scene Indexes: objects %i, meshes %i, lights %i, armatures %i, skinned %i",
+				previous.scene_object_count,
+				previous.mesh_object_count,
+				previous.light_object_count,
+				previous.armature_object_count,
+				previous.skinned_mesh_object_count
+			);
+			ImGui::Text(
+				"Frame Access: live-link +%i -%i reset %i, object scans %i, storage updates %i",
+				previous.live_link_updated_objects,
+				previous.live_link_deleted_objects,
+				previous.live_link_reset_count,
+				previous.object_update_scan_count,
+				previous.object_update_storage_updates
+			);
+			ImGui::Text(
+				"Culling: calls %i, candidates %i, visible %i, no-mesh %i, hidden %i, frustum %i",
+				previous.cull_calls,
+				previous.cull_candidate_count,
+				previous.cull_visible_count,
+				previous.cull_non_renderable_count,
+				previous.cull_visibility_count,
+				previous.cull_frustum_count
+			);
+			ImGui::Text(
+				"Hot Lists: lighting %i/%i, skinning %i/%i, tessellation %i/%i, draws %i meshes %i",
+				previous.lighting_processed_count,
+				previous.lighting_candidate_count,
+				previous.gpu_skinning_updated_count,
+				previous.gpu_skinning_candidate_count,
+				previous.tessellation_processed_count,
+				previous.tessellation_candidate_count,
+				previous.draw_calls,
+				previous.draw_mesh_count
+			);
 		}
 
 		if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1816,9 +1969,17 @@ void frame(void)
 			ImGui::Checkbox("Skinning Debug View", &state.animation.skinning_debug_view);
 
 			f32 animation_label_width = 0.0f;
-			for (auto& [unique_id, object] : state.scene.objects)
+			scene_ensure_indexes(state);
+			for (const i32 unique_id : state.scene.indexes.armature_object_ids)
 			{
-				if (!object.has_armature || object.armature.animation_count == 0 || !object.armature.animations)
+				if (!state.scene.objects.contains(unique_id))
+				{
+					continue;
+				}
+
+				Object& object = state.scene.objects[unique_id];
+				assert(object.has_armature);
+				if (object.armature.animation_count == 0 || !object.armature.animations)
 				{
 					continue;
 				}
@@ -1833,9 +1994,16 @@ void frame(void)
 			}
 
 			const f32 animation_combo_x = ImGui::GetCursorPosX() + animation_label_width + ImGui::GetStyle().ItemSpacing.x;
-			for (auto& [unique_id, object] : state.scene.objects)
+			for (const i32 unique_id : state.scene.indexes.armature_object_ids)
 			{
-				if (!object.has_armature || object.armature.animation_count == 0 || !object.armature.animations)
+				if (!state.scene.objects.contains(unique_id))
+				{
+					continue;
+				}
+
+				Object& object = state.scene.objects[unique_id];
+				assert(object.has_armature);
+				if (object.armature.animation_count == 0 || !object.armature.animations)
 				{
 					continue;
 				}
@@ -2403,81 +2571,89 @@ void frame(void)
 				state.lighting.spot_lights.reset();
 				state.lighting.sun_lights.reset();
 
-				for (auto const& [unique_id, object] : state.scene.objects)
+				scene_ensure_indexes(state);
+				state.data_oriented.frame.lighting_candidate_count += (i32)state.scene.indexes.light_object_ids.length();
+				for (const i32 unique_id : state.scene.indexes.light_object_ids)
 				{
-					if (object.has_light)
+					if (!state.scene.objects.contains(unique_id))
 					{
-						const Light& light = object.light;
-						switch(light.type)
+						continue;
+					}
+
+					const Object& object = state.scene.objects[unique_id];
+					assert(object.has_light);
+					state.data_oriented.frame.lighting_processed_count += 1;
+
+					const Light& light = object.light;
+					switch(light.type)
+					{
+						case LightType::Point:
 						{
-							case LightType::Point:
+							if (state.lighting.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
 							{
-								if (state.lighting.point_lights.length() >= MAX_LIGHTS_PER_TYPE)
-								{
-									printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
-									continue;
-								}
-
-								lighting_PointLight_t new_point_light = {};
-								const Transform& transform = object.current_transform;
-								memcpy(&new_point_light.location, &transform.location, sizeof(f32) * 4);
-								memcpy(&new_point_light.color, &object.light.color, sizeof(f32) * 3);
-								new_point_light.color[3] = 1.0; // Force alpha to 1.0
-								new_point_light.power = object.light.point.power;
-								state.lighting.point_lights.add(new_point_light);
-								break;
+								printf("Exceeded Max Number of Point Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+								continue;
 							}
-							case LightType::Spot:
-							{
-								if (state.lighting.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
-								{
-									printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
-									continue;
-								}
 
-								lighting_SpotLight_t new_spot_light = {};
-								const Transform& transform = object.current_transform;
-								memcpy(&new_spot_light.location, &transform.location, sizeof(f32) * 4);
-								memcpy(&new_spot_light.color, &object.light.color, sizeof(f32) * 3);
-								new_spot_light.color[3] = 1.0; // Force alpha to 1.0
-
-								HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(f32) * 3);
-
-								new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
-								new_spot_light.power = object.light.spot.power;
-								new_spot_light.edge_blend = object.light.spot.edge_blend;
-								state.lighting.spot_lights.add(new_spot_light);
-								break;
-							}
-							case LightType::Sun:
-							{
-								if (state.lighting.sun_lights.length() >= MAX_LIGHTS_PER_TYPE)
-								{
-									printf("Exceeded Max Number of Sun Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
-									continue;
-								}
-
-								lighting_SunLight_t new_sun_light = {};
-								const Transform& transform = object.current_transform;
-								memcpy(&new_sun_light.location, &transform.location, sizeof(f32) * 4);
-								memcpy(&new_sun_light.color, &object.light.color, sizeof(f32) * 3);
-								new_sun_light.color[3] = 1.0; // Force alpha to 1.0
-
-								HMM_Vec3 sun_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
-								memcpy(&new_sun_light.direction, &sun_light_dir, sizeof(f32) * 3);
-
-								new_sun_light.power = object.light.sun.power;
-								new_sun_light.cast_shadows = object.light.sun.cast_shadows;
-								state.lighting.sun_lights.add(new_sun_light);
-								break;
-							}
-							case LightType::Area:
-							{
-								break;
-							}
-							default: break;
+							lighting_PointLight_t new_point_light = {};
+							const Transform& transform = object.current_transform;
+							memcpy(&new_point_light.location, &transform.location, sizeof(f32) * 4);
+							memcpy(&new_point_light.color, &object.light.color, sizeof(f32) * 3);
+							new_point_light.color[3] = 1.0; // Force alpha to 1.0
+							new_point_light.power = object.light.point.power;
+							state.lighting.point_lights.add(new_point_light);
+							break;
 						}
+						case LightType::Spot:
+						{
+							if (state.lighting.spot_lights.length() >= MAX_LIGHTS_PER_TYPE)
+							{
+								printf("Exceeded Max Number of Spot Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+								continue;
+							}
+
+							lighting_SpotLight_t new_spot_light = {};
+							const Transform& transform = object.current_transform;
+							memcpy(&new_spot_light.location, &transform.location, sizeof(f32) * 4);
+							memcpy(&new_spot_light.color, &object.light.color, sizeof(f32) * 3);
+							new_spot_light.color[3] = 1.0; // Force alpha to 1.0
+
+							HMM_Vec3 spot_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+							memcpy(&new_spot_light.direction, &spot_light_dir, sizeof(f32) * 3);
+
+							new_spot_light.spot_angle_radians = object.light.spot.beam_angle / 2.0f;
+							new_spot_light.power = object.light.spot.power;
+							new_spot_light.edge_blend = object.light.spot.edge_blend;
+							state.lighting.spot_lights.add(new_spot_light);
+							break;
+						}
+						case LightType::Sun:
+						{
+							if (state.lighting.sun_lights.length() >= MAX_LIGHTS_PER_TYPE)
+							{
+								printf("Exceeded Max Number of Sun Lights (%i)\n", MAX_LIGHTS_PER_TYPE);
+								continue;
+							}
+
+							lighting_SunLight_t new_sun_light = {};
+							const Transform& transform = object.current_transform;
+							memcpy(&new_sun_light.location, &transform.location, sizeof(f32) * 4);
+							memcpy(&new_sun_light.color, &object.light.color, sizeof(f32) * 3);
+							new_sun_light.color[3] = 1.0; // Force alpha to 1.0
+
+							HMM_Vec3 sun_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+							memcpy(&new_sun_light.direction, &sun_light_dir, sizeof(f32) * 3);
+
+							new_sun_light.power = object.light.sun.power;
+							new_sun_light.cast_shadows = object.light.sun.cast_shadows;
+							state.lighting.sun_lights.add(new_sun_light);
+							break;
+						}
+						case LightType::Area:
+						{
+							break;
+						}
+						default: break;
 					}
 				}
 
@@ -2552,6 +2728,8 @@ void frame(void)
 
 				for (auto& [unique_id, object] : state.scene.objects)
 				{
+					state.data_oriented.frame.object_update_scan_count += 1;
+
 					// For objects that simulate physics, copy their physics transforms into their uniform buffers
 					object_copy_physics_transform(object, body_interface);
 
@@ -2561,9 +2739,11 @@ void frame(void)
 						{
 							state.gi.layout_dirty = true;
 							state.gi.is_updating = true;
+							state.data_oriented.frame.object_update_mesh_dirty_count += 1;
 						}
 						object.storage_buffer_needs_update = false;
 						object_update_storage_buffer(object);
+						state.data_oriented.frame.object_update_storage_updates += 1;
 					}
 				}
 			}
@@ -2658,7 +2838,7 @@ void frame(void)
 		CullResult cull_result;
 		{
 			CPU_TIMING_SCOPE("Geometry Culling");
-			cull_result = cull_objects(state.scene.objects, view_projection_matrix, cull_bounds_padding);
+			cull_result = cull_objects(state, view_projection_matrix, cull_bounds_padding);
 		}
 
 		{ // Geometry Pass
@@ -2953,10 +3133,15 @@ void frame(void)
 						sg_apply_uniforms(1, SG_RANGE(mesh_fs_params));
 
 						GpuImage& position_texture = geometry_pass.get_color_output(1);
-						for (auto& [unique_id, object_ptr] : cull_result.objects)
+						state.data_oriented.frame.draw_calls += 1;
+						for (const i32 unique_id : cull_result.object_ids)
 						{
-							assert(object_ptr);
-							Object& object = *object_ptr;
+							if (!state.scene.objects.contains(unique_id))
+							{
+								continue;
+							}
+
+							Object& object = state.scene.objects[unique_id];
 							if (!object.has_mesh)
 							{
 								continue;
@@ -2998,6 +3183,7 @@ void frame(void)
 							};
 							gpu_apply_bindings(&mesh_bindings);
 							sg_draw(0, render_view.index_count, 1);
+							state.data_oriented.frame.draw_mesh_count += 1;
 						}
 					}
 				}

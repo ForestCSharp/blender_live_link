@@ -169,13 +169,18 @@ namespace Tessellation
 
 	void disable_all_meshes(State& state)
 	{
-		for (auto& [unique_id, object] : state.scene.objects)
+		scene_ensure_indexes(state);
+		for (const i32 unique_id : state.scene.indexes.mesh_object_ids)
 		{
-			if (object.has_mesh)
+			if (!state.scene.objects.contains(unique_id))
 			{
-				object.mesh.tessellated_geometry.active = false;
-				object.mesh.tessellated_geometry.overflowed = false;
+				continue;
 			}
+
+			Object& object = state.scene.objects[unique_id];
+			assert(object.has_mesh);
+			object.mesh.tessellated_geometry.active = false;
+			object.mesh.tessellated_geometry.overflowed = false;
 		}
 	}
 
@@ -744,20 +749,25 @@ namespace Tessellation
 		}
 
 		init();
+		scene_ensure_indexes(state);
+		state.data_oriented.frame.tessellation_candidate_count += (i32)state.scene.indexes.mesh_object_ids.length();
 
-		for (auto& [unique_id, object] : state.scene.objects)
+		for (const i32 unique_id : state.scene.indexes.mesh_object_ids)
 		{
-			if (!object.has_mesh)
+			if (!state.scene.objects.contains(unique_id))
 			{
 				continue;
 			}
 
+			Object& object = state.scene.objects[unique_id];
+			assert(object.has_mesh);
 			if (state.tessellation.mode != ETessellationMode::Fixed)
 			{
 				poll_gpu_readbacks(state, object.mesh);
 				refresh_active_skinned_mesh_gpu(state, object.mesh);
 			}
 			prepare_mesh_gpu(state, object, camera, fov_radians);
+			state.data_oriented.frame.tessellation_processed_count += 1;
 		}
 	}
 }

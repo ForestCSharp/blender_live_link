@@ -12,10 +12,16 @@ static void draw_visible_geometry_meshes(
 	const geometry_fs_params_t& fs_params,
 	sg_pixel_format skinned_depth_format)
 {
-	for (auto& [unique_id, object_ptr] : cull_result.objects)
+	state.data_oriented.frame.draw_calls += 1;
+
+	for (const i32 unique_id : cull_result.object_ids)
 	{
-		assert(object_ptr);
-		Object& object = *object_ptr;
+		if (!state.scene.objects.contains(unique_id))
+		{
+			continue;
+		}
+
+		Object& object = state.scene.objects[unique_id];
 
 		if (!object.has_mesh)
 		{
@@ -54,5 +60,6 @@ static void draw_visible_geometry_meshes(
 		mesh_apply_render_bindings(bindings, mesh, render_view);
 		gpu_apply_bindings(&bindings);
 		sg_draw(0, render_view.index_count, 1);
+		state.data_oriented.frame.draw_mesh_count += 1;
 	}
 }

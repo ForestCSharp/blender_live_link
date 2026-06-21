@@ -218,14 +218,19 @@ namespace ShadowDepthPass
 		return desc;
 	}
 
-	void draw_shadow_meshes(const CullResult& cull_result, const shadow_depth_vs_params_t& vs_params)
+	void draw_shadow_meshes(State& in_state, const CullResult& cull_result, const shadow_depth_vs_params_t& vs_params)
 	{
 		CPU_TIMING_SCOPE("Shadow Draw Meshes");
+		in_state.data_oriented.frame.draw_calls += 1;
 
-		for (auto& [unique_id, object_ptr] : cull_result.objects)
+		for (const i32 unique_id : cull_result.object_ids)
 		{
-			assert(object_ptr);
-			Object& object = *object_ptr;
+			if (!in_state.scene.objects.contains(unique_id))
+			{
+				continue;
+			}
+
+			Object& object = in_state.scene.objects[unique_id];
 
 			if (!object.has_mesh)
 			{
@@ -245,6 +250,7 @@ namespace ShadowDepthPass
 			mesh_apply_render_bindings(bindings, mesh, render_view);
 			gpu_apply_bindings(&bindings);
 			sg_draw(0, render_view.index_count, 1);
+			in_state.data_oriented.frame.draw_mesh_count += 1;
 		}
 	}
 
@@ -324,11 +330,11 @@ namespace ShadowDepthPass
 			CullResult cull_result;
 			{
 				CPU_TIMING_SCOPE("Shadow Culling");
-				cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
+				cull_result = cull_objects(in_state, light_view_proj, cull_bounds_padding);
 			}
 
 			// Submit draw calls for objects after culling
-			draw_shadow_meshes(cull_result, vs_params);
+			draw_shadow_meshes(in_state, cull_result, vs_params);
 
 			return;
 		}
@@ -404,10 +410,10 @@ namespace ShadowDepthPass
 		CullResult cull_result;
 		{
 			CPU_TIMING_SCOPE("Shadow Culling");
-			cull_result = cull_objects(in_state.scene.objects, light_view_proj, cull_bounds_padding);
+			cull_result = cull_objects(in_state, light_view_proj, cull_bounds_padding);
 		}
 
 		// Submit draw calls for objects after culling
-		draw_shadow_meshes(cull_result, vs_params);
+		draw_shadow_meshes(in_state, cull_result, vs_params);
 	}
 }
