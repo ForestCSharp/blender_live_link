@@ -369,16 +369,26 @@ RenderPass& get_render_pass(const ERenderPass in_pass_id)
 	return state.render_passes.passes[static_cast<int>(in_pass_id)];
 }
 
-void invalidate_shadow_cache()
+void invalidate_shadow_cache(const bool force = false)
 {
+	if (!force && state.shadow.depth_freeze)
+	{
+		return;
+	}
+
 	ShadowDepthPass::has_valid_shadow_map = false;
 	ShadowDepthPass::has_valid_shadow_blur = false;
+}
+
+void request_shadow_recapture()
+{
+	invalidate_shadow_cache(true);
+	state.shadow.force_recapture = true;
 }
 
 void mark_scene_geometry_dirty()
 {
 	invalidate_shadow_cache();
-	state.shadow.force_recapture = true;
 	state.gi.layout_dirty = true;
 	state.gi.is_updating = true;
 }
@@ -1725,11 +1735,11 @@ void frame(void)
 			printf("Updating Object. UID: %i\n", updated_object_uid);
 
 			// Cleanup old object
-			bool mesh_changed = updated_object.has_mesh;
+			bool gi_scene_geometry_changed = object_contributes_to_gi_scene(updated_object);
 			if (state.scene.objects.contains(updated_object_uid))
 			{
 				Object& existing_object = state.scene.objects[updated_object_uid];
-				mesh_changed = mesh_changed || existing_object.has_mesh;
+				gi_scene_geometry_changed = gi_scene_geometry_changed || object_contributes_to_gi_scene(existing_object);
 				object_cleanup(existing_object);
 			}
 
@@ -1743,7 +1753,7 @@ void frame(void)
 				object_add_jolt_body(updated_object);
 			}
 
-			if (mesh_changed)
+			if (gi_scene_geometry_changed)
 			{
 				mark_scene_geometry_dirty();
 			}
@@ -1767,7 +1777,7 @@ void frame(void)
 					mark_lighting_dirty();
 				}
 
-				if (object_to_delete.has_mesh)
+				if (object_contributes_to_gi_scene(object_to_delete))
 				{
 					mark_scene_geometry_dirty();
 				}
@@ -1831,13 +1841,13 @@ void frame(void)
 		for (auto& [unique_id, object] : state.scene.objects)
 		{
 			object.current_transform = object.initial_transform;
+			object.storage_buffer_needs_update = true;
 
 			if (object.has_rigid_body)
 			{
 				object_reset_jolt_body(object);
 			}
 		}
-		mark_scene_geometry_dirty();
 	);
 
 	DEBUG_UI(
@@ -2076,7 +2086,6 @@ void frame(void)
 				if (tessellation_changed)
 				{
 					invalidate_shadow_cache();
-					state.shadow.force_recapture = true;
 				}
 			}
 
@@ -2118,6 +2127,10 @@ void frame(void)
 				ImGui::Checkbox("Shadow Rendering", &state.shadow.rendering_enable);
 				ImGui::Checkbox("Shadow Blur", &state.shadow.blur_enable);
 				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow.depth_freeze);
+				if (ImGui::Button("Recapture Shadow Depth"))
+				{
+					request_shadow_recapture();
+				}
 				if (ImGui::SliderInt("Num Cascades", &state.shadow.num_cascades, 1, MAX_SHADOW_CASCADES))
 				{
 					invalidate_shadow_cache();
@@ -2148,7 +2161,6 @@ void frame(void)
 					ImGui::EndDisabled();
 					if (center_changed)
 					{
-						state.shadow.force_recapture = true;
 						invalidate_shadow_cache();
 					}
 				}
@@ -2735,12 +2747,6 @@ void frame(void)
 
 					if (object.storage_buffer_needs_update)
 					{
-						if (object.has_mesh)
-						{
-							state.gi.layout_dirty = true;
-							state.gi.is_updating = true;
-							state.data_oriented.frame.object_update_mesh_dirty_count += 1;
-						}
 						object.storage_buffer_needs_update = false;
 						object_update_storage_buffer(object);
 						state.data_oriented.frame.object_update_storage_updates += 1;
@@ -2773,8 +2779,9 @@ void frame(void)
 			}
 			else
 			{
-				// Only update shadow depth if we're not freezing it, or if we don't have a valid shadow map yet
-				const bool should_update_shadow_depth = !state.shadow.depth_freeze || !ShadowDepthPass::has_valid_shadow_map || state.shadow.force_recapture;
+				const bool should_update_shadow_depth = state.shadow.depth_freeze
+					? state.shadow.force_recapture
+					: true;
 				if (should_update_shadow_depth)
 				{
 					RenderPass& shadow_depth_pass = get_render_pass(ERenderPass::ShadowDepth);

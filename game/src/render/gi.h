@@ -120,7 +120,7 @@ bool gi_scene_collect_visible_mesh_bounds(
 
 	for (auto const& [unique_id, object] : in_state.scene.objects)
 	{
-		if (!object.visibility || !object.has_mesh)
+		if (!object_contributes_to_gi_scene(object))
 		{
 			continue;
 		}
@@ -572,6 +572,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 {
 	if (in_state.gi.layout_dirty)
 	{
+        printf("GI Scene Layout Dirty. Rebuilding...\n");
 		gi_scene_rebuild_layout(in_gi_scene, in_state);
 	}
 
@@ -621,6 +622,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 		}
 
 		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
+
 		if (in_gi_scene.probe_idx_to_update == 0)
 		{
 			in_state.gi.is_updating = false;

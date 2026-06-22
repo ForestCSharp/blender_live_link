@@ -136,6 +136,21 @@ BoundingBox object_get_bounding_box(const Object& in_object)
 	return bounding_box_transform(in_object.mesh.bounding_box, in_object.current_transform);	
 }
 
+bool object_has_dynamic_jolt_body(const Object& in_object)
+{
+	return in_object.has_rigid_body && in_object.rigid_body.is_dynamic;
+}
+
+bool object_has_dynamic_jolt_actor(const Object& in_object)
+{
+	return object_has_dynamic_jolt_body(in_object) || in_object.has_character;
+}
+
+bool object_contributes_to_gi_scene(const Object& in_object)
+{
+	return in_object.visibility && in_object.has_mesh && !object_has_dynamic_jolt_actor(in_object);
+}
+
 void object_add_jolt_body(Object& in_object)
 {
 	if (!in_object.has_mesh)
