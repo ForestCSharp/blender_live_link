@@ -26,6 +26,7 @@ enum class ERenderPass : int
 	Geometry,
 	SSAO,
 	SSAO_Blur,
+	ScreenSpaceShadows,
 	Lighting,
 	DOF_Combine,
 	WireOverlay,
@@ -234,6 +235,16 @@ struct State
 		i32 debug_cascade_index = 0;
 		i32 debug_view_mode = 0;
 		bool debug_show_cascade_selection = false;
+		struct ScreenSpaceShadowState
+		{
+			bool enable = true;
+			bool debug_show_mask = false;
+			f32 ray_length = 2.0f;
+			f32 thickness = 0.08f;
+			i32 max_steps = 24;
+			f32 intensity = 1.0f;
+			i32 filter_radius = 2;
+		} screen_space;
 	} shadow;
 
 	struct TessellationState

@@ -88,7 +88,7 @@ using ankerl::unordered_dense::map;
 
 #include "render/shader_files.h"
 
-// geometry pass
+// Render Passes
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
 #include "render/blur_pass.h"
@@ -97,6 +97,7 @@ using ankerl::unordered_dense::map;
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
 #include "render/shadow_cascade_debug_pass.h"
+#include "render/screen_space_shadows_pass.h"
 
 // Wrapper for sockets
 #include "network/socket_wrapper.h"
@@ -1471,6 +1472,8 @@ void init(void)
 	};
 	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
 
+	get_render_pass(ERenderPass::ScreenSpaceShadows).init(ScreenSpaceShadowsPass::make_render_pass_desc(ssao_pixel_format));
+
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
 
 	RenderPassDesc dof_combine_pass_desc = {
@@ -2165,6 +2168,27 @@ void frame(void)
 					}
 				}
 				ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
+				if (ImGui::CollapsingHeader("Screen Space Shadows", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enable Screen Space Shadows", &state.shadow.screen_space.enable);
+					ImGui::SliderFloat("Ray Length", &state.shadow.screen_space.ray_length, 0.0f, 10.0f, "%.2f");
+					ImGui::SliderFloat("Thickness", &state.shadow.screen_space.thickness, 0.001f, 0.5f, "%.3f");
+					ImGui::SliderInt("Max Steps", &state.shadow.screen_space.max_steps, 1, 64);
+					ImGui::SliderFloat("Intensity", &state.shadow.screen_space.intensity, 0.0f, 1.0f, "%.2f");
+					ImGui::SliderInt("Filter Radius", &state.shadow.screen_space.filter_radius, 0, 2);
+					ImGui::Checkbox("Show Screen Space Shadow Mask", &state.shadow.screen_space.debug_show_mask);
+					if (state.shadow.screen_space.debug_show_mask)
+					{
+						GpuImage& screen_space_shadow_image = get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0);
+						const GpuImageDesc& screen_space_shadow_desc = screen_space_shadow_image.get_desc();
+						const f32 max_debug_size = 256.0f;
+						const f32 aspect_ratio = (f32)screen_space_shadow_desc.width / (f32)screen_space_shadow_desc.height;
+						const ImVec2 image_size = aspect_ratio >= 1.0f
+							? ImVec2(max_debug_size, max_debug_size / aspect_ratio)
+							: ImVec2(max_debug_size * aspect_ratio, max_debug_size);
+						ImGui::Image(simgui_imtextureid(screen_space_shadow_image.get_texture_view(0)), image_size);
+					}
+				}
 			}
 			ImGui::Unindent();
 
@@ -2972,6 +2996,32 @@ void frame(void)
 			}
 		}
 
+		bool screen_space_shadows_valid = false;
+		if (state.shadow.rendering_enable && state.shadow.screen_space.enable)
+		{
+			Object* screen_space_shadow_sun = ShadowDepthPass::get_valid_shadow_sun(state);
+			if (screen_space_shadow_sun)
+			{
+				RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+				RenderPass& screen_space_shadows_pass = get_render_pass(ERenderPass::ScreenSpaceShadows);
+				HMM_Vec3 sun_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0, 0, -1), screen_space_shadow_sun->current_transform.rotation));
+				ScreenSpaceShadowsPass::execute(
+					screen_space_shadows_pass,
+					geometry_pass.get_color_output(1).get_texture_view(0),
+					geometry_pass.get_color_output(2).get_texture_view(0),
+					state.gpu.linear_sampler,
+					view_matrix,
+					projection_matrix,
+					sun_light_dir,
+					state.shadow.screen_space.ray_length,
+					state.shadow.screen_space.thickness,
+					state.shadow.screen_space.max_steps,
+					state.shadow.screen_space.filter_radius
+				);
+				screen_space_shadows_valid = true;
+			}
+		}
+
 		{ // Lighting Pass
 			get_render_pass(ERenderPass::Lighting).execute(
 				[&](const i32)
@@ -2996,7 +3046,9 @@ void frame(void)
 					state.lighting.fs_params.isolated_probe_index = state.gi.probe_isolation_enable
 						? (state.gi.isolated_probe_index >= 0 ? state.gi.isolated_probe_index : -2)
 						: -1;
+					state.lighting.fs_params.screen_space_shadows_enable = screen_space_shadows_valid ? 1 : 0;
 					state.lighting.fs_params.shadow_bias = 0.001f;
+					state.lighting.fs_params.screen_space_shadow_intensity = state.shadow.screen_space.intensity;
 					state.lighting.fs_params.shadow_map_texel_size = HMM_V2(
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution,
 						1.0f / (f32)ShadowDepthPass::ShadowMapResolution
@@ -3026,6 +3078,9 @@ void frame(void)
 					GpuImage& shadow_moments_texture = state.shadow.blur_enable && ShadowDepthPass::has_valid_shadow_blur
 						? get_render_pass(ERenderPass::ShadowBlur).get_color_output(0)
 						: get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
+					GpuImage& screen_space_shadow_texture = screen_space_shadows_valid
+						? get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0)
+						: state.gpu.default_image;
 
 					sg_bindings bindings = {
 						.views = {
@@ -3045,6 +3100,7 @@ void frame(void)
 							[13] = gi_scene.sh9_coefficients_buffer.get_storage_view(),
 							[14] = gi_scene.sg9_lobes_buffer.get_storage_view(),
 							[15] = gi_scene.octree_nodes_buffer.get_storage_view(),
+							[16] = screen_space_shadow_texture.get_texture_view(0),
 						},
 						.samplers = {
 							[0] = state.gpu.linear_sampler,

@@ -81,7 +81,9 @@ layout(binding=0) uniform fs_params {
 	int shadow_cascade_placement_mode;
 	int shadow_debug_show_cascade_selection;
 	int isolated_probe_index;
+	int screen_space_shadows_enable;
 	float shadow_bias;
+	float screen_space_shadow_intensity;
 	vec2 shadow_map_texel_size;
 	vec4 shadow_cascade_distances;
 	mat4 shadow_view_projections[MAX_SHADOW_CASCADES];
@@ -117,6 +119,8 @@ layout(binding=10) uniform texture2D octahedral_lighting_texture;
 layout(binding=11) uniform texture2D octahedral_depth_texture;
 @image_sample_type shadow_moments_texture float
 layout(binding=12) uniform texture2DArray shadow_moments_texture;
+
+layout(binding=16) uniform texture2D screen_space_shadow_tex;
 
 layout(binding=13) readonly buffer SH9CoefficientsBuffer {
 	ProbeRadianceCoefficient sh9_coefficients[];
@@ -635,6 +639,11 @@ void main()
 					float sun_shadow_visibility = sun_lights[i].cast_shadows != 0
 						? sample_shadow_visibility(position, normal, sun_lights[i].direction)
 						: 1.0;
+					if (screen_space_shadows_enable != 0 && sun_lights[i].cast_shadows != 0)
+					{
+						float screen_space_shadow_visibility = texture(sampler2D(screen_space_shadow_tex, tex_sampler), uv).r;
+						sun_shadow_visibility *= mix(1.0, screen_space_shadow_visibility, screen_space_shadow_intensity);
+					}
 
 					final_color.xyz += sun_shadow_visibility * sample_sun_light(
 							sun_lights[i], 

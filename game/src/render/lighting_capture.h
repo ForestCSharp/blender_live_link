@@ -244,6 +244,7 @@ public:
 				fs_params.direct_lighting_enable = true;
 				fs_params.gi_enable = false;
 				fs_params.shadow_map_enable = false;
+				fs_params.screen_space_shadows_enable = false;
 				sg_apply_uniforms(0, SG_RANGE(fs_params));
 
 				GpuImage& color_texture = geometry_pass.get_color_output(0, face_idx);
@@ -269,6 +270,7 @@ public:
 						[13] = in_state.gpu.default_buffer.get_storage_view(),
 						[14] = in_state.gpu.default_buffer.get_storage_view(),
 						[15] = in_state.gpu.default_buffer.get_storage_view(),
+						[16] = in_state.gpu.default_image.get_texture_view(0),
 					},
 					.samplers = {
 						[0] = in_state.gpu.linear_sampler,

@@ -3,6 +3,7 @@
 // Generated Shader Files
 #include "../data/shaders/ssao_constants.h"
 #include "ssao.compiled.h"
+#include "screen_space_shadows.compiled.h"
 #include "blur.compiled.h"
 #include "dof_combine.compiled.h"
 #include "lighting.compiled.h"
