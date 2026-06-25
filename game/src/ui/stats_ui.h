@@ -28,6 +28,13 @@ static void stats_ui_cell_u64(const char* label, u64 value)
 	ImGui::Text("%llu", (unsigned long long)value);
 }
 
+static void stats_ui_cell_seconds(const char* label, f64 value)
+{
+	stats_ui_cell_label(label);
+	ImGui::TableNextColumn();
+	ImGui::Text("%.6f s", value);
+}
+
 static void stats_ui_cell_size(const char* label, size_t value)
 {
 	stats_ui_cell_label(label);
@@ -50,9 +57,8 @@ static void stats_ui_table_columns()
 	ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed);
 }
 
-static void draw_stats_ui(const State& state)
+static void draw_stats_ui(State& state)
 {
-	const auto& import = state.data_oriented.last_import;
 	const auto& previous = state.data_oriented.previous_frame;
 	const ImGuiTableFlags stats_table_flags =
 		ImGuiTableFlags_SizingStretchProp |
@@ -62,7 +68,34 @@ static void draw_stats_ui(const State& state)
 
 	if (ImGui::CollapsingHeader("Update Stats", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled("Last live-link import");
+		const i32 import_history_count = (i32)state.data_oriented.import_history.length();
+		if (import_history_count > 0)
+		{
+			state.data_oriented.selected_import_history_index = CLAMP(
+				state.data_oriented.selected_import_history_index,
+				0,
+				import_history_count - 1
+			);
+
+			ImGui::SetNextItemWidth(180.0f);
+			ImGui::SliderInt(
+				"Update",
+				&state.data_oriented.selected_import_history_index,
+				0,
+				import_history_count - 1
+			);
+		}
+		else
+		{
+			state.data_oriented.selected_import_history_index = -1;
+			ImGui::TextDisabled("No live-link imports received");
+		}
+
+		const auto& import = import_history_count > 0
+			? state.data_oriented.import_history[state.data_oriented.selected_import_history_index]
+			: state.data_oriented.last_import;
+
+		ImGui::TextDisabled("Live-link import");
 		if (ImGui::BeginTable("##LiveLinkImportStats", 4, stats_table_flags))
 		{
 			stats_ui_table_columns();
@@ -70,6 +103,10 @@ static void draw_stats_ui(const State& state)
 			ImGui::TableNextRow();
 			stats_ui_cell_u64("Update", import.update_index);
 			stats_ui_cell_u64("Bytes", import.byte_count);
+
+			ImGui::TableNextRow();
+			stats_ui_cell_seconds("Generation Time", import.generation_seconds);
+			stats_ui_cell_bool("Reset", import.reset);
 
 			ImGui::TableNextRow();
 			stats_ui_cell_i32("Objects", import.object_count);
@@ -98,9 +135,6 @@ static void draw_stats_ui(const State& state)
 			ImGui::TableNextRow();
 			stats_ui_cell_u64("Image Bytes", import.image_byte_count);
 			stats_ui_cell_i32("Malformed", import.malformed_object_count);
-
-			ImGui::TableNextRow();
-			stats_ui_cell_bool("Reset", import.reset);
 			ImGui::EndTable();
 		}
 

@@ -2,6 +2,7 @@
 /game/bin/*
 /compiled_schemas/*
 /flatbuffers/build/*
+/__pycache__/*
 
 .DS_Store
 

@@ -691,6 +691,7 @@ class LiveLinkConnection():
 
     # Creates an update for objects in in_object_list
     def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+        export_generation_start = time.perf_counter()
         self.update_sequence += 1
 
         # Evaluate Depsgraph
@@ -718,6 +719,7 @@ class LiveLinkConnection():
             "image_count": 0,
             "image_byte_count": 0,
             "byte_count": 0,
+            "generation_seconds": 0.0,
             "reset": reset,
         }
 
@@ -942,6 +944,8 @@ class LiveLinkConnection():
         Update.AddMaterials(builder, update_materials)
         Update.AddImages(builder, update_images)
         Update.AddReset(builder, reset)
+        export_stats["generation_seconds"] = time.perf_counter() - export_generation_start
+        Update.AddGenerationSeconds(builder, export_stats["generation_seconds"])
 
         # finalize scene flatbuffer
         live_link_scene = Update.End(builder)
@@ -973,6 +977,7 @@ class LiveLinkConnection():
             f"materials={export_stats['material_count']} "
             f"images={export_stats['image_count']} "
             f"image_bytes={export_stats['image_byte_count']} "
+            f"generation_seconds={export_stats['generation_seconds']:.6f} "
             f"reset={export_stats['reset']}"
         )
         return output
@@ -992,6 +997,20 @@ live_link_connection = []
 
 batched_updates = set()
 batched_deleted = set()
+
+def clear_batched_depsgraph_updates(update_reason="unknown"):
+    if bpy.app.timers.is_registered(send_updates_timer):
+        bpy.app.timers.unregister(send_updates_timer)
+
+    if batched_updates or batched_deleted:
+        print(
+            "\nLive Link Clear Queued Depsgraph Updates: "
+            f"reason={update_reason} "
+            f"queued_updates={len(batched_updates)} "
+            f"queued_deleted={len(batched_deleted)}"
+        )
+        batched_updates.clear()
+        batched_deleted.clear()
 
 # Actually sends batched updates
 def send_updates_timer(): 
@@ -1078,6 +1097,7 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
+        clear_batched_depsgraph_updates(update_reason="manual_full_update_before_send")
         print(
             "\nLive Link Manual Send Requested: "
             f"reason=manual_full_update "
@@ -1085,11 +1105,16 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
             f"queued_depsgraph_updates={len(batched_updates)} "
             f"queued_deleted={len(batched_deleted)}"
         )
-        live_link_connection.send_object_list(
-            updated_objects = list(bpy.context.scene.objects), 
-            deleted_object_uids = [],
-            update_reason = "manual_full_update",
-        ) 
+        depsgraph_update_post_callback.enabled = False
+        try:
+            live_link_connection.send_object_list(
+                updated_objects = list(bpy.context.scene.objects),
+                deleted_object_uids = [],
+                update_reason = "manual_full_update",
+            )
+        finally:
+            clear_batched_depsgraph_updates(update_reason="manual_full_update_after_send")
+            depsgraph_update_post_callback.enabled = True
         return {'FINISHED'}
 # End OpLiveLinkSendFullUpdate 
 

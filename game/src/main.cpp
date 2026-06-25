@@ -587,6 +587,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 		assert(update);
+		import_stats.generation_seconds = update->generation_seconds();
 
 		// process images from update
 		if (auto images = update->images())
@@ -1088,10 +1089,13 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 		}
 
 		state.data_oriented.last_import = import_stats;
+		state.data_oriented.import_history.add(import_stats);
+		state.data_oriented.selected_import_history_index = (i32)state.data_oriented.import_history.length() - 1;
 		printf(
-			"Live Link Import Stats #%llu: bytes=%llu objects=%i deleted=%i meshes=%i verts=%i indices=%i skinned=%i lights=%i armatures=%i animations=%i matrices=%i materials=%i images=%i image_bytes=%llu malformed=%i reset=%s\n",
+			"Live Link Import Stats #%llu: bytes=%llu generation_seconds=%.6f objects=%i deleted=%i meshes=%i verts=%i indices=%i skinned=%i lights=%i armatures=%i animations=%i matrices=%i materials=%i images=%i image_bytes=%llu malformed=%i reset=%s\n",
 			(unsigned long long)import_stats.update_index,
 			(unsigned long long)import_stats.byte_count,
+			import_stats.generation_seconds,
 			import_stats.object_count,
 			import_stats.deleted_object_count,
 			import_stats.mesh_count,

@@ -346,6 +346,7 @@ struct State
 		{
 			u64 update_index = 0;
 			u64 byte_count = 0;
+			f64 generation_seconds = 0.0;
 			i32 object_count = 0;
 			i32 deleted_object_count = 0;
 			i32 mesh_count = 0;
@@ -407,6 +408,8 @@ struct State
 
 		u64 frame_index = 0;
 		LiveLinkImportStats last_import;
+		StretchyBuffer<LiveLinkImportStats> import_history;
+		i32 selected_import_history_index = -1;
 		FrameAccessStats frame;
 		FrameAccessStats previous_frame;
 	} data_oriented;

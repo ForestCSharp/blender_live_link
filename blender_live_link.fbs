@@ -230,6 +230,7 @@ table Update
 	materials			: [Material];
 	images				: [Image];
 	reset 				: bool = false;
+	generation_seconds	: double = 0.0;
 }
 
 root_type Update;
