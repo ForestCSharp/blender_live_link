@@ -6,6 +6,8 @@
 
 @fs trace_fs
 
+@include_block dither_noise
+
 layout(binding=0) uniform texture2D position_tex;
 layout(binding=1) uniform texture2D normal_tex;
 
@@ -18,6 +20,7 @@ layout(binding=0) uniform trace_fs_params {
 	vec3 light_direction;
 	float ray_length;
 	float thickness;
+	float jitter_strength;
 	int max_steps;
 	int enable;
 };
@@ -25,6 +28,10 @@ layout(binding=0) uniform trace_fs_params {
 in vec2 uv;
 
 out vec4 frag_color;
+
+const float normal_offset_bias = 0.02;
+const float same_surface_normal_threshold = 0.96;
+const float edge_fade_width = 0.06;
 
 vec2 project_to_uv(vec3 in_view_position)
 {
@@ -59,21 +66,25 @@ void main()
 	vec3 world_position = sampled_position.xyz;
 	vec3 world_normal = normalize(sampled_normal.xyz);
 	vec3 surface_to_light_world = normalize(-light_direction);
+	float normal_light = dot(world_normal, surface_to_light_world);
 
-	if (dot(world_normal, surface_to_light_world) <= 0.0)
+	if (normal_light <= 0.0)
 	{
 		frag_color = vec4(1.0);
 		return;
 	}
 
-	vec3 view_start = (view * vec4(world_position + world_normal * 0.02, 1.0)).xyz;
-	vec3 view_end = (view * vec4(world_position + surface_to_light_world * ray_length, 1.0)).xyz;
+	vec3 ray_start_world = world_position + world_normal * normal_offset_bias;
+	vec3 view_ray_position = (view * vec4(ray_start_world, 1.0)).xyz;
+	vec3 view_light_direction = normalize((view * vec4(surface_to_light_world, 0.0)).xyz);
+	vec3 ray_step = view_light_direction * (ray_length / float(max_steps));
+	float jitter = (gradient_noise(gl_FragCoord.xy) * 2.0 - 1.0) * jitter_strength;
+	view_ray_position += ray_step * jitter;
 
 	float visibility = 1.0;
-	for (int i = 1; i <= max_steps; ++i)
+	for (int i = 0; i < max_steps; ++i)
 	{
-		float ray_alpha = float(i) / float(max_steps);
-		vec3 view_ray_position = mix(view_start, view_end, ray_alpha);
+		view_ray_position += ray_step;
 		vec2 sample_uv = project_to_uv(view_ray_position);
 		if (sample_uv.x < 0.0 || sample_uv.x > 1.0 || sample_uv.y < 0.0 || sample_uv.y > 1.0)
 		{
@@ -87,12 +98,21 @@ void main()
 			continue;
 		}
 
+		vec3 blocker_world_normal = normalize(blocker_normal.xyz);
+		float same_surface_distance = abs(dot(blocker_world_position.xyz - world_position, world_normal));
+		if (dot(blocker_world_normal, world_normal) > same_surface_normal_threshold && same_surface_distance < normal_offset_bias * 2.0)
+		{
+			continue;
+		}
+
 		vec3 blocker_view_position = (view * vec4(blocker_world_position.xyz, 1.0)).xyz;
 		float camera_depth_delta = blocker_view_position.z - view_ray_position.z;
 		float effective_thickness = max(thickness, abs(view_ray_position.z) * 0.002);
-		if (camera_depth_delta > 0.0 && camera_depth_delta < effective_thickness)
+		float depth_bias = min(effective_thickness * 0.5, max(0.005, abs(view_ray_position.z) * 0.0005));
+		if (camera_depth_delta > depth_bias && camera_depth_delta < effective_thickness)
 		{
-			visibility = 0.0;
+			float edge_distance = min(min(sample_uv.x, 1.0 - sample_uv.x), min(sample_uv.y, 1.0 - sample_uv.y));
+			visibility = 1.0 - clamp(edge_distance / edge_fade_width, 0.0, 1.0);
 			break;
 		}
 	}

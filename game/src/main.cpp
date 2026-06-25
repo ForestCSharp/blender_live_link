@@ -153,6 +153,7 @@ using ankerl::unordered_dense::map;
 #include "imgui/misc/single_file/imgui_single_file.h"
 #include "sokol/util/sokol_imgui.h"
 #include "ui/cpu_profiler_ui.h"
+#include "ui/stats_ui.h"
 
 bool g_show_imgui = true;
 // All imgui debug ui should be wrapped in this.
@@ -1904,60 +1905,7 @@ void frame(void)
 		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
 			ImGui::Spacing();
 
-			const auto& import = state.data_oriented.last_import;
-			const auto& previous = state.data_oriented.previous_frame;
-			ImGui::Text(
-				"Last Import #%llu: %llu bytes, objects %i, meshes %i, verts %i, indices %i",
-				(unsigned long long)import.update_index,
-				(unsigned long long)import.byte_count,
-				import.object_count,
-				import.mesh_count,
-				import.mesh_vertex_count,
-				import.mesh_index_count
-			);
-			ImGui::Text(
-				"Import Assets: materials %i, images %i, image bytes %llu, malformed %i",
-				import.material_count,
-				import.image_count,
-				(unsigned long long)import.image_byte_count,
-				import.malformed_object_count
-			);
-			ImGui::Text(
-				"Scene Indexes: objects %i, meshes %i, lights %i, armatures %i, skinned %i",
-				previous.scene_object_count,
-				previous.mesh_object_count,
-				previous.light_object_count,
-				previous.armature_object_count,
-				previous.skinned_mesh_object_count
-			);
-			ImGui::Text(
-				"Frame Access: live-link +%i -%i reset %i, object scans %i, storage updates %i",
-				previous.live_link_updated_objects,
-				previous.live_link_deleted_objects,
-				previous.live_link_reset_count,
-				previous.object_update_scan_count,
-				previous.object_update_storage_updates
-			);
-			ImGui::Text(
-				"Culling: calls %i, candidates %i, visible %i, no-mesh %i, hidden %i, frustum %i",
-				previous.cull_calls,
-				previous.cull_candidate_count,
-				previous.cull_visible_count,
-				previous.cull_non_renderable_count,
-				previous.cull_visibility_count,
-				previous.cull_frustum_count
-			);
-			ImGui::Text(
-				"Hot Lists: lighting %i/%i, skinning %i/%i, tessellation %i/%i, draws %i meshes %i",
-				previous.lighting_processed_count,
-				previous.lighting_candidate_count,
-				previous.gpu_skinning_updated_count,
-				previous.gpu_skinning_candidate_count,
-				previous.tessellation_processed_count,
-				previous.tessellation_candidate_count,
-				previous.draw_calls,
-				previous.draw_mesh_count
-			);
+			draw_stats_ui(state);
 		}
 
 		if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2171,8 +2119,9 @@ void frame(void)
 				if (ImGui::CollapsingHeader("Screen Space Shadows", ImGuiTreeNodeFlags_DefaultOpen))
 				{
 					ImGui::Checkbox("Enable Screen Space Shadows", &state.shadow.screen_space.enable);
-					ImGui::SliderFloat("Ray Length", &state.shadow.screen_space.ray_length, 0.0f, 10.0f, "%.2f");
+					ImGui::SliderFloat("Contact Ray Length", &state.shadow.screen_space.ray_length, 0.0f, 10.0f, "%.2f");
 					ImGui::SliderFloat("Thickness", &state.shadow.screen_space.thickness, 0.001f, 0.5f, "%.3f");
+					ImGui::SliderFloat("Jitter Strength", &state.shadow.screen_space.jitter_strength, 0.0f, 2.0f, "%.2f");
 					ImGui::SliderInt("Max Steps", &state.shadow.screen_space.max_steps, 1, 64);
 					ImGui::SliderFloat("Intensity", &state.shadow.screen_space.intensity, 0.0f, 1.0f, "%.2f");
 					ImGui::SliderInt("Filter Radius", &state.shadow.screen_space.filter_radius, 0, 2);
@@ -2888,40 +2837,6 @@ void frame(void)
 						sg_apply_uniforms(0, SG_RANGE(vs_params));
 					}
 
-					DEBUG_UI(
-						{
-							CPU_TIMING_SCOPE("Geometry Debug UI");
-
-							if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
-							{
-								ImGui::Text("Total Objects: %zu", state.scene.objects.size());
-
-								ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-								if (ImGui::TreeNode("CulledObjects", "Culled Objects: %i", cull_result.cull_count))
-								{
-									#if WITH_VERBOSE_CULL_RESULTS
-									ImGui::Text("Non-Renderable: %i", cull_result.non_renderable_cull_count);
-									ImGui::Text("Invisible: %i", cull_result.visibility_cull_count);
-									ImGui::Text("Frustum Culled: %i", cull_result.frustum_cull_count);
-									#else
-									ImGui::Text("#define WITH_VERBOSE_CULL_RESULTS 1 for additional culling stats");
-									#endif
-									ImGui::TreePop();
-								}
-
-								ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-								if (ImGui::TreeNode("Lights", "Lights"))
-								{
-									ImGui::Text("Num Point Lights: %i", state.lighting.point_lights.length());
-									ImGui::Text("Num Spot Lights:  %i", state.lighting.spot_lights.length());
-									ImGui::Text("Num Sun Lights:   %i", state.lighting.sun_lights.length());
-									ImGui::TreePop();
-								}
-
-							}
-						}
-					);
-
 					// Submit draw calls for objects after culling
 					{
 						CPU_TIMING_SCOPE("Geometry Draw Meshes");
@@ -3015,6 +2930,7 @@ void frame(void)
 					sun_light_dir,
 					state.shadow.screen_space.ray_length,
 					state.shadow.screen_space.thickness,
+					state.shadow.screen_space.jitter_strength,
 					state.shadow.screen_space.max_steps,
 					state.shadow.screen_space.filter_radius
 				);

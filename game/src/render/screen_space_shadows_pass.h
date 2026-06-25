@@ -91,6 +91,7 @@ namespace ScreenSpaceShadowsPass
 		HMM_Vec3 in_light_direction,
 		f32 in_ray_length,
 		f32 in_thickness,
+		f32 in_jitter_strength,
 		i32 in_max_steps,
 		i32 in_filter_radius
 	)
@@ -106,6 +107,7 @@ namespace ScreenSpaceShadowsPass
 					.light_direction = in_light_direction,
 					.ray_length = in_ray_length,
 					.thickness = in_thickness,
+					.jitter_strength = in_jitter_strength,
 					.max_steps = in_max_steps,
 					.enable = 1,
 				};
