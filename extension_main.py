@@ -747,6 +747,9 @@ class LiveLinkConnection():
                 "animation_sampling": 0.0,
                 "materials": 0.0,
                 "images": 0.0,
+                "image_pixels_read": 0.0,
+                "image_rgba8_convert": 0.0,
+                "image_flatbuffer_pack": 0.0,
                 "flatbuffer_finish": 0.0,
             },
             "reset": reset,
@@ -937,20 +940,32 @@ class LiveLinkConnection():
             
             # Get image width and height
             image_width, image_height = image.size
+            image_pixel_component_count = image_width * image_height * 4
 
-            # Ensure pixels are loaded
-            _ = image.pixels[0]
+            pixels_read_start = time.perf_counter()
+            try:
+                pixels_f32 = np.empty(image_pixel_component_count, dtype=np.float32)
+                image.pixels.foreach_get(pixels_f32)
+            except Exception:
+                # Some Blender image types may not support foreach_get reliably.
+                pixels_f32 = np.array(image.pixels[:], dtype=np.float32)
+            self.add_export_timing(export_stats, "image_pixels_read", time.perf_counter() - pixels_read_start)
 
-            # Get float32 pixel array (RGBA)
-            pixels_f32 = np.array(image.pixels[:], dtype=np.float32)
+            rgba8_convert_start = time.perf_counter()
+            np.clip(pixels_f32, 0.0, 1.0, out=pixels_f32)
+            np.multiply(pixels_f32, 255.0, out=pixels_f32)
+            np.rint(pixels_f32, out=pixels_f32)
+            pixels_rgba8 = np.empty(pixels_f32.size, dtype=np.uint8)
+            pixels_rgba8[:] = pixels_f32
+            self.add_export_timing(export_stats, "image_rgba8_convert", time.perf_counter() - rgba8_convert_start)
 
-            # Reinterpret the float32 array as uint8 bytes
-            pixels_bytes = pixels_f32.view(np.uint8)
             export_stats["image_count"] += 1
-            export_stats["image_byte_count"] += int(pixels_bytes.nbytes)
+            export_stats["image_byte_count"] += int(pixels_rgba8.nbytes)
 
             # Now pass to FlatBuffers
-            flatbuffer_image_data = builder.CreateNumpyVector(pixels_bytes)
+            image_pack_start = time.perf_counter()
+            flatbuffer_image_data = builder.CreateNumpyVector(pixels_rgba8)
+            self.add_export_timing(export_stats, "image_flatbuffer_pack", time.perf_counter() - image_pack_start)
 
             # Build up flatbuffers image and add it to our list of images
             Image.Start(builder)
@@ -1026,6 +1041,9 @@ class LiveLinkConnection():
             f"animation_sampling={timing_stats['animation_sampling']:.6f}s "
             f"materials={timing_stats['materials']:.6f}s "
             f"images={timing_stats['images']:.6f}s "
+            f"image_pixels_read={timing_stats['image_pixels_read']:.6f}s "
+            f"image_rgba8_convert={timing_stats['image_rgba8_convert']:.6f}s "
+            f"image_flatbuffer_pack={timing_stats['image_flatbuffer_pack']:.6f}s "
             f"flatbuffer_finish={timing_stats['flatbuffer_finish']:.6f}s"
         )
         return output

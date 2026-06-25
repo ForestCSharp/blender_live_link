@@ -269,12 +269,33 @@ bool register_image(const Blender::LiveLink::Image& in_image)
 	printf("Registering image with ID: %i\n", image_id);
 
 	auto data_vec = in_image.data();
+	const i32 image_width = in_image.width();
+	const i32 image_height = in_image.height();
+	if (!data_vec || image_width <= 0 || image_height <= 0)
+	{
+		printf("Skipping image ID %i: missing data or invalid dimensions (%i x %i)\n", image_id, image_width, image_height);
+		return false;
+	}
+
+	const size_t expected_byte_count = (size_t)image_width * (size_t)image_height * 4;
+	if (data_vec->size() != expected_byte_count)
+	{
+		printf(
+			"Skipping image ID %i: expected %zu RGBA8 bytes for %i x %i, received %zu\n",
+			image_id,
+			expected_byte_count,
+			image_width,
+			image_height,
+			(size_t)data_vec->size()
+		);
+		return false;
+	}
 
 	GpuImageDesc image_desc = {
 		.type = SG_IMAGETYPE_2D,
-		.width = in_image.width(),
-		.height = in_image.height(),
-		.pixel_format = SG_PIXELFORMAT_RGBA32F,
+		.width = image_width,
+		.height = image_height,
+		.pixel_format = SG_PIXELFORMAT_RGBA8,
 		.data = data_vec->data(),
 	};
 
