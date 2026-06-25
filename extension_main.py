@@ -177,8 +177,16 @@ class LiveLinkConnection():
         Matrix.AddElements(builder, matrix_elements_fb)
         return Matrix.End(builder)
 
-    def get_mesh(self, obj, dependency_graph, use_rest_pose=False):
+    def add_export_timing(self, export_stats, key, elapsed_seconds):
+        if export_stats is not None:
+            export_stats["timings"][key] += elapsed_seconds
+
+    def mesh_needs_triangulation(self, mesh):
+        return any(polygon.loop_total != 3 for polygon in mesh.polygons)
+
+    def get_mesh(self, obj, dependency_graph, use_rest_pose=False, export_stats=None):
         disabled_modifiers = []
+        mesh_eval_start = time.perf_counter()
         if use_rest_pose:
             for modifier in obj.modifiers:
                 if modifier.type == 'ARMATURE' and modifier.show_viewport:
@@ -202,11 +210,15 @@ class LiveLinkConnection():
                 finally:
                     obj_evaluated.to_mesh_clear()
 
-            bm = bmesh.new()
-            bm.from_mesh(mesh)
-            bmesh.ops.triangulate(bm, faces=bm.faces[:])
-            bm.to_mesh(mesh)
-            bm.free()
+            self.add_export_timing(export_stats, "mesh_eval", time.perf_counter() - mesh_eval_start)
+            triangulation_start = time.perf_counter()
+            if self.mesh_needs_triangulation(mesh):
+                bm = bmesh.new()
+                bm.from_mesh(mesh)
+                bmesh.ops.triangulate(bm, faces=bm.faces[:])
+                bm.to_mesh(mesh)
+                bm.free()
+            self.add_export_timing(export_stats, "triangulation", time.perf_counter() - triangulation_start)
             return mesh
         finally:
             for modifier in disabled_modifiers:
@@ -312,6 +324,7 @@ class LiveLinkConnection():
         old_action = armature_obj.animation_data.action
 
         skin_matrices = np.zeros(frame_count * bone_count * 16, dtype=np.float32)
+        animation_sampling_start = time.perf_counter()
         try:
             armature_obj.animation_data.action = action
             for frame_idx, frame in enumerate(range(frame_start, frame_end + 1)):
@@ -331,6 +344,7 @@ class LiveLinkConnection():
             armature_obj.animation_data.action = old_action
             scene.frame_set(old_frame, subframe=old_subframe)
             bpy.context.view_layer.update()
+            self.add_export_timing(export_stats, "animation_sampling", time.perf_counter() - animation_sampling_start)
 
         animation_name_fb = builder.CreateString(action.name)
         skin_matrices_fb = builder.CreateNumpyVector(skin_matrices)
@@ -353,7 +367,7 @@ class LiveLinkConnection():
         mesh_fb = None
         if obj.type == 'MESH': 
             mesh_armature = self.get_mesh_armature(obj)
-            mesh = self.get_mesh(obj, dependency_graph, mesh_armature is not None)
+            mesh = self.get_mesh(obj, dependency_graph, mesh_armature is not None, export_stats)
 
             vertex_count = len(mesh.vertices)
             loop_count = len(mesh.loops)
@@ -387,6 +401,7 @@ class LiveLinkConnection():
                 uvs = np.zeros((loop_count, 2), dtype=np.float32)
 
             # --- Build unique (vertex, uv) keys ---
+            vertex_dedupe_start = time.perf_counter()
             rounded_uvs = (uvs * 1e6).astype(np.int32)  # prevent float issues
             dtype = np.dtype([('v', np.int32), ('u', np.int32), ('v2', np.int32)])
             keys = np.zeros((loop_count,), dtype=dtype)
@@ -397,6 +412,7 @@ class LiveLinkConnection():
             unique_keys, inverse_indices = np.unique(keys, return_inverse=True)
             new_indices = inverse_indices.astype(np.int32)
             new_vertex_count = len(unique_keys)
+            self.add_export_timing(export_stats, "vertex_dedupe", time.perf_counter() - vertex_dedupe_start)
             if export_stats is not None:
                 export_stats["mesh_count"] += 1
                 export_stats["mesh_vertex_count"] += int(new_vertex_count)
@@ -426,6 +442,7 @@ class LiveLinkConnection():
             mesh_to_armature_fb = None
             armature_to_mesh_fb = None
             if mesh_armature:
+                skin_weights_start = time.perf_counter()
                 if export_stats is not None:
                     export_stats["skinned_mesh_count"] += 1
                 # Map bone -> index
@@ -472,6 +489,7 @@ class LiveLinkConnection():
                     builder,
                     obj.matrix_world.inverted() @ mesh_armature.matrix_world
                 )
+                self.add_export_timing(export_stats, "skin_weights", time.perf_counter() - skin_weights_start)
 
             # --- Material IDs (optional) ---
             # Get Materials
@@ -513,6 +531,7 @@ class LiveLinkConnection():
                 Mesh.AddArmatureId(builder, -1)
 
             mesh_fb = Mesh.End(builder)
+            bpy.data.meshes.remove(mesh)
 
         # Armature Data
         armature_fb = None
@@ -720,6 +739,16 @@ class LiveLinkConnection():
             "image_byte_count": 0,
             "byte_count": 0,
             "generation_seconds": 0.0,
+            "timings": {
+                "mesh_eval": 0.0,
+                "triangulation": 0.0,
+                "vertex_dedupe": 0.0,
+                "skin_weights": 0.0,
+                "animation_sampling": 0.0,
+                "materials": 0.0,
+                "images": 0.0,
+                "flatbuffer_finish": 0.0,
+            },
             "reset": reset,
         }
 
@@ -791,6 +820,7 @@ class LiveLinkConnection():
         referenced_images = {}
 
         # create flatbuffers materials
+        materials_start = time.perf_counter()
         flatbuffer_materials = []
         export_stats["material_count"] = len(referenced_materials)
         for material_id, material in referenced_materials.items():
@@ -899,7 +929,9 @@ class LiveLinkConnection():
         for material in reversed(flatbuffer_materials):
             builder.PrependUOffsetTRelative(material)
         update_materials = builder.EndVector()
+        self.add_export_timing(export_stats, "materials", time.perf_counter() - materials_start)
 
+        images_start = time.perf_counter()
         flatbuffer_images = []
         for image_id, image in referenced_images.items():
             
@@ -934,7 +966,9 @@ class LiveLinkConnection():
         for image in reversed(flatbuffer_images):
             builder.PrependUOffsetTRelative(image)
         update_images = builder.EndVector()            
+        self.add_export_timing(export_stats, "images", time.perf_counter() - images_start)
 
+        flatbuffer_finish_start = time.perf_counter()
         # Begin writing top-level update table
         Update.Start(builder)
 
@@ -956,6 +990,8 @@ class LiveLinkConnection():
         # return flatbuffers binary output
         output = builder.Output()
         export_stats["byte_count"] = len(output)
+        self.add_export_timing(export_stats, "flatbuffer_finish", time.perf_counter() - flatbuffer_finish_start)
+        timing_stats = export_stats["timings"]
         print(
             "\nLive Link Export Stats: "
             f"seq={export_stats['sequence']} "
@@ -979,6 +1015,18 @@ class LiveLinkConnection():
             f"image_bytes={export_stats['image_byte_count']} "
             f"generation_seconds={export_stats['generation_seconds']:.6f} "
             f"reset={export_stats['reset']}"
+        )
+        print(
+            "Live Link Export Timings: "
+            f"seq={export_stats['sequence']} "
+            f"mesh_eval={timing_stats['mesh_eval']:.6f}s "
+            f"triangulation={timing_stats['triangulation']:.6f}s "
+            f"vertex_dedupe={timing_stats['vertex_dedupe']:.6f}s "
+            f"skin_weights={timing_stats['skin_weights']:.6f}s "
+            f"animation_sampling={timing_stats['animation_sampling']:.6f}s "
+            f"materials={timing_stats['materials']:.6f}s "
+            f"images={timing_stats['images']:.6f}s "
+            f"flatbuffer_finish={timing_stats['flatbuffer_finish']:.6f}s"
         )
         return output
 
