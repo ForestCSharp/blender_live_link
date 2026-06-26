@@ -3,6 +3,7 @@
 /compiled_schemas/*
 /flatbuffers/build/*
 /__pycache__/*
+/blend_src/
 
 .DS_Store
 
