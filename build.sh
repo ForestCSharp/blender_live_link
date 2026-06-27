@@ -180,10 +180,6 @@ if ! [ "$BUILD_ONLY_GAME" = "true" ]; then
 
 	echo "FULL BUILD ($BLENDER_BUILD_MODE)"
 
-	if [[ $BLENDER_BUILD_MODE = native ]]; then
-		"$SCRIPT_DIR/build_blend_src.sh"
-	fi
-
 	# build flattbuffers, passing in OS as first arg
 	cd $SCRIPT_DIR
 	rm -rf compiled_schemas
@@ -208,6 +204,10 @@ if ! [ "$BUILD_ONLY_GAME" = "true" ]; then
 
 	# copy flatbuffers python package
 	cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers
+
+	if [[ $BLENDER_BUILD_MODE = native ]]; then
+		"$SCRIPT_DIR/build_blend_src.sh"
+	fi
 
 	package_extension
 

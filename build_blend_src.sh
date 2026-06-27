@@ -10,10 +10,14 @@ BLENDER_BUILD_DIR="$BLEND_SRC_DIR/build_macos"
 BLENDER_LITE_BUILD_DIR="${BLENDER_BUILD_DIR}_lite"
 BLENDER_BINARY="$BLENDER_LITE_BUILD_DIR/bin/Blender.app/Contents/MacOS/Blender"
 BLENDER_PATCH_DIR="$SCRIPT_DIR/blend_patches"
+BLENDER_NATIVE_SOURCE_DIR="$BLENDER_PATCH_DIR/live_link_native"
+BLENDER_NATIVE_DEST_DIR="$BLENDER_SRC_DIR/source/blender/python/intern"
 BLENDER_PATCH_SENTINEL_DIR="$BLEND_SRC_DIR/.patches_applied"
+BLENDER_LIVE_LINK_SCHEMA_HEADER="$SCRIPT_DIR/compiled_schemas/cpp/blender_live_link_generated.h"
+BLENDER_LIVE_LINK_FLATBUFFERS_HEADER="$SCRIPT_DIR/flatbuffers/include/flatbuffers/flatbuffers.h"
 SOURCE_INDEX_URL="${BLENDER_SOURCE_INDEX_URL:-https://download.blender.org/source/}"
 BOOTSTRAP_CMAKE_VERSION="${BLENDER_BOOTSTRAP_CMAKE_VERSION:-3.31.6}"
-FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF"
+FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
 RUBBERBAND_CPP_ARGS="-include cstddef"
 BLENDER_PATCHES_CHANGED=false
 
@@ -29,15 +33,15 @@ require_command() {
 	fi
 }
 
-patch_checksum() {
-	local patch_path=$1
+file_checksum() {
+	local file_path=$1
 
 	if command -v shasum > /dev/null 2>&1; then
-		shasum -a 256 "$patch_path" | awk '{ print $1 }'
+		shasum -a 256 "$file_path" | awk '{ print $1 }'
 	elif command -v sha256sum > /dev/null 2>&1; then
-		sha256sum "$patch_path" | awk '{ print $1 }'
+		sha256sum "$file_path" | awk '{ print $1 }'
 	else
-		echo "Error: neither shasum nor sha256sum was found; cannot track Blender patch state" >&2
+		echo "Error: neither shasum nor sha256sum was found; cannot track Blender native patch state" >&2
 		exit 1
 	fi
 }
@@ -193,7 +197,7 @@ apply_blender_patches() {
 		local patch_sha
 		local sentinel_path
 		patch_name=$(basename "$patch_path")
-		patch_sha=$(patch_checksum "$patch_path")
+		patch_sha=$(file_checksum "$patch_path")
 		sentinel_path="$BLENDER_PATCH_SENTINEL_DIR/$patch_name.sha256"
 
 		if patch --batch --forward --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
@@ -201,19 +205,74 @@ apply_blender_patches() {
 			patch --batch --forward -p1 -d "$BLENDER_SRC_DIR" < "$patch_path"
 			printf "%s\n" "$patch_sha" > "$sentinel_path"
 			BLENDER_PATCHES_CHANGED=true
+		elif [[ -f "$sentinel_path" && "$(cat "$sentinel_path")" == "$patch_sha" ]]; then
+			echo "Blender patch already applied: $patch_name"
 		elif patch --batch --reverse --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
-			if [[ -f "$sentinel_path" && "$(cat "$sentinel_path")" == "$patch_sha" ]]; then
-				echo "Blender patch already applied: $patch_name"
-			else
-				echo "Blender patch already present; recording patch state: $patch_name"
-				printf "%s\n" "$patch_sha" > "$sentinel_path"
-			fi
+			echo "Blender patch already present; recording patch state: $patch_name"
+			printf "%s\n" "$patch_sha" > "$sentinel_path"
 		else
 			echo "Error: Blender patch '$patch_name' could not be applied or cleanly detected as already applied"
 			echo "Source may be partially patched or the patch may not match this Blender release."
 			exit 1
 		fi
 	done
+}
+
+sync_native_live_link_sources() {
+	local sources=(
+		"bpy_live_link.cc"
+		"bpy_live_link.hh"
+	)
+
+	mkdir -p "$BLENDER_PATCH_SENTINEL_DIR"
+
+	local source_name
+	for source_name in "${sources[@]}"; do
+		local source_path="$BLENDER_NATIVE_SOURCE_DIR/$source_name"
+		local dest_path="$BLENDER_NATIVE_DEST_DIR/$source_name"
+		local source_sha
+		local dest_sha=""
+		local sentinel_path="$BLENDER_PATCH_SENTINEL_DIR/live_link_native_$source_name.sha256"
+
+		if [[ ! -f "$source_path" ]]; then
+			echo "Error: required native Live Link source was not found at $source_path"
+			exit 1
+		fi
+
+		source_sha=$(file_checksum "$source_path")
+		if [[ -f "$dest_path" ]]; then
+			dest_sha=$(file_checksum "$dest_path")
+		fi
+
+		if [[ "$dest_sha" == "$source_sha" ]]; then
+			if [[ -f "$sentinel_path" && "$(cat "$sentinel_path")" == "$source_sha" ]]; then
+				echo "Native Live Link source already synced: $source_name"
+			else
+				echo "Native Live Link source already present; recording source state: $source_name"
+				printf "%s\n" "$source_sha" > "$sentinel_path"
+			fi
+			continue
+		fi
+
+		echo "Syncing native Live Link source: $source_name"
+		cp "$source_path" "$dest_path"
+		printf "%s\n" "$source_sha" > "$sentinel_path"
+		BLENDER_PATCHES_CHANGED=true
+	done
+}
+
+ensure_native_schema_inputs() {
+	if [[ ! -f "$BLENDER_LIVE_LINK_SCHEMA_HEADER" ]]; then
+		echo "Error: generated C++ schema header was not found at $BLENDER_LIVE_LINK_SCHEMA_HEADER"
+		echo "Run ./build.sh -native so FlatBuffers schemas are generated before Blender is compiled."
+		exit 1
+	fi
+
+	if [[ ! -f "$BLENDER_LIVE_LINK_FLATBUFFERS_HEADER" ]]; then
+		echo "Error: FlatBuffers C++ headers were not found at $BLENDER_LIVE_LINK_FLATBUFFERS_HEADER"
+		echo "Run ./build.sh -native so flatbuffers/build.sh prepares the dependency first."
+		exit 1
+	fi
 }
 
 require_mac_build_tools() {
@@ -369,6 +428,8 @@ build_mac_blender() {
 
 	if [[ "$BLENDER_PATCHES_CHANGED" == "true" ]]; then
 		echo "Blender patches changed; running the app build so native changes are compiled."
+	elif [[ -x "$BLENDER_BINARY" && "$BLENDER_LIVE_LINK_SCHEMA_HEADER" -nt "$BLENDER_BINARY" ]]; then
+		echo "Generated Live Link C++ schema is newer than Blender; rebuilding native Blender."
 	elif [[ -x "$BLENDER_BINARY" ]]; then
 		echo "Blender already built at $BLENDER_BINARY"
 		return
@@ -396,7 +457,9 @@ build_mac_blender() {
 }
 
 ensure_blender_source
+ensure_native_schema_inputs
 apply_blender_patches
+sync_native_live_link_sources
 
 CURRENT_OS=$(detect_os)
 case "$CURRENT_OS" in

@@ -703,7 +703,11 @@ class LiveLinkConnection():
         if obj.rigid_body:
             Object.AddRigidBody(builder, RigidBody.CreateRigidBody(
                 builder, 
-                isDynamic = obj.rigid_body.enabled,
+                isDynamic = (
+                    obj.rigid_body.type == 'ACTIVE'
+                    and obj.rigid_body.enabled
+                    and not obj.rigid_body.kinematic
+                ),
                 mass = obj.rigid_body.mass
             ))
 
@@ -718,6 +722,7 @@ class LiveLinkConnection():
 
     def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
         if native_live_link_available() and not scene_uses_python_export_fallback():
+            dependency_graph = bpy.context.evaluated_depsgraph_get()
             self.update_sequence += 1
             print(
                 "\nLive Link Native Export Requested: "
@@ -731,6 +736,7 @@ class LiveLinkConnection():
             output = bpy.app.live_link_make_update(
                 in_object_list,
                 in_deleted_object_uids,
+                dependency_graph,
                 reset,
                 update_reason,
                 self.update_sequence,
