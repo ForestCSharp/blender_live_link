@@ -39,6 +39,17 @@ set_blender_build_mode() {
 	BLENDER_BUILD_MODE_WAS_SET=true
 }
 
+resolve_blend_file_arg() {
+	local requested_file=$1
+	if [[ "$requested_file" = /* ]]; then
+		printf "%s\n" "$requested_file"
+	elif [[ -f "$SCRIPT_DIR/blend_files/$requested_file" ]]; then
+		printf "%s\n" "$SCRIPT_DIR/blend_files/$requested_file"
+	else
+		printf "%s\n" "$SCRIPT_DIR/$requested_file"
+	fi
+}
+
 package_extension() {
 	cd $SCRIPT_DIR/..
 	rm -f "$EXTENSION_ZIP_PATH"
@@ -58,6 +69,7 @@ package_extension() {
 			-x!"$BASE_DIR/build.sh" \
 			-x!"$BASE_DIR/build_blend_src.sh" \
 			-x!"$BASE_DIR/clean_blend_src.sh" \
+			-x!"$BASE_DIR/test_live_link_parity.sh" \
 			-x!"$BASE_DIR/README.md" \
 			-x!"$BASE_DIR/TODO.txt" \
 			-x!"$BASE_DIR/.gitignore" \
@@ -79,6 +91,7 @@ package_extension() {
 			-x "$BASE_DIR/build.sh" \
 			-x "$BASE_DIR/build_blend_src.sh" \
 			-x "$BASE_DIR/clean_blend_src.sh" \
+			-x "$BASE_DIR/test_live_link_parity.sh" \
 			-x "$BASE_DIR/README.md" \
 			-x "$BASE_DIR/TODO.txt" \
 			-x "$BASE_DIR/.gitignore" \
@@ -161,7 +174,7 @@ while [[ $# -gt 0 ]]; do
     	shift # past argument
     	;;
     -f|--file)
-		run_args="$SCRIPT_DIR/blend_files/$2"
+		run_args="$(resolve_blend_file_arg "$2")"
     	shift # past argument
     	shift # past argument
     	;;
@@ -216,6 +229,11 @@ if ! [ "$BUILD_ONLY_GAME" = "true" ]; then
 	else
 		install_and_launch_native_blender
 	fi
+fi
+
+if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
+	echo "Skipping game build/run because BLENDER_LIVE_LINK_SKIP_GAME=1"
+	exit 0
 fi
 
 # Compile game, passing in OS as first arg

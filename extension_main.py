@@ -17,6 +17,7 @@ import builtins
 import numpy as np
 import os
 import socket
+import struct
 import sys
 import traceback
 import time
@@ -722,29 +723,15 @@ class LiveLinkConnection():
 
     def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
         if native_live_link_available() and not scene_uses_python_export_fallback():
-            dependency_graph = bpy.context.evaluated_depsgraph_get()
             self.update_sequence += 1
-            print(
-                "\nLive Link Native Export Requested: "
-                f"seq={self.update_sequence} "
-                f"reason={update_reason} "
-                f"reset={reset} "
-                f"objects={len(in_object_list)} "
-                f"deleted={len(in_deleted_object_uids)}"
-            )
-
-            output = bpy.app.live_link_make_update(
+            output = self.make_update_native(
                 in_object_list,
                 in_deleted_object_uids,
-                dependency_graph,
-                reset,
-                update_reason,
-                self.update_sequence,
+                dependency_graph=bpy.context.evaluated_depsgraph_get(),
+                reset=reset,
+                update_reason=update_reason,
+                sequence=self.update_sequence,
             )
-            if not isinstance(output, (bytes, bytearray)):
-                raise TypeError("bpy.app.live_link_make_update must return bytes")
-
-            output = bytes(output)
             print(
                 "Live Link Native Export Returned: "
                 f"seq={self.update_sequence} "
@@ -759,10 +746,328 @@ class LiveLinkConnection():
             update_reason=update_reason,
         )
 
+    def make_update_native(
+        self,
+        in_object_list,
+        in_deleted_object_uids,
+        dependency_graph=None,
+        reset=False,
+        update_reason="unknown",
+        sequence=0,
+    ):
+        if not native_live_link_available():
+            raise RuntimeError("Native Live Link export is not available")
+        if dependency_graph is None:
+            dependency_graph = bpy.context.evaluated_depsgraph_get()
+
+        print(
+            "\nLive Link Native Export Requested: "
+            f"seq={sequence} "
+            f"reason={update_reason} "
+            f"reset={reset} "
+            f"objects={len(in_object_list)} "
+            f"deleted={len(in_deleted_object_uids)}"
+        )
+
+        output = bpy.app.live_link_make_update(
+            in_object_list,
+            in_deleted_object_uids,
+            dependency_graph,
+            reset,
+            update_reason,
+            sequence,
+        )
+        if not isinstance(output, (bytes, bytearray)):
+            raise TypeError("bpy.app.live_link_make_update must return bytes")
+        return bytes(output)
+
+    def make_full_update_object_list(self):
+        return list(bpy.context.scene.objects)
+
+    def normalize_update_bytes_for_compare(self, update_bytes):
+        normalized = bytearray(update_bytes)
+        update = Update.Update.GetRootAs(normalized, 4)
+        generation_seconds_offset = update._tab.Offset(14)
+        if generation_seconds_offset != 0:
+            struct.pack_into("<d", normalized, update._tab.Pos + generation_seconds_offset, 0.0)
+        return bytes(normalized)
+
+    def describe_update_bytes(self, update_bytes):
+        update = Update.Update.GetRootAs(update_bytes, 4)
+        return (
+            f"objects={update.ObjectsLength()} "
+            f"deleted={update.DeletedObjectUidsLength()} "
+            f"materials={update.MaterialsLength()} "
+            f"images={update.ImagesLength()} "
+            f"reset={update.Reset()}"
+        )
+
+    def _fb_string(self, value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
+
+    def _fb_vec3_tuple(self, value):
+        if value is None:
+            return None
+        return (value.X(), value.Y(), value.Z())
+
+    def _fb_vec4_tuple(self, value):
+        if value is None:
+            return None
+        return (value.X(), value.Y(), value.Z(), value.W())
+
+    def _fb_quat_tuple(self, value):
+        if value is None:
+            return None
+        return (value.X(), value.Y(), value.Z(), value.W())
+
+    def _fb_rigid_body_tuple(self, value):
+        if value is None:
+            return None
+        return (value.IsDynamic(), value.Mass())
+
+    def _fb_light_tuple(self, value):
+        if value is None:
+            return None
+        return (value.Type(), self._fb_vec3_tuple(value.Color()), value.UseShadow())
+
+    def _fb_mesh_summary(self, value):
+        if value is None:
+            return None
+        return {
+            "positions": value.PositionsLength(),
+            "normals": value.NormalsLength(),
+            "texcoords": value.TexcoordsLength(),
+            "indices": value.IndicesLength(),
+            "joint_indices": value.JointIndicesLength(),
+            "joint_weights": value.JointWeightsLength(),
+            "material_ids": value.MaterialIdsLength(),
+            "armature_id": value.ArmatureId(),
+            "has_mesh_to_armature": value.MeshToArmature() is not None,
+            "has_armature_to_mesh": value.ArmatureToMesh() is not None,
+        }
+
+    def _compare_scalar(self, diffs, path, native_value, python_value):
+        if native_value != python_value:
+            diffs.append(f"{path}: native={native_value!r} python={python_value!r}")
+
+    def _compare_vector(self, diffs, path, native_len, python_len, native_get, python_get, max_mismatches=10):
+        if native_len != python_len:
+            diffs.append(f"{path}.length: native={native_len} python={python_len}")
+
+        mismatch_count = 0
+        for index in range(min(native_len, python_len)):
+            native_value = native_get(index)
+            python_value = python_get(index)
+            if native_value == python_value:
+                continue
+            if mismatch_count < max_mismatches:
+                diffs.append(f"{path}[{index}]: native={native_value!r} python={python_value!r}")
+            mismatch_count += 1
+
+        if mismatch_count > max_mismatches:
+            diffs.append(f"{path}: {mismatch_count - max_mismatches} additional mismatches omitted")
+
+    def _compare_mesh(self, diffs, path, native_mesh, python_mesh):
+        self._compare_scalar(diffs, f"{path}.summary", self._fb_mesh_summary(native_mesh), self._fb_mesh_summary(python_mesh))
+        if native_mesh is None or python_mesh is None:
+            return
+
+        self._compare_vector(
+            diffs,
+            f"{path}.positions",
+            native_mesh.PositionsLength(),
+            python_mesh.PositionsLength(),
+            native_mesh.Positions,
+            python_mesh.Positions,
+        )
+        self._compare_vector(
+            diffs,
+            f"{path}.normals",
+            native_mesh.NormalsLength(),
+            python_mesh.NormalsLength(),
+            native_mesh.Normals,
+            python_mesh.Normals,
+        )
+        self._compare_vector(
+            diffs,
+            f"{path}.texcoords",
+            native_mesh.TexcoordsLength(),
+            python_mesh.TexcoordsLength(),
+            native_mesh.Texcoords,
+            python_mesh.Texcoords,
+        )
+        self._compare_vector(
+            diffs,
+            f"{path}.indices",
+            native_mesh.IndicesLength(),
+            python_mesh.IndicesLength(),
+            native_mesh.Indices,
+            python_mesh.Indices,
+        )
+        self._compare_vector(
+            diffs,
+            f"{path}.material_ids",
+            native_mesh.MaterialIdsLength(),
+            python_mesh.MaterialIdsLength(),
+            native_mesh.MaterialIds,
+            python_mesh.MaterialIds,
+        )
+
+    def _compare_update_buffers(self, native_bytes, python_bytes, max_diffs=80):
+        native_update = Update.Update.GetRootAs(native_bytes, 4)
+        python_update = Update.Update.GetRootAs(python_bytes, 4)
+        diffs = []
+
+        self._compare_scalar(diffs, "update.objects.length", native_update.ObjectsLength(), python_update.ObjectsLength())
+        self._compare_scalar(diffs, "update.deleted_object_uids.length", native_update.DeletedObjectUidsLength(), python_update.DeletedObjectUidsLength())
+        self._compare_scalar(diffs, "update.materials.length", native_update.MaterialsLength(), python_update.MaterialsLength())
+        self._compare_scalar(diffs, "update.images.length", native_update.ImagesLength(), python_update.ImagesLength())
+        self._compare_scalar(diffs, "update.reset", native_update.Reset(), python_update.Reset())
+
+        self._compare_vector(
+            diffs,
+            "update.deleted_object_uids",
+            native_update.DeletedObjectUidsLength(),
+            python_update.DeletedObjectUidsLength(),
+            native_update.DeletedObjectUids,
+            python_update.DeletedObjectUids,
+        )
+
+        object_count = min(native_update.ObjectsLength(), python_update.ObjectsLength())
+        for index in range(object_count):
+            native_object = native_update.Objects(index)
+            python_object = python_update.Objects(index)
+            path = f"update.objects[{index}]"
+            self._compare_scalar(diffs, f"{path}.name", self._fb_string(native_object.Name()), self._fb_string(python_object.Name()))
+            self._compare_scalar(diffs, f"{path}.unique_id", native_object.UniqueId(), python_object.UniqueId())
+            self._compare_scalar(diffs, f"{path}.visibility", native_object.Visibility(), python_object.Visibility())
+            self._compare_scalar(diffs, f"{path}.location", self._fb_vec3_tuple(native_object.Location()), self._fb_vec3_tuple(python_object.Location()))
+            self._compare_scalar(diffs, f"{path}.scale", self._fb_vec3_tuple(native_object.Scale()), self._fb_vec3_tuple(python_object.Scale()))
+            self._compare_scalar(diffs, f"{path}.rotation", self._fb_quat_tuple(native_object.Rotation()), self._fb_quat_tuple(python_object.Rotation()))
+            self._compare_scalar(diffs, f"{path}.rigid_body", self._fb_rigid_body_tuple(native_object.RigidBody()), self._fb_rigid_body_tuple(python_object.RigidBody()))
+            self._compare_scalar(diffs, f"{path}.light", self._fb_light_tuple(native_object.Light()), self._fb_light_tuple(python_object.Light()))
+            self._compare_scalar(diffs, f"{path}.armature_present", native_object.Armature() is not None, python_object.Armature() is not None)
+            self._compare_scalar(diffs, f"{path}.components.length", native_object.ComponentsLength(), python_object.ComponentsLength())
+            self._compare_mesh(diffs, f"{path}.mesh", native_object.Mesh(), python_object.Mesh())
+            if len(diffs) >= max_diffs:
+                break
+
+        material_count = min(native_update.MaterialsLength(), python_update.MaterialsLength())
+        for index in range(material_count):
+            native_material = native_update.Materials(index)
+            python_material = python_update.Materials(index)
+            path = f"update.materials[{index}]"
+            self._compare_scalar(diffs, f"{path}.unique_id", native_material.UniqueId(), python_material.UniqueId())
+            self._compare_scalar(diffs, f"{path}.name", self._fb_string(native_material.Name()), self._fb_string(python_material.Name()))
+            self._compare_scalar(diffs, f"{path}.base_color", self._fb_vec4_tuple(native_material.BaseColor()), self._fb_vec4_tuple(python_material.BaseColor()))
+            self._compare_scalar(diffs, f"{path}.base_color_image_id", native_material.BaseColorImageId(), python_material.BaseColorImageId())
+            self._compare_scalar(diffs, f"{path}.metallic", native_material.Metallic(), python_material.Metallic())
+            self._compare_scalar(diffs, f"{path}.metallic_image_id", native_material.MetallicImageId(), python_material.MetallicImageId())
+            self._compare_scalar(diffs, f"{path}.roughness", native_material.Roughness(), python_material.Roughness())
+            self._compare_scalar(diffs, f"{path}.roughness_image_id", native_material.RoughnessImageId(), python_material.RoughnessImageId())
+            self._compare_scalar(diffs, f"{path}.emission_color", self._fb_vec4_tuple(native_material.EmissionColor()), self._fb_vec4_tuple(python_material.EmissionColor()))
+            self._compare_scalar(diffs, f"{path}.emission_color_image_id", native_material.EmissionColorImageId(), python_material.EmissionColorImageId())
+            self._compare_scalar(diffs, f"{path}.emission_strength", native_material.EmissionStrength(), python_material.EmissionStrength())
+            if len(diffs) >= max_diffs:
+                break
+
+        image_count = min(native_update.ImagesLength(), python_update.ImagesLength())
+        for index in range(image_count):
+            native_image = native_update.Images(index)
+            python_image = python_update.Images(index)
+            path = f"update.images[{index}]"
+            self._compare_scalar(diffs, f"{path}.unique_id", native_image.UniqueId(), python_image.UniqueId())
+            self._compare_scalar(diffs, f"{path}.width", native_image.Width(), python_image.Width())
+            self._compare_scalar(diffs, f"{path}.height", native_image.Height(), python_image.Height())
+            self._compare_scalar(diffs, f"{path}.data.length", native_image.DataLength(), python_image.DataLength())
+            if len(diffs) >= max_diffs:
+                break
+
+        if len(diffs) > max_diffs:
+            diffs = diffs[:max_diffs] + [f"... additional differences omitted after {max_diffs} entries"]
+        return diffs
+
+    def compare_native_python_full_update(self):
+        if not native_live_link_available():
+            raise RuntimeError("Native Live Link export is not available")
+
+        objects = self.make_full_update_object_list()
+        old_sequence = self.update_sequence
+        try:
+            dependency_graph = bpy.context.evaluated_depsgraph_get()
+            native_bytes = self.make_update_native(
+                objects,
+                [],
+                dependency_graph=dependency_graph,
+                reset=False,
+                update_reason="compare_native_python_native",
+                sequence=old_sequence + 1,
+            )
+            python_bytes = self.make_update_python(
+                objects,
+                [],
+                reset=False,
+                update_reason="compare_native_python_python",
+                increment_sequence=False,
+            )
+        finally:
+            self.update_sequence = old_sequence
+
+        native_normalized = self.normalize_update_bytes_for_compare(native_bytes)
+        python_normalized = self.normalize_update_bytes_for_compare(python_bytes)
+        if native_normalized == python_normalized:
+            print(
+                "\nLive Link Native/Python Compare: MATCH "
+                f"bytes={len(native_normalized)} "
+                f"{self.describe_update_bytes(native_normalized)}"
+            )
+            return True, "Native/Python exports match after timing normalization"
+
+        first_diff = next(
+            (
+                index
+                for index, (native_byte, python_byte) in enumerate(zip(native_normalized, python_normalized))
+                if native_byte != python_byte
+            ),
+            min(len(native_normalized), len(python_normalized)),
+        )
+        message = (
+            "Native/Python exports differ after timing normalization: "
+            f"first_diff={first_diff} "
+            f"native_bytes={len(native_normalized)} "
+            f"python_bytes={len(python_normalized)} "
+            f"native({self.describe_update_bytes(native_normalized)}) "
+            f"python({self.describe_update_bytes(python_normalized)})"
+        )
+        print("\nLive Link Native/Python Compare: MISMATCH " + message)
+        diffs = self._compare_update_buffers(native_normalized, python_normalized)
+        if diffs:
+            print("Live Link Native/Python Structured Differences:")
+            for diff in diffs:
+                print(f"  - {diff}")
+        else:
+            print("Live Link Native/Python Structured Differences: no parsed field differences found")
+        return False, message
+
     # Creates an update for objects in in_object_list using Python FlatBuffers generation.
-    def make_update_python(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+    def make_update_python(
+        self,
+        in_object_list,
+        in_deleted_object_uids,
+        reset=False,
+        update_reason="unknown",
+        increment_sequence=True,
+    ):
         export_generation_start = time.perf_counter()
-        self.update_sequence += 1
+        if increment_sequence:
+            self.update_sequence += 1
+            sequence = self.update_sequence
+        else:
+            sequence = self.update_sequence + 1
 
         # Evaluate Depsgraph
         dependency_graph = bpy.context.evaluated_depsgraph_get()
@@ -770,7 +1075,7 @@ class LiveLinkConnection():
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
         export_stats = {
-            "sequence": self.update_sequence,
+            "sequence": sequence,
             "reason": update_reason,
             "input_object_count": len(in_object_list),
             "deleted_object_count": len(in_deleted_object_uids),
@@ -1246,6 +1551,34 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
         return {'FINISHED'}
 # End OpLiveLinkSendFullUpdate 
 
+class OpLiveLinkCompareNativePythonExport(bpy.types.Operator):
+    """Live Link: Compare Native and Python Full Update Exports"""
+    bl_idname = "live_link.compare_native_python_export"
+    bl_label = "Live Link: Compare Native/Python Export"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        if not native_live_link_available():
+            self.report({'ERROR'}, "Native Live Link export is not available")
+            return {'CANCELLED'}
+
+        depsgraph_update_post_callback.enabled = False
+        try:
+            matched, message = live_link_connection.compare_native_python_full_update()
+        except Exception as exc:
+            print(traceback.format_exc())
+            self.report({'ERROR'}, f"Native/Python compare failed: {exc}")
+            return {'CANCELLED'}
+        finally:
+            depsgraph_update_post_callback.enabled = True
+
+        if matched:
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+
+        self.report({'WARNING'}, message)
+        return {'CANCELLED'}
+
 # Begin OpLiveLinkSendReset
 class OpLiveLinkSendReset(bpy.types.Operator):
     """Live Link: Send Reset """
@@ -1309,6 +1642,7 @@ class LiveLinkView3DPanel(bpy.types.Panel):
         layout.operator("live_link.reset_connection", text="Reset Connection")
         layout.operator("live_link.save_to_file", text="Save To File")
         if native_live_link_available():
+            layout.operator("live_link.compare_native_python_export", text="Compare Native/Python Export")
             layout.prop(scene, "live_link_use_python_export_fallback")
 # End LiveLinkView3DPanel
 
@@ -1539,6 +1873,7 @@ class OBJECT_PT_custom_object_panel(Panel):
 classes_to_register = [ 
     # Main Live Link Operators
     OpLiveLinkSendFullUpdate,
+    OpLiveLinkCompareNativePythonExport,
     OpLiveLinkSendReset,
     OpLiveLinkResetConnection,
     OpLiveLinkSaveToFile,
