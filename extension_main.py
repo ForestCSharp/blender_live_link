@@ -89,6 +89,14 @@ def print(*args, **kwargs):
                                 type='OUTPUT'
                             )
 
+def native_live_link_available():
+    return hasattr(bpy.app, "live_link_make_update")
+
+def scene_uses_python_export_fallback(scene=None):
+    if scene is None:
+        scene = bpy.context.scene
+    return bool(getattr(scene, "live_link_use_python_export_fallback", False))
+
 # Class to manage our live link connection
 class LiveLinkConnection():
     def __init__(self):
@@ -708,8 +716,45 @@ class LiveLinkConnection():
 
         return live_link_object
 
-    # Creates an update for objects in in_object_list
     def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+        if native_live_link_available() and not scene_uses_python_export_fallback():
+            self.update_sequence += 1
+            print(
+                "\nLive Link Native Export Requested: "
+                f"seq={self.update_sequence} "
+                f"reason={update_reason} "
+                f"reset={reset} "
+                f"objects={len(in_object_list)} "
+                f"deleted={len(in_deleted_object_uids)}"
+            )
+
+            output = bpy.app.live_link_make_update(
+                in_object_list,
+                in_deleted_object_uids,
+                reset,
+                update_reason,
+                self.update_sequence,
+            )
+            if not isinstance(output, (bytes, bytearray)):
+                raise TypeError("bpy.app.live_link_make_update must return bytes")
+
+            output = bytes(output)
+            print(
+                "Live Link Native Export Returned: "
+                f"seq={self.update_sequence} "
+                f"bytes={len(output)}"
+            )
+            return output
+
+        return self.make_update_python(
+            in_object_list,
+            in_deleted_object_uids,
+            reset=reset,
+            update_reason=update_reason,
+        )
+
+    # Creates an update for objects in in_object_list using Python FlatBuffers generation.
+    def make_update_python(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
         export_generation_start = time.perf_counter()
         self.update_sequence += 1
 
@@ -1125,11 +1170,17 @@ def depsgraph_update_post_callback(scene, depsgraph):
     if not depsgraph_update_post_callback.enabled:
         return
 
+    current_objects = set(obj.session_uid for obj in scene.objects)
+
+    if depsgraph_update_post_callback.suppress_next:
+        depsgraph_update_post_callback.suppress_next = False
+        depsgraph_update_post_callback.previous_objects = current_objects
+        clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
+        return
+
     updated_objects = []
 
     # Determine if any objects were deleted
-    current_objects = set(obj.session_uid for obj in scene.objects)
-
     # Track the objects at the last update
     if hasattr(depsgraph_update_post_callback, "previous_objects"):
         previous_objects = depsgraph_update_post_callback.previous_objects
@@ -1153,6 +1204,11 @@ def depsgraph_update_post_callback(scene, depsgraph):
 
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
+depsgraph_update_post_callback.suppress_next = False
+
+def live_link_python_export_fallback_update(self, context):
+    depsgraph_update_post_callback.suppress_next = True
+    clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
 
 # Begin OpLiveLinkSendFullUpdate
 class OpLiveLinkSendFullUpdate(bpy.types.Operator):
@@ -1246,6 +1302,8 @@ class LiveLinkView3DPanel(bpy.types.Panel):
         layout.operator("live_link.send_reset", text="Send Reset")  
         layout.operator("live_link.reset_connection", text="Reset Connection")
         layout.operator("live_link.save_to_file", text="Save To File")
+        if native_live_link_available():
+            layout.prop(scene, "live_link_use_python_export_fallback")
 # End LiveLinkView3DPanel
 
 def menu_func(self, context):
@@ -1512,6 +1570,12 @@ def register():
 
     # Setup live link settings on type Object
     bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
+    bpy.types.Scene.live_link_use_python_export_fallback = bpy.props.BoolProperty(
+        name="Use Python Export Fallback",
+        description="Use the Python FlatBuffers exporter even when native Live Link export is available",
+        default=False,
+        update=live_link_python_export_fallback_update,
+    )
 
 def unregister():
     # clean up live link connection
@@ -1530,6 +1594,8 @@ def unregister():
 
     # Delete Live Link Settings
     del bpy.types.Object.live_link_settings
+    if hasattr(bpy.types.Scene, "live_link_use_python_export_fallback"):
+        del bpy.types.Scene.live_link_use_python_export_fallback
 
 # This allows you to run the script directly from Blender's Text editor
 if __name__ == "__main__":

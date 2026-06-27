@@ -50,8 +50,11 @@ package_extension() {
 			-x!"$BASE_DIR/game/*" \
 			-x!"$BASE_DIR/blend_files/*" \
 			-x!"$BASE_DIR/blend_src/*" \
+			-x!"$BASE_DIR/blend_patches/*" \
 			-x!"$BASE_DIR/compiled_schemas/cpp/*" \
 			-x!"$BASE_DIR/docs/*" \
+			-x!"$BASE_DIR/__pycache__/*" \
+			-x!"$BASE_DIR/*.pyc" \
 			-x!"$BASE_DIR/build.sh" \
 			-x!"$BASE_DIR/build_blend_src.sh" \
 			-x!"$BASE_DIR/clean_blend_src.sh" \
@@ -68,8 +71,11 @@ package_extension() {
 			-x "$BASE_DIR/game/*"\
 			-x "$BASE_DIR/blend_files/*" \
 			-x "$BASE_DIR/blend_src/*" \
+			-x "$BASE_DIR/blend_patches/*" \
 			-x "$BASE_DIR/compiled_schemas/cpp/*" \
 			-x "$BASE_DIR/docs/*" \
+			-x "$BASE_DIR/__pycache__/*" \
+			-x "$BASE_DIR/*.pyc" \
 			-x "$BASE_DIR/build.sh" \
 			-x "$BASE_DIR/build_blend_src.sh" \
 			-x "$BASE_DIR/clean_blend_src.sh" \

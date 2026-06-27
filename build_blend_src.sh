@@ -9,10 +9,13 @@ TOOLS_DIR="$BLEND_SRC_DIR/tools"
 BLENDER_BUILD_DIR="$BLEND_SRC_DIR/build_macos"
 BLENDER_LITE_BUILD_DIR="${BLENDER_BUILD_DIR}_lite"
 BLENDER_BINARY="$BLENDER_LITE_BUILD_DIR/bin/Blender.app/Contents/MacOS/Blender"
+BLENDER_PATCH_DIR="$SCRIPT_DIR/blend_patches"
+BLENDER_PATCH_SENTINEL_DIR="$BLEND_SRC_DIR/.patches_applied"
 SOURCE_INDEX_URL="${BLENDER_SOURCE_INDEX_URL:-https://download.blender.org/source/}"
 BOOTSTRAP_CMAKE_VERSION="${BLENDER_BOOTSTRAP_CMAKE_VERSION:-3.31.6}"
 FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF"
 RUBBERBAND_CPP_ARGS="-include cstddef"
+BLENDER_PATCHES_CHANGED=false
 
 is_valid_blender_source() {
 	[[ -f "$BLENDER_SRC_DIR/CMakeLists.txt" && -d "$BLENDER_SRC_DIR/source/creator" ]]
@@ -22,6 +25,19 @@ require_command() {
 	local command_name=$1
 	if ! command -v "$command_name" > /dev/null 2>&1; then
 		echo "Error: required command '$command_name' was not found"
+		exit 1
+	fi
+}
+
+patch_checksum() {
+	local patch_path=$1
+
+	if command -v shasum > /dev/null 2>&1; then
+		shasum -a 256 "$patch_path" | awk '{ print $1 }'
+	elif command -v sha256sum > /dev/null 2>&1; then
+		sha256sum "$patch_path" | awk '{ print $1 }'
+	else
+		echo "Error: neither shasum nor sha256sum was found; cannot track Blender patch state" >&2
 		exit 1
 	fi
 }
@@ -151,6 +167,53 @@ ensure_blender_source() {
 
 	mv "$extracted_root" "$BLENDER_SRC_DIR"
 	echo "Blender source ready at $BLENDER_SRC_DIR"
+}
+
+apply_blender_patches() {
+	if [[ ! -d "$BLENDER_PATCH_DIR" ]]; then
+		echo "No Blender patch directory found at $BLENDER_PATCH_DIR"
+		return
+	fi
+
+	shopt -s nullglob
+	local patches=("$BLENDER_PATCH_DIR"/*.patch)
+	shopt -u nullglob
+
+	if (( ${#patches[@]} == 0 )); then
+		echo "No Blender patches found in $BLENDER_PATCH_DIR"
+		return
+	fi
+
+	require_command patch
+	mkdir -p "$BLENDER_PATCH_SENTINEL_DIR"
+
+	local patch_path
+	for patch_path in "${patches[@]}"; do
+		local patch_name
+		local patch_sha
+		local sentinel_path
+		patch_name=$(basename "$patch_path")
+		patch_sha=$(patch_checksum "$patch_path")
+		sentinel_path="$BLENDER_PATCH_SENTINEL_DIR/$patch_name.sha256"
+
+		if patch --batch --forward --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
+			echo "Applying Blender patch: $patch_name"
+			patch --batch --forward -p1 -d "$BLENDER_SRC_DIR" < "$patch_path"
+			printf "%s\n" "$patch_sha" > "$sentinel_path"
+			BLENDER_PATCHES_CHANGED=true
+		elif patch --batch --reverse --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
+			if [[ -f "$sentinel_path" && "$(cat "$sentinel_path")" == "$patch_sha" ]]; then
+				echo "Blender patch already applied: $patch_name"
+			else
+				echo "Blender patch already present; recording patch state: $patch_name"
+				printf "%s\n" "$patch_sha" > "$sentinel_path"
+			fi
+		else
+			echo "Error: Blender patch '$patch_name' could not be applied or cleanly detected as already applied"
+			echo "Source may be partially patched or the patch may not match this Blender release."
+			exit 1
+		fi
+	done
 }
 
 require_mac_build_tools() {
@@ -304,7 +367,9 @@ build_mac_blender() {
 	require_mac_build_tools
 	ensure_mac_blender_dependencies "$arch"
 
-	if [[ -x "$BLENDER_BINARY" ]]; then
+	if [[ "$BLENDER_PATCHES_CHANGED" == "true" ]]; then
+		echo "Blender patches changed; running the app build so native changes are compiled."
+	elif [[ -x "$BLENDER_BINARY" ]]; then
 		echo "Blender already built at $BLENDER_BINARY"
 		return
 	fi
@@ -331,6 +396,7 @@ build_mac_blender() {
 }
 
 ensure_blender_source
+apply_blender_patches
 
 CURRENT_OS=$(detect_os)
 case "$CURRENT_OS" in

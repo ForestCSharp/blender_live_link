@@ -1,0 +1,95 @@
+diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/intern/bpy_app.cc
+--- a/source/blender/python/intern/bpy_app.cc
++++ b/source/blender/python/intern/bpy_app.cc
+@@ -749,6 +749,80 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
+   return PyBool_FromLong(WM_jobs_has_running_type(wm, job_type_enum.value));
+ }
+ 
++PyDoc_STRVAR(
++    /* Wrap. */
++    bpy_app_live_link_make_update_doc,
++    ".. staticmethod:: live_link_make_update(objects, deleted_object_uids, reset=False, "
++    "update_reason=\"unknown\", sequence=0)\n"
++    "\n"
++    "   Native Blender Live Link update stub.\n"
++    "\n"
++    "   :param objects: Blender objects considered for export.\n"
++    "   :type objects: sequence\n"
++    "   :param deleted_object_uids: Deleted object session UIDs.\n"
++    "   :type deleted_object_uids: sequence\n"
++    "   :param reset: Whether this update is a reset.\n"
++    "   :type reset: bool\n"
++    "   :param update_reason: Diagnostic reason for this update.\n"
++    "   :type update_reason: str\n"
++    "   :param sequence: Python-maintained update sequence number.\n"
++    "   :type sequence: int\n"
++    "   :return: Empty bytes until native update generation is implemented.\n"
++    "   :rtype: bytes\n");
++static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
++                                               PyObject *args,
++                                               PyObject *kwds)
++{
++  PyObject *objects = nullptr;
++  PyObject *deleted_object_uids = nullptr;
++  bool reset = false;
++  const char *update_reason = "unknown";
++  int sequence = 0;
++
++  static const char *_keywords[] = {
++      "objects", "deleted_object_uids", "reset", "update_reason", "sequence", nullptr};
++  static _PyArg_Parser _parser = {
++      "OO|O&si" /* `objects`, `deleted_object_uids`, optional `reset`, `update_reason`, `sequence`. */
++      ":live_link_make_update",
++      _keywords,
++      nullptr,
++  };
++  if (!_PyArg_ParseTupleAndKeywordsFast(args,
++                                        kwds,
++                                        &_parser,
++                                        &objects,
++                                        &deleted_object_uids,
++                                        PyC_ParseBool,
++                                        &reset,
++                                        &update_reason,
++                                        &sequence))
++  {
++    return nullptr;
++  }
++
++  Py_ssize_t object_count = PyObject_Length(objects);
++  if (object_count < 0) {
++    PyErr_Clear();
++    object_count = 0;
++  }
++  Py_ssize_t deleted_count = PyObject_Length(deleted_object_uids);
++  if (deleted_count < 0) {
++    PyErr_Clear();
++    deleted_count = 0;
++  }
++
++  PySys_WriteStdout(
++      "Blender Live Link native make_update stub: sequence=%d reason=%s reset=%s "
++      "objects=%zd deleted=%zd\n",
++      sequence,
++      update_reason,
++      reset ? "true" : "false",
++      object_count,
++      deleted_count);
++
++  return PyBytes_FromStringAndSize("", 0);
++}
++
+ char *(*BPY_python_app_help_text_fn)(bool all) = nullptr;
+ 
+ PyDoc_STRVAR(
+@@ -822,6 +896,10 @@ static PyMethodDef bpy_app_methods[] = {
+      reinterpret_cast<PyCFunction>(bpy_app_is_job_running),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,
+      bpy_app_is_job_running_doc},
++    {"live_link_make_update",
++     reinterpret_cast<PyCFunction>(bpy_app_live_link_make_update),
++     METH_VARARGS | METH_KEYWORDS | METH_STATIC,
++     bpy_app_live_link_make_update_doc},
+     {"help_text",
+      reinterpret_cast<PyCFunction>(bpy_app_help_text),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,
