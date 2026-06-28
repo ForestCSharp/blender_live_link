@@ -8,16 +8,20 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "BKE_image.hh"
 #include "BKE_attribute.hh"
+#include "BKE_layer.hh"
 #include "BKE_lib_id.hh"
 #include "BKE_material.hh"
 #include "BKE_mesh.hh"
+#include "BKE_node.hh"
 #include "BKE_object.hh"
 
 #include "BLI_math_matrix.h"
@@ -27,15 +31,24 @@
 #include "DEG_depsgraph_query.hh"
 
 #include "DNA_ID.h"
+#include "DNA_image_types.h"
 #include "DNA_light_types.h"
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
+#include "DNA_node_types.h"
 #include "DNA_object_types.h"
 #include "DNA_rigidbody_types.h"
+
+#include "BKE_node_legacy_types.hh"
+
+#include "IMB_imbuf_types.hh"
 
 #include "RNA_prototypes.hh"
 
 #include "bpy_rna.hh"
+
+#include "bmesh.hh"
+#include "bmesh_tools.hh"
 
 #include "blender_live_link_generated.h"
 
@@ -43,6 +56,11 @@ namespace blender {
 namespace {
 
 namespace ll = Blender::LiveLink;
+
+template<typename T> std::vector<T> reversed_copy(const std::vector<T> &values)
+{
+  return std::vector<T>(values.rbegin(), values.rend());
+}
 
 struct PyPtr {
   PyObject *value = nullptr;
@@ -128,6 +146,25 @@ bool object_live_link_enabled(PyObject *py_object)
   return py_bool_attr(settings, "enable_live_link", true);
 }
 
+bool object_visible_get(const Object *object, Depsgraph *depsgraph)
+{
+  if (!depsgraph) {
+    return (object->visibility_flag & OB_HIDE_VIEWPORT) == 0;
+  }
+
+  ViewLayer *view_layer = DEG_get_input_view_layer(depsgraph);
+  if (!view_layer) {
+    return (object->visibility_flag & OB_HIDE_VIEWPORT) == 0;
+  }
+
+  Base *base = BKE_view_layer_base_find(view_layer, const_cast<Object *>(object));
+  if (!base) {
+    return false;
+  }
+
+  return BKE_base_is_visible(nullptr, base);
+}
+
 Object *object_from_py(PyObject *py_object)
 {
   const PointerRNA *ptr = pyrna_struct_as_ptr(py_object, RNA_Object);
@@ -176,6 +213,17 @@ struct MeshVertexKey {
   {
     return vertex == other.vertex && uv_x == other.uv_x && uv_y == other.uv_y;
   }
+
+  bool operator<(const MeshVertexKey &other) const
+  {
+    if (vertex != other.vertex) {
+      return vertex < other.vertex;
+    }
+    if (uv_x != other.uv_x) {
+      return uv_x < other.uv_x;
+    }
+    return uv_y < other.uv_y;
+  }
 };
 
 struct MeshVertexKeyHash {
@@ -188,9 +236,65 @@ struct MeshVertexKeyHash {
   }
 };
 
+struct ReferencedMaterials {
+  std::vector<Material *> materials;
+  std::unordered_set<int32_t> ids;
+
+  void add(Material *material)
+  {
+    if (!material) {
+      return;
+    }
+    const int32_t material_id = int32_t(material->id.session_uid);
+    if (ids.insert(material_id).second) {
+      materials.push_back(material);
+    }
+  }
+
+  size_t size() const
+  {
+    return materials.size();
+  }
+};
+
+struct ImageReference {
+  Image *image = nullptr;
+  ImageUser image_user{};
+};
+
+struct ReferencedImages {
+  std::vector<ImageReference> images;
+  std::unordered_set<int32_t> ids;
+
+  int32_t add(Image *image, const ImageUser *image_user)
+  {
+    if (!image) {
+      return 0;
+    }
+    const int32_t image_id = int32_t(image->id.session_uid);
+    if (ids.insert(image_id).second) {
+      ImageReference reference;
+      reference.image = image;
+      if (image_user) {
+        reference.image_user = *image_user;
+      }
+      else {
+        BKE_imageuser_default(&reference.image_user);
+      }
+      images.push_back(reference);
+    }
+    return image_id;
+  }
+
+  size_t size() const
+  {
+    return images.size();
+  }
+};
+
 void add_object_materials(Object *object,
                           std::vector<int32_t> &material_ids,
-                          std::map<int32_t, Material *> &referenced_materials)
+                          ReferencedMaterials &referenced_materials)
 {
   for (short slot = 1; slot <= object->totcol; slot++) {
     Material *material = BKE_object_material_get(object, slot);
@@ -199,7 +303,7 @@ void add_object_materials(Object *object,
     }
     const int32_t material_id = int32_t(material->id.session_uid);
     material_ids.push_back(material_id);
-    referenced_materials.emplace(material_id, material);
+    referenced_materials.add(material);
   }
 }
 
@@ -222,11 +326,42 @@ void with_active_uv_map(Mesh *mesh, Fn &&fn)
   fn(nullptr);
 }
 
+bool mesh_needs_triangulation(const Mesh *mesh)
+{
+  const OffsetIndices<int> faces = mesh->faces();
+  for (const int face_index : faces.index_range()) {
+    if (faces[face_index].size() != 3) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Mesh *triangulate_mesh_like_python(Mesh *mesh)
+{
+  CustomData_MeshMasks cd_mask_extra{};
+  BMeshCreateParams bmesh_create_params{};
+  BMeshFromMeshParams bmesh_from_mesh_params{};
+  bmesh_from_mesh_params.calc_face_normal = true;
+  bmesh_from_mesh_params.calc_vert_normal = false;
+  bmesh_from_mesh_params.cd_mask_extra = cd_mask_extra;
+
+  BMesh *bm = BKE_mesh_to_bmesh_ex(mesh, &bmesh_create_params, &bmesh_from_mesh_params);
+  BM_mesh_triangulate(bm, 0, 0, 4, false, nullptr, nullptr, nullptr);
+
+  BMeshToMeshParams bmesh_to_mesh_params{};
+  bmesh_to_mesh_params.update_shapekey_indices = true;
+  bmesh_to_mesh_params.cd_mask_extra = cd_mask_extra;
+  Mesh *result = BKE_mesh_from_bmesh_nomain(bm, &bmesh_to_mesh_params, mesh);
+  BM_mesh_free(bm);
+  return result;
+}
+
 flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builder,
                                           Object *object,
                                           Object *object_eval,
                                           Depsgraph *depsgraph,
-                                          std::map<int32_t, Material *> &referenced_materials)
+                                          ReferencedMaterials &referenced_materials)
 {
   if (!depsgraph || !object_eval) {
     return 0;
@@ -235,6 +370,11 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   Mesh *mesh = BKE_object_to_mesh(depsgraph, object_eval, true);
   if (!mesh) {
     return 0;
+  }
+  Mesh *triangulated_mesh = nullptr;
+  if (mesh_needs_triangulation(mesh)) {
+    triangulated_mesh = triangulate_mesh_like_python(mesh);
+    mesh = triangulated_mesh;
   }
 
   std::vector<float> positions_out;
@@ -247,46 +387,56 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   const Span<float3> positions = mesh->vert_positions();
   const Span<float3> normals = mesh->vert_normals();
   const Span<int> corner_verts = mesh->corner_verts();
-  const Span<int3> corner_tris = mesh->corner_tris();
+  const OffsetIndices<int> faces = mesh->faces();
 
-  std::unordered_map<MeshVertexKey, uint32_t, MeshVertexKeyHash> vertex_map;
-  vertex_map.reserve(corner_tris.size() * 3);
-  positions_out.reserve(corner_tris.size() * 9);
-  normals_out.reserve(corner_tris.size() * 9);
-  texcoords_out.reserve(corner_tris.size() * 6);
-  indices_out.reserve(corner_tris.size() * 3);
+  std::vector<MeshVertexKey> corner_keys;
+  corner_keys.reserve(corner_verts.size());
+  indices_out.reserve(corner_verts.size());
 
   with_active_uv_map(mesh, [&](const VArraySpan<float2> *uv_map) {
-    for (const int3 &tri : corner_tris) {
-      for (int tri_corner = 0; tri_corner < 3; tri_corner++) {
-        const int corner = tri[tri_corner];
+    for (const int face_index : faces.index_range()) {
+      const IndexRange face = faces[face_index];
+      for (const int corner : face) {
         const int vertex = corner_verts[corner];
         float2 uv = {0.0f, 0.0f};
         if (uv_map) {
           uv = (*uv_map)[corner];
         }
 
-        const MeshVertexKey key = {
-            vertex, int(std::round(uv.x * 1000000.0f)), int(std::round(uv.y * 1000000.0f))};
-        auto found = vertex_map.find(key);
-        if (found != vertex_map.end()) {
-          indices_out.push_back(found->second);
-          continue;
-        }
-
-        const uint32_t new_index = uint32_t(vertex_map.size());
-        vertex_map.emplace(key, new_index);
-        indices_out.push_back(new_index);
-
-        const float3 position = positions[vertex];
-        const float3 normal = normals[vertex];
-        positions_out.insert(positions_out.end(), {position.x, position.y, position.z});
-        normals_out.insert(normals_out.end(), {normal.x, normal.y, normal.z});
-        texcoords_out.insert(texcoords_out.end(), {uv.x, uv.y});
+        const MeshVertexKey key = {vertex, int(uv.x * 1000000.0f), int(uv.y * 1000000.0f)};
+        corner_keys.push_back(key);
       }
     }
   });
 
+  std::vector<MeshVertexKey> unique_keys = corner_keys;
+  std::sort(unique_keys.begin(), unique_keys.end());
+  unique_keys.erase(std::unique(unique_keys.begin(), unique_keys.end()), unique_keys.end());
+
+  std::map<MeshVertexKey, uint32_t> key_to_index;
+  for (uint32_t index = 0; index < unique_keys.size(); index++) {
+    key_to_index.emplace(unique_keys[index], index);
+  }
+
+  positions_out.reserve(unique_keys.size() * 3);
+  normals_out.reserve(unique_keys.size() * 3);
+  texcoords_out.reserve(unique_keys.size() * 2);
+  for (const MeshVertexKey &key : unique_keys) {
+    const float3 position = positions[key.vertex];
+    const float3 normal = normals[key.vertex];
+    positions_out.insert(positions_out.end(), {position.x, position.y, position.z});
+    normals_out.insert(normals_out.end(), {normal.x, normal.y, normal.z});
+    texcoords_out.insert(
+        texcoords_out.end(), {float(key.uv_x) / 1000000.0f, float(key.uv_y) / 1000000.0f});
+  }
+
+  for (const MeshVertexKey &key : corner_keys) {
+    indices_out.push_back(key_to_index[key]);
+  }
+
+  if (triangulated_mesh) {
+    BKE_id_free(nullptr, triangulated_mesh);
+  }
   BKE_object_to_mesh_clear(object_eval);
 
   return ll::CreateMesh(builder,
@@ -410,7 +560,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
                                               PyObject *py_object,
                                               Object *object,
                                               Depsgraph *depsgraph,
-                                              std::map<int32_t, Material *> &referenced_materials)
+                                              ReferencedMaterials &referenced_materials)
 {
   Object *object_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
 
@@ -444,12 +594,12 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
 
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
       export_gameplay_components(builder, py_object);
-  const auto components_fb = components.empty() ? 0 : builder.CreateVector(components);
+  const auto components_fb = components.empty() ? 0 : builder.CreateVector(reversed_copy(components));
 
   return ll::CreateObject(builder,
                           builder.CreateString(id_name(object->id)),
                           int32_t(object->id.session_uid),
-                          (object->visibility_flag & OB_HIDE_VIEWPORT) == 0,
+                          object_visible_get(object, depsgraph),
                           &location_fb,
                           &scale_fb,
                           &rotation_fb,
@@ -460,23 +610,204 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
                           components_fb);
 }
 
-flatbuffers::Offset<ll::Material> export_material(flatbuffers::FlatBufferBuilder &builder,
-                                                  const Material &material)
+struct MaterialExportData {
+  ll::Vec4 base_color = ll::Vec4(1.0f, 1.0f, 1.0f, 1.0f);
+  int32_t base_color_image_id = 0;
+  float metallic = 0.0f;
+  int32_t metallic_image_id = 0;
+  float roughness = 0.0f;
+  int32_t roughness_image_id = 0;
+  ll::Vec4 emission_color = ll::Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+  int32_t emission_color_image_id = 0;
+  float emission_strength = 0.0f;
+};
+
+const bNode *find_principled_bsdf(const Material &material)
 {
-  const ll::Vec4 base_color(material.r, material.g, material.b, material.a);
-  const ll::Vec4 emission_color(0.0f, 0.0f, 0.0f, 0.0f);
+  if (!material.nodetree) {
+    return nullptr;
+  }
+  for (const bNode *node = static_cast<const bNode *>(material.nodetree->nodes.first); node;
+       node = node->next)
+  {
+    if (node->type_legacy == SH_NODE_BSDF_PRINCIPLED ||
+        std::strcmp(node->idname, "ShaderNodeBsdfPrincipled") == 0)
+    {
+      return node;
+    }
+  }
+  return nullptr;
+}
+
+const bNodeSocket *find_input_socket(const bNode &node, const char *identifier)
+{
+  if (const bNodeSocket *socket = bke::node_find_socket(node, SOCK_IN, identifier)) {
+    return socket;
+  }
+  return nullptr;
+}
+
+float socket_float_default(const bNodeSocket *socket, const float default_value)
+{
+  if (!socket || !socket->default_value) {
+    return default_value;
+  }
+  const bNodeSocketValueFloat *value = static_cast<const bNodeSocketValueFloat *>(
+      socket->default_value);
+  return value->value;
+}
+
+ll::Vec4 socket_rgba_default(const bNodeSocket *socket, const ll::Vec4 &default_value)
+{
+  if (!socket || !socket->default_value) {
+    return default_value;
+  }
+  const bNodeSocketValueRGBA *value = static_cast<const bNodeSocketValueRGBA *>(
+      socket->default_value);
+  return ll::Vec4(value->value[0], value->value[1], value->value[2], value->value[3]);
+}
+
+int32_t linked_image_id(const bNodeSocket *socket, ReferencedImages &referenced_images)
+{
+  if (!socket || !socket->link) {
+    return 0;
+  }
+  const bNodeLink *link = socket->link;
+  const bNode *from_node = link->fromnode;
+  if (!from_node ||
+      !(from_node->type_legacy == SH_NODE_TEX_IMAGE ||
+        std::strcmp(from_node->idname, "ShaderNodeTexImage") == 0) ||
+      !from_node->id)
+  {
+    return 0;
+  }
+
+  const NodeTexImage *texture_node = static_cast<const NodeTexImage *>(from_node->storage);
+  ImageUser image_user{};
+  const ImageUser *image_user_ptr = nullptr;
+  if (texture_node) {
+    image_user = texture_node->iuser;
+    image_user_ptr = &image_user;
+  }
+  return referenced_images.add(reinterpret_cast<Image *>(from_node->id), image_user_ptr);
+}
+
+MaterialExportData extract_material_data(const Material &material,
+                                         ReferencedImages &referenced_images)
+{
+  MaterialExportData data;
+  const bNode *bsdf = find_principled_bsdf(material);
+  if (!bsdf) {
+    return data;
+  }
+
+  const bNodeSocket *base_color = find_input_socket(*bsdf, "Base Color");
+  data.base_color = socket_rgba_default(base_color, data.base_color);
+  data.base_color_image_id = linked_image_id(base_color, referenced_images);
+
+  const bNodeSocket *metallic = find_input_socket(*bsdf, "Metallic");
+  data.metallic = socket_float_default(metallic, data.metallic);
+  data.metallic_image_id = linked_image_id(metallic, referenced_images);
+
+  const bNodeSocket *roughness = find_input_socket(*bsdf, "Roughness");
+  data.roughness = socket_float_default(roughness, data.roughness);
+  data.roughness_image_id = linked_image_id(roughness, referenced_images);
+
+  const bNodeSocket *emission_color = find_input_socket(*bsdf, "Emission Color");
+  data.emission_color = socket_rgba_default(emission_color, data.emission_color);
+  data.emission_color_image_id = linked_image_id(emission_color, referenced_images);
+
+  const bNodeSocket *emission_strength = find_input_socket(*bsdf, "Emission Strength");
+  data.emission_strength = socket_float_default(emission_strength, data.emission_strength);
+
+  return data;
+}
+
+uint8_t float_to_rgba8(const float value)
+{
+  const float clamped = std::clamp(value, 0.0f, 1.0f) * 255.0f;
+  return uint8_t(std::nearbyint(clamped));
+}
+
+std::vector<uint8_t> image_pixels_rgba8(const ImBuf &image_buffer)
+{
+  const int64_t pixel_count = int64_t(image_buffer.x) * int64_t(image_buffer.y);
+  std::vector<uint8_t> pixels;
+  if (pixel_count <= 0) {
+    return pixels;
+  }
+  pixels.resize(size_t(pixel_count) * 4);
+
+  if (image_buffer.float_buffer.data) {
+    const float *source = image_buffer.float_buffer.data;
+    const int channels = image_buffer.channels == 0 ? 4 : image_buffer.channels;
+    for (int64_t pixel = 0; pixel < pixel_count; pixel++) {
+      const int64_t source_index = pixel * channels;
+      const int64_t dest_index = pixel * 4;
+      pixels[dest_index + 0] = float_to_rgba8(source[source_index + 0]);
+      pixels[dest_index + 1] = channels > 1 ? float_to_rgba8(source[source_index + 1]) : pixels[dest_index + 0];
+      pixels[dest_index + 2] = channels > 2 ? float_to_rgba8(source[source_index + 2]) : pixels[dest_index + 0];
+      pixels[dest_index + 3] = channels > 3 ? float_to_rgba8(source[source_index + 3]) : 255;
+    }
+    return pixels;
+  }
+
+  if (image_buffer.byte_buffer.data) {
+    const uint8_t *source = image_buffer.byte_buffer.data;
+    const int channels = image_buffer.channels == 0 ? 4 : image_buffer.channels;
+    for (int64_t pixel = 0; pixel < pixel_count; pixel++) {
+      const int64_t source_index = pixel * channels;
+      const int64_t dest_index = pixel * 4;
+      pixels[dest_index + 0] = source[source_index + 0];
+      pixels[dest_index + 1] = channels > 1 ? source[source_index + 1] : pixels[dest_index + 0];
+      pixels[dest_index + 2] = channels > 2 ? source[source_index + 2] : pixels[dest_index + 0];
+      pixels[dest_index + 3] = channels > 3 ? source[source_index + 3] : 255;
+    }
+  }
+
+  return pixels;
+}
+
+flatbuffers::Offset<ll::Image> export_image(flatbuffers::FlatBufferBuilder &builder,
+                                            const ImageReference &reference)
+{
+  void *lock = nullptr;
+  ImBuf *image_buffer = BKE_image_acquire_ibuf(reference.image,
+                                              const_cast<ImageUser *>(&reference.image_user),
+                                              &lock);
+  if (!image_buffer) {
+    return ll::CreateImage(builder, int32_t(reference.image->id.session_uid), 0, 0, 0);
+  }
+
+  std::vector<uint8_t> pixels = image_pixels_rgba8(*image_buffer);
+  const int width = image_buffer->x;
+  const int height = image_buffer->y;
+  BKE_image_release_ibuf(reference.image, image_buffer, lock);
+
+  return ll::CreateImage(builder,
+                         int32_t(reference.image->id.session_uid),
+                         width,
+                         height,
+                         builder.CreateVector(pixels));
+}
+
+flatbuffers::Offset<ll::Material> export_material(flatbuffers::FlatBufferBuilder &builder,
+                                                  const Material &material,
+                                                  ReferencedImages &referenced_images)
+{
+  const MaterialExportData data = extract_material_data(material, referenced_images);
   return ll::CreateMaterial(builder,
                             int32_t(material.id.session_uid),
                             builder.CreateString(id_name(material.id)),
-                            &base_color,
-                            0,
-                            material.metallic,
-                            0,
-                            material.roughness,
-                            0,
-                            &emission_color,
-                            0,
-                            0.0f);
+                            &data.base_color,
+                            data.base_color_image_id,
+                            data.metallic,
+                            data.metallic_image_id,
+                            data.roughness,
+                            data.roughness_image_id,
+                            &data.emission_color,
+                            data.emission_color_image_id,
+                            data.emission_strength);
 }
 
 }  // namespace
@@ -506,7 +837,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
 
   flatbuffers::FlatBufferBuilder builder(1024);
   std::vector<flatbuffers::Offset<ll::Object>> object_offsets;
-  std::map<int32_t, Material *> referenced_materials;
+  ReferencedMaterials referenced_materials;
+  ReferencedImages referenced_images;
   std::unordered_set<uint32_t> exported_object_ids;
 
   const Py_ssize_t object_count = PySequence_Fast_GET_SIZE(object_sequence);
@@ -529,8 +861,14 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
 
   std::vector<flatbuffers::Offset<ll::Material>> material_offsets;
   material_offsets.reserve(referenced_materials.size());
-  for (const auto &item : referenced_materials) {
-    material_offsets.push_back(export_material(builder, *item.second));
+  for (const Material *material : referenced_materials.materials) {
+    material_offsets.push_back(export_material(builder, *material, referenced_images));
+  }
+
+  std::vector<flatbuffers::Offset<ll::Image>> image_offsets;
+  image_offsets.reserve(referenced_images.size());
+  for (const ImageReference &reference : referenced_images.images) {
+    image_offsets.push_back(export_image(builder, reference));
   }
 
   const auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -538,23 +876,24 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
       std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
 
   const auto update = ll::CreateUpdate(builder,
-                                       builder.CreateVector(object_offsets),
-                                       builder.CreateVector(deleted_ids),
+                                       builder.CreateVector(reversed_copy(object_offsets)),
+                                       builder.CreateVector(reversed_copy(deleted_ids)),
                                        builder.CreateVector(material_offsets),
-                                       0,
+                                       builder.CreateVector(image_offsets),
                                        reset,
                                        generation_seconds);
   ll::FinishSizePrefixedUpdateBuffer(builder, update);
 
   PySys_WriteStdout(
       "Blender Live Link native make_update: sequence=%d reason=%s reset=%s objects=%zu "
-      "deleted=%zu materials=%zu bytes=%zu generation_seconds=%.6f\n",
+      "deleted=%zu materials=%zu images=%zu bytes=%zu generation_seconds=%.6f\n",
       sequence,
       update_reason,
       reset ? "true" : "false",
       object_offsets.size(),
       deleted_ids.size(),
       material_offsets.size(),
+      image_offsets.size(),
       size_t(builder.GetSize()),
       generation_seconds);
 

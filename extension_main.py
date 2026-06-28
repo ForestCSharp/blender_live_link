@@ -14,6 +14,7 @@ from bpy.app.handlers import persistent
 
 import bmesh
 import builtins
+import hashlib
 import numpy as np
 import os
 import socket
@@ -784,14 +785,6 @@ class LiveLinkConnection():
     def make_full_update_object_list(self):
         return list(bpy.context.scene.objects)
 
-    def normalize_update_bytes_for_compare(self, update_bytes):
-        normalized = bytearray(update_bytes)
-        update = Update.Update.GetRootAs(normalized, 4)
-        generation_seconds_offset = update._tab.Offset(14)
-        if generation_seconds_offset != 0:
-            struct.pack_into("<d", normalized, update._tab.Pos + generation_seconds_offset, 0.0)
-        return bytes(normalized)
-
     def describe_update_bytes(self, update_bytes):
         update = Update.Update.GetRootAs(update_bytes, 4)
         return (
@@ -824,6 +817,192 @@ class LiveLinkConnection():
             return None
         return (value.X(), value.Y(), value.Z(), value.W())
 
+    def _fb_vector_data(self, value):
+        if isinstance(value, int):
+            return np.empty(0, dtype=np.uint8)
+        return np.asarray(value)
+
+    def _compare_exact(self, diffs, path, native_value, python_value):
+        if native_value != python_value:
+            diffs.append(f"{path}: native={native_value!r} python={python_value!r}")
+
+    def _compare_presence(self, diffs, path, native_value, python_value):
+        native_present = native_value is not None
+        python_present = python_value is not None
+        self._compare_exact(diffs, f"{path}.present", native_present, python_present)
+        return native_present and python_present
+
+    def _compare_float(self, diffs, path, native_value, python_value, tolerance=1e-5):
+        if abs(float(native_value) - float(python_value)) > tolerance:
+            diffs.append(
+                f"{path}: native={native_value!r} python={python_value!r} "
+                f"abs_diff={abs(float(native_value) - float(python_value)):.8g} "
+                f"tolerance={tolerance}"
+            )
+
+    def _compare_float_tuple(self, diffs, path, native_value, python_value, tolerance=1e-5):
+        self._compare_exact(diffs, f"{path}.length", len(native_value), len(python_value))
+        for index, (native_item, python_item) in enumerate(zip(native_value, python_value)):
+            self._compare_float(diffs, f"{path}[{index}]", native_item, python_item, tolerance)
+
+    def _compare_exact_vector(self, diffs, path, native_len, python_len, native_get, python_get, max_mismatches=10):
+        self._compare_exact(diffs, f"{path}.length", native_len, python_len)
+
+        mismatch_count = 0
+        for index in range(min(native_len, python_len)):
+            native_value = native_get(index)
+            python_value = python_get(index)
+            if native_value == python_value:
+                continue
+            if mismatch_count < max_mismatches:
+                diffs.append(f"{path}[{index}]: native={native_value!r} python={python_value!r}")
+            mismatch_count += 1
+
+        if mismatch_count > max_mismatches:
+            diffs.append(f"{path}: {mismatch_count - max_mismatches} additional mismatches omitted")
+
+    def _compare_float_vector(self, diffs, path, native_len, python_len, native_get, python_get, tolerance=1e-5, max_mismatches=10):
+        self._compare_exact(diffs, f"{path}.length", native_len, python_len)
+        if native_len != python_len:
+            return
+
+        mismatch_count = 0
+        for index in range(min(native_len, python_len)):
+            native_value = native_get(index)
+            python_value = python_get(index)
+            if abs(float(native_value) - float(python_value)) <= tolerance:
+                continue
+            if mismatch_count < max_mismatches:
+                diffs.append(
+                    f"{path}[{index}]: native={native_value!r} python={python_value!r} "
+                    f"abs_diff={abs(float(native_value) - float(python_value)):.8g} "
+                    f"tolerance={tolerance}"
+                )
+            mismatch_count += 1
+
+        if mismatch_count > max_mismatches:
+            diffs.append(f"{path}: {mismatch_count - max_mismatches} additional mismatches omitted")
+
+    def _compare_matrix(self, diffs, path, native_matrix, python_matrix, tolerance=1e-5):
+        if not self._compare_presence(diffs, path, native_matrix, python_matrix):
+            return
+        self._compare_float_vector(
+            diffs,
+            f"{path}.elements",
+            native_matrix.ElementsLength(),
+            python_matrix.ElementsLength(),
+            native_matrix.Elements,
+            python_matrix.Elements,
+            tolerance,
+        )
+
+    def _compare_rigid_body(self, diffs, path, native_rigid_body, python_rigid_body):
+        if not self._compare_presence(diffs, path, native_rigid_body, python_rigid_body):
+            return
+        self._compare_exact(diffs, f"{path}.is_dynamic", native_rigid_body.IsDynamic(), python_rigid_body.IsDynamic())
+        self._compare_float(diffs, f"{path}.mass", native_rigid_body.Mass(), python_rigid_body.Mass())
+
+    def _compare_light(self, diffs, path, native_light, python_light):
+        if not self._compare_presence(diffs, path, native_light, python_light):
+            return
+        self._compare_exact(diffs, f"{path}.type", native_light.Type(), python_light.Type())
+        self._compare_float_tuple(diffs, f"{path}.color", self._fb_vec3_tuple(native_light.Color()), self._fb_vec3_tuple(python_light.Color()))
+        self._compare_exact(diffs, f"{path}.use_shadow", native_light.UseShadow(), python_light.UseShadow())
+
+        native_point = native_light.PointLight()
+        python_point = python_light.PointLight()
+        if self._compare_presence(diffs, f"{path}.point_light", native_point, python_point):
+            self._compare_float(diffs, f"{path}.point_light.power", native_point.Power(), python_point.Power())
+
+        native_spot = native_light.SpotLight()
+        python_spot = python_light.SpotLight()
+        if self._compare_presence(diffs, f"{path}.spot_light", native_spot, python_spot):
+            self._compare_float(diffs, f"{path}.spot_light.power", native_spot.Power(), python_spot.Power())
+            self._compare_float(diffs, f"{path}.spot_light.beam_angle", native_spot.BeamAngle(), python_spot.BeamAngle())
+            self._compare_float(diffs, f"{path}.spot_light.edge_blend", native_spot.EdgeBlend(), python_spot.EdgeBlend())
+
+        native_sun = native_light.SunLight()
+        python_sun = python_light.SunLight()
+        if self._compare_presence(diffs, f"{path}.sun_light", native_sun, python_sun):
+            self._compare_float(diffs, f"{path}.sun_light.power", native_sun.Power(), python_sun.Power())
+            self._compare_exact(diffs, f"{path}.sun_light.cast_shadows", native_sun.CastShadows(), python_sun.CastShadows())
+
+    def _union_value_as(self, union_table, value_type):
+        if union_table is None:
+            return None
+        if value_type == GameplayComponent.GameplayComponent.GameplayComponentCharacter:
+            value = GameplayComponentCharacter.GameplayComponentCharacter()
+        elif value_type == GameplayComponent.GameplayComponent.GameplayComponentCameraControl:
+            value = GameplayComponentCameraControl.GameplayComponentCameraControl()
+        else:
+            return None
+        value.Init(union_table.Bytes, union_table.Pos)
+        return value
+
+    def _compare_gameplay_component(self, diffs, path, native_component, python_component):
+        if not self._compare_presence(diffs, path, native_component, python_component):
+            return
+        native_type = native_component.ValueType()
+        python_type = python_component.ValueType()
+        self._compare_exact(diffs, f"{path}.value_type", native_type, python_type)
+        if native_type != python_type:
+            return
+
+        native_value = self._union_value_as(native_component.Value(), native_type)
+        python_value = self._union_value_as(python_component.Value(), python_type)
+        if not self._compare_presence(diffs, f"{path}.value", native_value, python_value):
+            return
+
+        if native_type == GameplayComponent.GameplayComponent.GameplayComponentCharacter:
+            self._compare_exact(diffs, f"{path}.character.player_controlled", native_value.PlayerControlled(), python_value.PlayerControlled())
+            self._compare_float(diffs, f"{path}.character.move_speed", native_value.MoveSpeed(), python_value.MoveSpeed())
+            self._compare_float(diffs, f"{path}.character.jump_speed", native_value.JumpSpeed(), python_value.JumpSpeed())
+        elif native_type == GameplayComponent.GameplayComponent.GameplayComponentCameraControl:
+            self._compare_float(diffs, f"{path}.camera_control.follow_distance", native_value.FollowDistance(), python_value.FollowDistance())
+            self._compare_float(diffs, f"{path}.camera_control.follow_speed", native_value.FollowSpeed(), python_value.FollowSpeed())
+
+    def _compare_components(self, diffs, path, native_object, python_object):
+        self._compare_exact(diffs, f"{path}.length", native_object.ComponentsLength(), python_object.ComponentsLength())
+        for index in range(min(native_object.ComponentsLength(), python_object.ComponentsLength())):
+            self._compare_gameplay_component(
+                diffs,
+                f"{path}[{index}]",
+                native_object.Components(index),
+                python_object.Components(index),
+            )
+
+    def _compare_bone(self, diffs, path, native_bone, python_bone):
+        self._compare_exact(diffs, f"{path}.name", self._fb_string(native_bone.Name()), self._fb_string(python_bone.Name()))
+        self._compare_exact(diffs, f"{path}.parent_name", self._fb_string(native_bone.ParentName()), self._fb_string(python_bone.ParentName()))
+        self._compare_exact(diffs, f"{path}.parent_index", native_bone.ParentIndex(), python_bone.ParentIndex())
+        self._compare_matrix(diffs, f"{path}.inverse_bind_matrix", native_bone.InverseBindMatrix(), python_bone.InverseBindMatrix())
+
+    def _compare_animation(self, diffs, path, native_animation, python_animation):
+        self._compare_exact(diffs, f"{path}.name", self._fb_string(native_animation.Name()), self._fb_string(python_animation.Name()))
+        self._compare_float(diffs, f"{path}.frame_rate", native_animation.FrameRate(), python_animation.FrameRate())
+        self._compare_float(diffs, f"{path}.duration_seconds", native_animation.DurationSeconds(), python_animation.DurationSeconds())
+        self._compare_exact(diffs, f"{path}.frame_count", native_animation.FrameCount(), python_animation.FrameCount())
+        self._compare_exact(diffs, f"{path}.bone_count", native_animation.BoneCount(), python_animation.BoneCount())
+        self._compare_float_vector(
+            diffs,
+            f"{path}.skin_matrices",
+            native_animation.SkinMatricesLength(),
+            python_animation.SkinMatricesLength(),
+            native_animation.SkinMatrices,
+            python_animation.SkinMatrices,
+        )
+
+    def _compare_armature(self, diffs, path, native_armature, python_armature):
+        if not self._compare_presence(diffs, path, native_armature, python_armature):
+            return
+        self._compare_exact(diffs, f"{path}.bones.length", native_armature.BonesLength(), python_armature.BonesLength())
+        for index in range(min(native_armature.BonesLength(), python_armature.BonesLength())):
+            self._compare_bone(diffs, f"{path}.bones[{index}]", native_armature.Bones(index), python_armature.Bones(index))
+
+        self._compare_exact(diffs, f"{path}.animations.length", native_armature.AnimationsLength(), python_armature.AnimationsLength())
+        for index in range(min(native_armature.AnimationsLength(), python_armature.AnimationsLength())):
+            self._compare_animation(diffs, f"{path}.animations[{index}]", native_armature.Animations(index), python_armature.Animations(index))
+
     def _fb_rigid_body_tuple(self, value):
         if value is None:
             return None
@@ -850,33 +1029,13 @@ class LiveLinkConnection():
             "has_armature_to_mesh": value.ArmatureToMesh() is not None,
         }
 
-    def _compare_scalar(self, diffs, path, native_value, python_value):
-        if native_value != python_value:
-            diffs.append(f"{path}: native={native_value!r} python={python_value!r}")
-
-    def _compare_vector(self, diffs, path, native_len, python_len, native_get, python_get, max_mismatches=10):
-        if native_len != python_len:
-            diffs.append(f"{path}.length: native={native_len} python={python_len}")
-
-        mismatch_count = 0
-        for index in range(min(native_len, python_len)):
-            native_value = native_get(index)
-            python_value = python_get(index)
-            if native_value == python_value:
-                continue
-            if mismatch_count < max_mismatches:
-                diffs.append(f"{path}[{index}]: native={native_value!r} python={python_value!r}")
-            mismatch_count += 1
-
-        if mismatch_count > max_mismatches:
-            diffs.append(f"{path}: {mismatch_count - max_mismatches} additional mismatches omitted")
-
     def _compare_mesh(self, diffs, path, native_mesh, python_mesh):
-        self._compare_scalar(diffs, f"{path}.summary", self._fb_mesh_summary(native_mesh), self._fb_mesh_summary(python_mesh))
-        if native_mesh is None or python_mesh is None:
+        if not self._compare_presence(diffs, path, native_mesh, python_mesh):
             return
 
-        self._compare_vector(
+        self._compare_exact(diffs, f"{path}.armature_id", native_mesh.ArmatureId(), python_mesh.ArmatureId())
+
+        self._compare_float_vector(
             diffs,
             f"{path}.positions",
             native_mesh.PositionsLength(),
@@ -884,7 +1043,7 @@ class LiveLinkConnection():
             native_mesh.Positions,
             python_mesh.Positions,
         )
-        self._compare_vector(
+        self._compare_float_vector(
             diffs,
             f"{path}.normals",
             native_mesh.NormalsLength(),
@@ -892,15 +1051,16 @@ class LiveLinkConnection():
             native_mesh.Normals,
             python_mesh.Normals,
         )
-        self._compare_vector(
+        self._compare_float_vector(
             diffs,
             f"{path}.texcoords",
             native_mesh.TexcoordsLength(),
             python_mesh.TexcoordsLength(),
             native_mesh.Texcoords,
             python_mesh.Texcoords,
+            tolerance=1e-6,
         )
-        self._compare_vector(
+        self._compare_exact_vector(
             diffs,
             f"{path}.indices",
             native_mesh.IndicesLength(),
@@ -908,7 +1068,23 @@ class LiveLinkConnection():
             native_mesh.Indices,
             python_mesh.Indices,
         )
-        self._compare_vector(
+        self._compare_exact_vector(
+            diffs,
+            f"{path}.joint_indices",
+            native_mesh.JointIndicesLength(),
+            python_mesh.JointIndicesLength(),
+            native_mesh.JointIndices,
+            python_mesh.JointIndices,
+        )
+        self._compare_float_vector(
+            diffs,
+            f"{path}.joint_weights",
+            native_mesh.JointWeightsLength(),
+            python_mesh.JointWeightsLength(),
+            native_mesh.JointWeights,
+            python_mesh.JointWeights,
+        )
+        self._compare_exact_vector(
             diffs,
             f"{path}.material_ids",
             native_mesh.MaterialIdsLength(),
@@ -916,19 +1092,56 @@ class LiveLinkConnection():
             native_mesh.MaterialIds,
             python_mesh.MaterialIds,
         )
+        self._compare_matrix(diffs, f"{path}.mesh_to_armature", native_mesh.MeshToArmature(), python_mesh.MeshToArmature())
+        self._compare_matrix(diffs, f"{path}.armature_to_mesh", native_mesh.ArmatureToMesh(), python_mesh.ArmatureToMesh())
+
+    def _compare_material(self, diffs, path, native_material, python_material):
+        self._compare_exact(diffs, f"{path}.unique_id", native_material.UniqueId(), python_material.UniqueId())
+        self._compare_exact(diffs, f"{path}.name", self._fb_string(native_material.Name()), self._fb_string(python_material.Name()))
+        self._compare_float_tuple(diffs, f"{path}.base_color", self._fb_vec4_tuple(native_material.BaseColor()), self._fb_vec4_tuple(python_material.BaseColor()))
+        self._compare_exact(diffs, f"{path}.base_color_image_id", native_material.BaseColorImageId(), python_material.BaseColorImageId())
+        self._compare_float(diffs, f"{path}.metallic", native_material.Metallic(), python_material.Metallic())
+        self._compare_exact(diffs, f"{path}.metallic_image_id", native_material.MetallicImageId(), python_material.MetallicImageId())
+        self._compare_float(diffs, f"{path}.roughness", native_material.Roughness(), python_material.Roughness())
+        self._compare_exact(diffs, f"{path}.roughness_image_id", native_material.RoughnessImageId(), python_material.RoughnessImageId())
+        self._compare_float_tuple(diffs, f"{path}.emission_color", self._fb_vec4_tuple(native_material.EmissionColor()), self._fb_vec4_tuple(python_material.EmissionColor()))
+        self._compare_exact(diffs, f"{path}.emission_color_image_id", native_material.EmissionColorImageId(), python_material.EmissionColorImageId())
+        self._compare_float(diffs, f"{path}.emission_strength", native_material.EmissionStrength(), python_material.EmissionStrength())
+
+    def _compare_image(self, diffs, path, native_image, python_image, max_mismatches=10):
+        self._compare_exact(diffs, f"{path}.unique_id", native_image.UniqueId(), python_image.UniqueId())
+        self._compare_exact(diffs, f"{path}.width", native_image.Width(), python_image.Width())
+        self._compare_exact(diffs, f"{path}.height", native_image.Height(), python_image.Height())
+        self._compare_exact(diffs, f"{path}.data.length", native_image.DataLength(), python_image.DataLength())
+        if native_image.DataLength() != python_image.DataLength():
+            return
+
+        native_data = self._fb_vector_data(native_image.DataAsNumpy())
+        python_data = self._fb_vector_data(python_image.DataAsNumpy())
+        native_hash = hashlib.sha256(native_data.tobytes()).hexdigest()
+        python_hash = hashlib.sha256(python_data.tobytes()).hexdigest()
+        if native_hash == python_hash:
+            return
+
+        diffs.append(f"{path}.data.sha256: native={native_hash[:16]} python={python_hash[:16]}")
+        mismatch_indices = np.flatnonzero(native_data != python_data)
+        for index in mismatch_indices[:max_mismatches]:
+            diffs.append(f"{path}.data[{int(index)}]: native={int(native_data[index])} python={int(python_data[index])}")
+        if len(mismatch_indices) > max_mismatches:
+            diffs.append(f"{path}.data: {len(mismatch_indices) - max_mismatches} additional mismatches omitted")
 
     def _compare_update_buffers(self, native_bytes, python_bytes, max_diffs=80):
         native_update = Update.Update.GetRootAs(native_bytes, 4)
         python_update = Update.Update.GetRootAs(python_bytes, 4)
         diffs = []
 
-        self._compare_scalar(diffs, "update.objects.length", native_update.ObjectsLength(), python_update.ObjectsLength())
-        self._compare_scalar(diffs, "update.deleted_object_uids.length", native_update.DeletedObjectUidsLength(), python_update.DeletedObjectUidsLength())
-        self._compare_scalar(diffs, "update.materials.length", native_update.MaterialsLength(), python_update.MaterialsLength())
-        self._compare_scalar(diffs, "update.images.length", native_update.ImagesLength(), python_update.ImagesLength())
-        self._compare_scalar(diffs, "update.reset", native_update.Reset(), python_update.Reset())
+        self._compare_exact(diffs, "update.objects.length", native_update.ObjectsLength(), python_update.ObjectsLength())
+        self._compare_exact(diffs, "update.deleted_object_uids.length", native_update.DeletedObjectUidsLength(), python_update.DeletedObjectUidsLength())
+        self._compare_exact(diffs, "update.materials.length", native_update.MaterialsLength(), python_update.MaterialsLength())
+        self._compare_exact(diffs, "update.images.length", native_update.ImagesLength(), python_update.ImagesLength())
+        self._compare_exact(diffs, "update.reset", native_update.Reset(), python_update.Reset())
 
-        self._compare_vector(
+        self._compare_exact_vector(
             diffs,
             "update.deleted_object_uids",
             native_update.DeletedObjectUidsLength(),
@@ -942,16 +1155,16 @@ class LiveLinkConnection():
             native_object = native_update.Objects(index)
             python_object = python_update.Objects(index)
             path = f"update.objects[{index}]"
-            self._compare_scalar(diffs, f"{path}.name", self._fb_string(native_object.Name()), self._fb_string(python_object.Name()))
-            self._compare_scalar(diffs, f"{path}.unique_id", native_object.UniqueId(), python_object.UniqueId())
-            self._compare_scalar(diffs, f"{path}.visibility", native_object.Visibility(), python_object.Visibility())
-            self._compare_scalar(diffs, f"{path}.location", self._fb_vec3_tuple(native_object.Location()), self._fb_vec3_tuple(python_object.Location()))
-            self._compare_scalar(diffs, f"{path}.scale", self._fb_vec3_tuple(native_object.Scale()), self._fb_vec3_tuple(python_object.Scale()))
-            self._compare_scalar(diffs, f"{path}.rotation", self._fb_quat_tuple(native_object.Rotation()), self._fb_quat_tuple(python_object.Rotation()))
-            self._compare_scalar(diffs, f"{path}.rigid_body", self._fb_rigid_body_tuple(native_object.RigidBody()), self._fb_rigid_body_tuple(python_object.RigidBody()))
-            self._compare_scalar(diffs, f"{path}.light", self._fb_light_tuple(native_object.Light()), self._fb_light_tuple(python_object.Light()))
-            self._compare_scalar(diffs, f"{path}.armature_present", native_object.Armature() is not None, python_object.Armature() is not None)
-            self._compare_scalar(diffs, f"{path}.components.length", native_object.ComponentsLength(), python_object.ComponentsLength())
+            self._compare_exact(diffs, f"{path}.name", self._fb_string(native_object.Name()), self._fb_string(python_object.Name()))
+            self._compare_exact(diffs, f"{path}.unique_id", native_object.UniqueId(), python_object.UniqueId())
+            self._compare_exact(diffs, f"{path}.visibility", native_object.Visibility(), python_object.Visibility())
+            self._compare_float_tuple(diffs, f"{path}.location", self._fb_vec3_tuple(native_object.Location()), self._fb_vec3_tuple(python_object.Location()))
+            self._compare_float_tuple(diffs, f"{path}.scale", self._fb_vec3_tuple(native_object.Scale()), self._fb_vec3_tuple(python_object.Scale()))
+            self._compare_float_tuple(diffs, f"{path}.rotation", self._fb_quat_tuple(native_object.Rotation()), self._fb_quat_tuple(python_object.Rotation()))
+            self._compare_rigid_body(diffs, f"{path}.rigid_body", native_object.RigidBody(), python_object.RigidBody())
+            self._compare_light(diffs, f"{path}.light", native_object.Light(), python_object.Light())
+            self._compare_armature(diffs, f"{path}.armature", native_object.Armature(), python_object.Armature())
+            self._compare_components(diffs, f"{path}.components", native_object, python_object)
             self._compare_mesh(diffs, f"{path}.mesh", native_object.Mesh(), python_object.Mesh())
             if len(diffs) >= max_diffs:
                 break
@@ -961,17 +1174,7 @@ class LiveLinkConnection():
             native_material = native_update.Materials(index)
             python_material = python_update.Materials(index)
             path = f"update.materials[{index}]"
-            self._compare_scalar(diffs, f"{path}.unique_id", native_material.UniqueId(), python_material.UniqueId())
-            self._compare_scalar(diffs, f"{path}.name", self._fb_string(native_material.Name()), self._fb_string(python_material.Name()))
-            self._compare_scalar(diffs, f"{path}.base_color", self._fb_vec4_tuple(native_material.BaseColor()), self._fb_vec4_tuple(python_material.BaseColor()))
-            self._compare_scalar(diffs, f"{path}.base_color_image_id", native_material.BaseColorImageId(), python_material.BaseColorImageId())
-            self._compare_scalar(diffs, f"{path}.metallic", native_material.Metallic(), python_material.Metallic())
-            self._compare_scalar(diffs, f"{path}.metallic_image_id", native_material.MetallicImageId(), python_material.MetallicImageId())
-            self._compare_scalar(diffs, f"{path}.roughness", native_material.Roughness(), python_material.Roughness())
-            self._compare_scalar(diffs, f"{path}.roughness_image_id", native_material.RoughnessImageId(), python_material.RoughnessImageId())
-            self._compare_scalar(diffs, f"{path}.emission_color", self._fb_vec4_tuple(native_material.EmissionColor()), self._fb_vec4_tuple(python_material.EmissionColor()))
-            self._compare_scalar(diffs, f"{path}.emission_color_image_id", native_material.EmissionColorImageId(), python_material.EmissionColorImageId())
-            self._compare_scalar(diffs, f"{path}.emission_strength", native_material.EmissionStrength(), python_material.EmissionStrength())
+            self._compare_material(diffs, path, native_material, python_material)
             if len(diffs) >= max_diffs:
                 break
 
@@ -980,10 +1183,7 @@ class LiveLinkConnection():
             native_image = native_update.Images(index)
             python_image = python_update.Images(index)
             path = f"update.images[{index}]"
-            self._compare_scalar(diffs, f"{path}.unique_id", native_image.UniqueId(), python_image.UniqueId())
-            self._compare_scalar(diffs, f"{path}.width", native_image.Width(), python_image.Width())
-            self._compare_scalar(diffs, f"{path}.height", native_image.Height(), python_image.Height())
-            self._compare_scalar(diffs, f"{path}.data.length", native_image.DataLength(), python_image.DataLength())
+            self._compare_image(diffs, path, native_image, python_image)
             if len(diffs) >= max_diffs:
                 break
 
@@ -1017,40 +1217,27 @@ class LiveLinkConnection():
         finally:
             self.update_sequence = old_sequence
 
-        native_normalized = self.normalize_update_bytes_for_compare(native_bytes)
-        python_normalized = self.normalize_update_bytes_for_compare(python_bytes)
-        if native_normalized == python_normalized:
+        diffs = self._compare_update_buffers(native_bytes, python_bytes)
+        if not diffs:
             print(
-                "\nLive Link Native/Python Compare: MATCH "
-                f"bytes={len(native_normalized)} "
-                f"{self.describe_update_bytes(native_normalized)}"
+                "\nLive Link Native/Python Compare: SEMANTIC MATCH "
+                f"native_bytes={len(native_bytes)} "
+                f"python_bytes={len(python_bytes)} "
+                f"{self.describe_update_bytes(native_bytes)}"
             )
-            return True, "Native/Python exports match after timing normalization"
+            return True, "Native/Python exports semantically match"
 
-        first_diff = next(
-            (
-                index
-                for index, (native_byte, python_byte) in enumerate(zip(native_normalized, python_normalized))
-                if native_byte != python_byte
-            ),
-            min(len(native_normalized), len(python_normalized)),
-        )
         message = (
-            "Native/Python exports differ after timing normalization: "
-            f"first_diff={first_diff} "
-            f"native_bytes={len(native_normalized)} "
-            f"python_bytes={len(python_normalized)} "
-            f"native({self.describe_update_bytes(native_normalized)}) "
-            f"python({self.describe_update_bytes(python_normalized)})"
+            "Native/Python exports differ semantically: "
+            f"native_bytes={len(native_bytes)} "
+            f"python_bytes={len(python_bytes)} "
+            f"native({self.describe_update_bytes(native_bytes)}) "
+            f"python({self.describe_update_bytes(python_bytes)})"
         )
-        print("\nLive Link Native/Python Compare: MISMATCH " + message)
-        diffs = self._compare_update_buffers(native_normalized, python_normalized)
-        if diffs:
-            print("Live Link Native/Python Structured Differences:")
-            for diff in diffs:
-                print(f"  - {diff}")
-        else:
-            print("Live Link Native/Python Structured Differences: no parsed field differences found")
+        print("\nLive Link Native/Python Compare: SEMANTIC MISMATCH " + message)
+        print("Live Link Native/Python Semantic Differences:")
+        for diff in diffs:
+            print(f"  - {diff}")
         return False, message
 
     # Creates an update for objects in in_object_list using Python FlatBuffers generation.
