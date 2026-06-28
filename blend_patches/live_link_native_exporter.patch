@@ -1,11 +1,10 @@
 diff --git a/source/blender/python/intern/CMakeLists.txt b/source/blender/python/intern/CMakeLists.txt
 --- a/source/blender/python/intern/CMakeLists.txt
 +++ b/source/blender/python/intern/CMakeLists.txt
-@@ -10,7 +10,16 @@ set(INC
-   # RNA_prototypes.hh
+@@ -12,12 +12,22 @@ set(INC
    ${CMAKE_BINARY_DIR}/source/blender/makesrna
  )
- 
+
 +if(NOT DEFINED BLENDER_LIVE_LINK_REPO_DIR)
 +  message(FATAL_ERROR "BLENDER_LIVE_LINK_REPO_DIR must be set for the Blender Live Link native patch")
 +endif()
@@ -17,16 +16,16 @@ diff --git a/source/blender/python/intern/CMakeLists.txt b/source/blender/python
 +
  set(INC_SYS
  )
- 
-@@ -18,5 +27,6 @@ set(SRC
+
+ set(SRC
    bpy.cc
    bpy_app.cc
 +  bpy_live_link.cc
    bpy_app_alembic.cc
    bpy_app_build_options.cc
    bpy_app_ffmpeg.cc
-@@ -69,6 +78,7 @@ set(SRC
- 
+@@ -70,6 +80,7 @@ set(SRC
+
    bpy.hh
    bpy_app.hh
 +  bpy_live_link.hh
@@ -37,53 +36,51 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 --- a/source/blender/python/intern/bpy_app.cc
 +++ b/source/blender/python/intern/bpy_app.cc
 @@ -14,6 +14,7 @@
- 
+
  #include "bpy_app.hh"
  
 +#include "bpy_live_link.hh"
  #include "bpy_app_alembic.hh"
  #include "bpy_app_build_options.hh"
  #include "bpy_app_ffmpeg.hh"
-@@ -755,22 +756,24 @@
- PyDoc_STRVAR(
-     /* Wrap. */
-     bpy_app_live_link_make_update_doc,
--    ".. staticmethod:: live_link_make_update(objects, deleted_object_uids, reset=False, "
--    "update_reason=\"unknown\", sequence=0)\n"
+@@ -752,6 +753,71 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
+   return PyBool_FromLong(WM_jobs_has_running_type(wm, job_type_enum.value));
+ }
+
++PyDoc_STRVAR(
++    /* Wrap. */
++    bpy_app_live_link_make_update_doc,
 +    ".. staticmethod:: live_link_make_update(objects, deleted_object_uids, dependency_graph, "
 +    "reset=False, update_reason=\"unknown\", sequence=0)\n"
-     "\n"
--    "   Native Blender Live Link update stub.\n"
++    "\n"
 +    "   Build a native Blender Live Link update.\n"
-     "\n"
-     "   :param objects: Blender objects considered for export.\n"
-     "   :type objects: sequence\n"
-     "   :param deleted_object_uids: Deleted object session UIDs.\n"
-     "   :type deleted_object_uids: sequence\n"
++    "\n"
++    "   :param objects: Blender objects considered for export.\n"
++    "   :type objects: sequence\n"
++    "   :param deleted_object_uids: Deleted object session UIDs.\n"
++    "   :type deleted_object_uids: sequence\n"
 +    "   :param dependency_graph: Evaluated dependency graph to export against.\n"
 +    "   :type dependency_graph: bpy.types.Depsgraph\n"
-     "   :param reset: Whether this update is a reset.\n"
-     "   :type reset: bool\n"
-     "   :param update_reason: Diagnostic reason for this update.\n"
-     "   :type update_reason: str\n"
-     "   :param sequence: Python-maintained update sequence number.\n"
-     "   :type sequence: int\n"
--    "   :return: Empty bytes until native update generation is implemented.\n"
++    "   :param reset: Whether this update is a reset.\n"
++    "   :type reset: bool\n"
++    "   :param update_reason: Diagnostic reason for this update.\n"
++    "   :type update_reason: str\n"
++    "   :param sequence: Python-maintained update sequence number.\n"
++    "   :type sequence: int\n"
 +    "   :return: Size-prefixed Live Link update bytes.\n"
-     "   :rtype: bytes\n");
- static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
-                                                PyObject *args,
-@@ -778,14 +781,21 @@
- {
-   PyObject *objects = nullptr;
-   PyObject *deleted_object_uids = nullptr;
++    "   :rtype: bytes\n");
++static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
++                                               PyObject *args,
++                                               PyObject *kwds)
++{
++  PyObject *objects = nullptr;
++  PyObject *deleted_object_uids = nullptr;
 +  PyObject *dependency_graph = nullptr;
-   bool reset = false;
-   const char *update_reason = "unknown";
-   int sequence = 0;
- 
-   static const char *_keywords[] = {
--      "objects", "deleted_object_uids", "reset", "update_reason", "sequence", nullptr};
++  bool reset = false;
++  const char *update_reason = "unknown";
++  int sequence = 0;
++
++  static const char *_keywords[] = {
 +      "objects",
 +      "deleted_object_uids",
 +      "dependency_graph",
@@ -91,47 +88,41 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +      "update_reason",
 +      "sequence",
 +      nullptr};
-   static _PyArg_Parser _parser = {
--      "OO|O&si" /* `objects`, `deleted_object_uids`, optional `reset`, `update_reason`, `sequence`. */
++  static _PyArg_Parser _parser = {
 +      "OOO|O&si" /* `objects`, `deleted_object_uids`, `dependency_graph`, optional args. */
-       ":live_link_make_update",
-       _keywords,
-       nullptr,
-@@ -795,6 +805,7 @@
-                                         &_parser,
-                                         &objects,
-                                         &deleted_object_uids,
++      ":live_link_make_update",
++      _keywords,
++      nullptr,
++  };
++  if (!_PyArg_ParseTupleAndKeywordsFast(args,
++                                        kwds,
++                                        &_parser,
++                                        &objects,
++                                        &deleted_object_uids,
 +                                        &dependency_graph,
-                                         PyC_ParseBool,
-                                         &reset,
-                                         &update_reason,
-@@ -803,27 +814,8 @@
-     return nullptr;
-   }
- 
--  Py_ssize_t object_count = PyObject_Length(objects);
--  if (object_count < 0) {
--    PyErr_Clear();
--    object_count = 0;
--  }
--  Py_ssize_t deleted_count = PyObject_Length(deleted_object_uids);
--  if (deleted_count < 0) {
--    PyErr_Clear();
--    deleted_count = 0;
--  }
--
--  PySys_WriteStdout(
--      "Blender Live Link native make_update stub: sequence=%d reason=%s reset=%s "
--      "objects=%zd deleted=%zd\n",
--      sequence,
--      update_reason,
--      reset ? "true" : "false",
--      object_count,
--      deleted_count);
--
--  return PyBytes_FromStringAndSize("", 0);
++                                        PyC_ParseBool,
++                                        &reset,
++                                        &update_reason,
++                                        &sequence))
++  {
++    return nullptr;
++  }
++
 +  return BPY_live_link_make_update(
 +      objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence);
- }
- 
++}
++
  char *(*BPY_python_app_help_text_fn)(bool all) = nullptr;
+
+ PyDoc_STRVAR(
+@@ -821,6 +887,10 @@ static PyMethodDef bpy_app_methods[] = {
+      reinterpret_cast<PyCFunction>(bpy_app_is_job_running),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,
+      bpy_app_is_job_running_doc},
++    {"live_link_make_update",
++     reinterpret_cast<PyCFunction>(bpy_app_live_link_make_update),
++     METH_VARARGS | METH_KEYWORDS | METH_STATIC,
++     bpy_app_live_link_make_update_doc},
+     {"help_text",
+      reinterpret_cast<PyCFunction>(bpy_app_help_text),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,

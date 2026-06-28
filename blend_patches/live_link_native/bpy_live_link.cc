@@ -5,15 +5,25 @@
 #include <Python.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
+#include "ANIM_action.hh"
+
+#include "BKE_action.hh"
+#include "BKE_anim_data.hh"
+#include "BKE_armature.hh"
+#include "BKE_deform.hh"
+#include "BKE_main.hh"
 #include "BKE_image.hh"
 #include "BKE_attribute.hh"
 #include "BKE_layer.hh"
@@ -22,18 +32,26 @@
 #include "BKE_mesh.hh"
 #include "BKE_node.hh"
 #include "BKE_object.hh"
+#include "BKE_scene.hh"
 
+#include "BLI_listbase.h"
 #include "BLI_math_matrix.h"
 #include "BLI_math_rotation.h"
 #include "BLI_math_vector_types.hh"
+#include "BLI_string.h"
 
 #include "DEG_depsgraph_query.hh"
 
+#include "DNA_action_types.h"
+#include "DNA_anim_types.h"
+#include "DNA_armature_types.h"
 #include "DNA_ID.h"
 #include "DNA_image_types.h"
 #include "DNA_light_types.h"
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
+#include "DNA_meshdata_types.h"
+#include "DNA_modifier_types.h"
 #include "DNA_node_types.h"
 #include "DNA_object_types.h"
 #include "DNA_rigidbody_types.h"
@@ -209,7 +227,6 @@ struct MeshVertexKey {
   {
     return vertex == other.vertex && uv_x == other.uv_x && uv_y == other.uv_y;
   }
-
 };
 
 struct MeshVertexKeyHash {
@@ -220,6 +237,16 @@ struct MeshVertexKeyHash {
     hash ^= std::hash<int>()(key.uv_y + 0x9e3779b9 + (hash << 6) + (hash >> 2));
     return hash;
   }
+};
+
+struct VertexSkinWeights {
+  std::array<int32_t, 4> indices = {0, 0, 0, 0};
+  std::array<float, 4> weights = {0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+struct DisabledModifierState {
+  ModifierData *modifier = nullptr;
+  int old_mode = 0;
 };
 
 struct ReferencedMaterials {
@@ -278,6 +305,215 @@ struct ReferencedImages {
   }
 };
 
+std::vector<float> matrix_to_column_major(const float matrix[4][4])
+{
+  std::vector<float> result;
+  result.reserve(16);
+  for (int column = 0; column < 4; column++) {
+    for (int row = 0; row < 4; row++) {
+      result.push_back(matrix[column][row]);
+    }
+  }
+  return result;
+}
+
+flatbuffers::Offset<ll::Matrix> create_matrix(flatbuffers::FlatBufferBuilder &builder,
+                                              const float matrix[4][4])
+{
+  return ll::CreateMatrix(builder, builder.CreateVector(matrix_to_column_major(matrix)));
+}
+
+Object *mesh_armature_object(Object *object)
+{
+  if (!object || object->type != OB_MESH) {
+    return nullptr;
+  }
+
+  if (object->parent && object->parent->type == OB_ARMATURE) {
+    return object->parent;
+  }
+
+  for (ModifierData *modifier = static_cast<ModifierData *>(object->modifiers.first); modifier;
+       modifier = modifier->next)
+  {
+    if (modifier->type != eModifierType_Armature) {
+      continue;
+    }
+    ArmatureModifierData *armature_modifier = reinterpret_cast<ArmatureModifierData *>(modifier);
+    if (armature_modifier->object && armature_modifier->object->type == OB_ARMATURE) {
+      return armature_modifier->object;
+    }
+  }
+
+  return nullptr;
+}
+
+void collect_bones_recursive(const ListBaseT<Bone> &bone_base, std::vector<const Bone *> &bones)
+{
+  for (const Bone *bone = static_cast<const Bone *>(bone_base.first); bone; bone = bone->next) {
+    bones.push_back(bone);
+    collect_bones_recursive(bone->childbase, bones);
+  }
+}
+
+std::vector<const Bone *> armature_bones(const bArmature &armature)
+{
+  std::vector<const Bone *> bones;
+  bones.reserve(BKE_armature_bonelist_count(&armature.bonebase));
+  collect_bones_recursive(armature.bonebase, bones);
+  return bones;
+}
+
+std::unordered_map<std::string, int32_t> bone_index_by_name(const std::vector<const Bone *> &bones)
+{
+  std::unordered_map<std::string, int32_t> indices;
+  indices.reserve(bones.size());
+  for (int32_t index = 0; index < int32_t(bones.size()); index++) {
+    indices.emplace(bones[index]->name, index);
+  }
+  return indices;
+}
+
+std::unordered_map<int, int32_t> deform_group_to_bone_index(
+    Object *object, const std::unordered_map<std::string, int32_t> &bone_indices)
+{
+  std::unordered_map<int, int32_t> result;
+  const ListBaseT<bDeformGroup> *defbase = BKE_object_defgroup_list(object);
+  if (!defbase) {
+    return result;
+  }
+
+  int group_index = 0;
+  for (const bDeformGroup *group = static_cast<const bDeformGroup *>(defbase->first);
+       group;
+       group = group->next)
+  {
+    const auto bone_index = bone_indices.find(group->name);
+    if (bone_index != bone_indices.end()) {
+      result.emplace(group_index, bone_index->second);
+    }
+    group_index++;
+  }
+  return result;
+}
+
+std::vector<VertexSkinWeights> skin_weights_for_mesh(const Mesh &mesh,
+                                                     Object *object,
+                                                     Object *armature_object)
+{
+  std::vector<VertexSkinWeights> result(mesh.verts_num);
+  if (!object || !armature_object || armature_object->type != OB_ARMATURE ||
+      !armature_object->data)
+  {
+    return result;
+  }
+
+  const bArmature *armature = reinterpret_cast<const bArmature *>(armature_object->data);
+  const std::vector<const Bone *> bones = armature_bones(*armature);
+  const std::unordered_map<std::string, int32_t> bone_indices = bone_index_by_name(bones);
+  Object *weight_object = DEG_get_original(object);
+  if (!weight_object) {
+    weight_object = object;
+  }
+  const std::unordered_map<int, int32_t> group_to_bone = deform_group_to_bone_index(weight_object,
+                                                                                   bone_indices);
+  if (group_to_bone.empty()) {
+    return result;
+  }
+
+  Span<MDeformVert> deform_verts = mesh.deform_verts();
+  if (deform_verts.is_empty() && weight_object->type == OB_MESH && weight_object->data) {
+    const Mesh *original_mesh = reinterpret_cast<const Mesh *>(weight_object->data);
+    deform_verts = original_mesh->deform_verts();
+  }
+
+  const int max_vertex = std::min<int>(int(result.size()), int(deform_verts.size()));
+  for (int vertex_index = 0; vertex_index < max_vertex; vertex_index++) {
+    const MDeformVert &deform_vert = deform_verts[vertex_index];
+    std::vector<std::pair<int32_t, float>> influences;
+    influences.reserve(deform_vert.totweight);
+    for (int weight_index = 0; weight_index < deform_vert.totweight; weight_index++) {
+      const MDeformWeight &weight = deform_vert.dw[weight_index];
+      const auto bone_index = group_to_bone.find(weight.def_nr);
+      if (bone_index == group_to_bone.end() || weight.weight <= 0.0f) {
+        continue;
+      }
+      influences.emplace_back(bone_index->second, weight.weight);
+    }
+
+    std::sort(influences.begin(),
+              influences.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
+    if (influences.size() > 4) {
+      influences.resize(4);
+    }
+
+    float total_weight = 0.0f;
+    for (const auto &influence : influences) {
+      total_weight += influence.second;
+    }
+    if (total_weight <= 0.0f) {
+      continue;
+    }
+
+    VertexSkinWeights &vertex_weights = result[vertex_index];
+    for (size_t index = 0; index < influences.size(); index++) {
+      vertex_weights.indices[index] = influences[index].first;
+      vertex_weights.weights[index] = influences[index].second / total_weight;
+    }
+  }
+
+  return result;
+}
+
+void mesh_armature_matrices(Object *object,
+                            Object *armature_object,
+                            float mesh_to_armature[4][4],
+                            float armature_to_mesh[4][4])
+{
+  float inverse_armature_world[4][4];
+  float inverse_mesh_world[4][4];
+  invert_m4_m4(inverse_armature_world, armature_object->object_to_world().ptr());
+  invert_m4_m4(inverse_mesh_world, object->object_to_world().ptr());
+  mul_m4_m4m4(mesh_to_armature, inverse_armature_world, object->object_to_world().ptr());
+  mul_m4_m4m4(armature_to_mesh, inverse_mesh_world, armature_object->object_to_world().ptr());
+}
+
+std::vector<DisabledModifierState> disable_armature_modifiers(Object *object)
+{
+  std::vector<DisabledModifierState> disabled;
+  for (ModifierData *modifier = static_cast<ModifierData *>(object->modifiers.first); modifier;
+       modifier = modifier->next)
+  {
+    if (modifier->type != eModifierType_Armature ||
+        (modifier->mode & eModifierMode_Realtime) == 0)
+    {
+      continue;
+    }
+    disabled.push_back({modifier, modifier->mode});
+    modifier->mode &= ~eModifierMode_Realtime;
+  }
+  return disabled;
+}
+
+void restore_modifiers(const std::vector<DisabledModifierState> &disabled)
+{
+  for (const DisabledModifierState &state : disabled) {
+    if (state.modifier) {
+      state.modifier->mode = state.old_mode;
+    }
+  }
+}
+
+void tag_object_geometry_update(Main *bmain, Depsgraph *depsgraph, Object *object)
+{
+  if (!bmain || !depsgraph || !object) {
+    return;
+  }
+  DEG_id_tag_update(&object->id, ID_RECALC_GEOMETRY);
+  BKE_scene_graph_update_tagged(depsgraph, bmain);
+}
+
 void add_object_materials(Object *object,
                           std::vector<int32_t> &material_ids,
                           ReferencedMaterials &referenced_materials)
@@ -312,18 +548,252 @@ void with_active_uv_map(Mesh *mesh, Fn &&fn)
   fn(nullptr);
 }
 
+bool legacy_action_targets_armature(const bAction &action,
+                                    const std::unordered_set<std::string> &bone_names)
+{
+  for (const FCurve *fcurve = static_cast<const FCurve *>(action.curves.first); fcurve;
+       fcurve = fcurve->next)
+  {
+    if (!fcurve->rna_path) {
+      continue;
+    }
+    char bone_name[MAXBONENAME];
+    if (!BLI_str_quoted_substr(fcurve->rna_path, "pose.bones[", bone_name, sizeof(bone_name)))
+    {
+      continue;
+    }
+    if (bone_names.find(bone_name) != bone_names.end()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool layered_action_targets_armature(const bAction &action,
+                                     const std::unordered_set<std::string> &bone_names)
+{
+  bool found = false;
+  auto callback = [&](const FCurve *, const char *bone_name) {
+    if (!found && bone_name && bone_names.find(bone_name) != bone_names.end()) {
+      found = true;
+    }
+  };
+
+  if (action.slot_array_num > 0) {
+    for (int index = 0; index < action.slot_array_num && !found; index++) {
+      const ActionSlot *slot = action.slot_array[index];
+      if (!slot) {
+        continue;
+      }
+      bke::BKE_action_find_fcurves_with_bones(&action, slot->handle, callback);
+    }
+  }
+  else {
+    bke::BKE_action_find_fcurves_with_bones(&action, animrig::Slot::unassigned, callback);
+  }
+
+  return found;
+}
+
+bool action_targets_armature(const bAction *action, Object *armature_object)
+{
+  if (!action || !armature_object || armature_object->type != OB_ARMATURE ||
+      !armature_object->data)
+  {
+    return false;
+  }
+
+  const bArmature *armature = reinterpret_cast<const bArmature *>(armature_object->data);
+  const std::vector<const Bone *> bones = armature_bones(*armature);
+  std::unordered_set<std::string> bone_names;
+  bone_names.reserve(bones.size());
+  for (const Bone *bone : bones) {
+    bone_names.insert(bone->name);
+  }
+
+  return legacy_action_targets_armature(*action, bone_names) ||
+         layered_action_targets_armature(*action, bone_names);
+}
+
+std::vector<bAction *> armature_actions(Main *bmain, Object *armature_object)
+{
+  std::vector<bAction *> result;
+  if (!bmain || !armature_object) {
+    return result;
+  }
+
+  AnimData *anim_data = BKE_animdata_from_id(&armature_object->id);
+  bAction *active_action = anim_data ? anim_data->action : nullptr;
+  if (action_targets_armature(active_action, armature_object)) {
+    result.push_back(active_action);
+  }
+
+  std::vector<bAction *> remaining_actions;
+  for (bAction *action = static_cast<bAction *>(bmain->actions.first); action;
+       action = reinterpret_cast<bAction *>(action->id.next))
+  {
+    if (action == active_action) {
+      continue;
+    }
+    if (action_targets_armature(action, armature_object)) {
+      remaining_actions.push_back(action);
+    }
+  }
+
+  std::sort(remaining_actions.begin(), remaining_actions.end(), [](const bAction *a, const bAction *b) {
+    return std::strcmp(id_name(a->id), id_name(b->id)) < 0;
+  });
+  result.insert(result.end(), remaining_actions.begin(), remaining_actions.end());
+  return result;
+}
+
+struct AnimationState {
+  bAction *action = nullptr;
+  int32_t slot_handle = 0;
+  char last_slot_identifier[MAX_ID_NAME] = "";
+  float frame = 1.0f;
+};
+
+AnimationState capture_animation_state(Object *armature_object, Scene *scene)
+{
+  AnimationState state;
+  state.frame = scene ? BKE_scene_frame_get(scene) : 1.0f;
+
+  AnimData *anim_data = BKE_animdata_from_id(&armature_object->id);
+  if (anim_data) {
+    state.action = anim_data->action;
+    state.slot_handle = anim_data->slot_handle;
+    STRNCPY(state.last_slot_identifier, anim_data->last_slot_identifier);
+  }
+  return state;
+}
+
+void restore_animation_state(Object *armature_object,
+                             Scene *scene,
+                             Depsgraph *depsgraph,
+                             const AnimationState &state)
+{
+  AnimData *anim_data = BKE_animdata_ensure_id(&armature_object->id);
+  if (anim_data) {
+    BKE_animdata_set_action(nullptr, &armature_object->id, state.action);
+    anim_data = BKE_animdata_from_id(&armature_object->id);
+    if (anim_data) {
+      anim_data->slot_handle = state.slot_handle;
+      STRNCPY(anim_data->last_slot_identifier, state.last_slot_identifier);
+    }
+  }
+
+  if (scene && depsgraph) {
+    BKE_scene_frame_set(scene, state.frame);
+    BKE_scene_graph_update_for_newframe(depsgraph);
+  }
+}
+
+flatbuffers::Offset<ll::Animation> export_animation(flatbuffers::FlatBufferBuilder &builder,
+                                                    Object *armature_object,
+                                                    bAction *action,
+                                                    const std::vector<const Bone *> &bones,
+                                                    Main *bmain,
+                                                    Depsgraph *depsgraph)
+{
+  if (!action || !armature_object || !bmain || !depsgraph) {
+    return 0;
+  }
+
+  Scene *scene = DEG_get_input_scene(depsgraph);
+  if (!scene) {
+    return 0;
+  }
+
+  const float frame_rate = scene->r.frs_sec_base > 0.0f ?
+                               float(scene->r.frs_sec) / scene->r.frs_sec_base :
+                               0.0f;
+  const float2 frame_range = action->wrap().get_frame_range();
+  const int frame_start = int(std::floor(frame_range.x));
+  const int frame_end = int(std::ceil(frame_range.y));
+  const int frame_count = std::max(1, frame_end - frame_start + 1);
+  const int bone_count = int(bones.size());
+  std::vector<float> skin_matrices;
+  skin_matrices.reserve(size_t(frame_count) * size_t(bone_count) * 16);
+
+  const AnimationState old_state = capture_animation_state(armature_object, scene);
+  BKE_animdata_ensure_id(&armature_object->id);
+  BKE_animdata_set_action(nullptr, &armature_object->id, action);
+
+  for (int frame = frame_start; frame <= frame_end; frame++) {
+    BKE_scene_frame_set(scene, float(frame));
+    BKE_scene_graph_update_for_newframe(depsgraph);
+    Object *armature_eval = DEG_get_evaluated(depsgraph, armature_object);
+
+    for (const Bone *bone : bones) {
+      float inverse_bind[4][4];
+      invert_m4_m4(inverse_bind, bone->arm_mat);
+
+      float skin_matrix[4][4];
+      if (armature_eval && armature_eval->pose) {
+        bPoseChannel *pose_channel = BKE_pose_channel_find_name(armature_eval->pose, bone->name);
+        if (pose_channel) {
+          mul_m4_m4m4(skin_matrix, pose_channel->pose_mat, inverse_bind);
+        }
+        else {
+          unit_m4(skin_matrix);
+        }
+      }
+      else {
+        unit_m4(skin_matrix);
+      }
+
+      const std::vector<float> matrix_values = matrix_to_column_major(skin_matrix);
+      skin_matrices.insert(skin_matrices.end(), matrix_values.begin(), matrix_values.end());
+    }
+  }
+
+  restore_animation_state(armature_object, scene, depsgraph, old_state);
+
+  const float duration_seconds = frame_rate > 0.0f ? float(frame_count) / frame_rate : 0.0f;
+  return ll::CreateAnimation(builder,
+                             builder.CreateString(id_name(action->id)),
+                             frame_rate,
+                             duration_seconds,
+                             frame_count,
+                             bone_count,
+                             builder.CreateVector(skin_matrices));
+}
+
 flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builder,
                                           Object *object,
-                                          Object *object_eval,
+                                          Object *mesh_armature,
+                                          Main *bmain,
                                           Depsgraph *depsgraph,
                                           ReferencedMaterials &referenced_materials)
 {
-  if (!depsgraph || !object_eval) {
+  if (!depsgraph || !object) {
+    return 0;
+  }
+
+  std::vector<DisabledModifierState> disabled_armature_modifiers;
+  if (mesh_armature) {
+    disabled_armature_modifiers = disable_armature_modifiers(object);
+    if (!disabled_armature_modifiers.empty()) {
+      tag_object_geometry_update(bmain, depsgraph, object);
+    }
+  }
+
+  Object *object_eval = DEG_get_evaluated(depsgraph, object);
+  if (!object_eval) {
+    restore_modifiers(disabled_armature_modifiers);
+    if (!disabled_armature_modifiers.empty()) {
+      tag_object_geometry_update(bmain, depsgraph, object);
+    }
     return 0;
   }
 
   Mesh *mesh = BKE_object_to_mesh(depsgraph, object_eval, true);
   if (!mesh) {
+    restore_modifiers(disabled_armature_modifiers);
+    if (!disabled_armature_modifiers.empty()) {
+      tag_object_geometry_update(bmain, depsgraph, object);
+    }
     return 0;
   }
 
@@ -331,8 +801,14 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   std::vector<float> normals_out;
   std::vector<float> texcoords_out;
   std::vector<uint32_t> indices_out;
+  std::vector<int32_t> joint_indices_out;
+  std::vector<float> joint_weights_out;
   std::vector<int32_t> material_ids;
   add_object_materials(object, material_ids, referenced_materials);
+  const std::vector<VertexSkinWeights> skin_weights = mesh_armature ?
+                                                         skin_weights_for_mesh(
+                                                             *mesh, object, mesh_armature) :
+                                                         std::vector<VertexSkinWeights>();
 
   const Span<float3> positions = mesh->vert_positions();
   const Span<float3> normals = mesh->vert_normals();
@@ -345,6 +821,10 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   normals_out.reserve(corner_tris.size() * 9);
   texcoords_out.reserve(corner_tris.size() * 6);
   indices_out.reserve(corner_tris.size() * 3);
+  if (mesh_armature) {
+    joint_indices_out.reserve(corner_tris.size() * 12);
+    joint_weights_out.reserve(corner_tris.size() * 12);
+  }
 
   with_active_uv_map(mesh, [&](const VArraySpan<float2> *uv_map) {
     for (const int tri_index : corner_tris.index_range()) {
@@ -367,6 +847,15 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
           texcoords_out.insert(texcoords_out.end(),
                                {float(key.uv_x) / 1000000.0f,
                                 float(key.uv_y) / 1000000.0f});
+          if (mesh_armature) {
+            const VertexSkinWeights vertex_weights = vertex < int(skin_weights.size()) ?
+                                                         skin_weights[vertex] :
+                                                         VertexSkinWeights();
+            joint_indices_out.insert(
+                joint_indices_out.end(), vertex_weights.indices.begin(), vertex_weights.indices.end());
+            joint_weights_out.insert(
+                joint_weights_out.end(), vertex_weights.weights.begin(), vertex_weights.weights.end());
+          }
         }
 
         indices_out.push_back(item->second);
@@ -374,18 +863,34 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
     }
   });
   BKE_object_to_mesh_clear(object_eval);
+  restore_modifiers(disabled_armature_modifiers);
+  if (!disabled_armature_modifiers.empty()) {
+    tag_object_geometry_update(bmain, depsgraph, object);
+  }
+
+  int32_t armature_id = -1;
+  flatbuffers::Offset<ll::Matrix> mesh_to_armature_fb = 0;
+  flatbuffers::Offset<ll::Matrix> armature_to_mesh_fb = 0;
+  if (mesh_armature) {
+    armature_id = int32_t(mesh_armature->id.session_uid);
+    float mesh_to_armature[4][4];
+    float armature_to_mesh[4][4];
+    mesh_armature_matrices(object, mesh_armature, mesh_to_armature, armature_to_mesh);
+    mesh_to_armature_fb = create_matrix(builder, mesh_to_armature);
+    armature_to_mesh_fb = create_matrix(builder, armature_to_mesh);
+  }
 
   return ll::CreateMesh(builder,
                         builder.CreateVector(positions_out),
                         builder.CreateVector(normals_out),
                         builder.CreateVector(texcoords_out),
                         builder.CreateVector(indices_out),
-                        0,
-                        0,
+                        mesh_armature ? builder.CreateVector(joint_indices_out) : 0,
+                        mesh_armature ? builder.CreateVector(joint_weights_out) : 0,
                         builder.CreateVector(material_ids),
-                        -1,
-                        0,
-                        0);
+                        armature_id,
+                        mesh_to_armature_fb,
+                        armature_to_mesh_fb);
 }
 
 flatbuffers::Offset<ll::Light> export_light(flatbuffers::FlatBufferBuilder &builder, const Object *object)
@@ -492,9 +997,57 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
   return components_out;
 }
 
+flatbuffers::Offset<ll::Armature> export_armature(flatbuffers::FlatBufferBuilder &builder,
+                                                  Object *armature_object,
+                                                  Main *bmain,
+                                                  Depsgraph *depsgraph)
+{
+  if (!armature_object || armature_object->type != OB_ARMATURE || !armature_object->data) {
+    return 0;
+  }
+
+  const bArmature *armature = reinterpret_cast<const bArmature *>(armature_object->data);
+  const std::vector<const Bone *> bones = armature_bones(*armature);
+  const std::unordered_map<std::string, int32_t> bone_indices = bone_index_by_name(bones);
+
+  std::vector<flatbuffers::Offset<ll::Bone>> bone_offsets;
+  bone_offsets.reserve(bones.size());
+  for (const Bone *bone : bones) {
+    const char *parent_name = bone->parent ? bone->parent->name : nullptr;
+    int32_t parent_index = -1;
+    if (parent_name) {
+      const auto item = bone_indices.find(parent_name);
+      parent_index = item != bone_indices.end() ? item->second : -1;
+    }
+
+    float inverse_bind[4][4];
+    invert_m4_m4(inverse_bind, bone->arm_mat);
+    bone_offsets.push_back(ll::CreateBone(builder,
+                                          builder.CreateString(bone->name),
+                                          parent_name ? builder.CreateString(parent_name) : 0,
+                                          parent_index,
+                                          create_matrix(builder, inverse_bind)));
+  }
+
+  std::vector<flatbuffers::Offset<ll::Animation>> animation_offsets;
+  const std::vector<bAction *> actions = armature_actions(bmain, armature_object);
+  animation_offsets.reserve(actions.size());
+  for (bAction *action : actions) {
+    const auto animation = export_animation(builder, armature_object, action, bones, bmain, depsgraph);
+    if (animation.o != 0) {
+      animation_offsets.push_back(animation);
+    }
+  }
+
+  return ll::CreateArmature(builder,
+                            builder.CreateVector(bone_offsets),
+                            builder.CreateVector(animation_offsets));
+}
+
 flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &builder,
                                               PyObject *py_object,
                                               Object *object,
+                                              Main *bmain,
                                               Depsgraph *depsgraph,
                                               ReferencedMaterials &referenced_materials)
 {
@@ -512,7 +1065,13 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
 
   flatbuffers::Offset<ll::Mesh> mesh_fb = 0;
   if (object->type == OB_MESH) {
-    mesh_fb = export_mesh(builder, object, object_eval, depsgraph, referenced_materials);
+    mesh_fb = export_mesh(
+        builder, object, mesh_armature_object(object), bmain, depsgraph, referenced_materials);
+  }
+
+  flatbuffers::Offset<ll::Armature> armature_fb = 0;
+  if (object->type == OB_ARMATURE) {
+    armature_fb = export_armature(builder, object, bmain, depsgraph);
   }
 
   flatbuffers::Offset<ll::Light> light_fb = export_light(builder, object_eval);
@@ -540,7 +1099,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
                           &scale_fb,
                           &rotation_fb,
                           mesh_fb,
-                          0,
+                          armature_fb,
                           rigid_body_ptr,
                           light_fb,
                           components_fb);
@@ -760,6 +1319,7 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
   if (!depsgraph) {
     return nullptr;
   }
+  Main *bmain = DEG_get_bmain(depsgraph);
 
   PyPtr object_sequence(PySequence_Fast(objects, "objects must be a sequence"));
   if (!object_sequence) {
@@ -792,7 +1352,7 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
       continue;
     }
     object_offsets.push_back(
-        export_object(builder, py_object, object, depsgraph, referenced_materials));
+        export_object(builder, py_object, object, bmain, depsgraph, referenced_materials));
   }
 
   std::vector<flatbuffers::Offset<ll::Material>> material_offsets;
