@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,9 +45,6 @@
 #include "RNA_prototypes.hh"
 
 #include "bpy_rna.hh"
-
-#include "bmesh.hh"
-#include "bmesh_tools.hh"
 
 #include "blender_live_link_generated.h"
 
@@ -214,16 +210,6 @@ struct MeshVertexKey {
     return vertex == other.vertex && uv_x == other.uv_x && uv_y == other.uv_y;
   }
 
-  bool operator<(const MeshVertexKey &other) const
-  {
-    if (vertex != other.vertex) {
-      return vertex < other.vertex;
-    }
-    if (uv_x != other.uv_x) {
-      return uv_x < other.uv_x;
-    }
-    return uv_y < other.uv_y;
-  }
 };
 
 struct MeshVertexKeyHash {
@@ -326,37 +312,6 @@ void with_active_uv_map(Mesh *mesh, Fn &&fn)
   fn(nullptr);
 }
 
-bool mesh_needs_triangulation(const Mesh *mesh)
-{
-  const OffsetIndices<int> faces = mesh->faces();
-  for (const int face_index : faces.index_range()) {
-    if (faces[face_index].size() != 3) {
-      return true;
-    }
-  }
-  return false;
-}
-
-Mesh *triangulate_mesh_like_python(Mesh *mesh)
-{
-  CustomData_MeshMasks cd_mask_extra{};
-  BMeshCreateParams bmesh_create_params{};
-  BMeshFromMeshParams bmesh_from_mesh_params{};
-  bmesh_from_mesh_params.calc_face_normal = true;
-  bmesh_from_mesh_params.calc_vert_normal = false;
-  bmesh_from_mesh_params.cd_mask_extra = cd_mask_extra;
-
-  BMesh *bm = BKE_mesh_to_bmesh_ex(mesh, &bmesh_create_params, &bmesh_from_mesh_params);
-  BM_mesh_triangulate(bm, 0, 0, 4, false, nullptr, nullptr, nullptr);
-
-  BMeshToMeshParams bmesh_to_mesh_params{};
-  bmesh_to_mesh_params.update_shapekey_indices = true;
-  bmesh_to_mesh_params.cd_mask_extra = cd_mask_extra;
-  Mesh *result = BKE_mesh_from_bmesh_nomain(bm, &bmesh_to_mesh_params, mesh);
-  BM_mesh_free(bm);
-  return result;
-}
-
 flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builder,
                                           Object *object,
                                           Object *object_eval,
@@ -371,11 +326,6 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   if (!mesh) {
     return 0;
   }
-  Mesh *triangulated_mesh = nullptr;
-  if (mesh_needs_triangulation(mesh)) {
-    triangulated_mesh = triangulate_mesh_like_python(mesh);
-    mesh = triangulated_mesh;
-  }
 
   std::vector<float> positions_out;
   std::vector<float> normals_out;
@@ -387,16 +337,20 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   const Span<float3> positions = mesh->vert_positions();
   const Span<float3> normals = mesh->vert_normals();
   const Span<int> corner_verts = mesh->corner_verts();
-  const OffsetIndices<int> faces = mesh->faces();
+  const Span<int3> corner_tris = mesh->corner_tris();
 
-  std::vector<MeshVertexKey> corner_keys;
-  corner_keys.reserve(corner_verts.size());
-  indices_out.reserve(corner_verts.size());
+  std::unordered_map<MeshVertexKey, uint32_t, MeshVertexKeyHash> key_to_index;
+  key_to_index.reserve(corner_tris.size() * 3);
+  positions_out.reserve(corner_tris.size() * 9);
+  normals_out.reserve(corner_tris.size() * 9);
+  texcoords_out.reserve(corner_tris.size() * 6);
+  indices_out.reserve(corner_tris.size() * 3);
 
   with_active_uv_map(mesh, [&](const VArraySpan<float2> *uv_map) {
-    for (const int face_index : faces.index_range()) {
-      const IndexRange face = faces[face_index];
-      for (const int corner : face) {
+    for (const int tri_index : corner_tris.index_range()) {
+      const int3 &tri = corner_tris[tri_index];
+      for (int tri_corner = 0; tri_corner < 3; tri_corner++) {
+        const int corner = tri[tri_corner];
         const int vertex = corner_verts[corner];
         float2 uv = {0.0f, 0.0f};
         if (uv_map) {
@@ -404,39 +358,21 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
         }
 
         const MeshVertexKey key = {vertex, int(uv.x * 1000000.0f), int(uv.y * 1000000.0f)};
-        corner_keys.push_back(key);
+        const auto [item, inserted] = key_to_index.emplace(key, uint32_t(key_to_index.size()));
+        if (inserted) {
+          const float3 position = positions[vertex];
+          const float3 normal = normals[vertex];
+          positions_out.insert(positions_out.end(), {position.x, position.y, position.z});
+          normals_out.insert(normals_out.end(), {normal.x, normal.y, normal.z});
+          texcoords_out.insert(texcoords_out.end(),
+                               {float(key.uv_x) / 1000000.0f,
+                                float(key.uv_y) / 1000000.0f});
+        }
+
+        indices_out.push_back(item->second);
       }
     }
   });
-
-  std::vector<MeshVertexKey> unique_keys = corner_keys;
-  std::sort(unique_keys.begin(), unique_keys.end());
-  unique_keys.erase(std::unique(unique_keys.begin(), unique_keys.end()), unique_keys.end());
-
-  std::map<MeshVertexKey, uint32_t> key_to_index;
-  for (uint32_t index = 0; index < unique_keys.size(); index++) {
-    key_to_index.emplace(unique_keys[index], index);
-  }
-
-  positions_out.reserve(unique_keys.size() * 3);
-  normals_out.reserve(unique_keys.size() * 3);
-  texcoords_out.reserve(unique_keys.size() * 2);
-  for (const MeshVertexKey &key : unique_keys) {
-    const float3 position = positions[key.vertex];
-    const float3 normal = normals[key.vertex];
-    positions_out.insert(positions_out.end(), {position.x, position.y, position.z});
-    normals_out.insert(normals_out.end(), {normal.x, normal.y, normal.z});
-    texcoords_out.insert(
-        texcoords_out.end(), {float(key.uv_x) / 1000000.0f, float(key.uv_y) / 1000000.0f});
-  }
-
-  for (const MeshVertexKey &key : corner_keys) {
-    indices_out.push_back(key_to_index[key]);
-  }
-
-  if (triangulated_mesh) {
-    BKE_id_free(nullptr, triangulated_mesh);
-  }
   BKE_object_to_mesh_clear(object_eval);
 
   return ll::CreateMesh(builder,

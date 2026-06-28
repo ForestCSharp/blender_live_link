@@ -261,6 +261,26 @@ sync_native_live_link_sources() {
 	done
 }
 
+remove_retired_bmesh_dependency_patch() {
+	local cmake_file="$BLENDER_SRC_DIR/source/blender/python/intern/CMakeLists.txt"
+	local retired_sentinel="$BLENDER_PATCH_SENTINEL_DIR/live_link_native_bmesh_dependency.patch.sha256"
+
+	if [[ ! -f "$cmake_file" ]]; then
+		return
+	fi
+
+	if ! grep -q '^[[:space:]]*PRIVATE bf::bmesh[[:space:]]*$' "$cmake_file"; then
+		rm -f "$retired_sentinel"
+		return
+	fi
+
+	echo "Removing retired Blender BMesh dependency patch from generated source"
+	awk '$0 !~ /^[[:space:]]*PRIVATE bf::bmesh[[:space:]]*$/' "$cmake_file" > "$cmake_file.tmp"
+	mv "$cmake_file.tmp" "$cmake_file"
+	rm -f "$retired_sentinel"
+	BLENDER_PATCHES_CHANGED=true
+}
+
 ensure_native_schema_inputs() {
 	if [[ ! -f "$BLENDER_LIVE_LINK_SCHEMA_HEADER" ]]; then
 		echo "Error: generated C++ schema header was not found at $BLENDER_LIVE_LINK_SCHEMA_HEADER"
@@ -459,6 +479,7 @@ build_mac_blender() {
 ensure_blender_source
 ensure_native_schema_inputs
 apply_blender_patches
+remove_retired_bmesh_dependency_patch
 sync_native_live_link_sources
 
 CURRENT_OS=$(detect_os)

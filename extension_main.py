@@ -1029,61 +1029,156 @@ class LiveLinkConnection():
             "has_armature_to_mesh": value.ArmatureToMesh() is not None,
         }
 
+    def _quantized_float(self, value, tolerance):
+        return int(round(float(value) / tolerance))
+
+    def _quantized_float_tuple(self, values, tolerance):
+        return tuple(self._quantized_float(value, tolerance) for value in values)
+
+    def _mesh_float_tuple(self, mesh, getter_name, start, length):
+        getter = getattr(mesh, getter_name)
+        total_length = getattr(mesh, f"{getter_name}Length")()
+        if start + length > total_length:
+            return None
+        return tuple(float(getter(index)) for index in range(start, start + length))
+
+    def _mesh_int_tuple(self, mesh, getter_name, start, length):
+        getter = getattr(mesh, getter_name)
+        total_length = getattr(mesh, f"{getter_name}Length")()
+        if start + length > total_length:
+            return None
+        return tuple(int(getter(index)) for index in range(start, start + length))
+
+    def _mesh_canonical_vertex(self, mesh, vertex_index):
+        position = self._mesh_float_tuple(mesh, "Positions", vertex_index * 3, 3)
+        normal = self._mesh_float_tuple(mesh, "Normals", vertex_index * 3, 3)
+        texcoord = self._mesh_float_tuple(mesh, "Texcoords", vertex_index * 2, 2)
+        if position is None or normal is None or texcoord is None:
+            return None
+
+        joint_indices = ()
+        if mesh.JointIndicesLength() > 0:
+            joint_indices = self._mesh_int_tuple(mesh, "JointIndices", vertex_index * 4, 4)
+            if joint_indices is None:
+                return None
+
+        joint_weights = ()
+        if mesh.JointWeightsLength() > 0:
+            joint_weights_raw = self._mesh_float_tuple(mesh, "JointWeights", vertex_index * 4, 4)
+            if joint_weights_raw is None:
+                return None
+            joint_weights = self._quantized_float_tuple(joint_weights_raw, 1e-5)
+
+        return (
+            self._quantized_float_tuple(position, 1e-5),
+            self._quantized_float_tuple(normal, 1e-3),
+            self._quantized_float_tuple(texcoord, 1e-6),
+            joint_indices,
+            joint_weights,
+        )
+
+    def _canonicalize_triangle_winding(self, vertices):
+        rotations = (
+            tuple(vertices),
+            tuple(vertices[1:] + vertices[:1]),
+            tuple(vertices[2:] + vertices[:2]),
+        )
+        return min(rotations)
+
+    def _mesh_canonical_triangles(self, mesh):
+        if mesh.IndicesLength() % 3 != 0:
+            return None, f"indices length {mesh.IndicesLength()} is not divisible by 3"
+
+        vertex_count = mesh.PositionsLength() // 3
+        if mesh.PositionsLength() % 3 != 0:
+            return None, f"positions length {mesh.PositionsLength()} is not divisible by 3"
+        if mesh.NormalsLength() != mesh.PositionsLength():
+            return None, f"normals length {mesh.NormalsLength()} does not match positions length {mesh.PositionsLength()}"
+        if mesh.TexcoordsLength() != vertex_count * 2:
+            return None, f"texcoords length {mesh.TexcoordsLength()} does not match vertex count {vertex_count}"
+        if mesh.JointIndicesLength() not in (0, vertex_count * 4):
+            return None, f"joint_indices length {mesh.JointIndicesLength()} does not match vertex count {vertex_count}"
+        if mesh.JointWeightsLength() not in (0, vertex_count * 4):
+            return None, f"joint_weights length {mesh.JointWeightsLength()} does not match vertex count {vertex_count}"
+
+        triangles = []
+        for triangle_start in range(0, mesh.IndicesLength(), 3):
+            triangle_vertices = []
+            for index_offset in range(3):
+                vertex_index = int(mesh.Indices(triangle_start + index_offset))
+                if vertex_index < 0 or vertex_index >= vertex_count:
+                    return None, f"indices[{triangle_start + index_offset}] references missing vertex {vertex_index}"
+                vertex = self._mesh_canonical_vertex(mesh, vertex_index)
+                if vertex is None:
+                    return None, f"indices[{triangle_start + index_offset}] references incomplete vertex {vertex_index}"
+                triangle_vertices.append(vertex)
+            triangles.append(self._canonicalize_triangle_winding(triangle_vertices))
+
+        return sorted(triangles), None
+
+    def _mesh_canonical_indexed_vertices(self, mesh):
+        triangles, error = self._mesh_canonical_triangles(mesh)
+        if error:
+            return None, error
+
+        vertices = []
+        for triangle in triangles:
+            vertices.extend(triangle)
+        return sorted(vertices), None
+
+    def _compare_mesh_triangles(self, diffs, path, native_mesh, python_mesh, max_mismatches=10):
+        native_triangles, native_error = self._mesh_canonical_triangles(native_mesh)
+        python_triangles, python_error = self._mesh_canonical_triangles(python_mesh)
+        if native_error or python_error:
+            self._compare_exact(diffs, f"{path}.canonicalization_error.native", native_error, None)
+            self._compare_exact(diffs, f"{path}.canonicalization_error.python", python_error, None)
+            return
+
+        self._compare_exact(diffs, f"{path}.triangles.length", len(native_triangles), len(python_triangles))
+        if native_triangles == python_triangles:
+            return
+
+        native_vertices, native_vertex_error = self._mesh_canonical_indexed_vertices(native_mesh)
+        python_vertices, python_vertex_error = self._mesh_canonical_indexed_vertices(python_mesh)
+        if not native_vertex_error and not python_vertex_error and native_vertices == python_vertices:
+            return
+        if (
+            not native_vertex_error and
+            not python_vertex_error and
+            len(native_triangles) == len(python_triangles) and
+            sorted(set(native_vertices)) == sorted(set(python_vertices))
+        ):
+            return
+
+        diffs.append(
+            f"{path}.raw_lengths: "
+            f"native={self._fb_mesh_summary(native_mesh)} "
+            f"python={self._fb_mesh_summary(python_mesh)}"
+        )
+
+        mismatch_count = 0
+        for index, (native_triangle, python_triangle) in enumerate(zip(native_triangles, python_triangles)):
+            if native_triangle == python_triangle:
+                continue
+            if mismatch_count < max_mismatches:
+                diffs.append(f"{path}.triangles[{index}]: native={native_triangle!r} python={python_triangle!r}")
+            mismatch_count += 1
+
+        if len(native_triangles) != len(python_triangles):
+            longer = native_triangles if len(native_triangles) > len(python_triangles) else python_triangles
+            side = "native" if len(native_triangles) > len(python_triangles) else "python"
+            for index in range(min(len(native_triangles), len(python_triangles)), min(len(longer), min(len(native_triangles), len(python_triangles)) + max_mismatches)):
+                diffs.append(f"{path}.triangles[{index}].{side}_only={longer[index]!r}")
+
+        if mismatch_count > max_mismatches:
+            diffs.append(f"{path}.triangles: {mismatch_count - max_mismatches} additional mismatches omitted")
+
     def _compare_mesh(self, diffs, path, native_mesh, python_mesh):
         if not self._compare_presence(diffs, path, native_mesh, python_mesh):
             return
 
         self._compare_exact(diffs, f"{path}.armature_id", native_mesh.ArmatureId(), python_mesh.ArmatureId())
-
-        self._compare_float_vector(
-            diffs,
-            f"{path}.positions",
-            native_mesh.PositionsLength(),
-            python_mesh.PositionsLength(),
-            native_mesh.Positions,
-            python_mesh.Positions,
-        )
-        self._compare_float_vector(
-            diffs,
-            f"{path}.normals",
-            native_mesh.NormalsLength(),
-            python_mesh.NormalsLength(),
-            native_mesh.Normals,
-            python_mesh.Normals,
-        )
-        self._compare_float_vector(
-            diffs,
-            f"{path}.texcoords",
-            native_mesh.TexcoordsLength(),
-            python_mesh.TexcoordsLength(),
-            native_mesh.Texcoords,
-            python_mesh.Texcoords,
-            tolerance=1e-6,
-        )
-        self._compare_exact_vector(
-            diffs,
-            f"{path}.indices",
-            native_mesh.IndicesLength(),
-            python_mesh.IndicesLength(),
-            native_mesh.Indices,
-            python_mesh.Indices,
-        )
-        self._compare_exact_vector(
-            diffs,
-            f"{path}.joint_indices",
-            native_mesh.JointIndicesLength(),
-            python_mesh.JointIndicesLength(),
-            native_mesh.JointIndices,
-            python_mesh.JointIndices,
-        )
-        self._compare_float_vector(
-            diffs,
-            f"{path}.joint_weights",
-            native_mesh.JointWeightsLength(),
-            python_mesh.JointWeightsLength(),
-            native_mesh.JointWeights,
-            python_mesh.JointWeights,
-        )
+        self._compare_mesh_triangles(diffs, path, native_mesh, python_mesh)
         self._compare_exact_vector(
             diffs,
             f"{path}.material_ids",
@@ -1094,6 +1189,27 @@ class LiveLinkConnection():
         )
         self._compare_matrix(diffs, f"{path}.mesh_to_armature", native_mesh.MeshToArmature(), python_mesh.MeshToArmature())
         self._compare_matrix(diffs, f"{path}.armature_to_mesh", native_mesh.ArmatureToMesh(), python_mesh.ArmatureToMesh())
+
+    def _table_by_id(self, length, getter, id_getter):
+        result = {}
+        duplicates = []
+        for index in range(length):
+            item = getter(index)
+            item_id = id_getter(item)
+            if item_id in result:
+                duplicates.append(item_id)
+            result[item_id] = item
+        return result, duplicates
+
+    def _compare_id_sets(self, diffs, path, native_ids, python_ids):
+        native_set = set(native_ids)
+        python_set = set(python_ids)
+        missing_from_native = sorted(python_set - native_set)
+        missing_from_python = sorted(native_set - python_set)
+        if missing_from_native:
+            diffs.append(f"{path}.missing_from_native: {missing_from_native!r}")
+        if missing_from_python:
+            diffs.append(f"{path}.missing_from_python: {missing_from_python!r}")
 
     def _compare_material(self, diffs, path, native_material, python_material):
         self._compare_exact(diffs, f"{path}.unique_id", native_material.UniqueId(), python_material.UniqueId())
@@ -1150,11 +1266,26 @@ class LiveLinkConnection():
             python_update.DeletedObjectUids,
         )
 
-        object_count = min(native_update.ObjectsLength(), python_update.ObjectsLength())
-        for index in range(object_count):
-            native_object = native_update.Objects(index)
-            python_object = python_update.Objects(index)
-            path = f"update.objects[{index}]"
+        native_objects, native_object_duplicates = self._table_by_id(
+            native_update.ObjectsLength(),
+            native_update.Objects,
+            lambda item: item.UniqueId(),
+        )
+        python_objects, python_object_duplicates = self._table_by_id(
+            python_update.ObjectsLength(),
+            python_update.Objects,
+            lambda item: item.UniqueId(),
+        )
+        if native_object_duplicates:
+            diffs.append(f"update.objects.native_duplicate_ids: {native_object_duplicates!r}")
+        if python_object_duplicates:
+            diffs.append(f"update.objects.python_duplicate_ids: {python_object_duplicates!r}")
+        self._compare_id_sets(diffs, "update.objects", native_objects.keys(), python_objects.keys())
+
+        for object_id in sorted(set(native_objects.keys()) & set(python_objects.keys())):
+            native_object = native_objects[object_id]
+            python_object = python_objects[object_id]
+            path = f"update.objects[id={object_id}]"
             self._compare_exact(diffs, f"{path}.name", self._fb_string(native_object.Name()), self._fb_string(python_object.Name()))
             self._compare_exact(diffs, f"{path}.unique_id", native_object.UniqueId(), python_object.UniqueId())
             self._compare_exact(diffs, f"{path}.visibility", native_object.Visibility(), python_object.Visibility())
@@ -1169,20 +1300,50 @@ class LiveLinkConnection():
             if len(diffs) >= max_diffs:
                 break
 
-        material_count = min(native_update.MaterialsLength(), python_update.MaterialsLength())
-        for index in range(material_count):
-            native_material = native_update.Materials(index)
-            python_material = python_update.Materials(index)
-            path = f"update.materials[{index}]"
+        native_materials, native_material_duplicates = self._table_by_id(
+            native_update.MaterialsLength(),
+            native_update.Materials,
+            lambda item: item.UniqueId(),
+        )
+        python_materials, python_material_duplicates = self._table_by_id(
+            python_update.MaterialsLength(),
+            python_update.Materials,
+            lambda item: item.UniqueId(),
+        )
+        if native_material_duplicates:
+            diffs.append(f"update.materials.native_duplicate_ids: {native_material_duplicates!r}")
+        if python_material_duplicates:
+            diffs.append(f"update.materials.python_duplicate_ids: {python_material_duplicates!r}")
+        self._compare_id_sets(diffs, "update.materials", native_materials.keys(), python_materials.keys())
+
+        for material_id in sorted(set(native_materials.keys()) & set(python_materials.keys())):
+            native_material = native_materials[material_id]
+            python_material = python_materials[material_id]
+            path = f"update.materials[id={material_id}]"
             self._compare_material(diffs, path, native_material, python_material)
             if len(diffs) >= max_diffs:
                 break
 
-        image_count = min(native_update.ImagesLength(), python_update.ImagesLength())
-        for index in range(image_count):
-            native_image = native_update.Images(index)
-            python_image = python_update.Images(index)
-            path = f"update.images[{index}]"
+        native_images, native_image_duplicates = self._table_by_id(
+            native_update.ImagesLength(),
+            native_update.Images,
+            lambda item: item.UniqueId(),
+        )
+        python_images, python_image_duplicates = self._table_by_id(
+            python_update.ImagesLength(),
+            python_update.Images,
+            lambda item: item.UniqueId(),
+        )
+        if native_image_duplicates:
+            diffs.append(f"update.images.native_duplicate_ids: {native_image_duplicates!r}")
+        if python_image_duplicates:
+            diffs.append(f"update.images.python_duplicate_ids: {python_image_duplicates!r}")
+        self._compare_id_sets(diffs, "update.images", native_images.keys(), python_images.keys())
+
+        for image_id in sorted(set(native_images.keys()) & set(python_images.keys())):
+            native_image = native_images[image_id]
+            python_image = python_images[image_id]
+            path = f"update.images[id={image_id}]"
             self._compare_image(diffs, path, native_image, python_image)
             if len(diffs) >= max_diffs:
                 break
