@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,10 +36,12 @@
 #include "BKE_scene.hh"
 
 #include "BLI_listbase.h"
+#include "BLI_index_range.hh"
 #include "BLI_math_matrix.h"
 #include "BLI_math_rotation.h"
 #include "BLI_math_vector_types.hh"
 #include "BLI_string.h"
+#include "BLI_task.hh"
 
 #include "DEG_depsgraph_query.hh"
 
@@ -1089,7 +1092,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
 
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
       export_gameplay_components(builder, py_object);
-  const auto components_fb = components.empty() ? 0 : builder.CreateVector(reversed_copy(components));
+  const auto components_fb = components.empty() ? 0 : builder.CreateVector(components);
 
   return ll::CreateObject(builder,
                           builder.CreateString(id_name(object->id)),
@@ -1305,6 +1308,1136 @@ flatbuffers::Offset<ll::Material> export_material(flatbuffers::FlatBufferBuilder
                             data.emission_strength);
 }
 
+struct DiffList {
+  int max_diffs = 100;
+  std::vector<std::string> diffs;
+  bool truncated = false;
+
+  void add(std::string diff)
+  {
+    if (int(diffs.size()) < max_diffs) {
+      diffs.push_back(std::move(diff));
+    }
+    else {
+      truncated = true;
+    }
+  }
+
+  void merge(const DiffList &other)
+  {
+    for (const std::string &diff : other.diffs) {
+      add(diff);
+    }
+    truncated = truncated || other.truncated;
+  }
+
+  void finish()
+  {
+    if (truncated && int(diffs.size()) < max_diffs) {
+      diffs.push_back("... additional differences omitted after " + std::to_string(max_diffs) +
+                      " entries");
+    }
+  }
+};
+
+struct CompareResult {
+  bool matched = false;
+  std::string message;
+};
+
+std::string fb_string(const flatbuffers::String *value)
+{
+  return value ? value->str() : "";
+}
+
+bool nearly_equal(const double a, const double b, const double tolerance)
+{
+  return std::fabs(a - b) <= tolerance;
+}
+
+template<typename T> uint32_t vector_size(const flatbuffers::Vector<T> *value)
+{
+  return value ? value->size() : 0;
+}
+
+template<typename T>
+bool vector_exact_equal(const flatbuffers::Vector<T> *native_value,
+                        const flatbuffers::Vector<T> *python_value)
+{
+  const uint32_t native_size = vector_size(native_value);
+  const uint32_t python_size = vector_size(python_value);
+  if (native_size != python_size) {
+    return false;
+  }
+  if (native_size == 0) {
+    return true;
+  }
+  return std::memcmp(native_value->data(), python_value->data(), sizeof(T) * native_size) == 0;
+}
+
+template<typename T>
+void compare_exact(DiffList &diffs,
+                   const std::string &path,
+                   const T &native_value,
+                   const T &python_value)
+{
+  if (native_value == python_value) {
+    return;
+  }
+  std::ostringstream stream;
+  stream << path << ": native=" << native_value << " python=" << python_value;
+  diffs.add(stream.str());
+}
+
+void compare_string(DiffList &diffs,
+                    const std::string &path,
+                    const std::string &native_value,
+                    const std::string &python_value)
+{
+  if (native_value != python_value) {
+    diffs.add(path + ": native=" + native_value + " python=" + python_value);
+  }
+}
+
+void compare_float(DiffList &diffs,
+                   const std::string &path,
+                   const double native_value,
+                   const double python_value,
+                   const double tolerance = 1e-5)
+{
+  if (nearly_equal(native_value, python_value, tolerance)) {
+    return;
+  }
+  std::ostringstream stream;
+  stream << path << ": native=" << native_value << " python=" << python_value
+         << " tolerance=" << tolerance;
+  diffs.add(stream.str());
+}
+
+template<typename T>
+void compare_exact_vector(DiffList &diffs,
+                          const std::string &path,
+                          const flatbuffers::Vector<T> *native_value,
+                          const flatbuffers::Vector<T> *python_value,
+                          const int max_mismatches = 10)
+{
+  const uint32_t native_size = vector_size(native_value);
+  const uint32_t python_size = vector_size(python_value);
+  compare_exact(diffs, path + ".length", native_size, python_size);
+  const uint32_t common_size = std::min(native_size, python_size);
+  int mismatch_count = 0;
+  for (uint32_t index = 0; index < common_size; index++) {
+    if (native_value->Get(index) == python_value->Get(index)) {
+      continue;
+    }
+    if (mismatch_count < max_mismatches) {
+      std::ostringstream stream;
+      stream << path << "[" << index << "]: native=" << native_value->Get(index)
+             << " python=" << python_value->Get(index);
+      diffs.add(stream.str());
+    }
+    mismatch_count++;
+  }
+  if (mismatch_count > max_mismatches) {
+    diffs.add(path + ": " + std::to_string(mismatch_count - max_mismatches) +
+              " additional mismatches omitted");
+  }
+}
+
+void compare_float_vector(DiffList &diffs,
+                          const std::string &path,
+                          const flatbuffers::Vector<float> *native_value,
+                          const flatbuffers::Vector<float> *python_value,
+                          const double tolerance = 1e-5,
+                          const int max_mismatches = 10)
+{
+  const uint32_t native_size = vector_size(native_value);
+  const uint32_t python_size = vector_size(python_value);
+  compare_exact(diffs, path + ".length", native_size, python_size);
+  const uint32_t common_size = std::min(native_size, python_size);
+  int mismatch_count = 0;
+  for (uint32_t index = 0; index < common_size; index++) {
+    if (nearly_equal(native_value->Get(index), python_value->Get(index), tolerance)) {
+      continue;
+    }
+    if (mismatch_count < max_mismatches) {
+      std::ostringstream stream;
+      stream << path << "[" << index << "]: native=" << native_value->Get(index)
+             << " python=" << python_value->Get(index) << " tolerance=" << tolerance;
+      diffs.add(stream.str());
+    }
+    mismatch_count++;
+  }
+  if (mismatch_count > max_mismatches) {
+    diffs.add(path + ": " + std::to_string(mismatch_count - max_mismatches) +
+              " additional mismatches omitted");
+  }
+}
+
+void compare_matrix(DiffList &diffs,
+                    const std::string &path,
+                    const ll::Matrix *native_value,
+                    const ll::Matrix *python_value,
+                    const double tolerance = 1e-5)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (native_value && python_value) {
+    compare_float_vector(diffs, path + ".elements", native_value->elements(), python_value->elements(), tolerance);
+  }
+}
+
+void compare_vec3(DiffList &diffs,
+                  const std::string &path,
+                  const ll::Vec3 *native_value,
+                  const ll::Vec3 *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_float(diffs, path + ".x", native_value->x(), python_value->x());
+  compare_float(diffs, path + ".y", native_value->y(), python_value->y());
+  compare_float(diffs, path + ".z", native_value->z(), python_value->z());
+}
+
+void compare_vec4(DiffList &diffs,
+                  const std::string &path,
+                  const ll::Vec4 *native_value,
+                  const ll::Vec4 *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_float(diffs, path + ".x", native_value->x(), python_value->x());
+  compare_float(diffs, path + ".y", native_value->y(), python_value->y());
+  compare_float(diffs, path + ".z", native_value->z(), python_value->z());
+  compare_float(diffs, path + ".w", native_value->w(), python_value->w());
+}
+
+void compare_quat(DiffList &diffs,
+                  const std::string &path,
+                  const ll::Quat *native_value,
+                  const ll::Quat *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_float(diffs, path + ".x", native_value->x(), python_value->x());
+  compare_float(diffs, path + ".y", native_value->y(), python_value->y());
+  compare_float(diffs, path + ".z", native_value->z(), python_value->z());
+  compare_float(diffs, path + ".w", native_value->w(), python_value->w());
+}
+
+int64_t quantized_float(const float value, const double tolerance)
+{
+  return int64_t(std::llround(double(value) / tolerance));
+}
+
+template<typename T> void hash_combine(size_t &seed, const T &value)
+{
+  seed ^= std::hash<T>{}(value) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+}
+
+struct CompareMeshVertexKey {
+  std::array<int64_t, 3> position{};
+  std::array<int64_t, 3> normal{};
+  std::array<int64_t, 2> texcoord{};
+  std::array<int32_t, 4> joint_indices{};
+  std::array<int64_t, 4> joint_weights{};
+  bool has_skinning = false;
+
+  bool operator==(const CompareMeshVertexKey &other) const
+  {
+    return position == other.position && normal == other.normal && texcoord == other.texcoord &&
+           joint_indices == other.joint_indices && joint_weights == other.joint_weights &&
+           has_skinning == other.has_skinning;
+  }
+};
+
+bool operator<(const CompareMeshVertexKey &a, const CompareMeshVertexKey &b)
+{
+  return std::tie(a.position, a.normal, a.texcoord, a.has_skinning, a.joint_indices, a.joint_weights) <
+         std::tie(b.position, b.normal, b.texcoord, b.has_skinning, b.joint_indices, b.joint_weights);
+}
+
+struct CompareMeshVertexKeyHash {
+  size_t operator()(const CompareMeshVertexKey &value) const
+  {
+    size_t seed = 0;
+    for (const int64_t component : value.position) {
+      hash_combine(seed, component);
+    }
+    for (const int64_t component : value.normal) {
+      hash_combine(seed, component);
+    }
+    for (const int64_t component : value.texcoord) {
+      hash_combine(seed, component);
+    }
+    hash_combine(seed, value.has_skinning);
+    for (const int32_t component : value.joint_indices) {
+      hash_combine(seed, component);
+    }
+    for (const int64_t component : value.joint_weights) {
+      hash_combine(seed, component);
+    }
+    return seed;
+  }
+};
+
+struct MeshTriangleKey {
+  std::array<CompareMeshVertexKey, 3> vertices{};
+
+  bool operator==(const MeshTriangleKey &other) const
+  {
+    return vertices == other.vertices;
+  }
+};
+
+struct MeshTriangleKeyHash {
+  size_t operator()(const MeshTriangleKey &value) const
+  {
+    size_t seed = 0;
+    CompareMeshVertexKeyHash vertex_hash;
+    for (const CompareMeshVertexKey &vertex : value.vertices) {
+      hash_combine(seed, vertex_hash(vertex));
+    }
+    return seed;
+  }
+};
+
+struct MeshEdgeKey {
+  std::array<CompareMeshVertexKey, 2> vertices{};
+
+  bool operator==(const MeshEdgeKey &other) const
+  {
+    return vertices == other.vertices;
+  }
+};
+
+struct MeshEdgeKeyHash {
+  size_t operator()(const MeshEdgeKey &value) const
+  {
+    size_t seed = 0;
+    CompareMeshVertexKeyHash vertex_hash;
+    for (const CompareMeshVertexKey &vertex : value.vertices) {
+      hash_combine(seed, vertex_hash(vertex));
+    }
+    return seed;
+  }
+};
+
+struct MeshFaceCoverKey {
+  bool is_quad = false;
+  std::array<CompareMeshVertexKey, 4> vertices{};
+  int vertex_count = 0;
+
+  bool operator==(const MeshFaceCoverKey &other) const
+  {
+    return is_quad == other.is_quad && vertex_count == other.vertex_count &&
+           vertices == other.vertices;
+  }
+};
+
+struct MeshFaceCoverKeyHash {
+  size_t operator()(const MeshFaceCoverKey &value) const
+  {
+    size_t seed = 0;
+    CompareMeshVertexKeyHash vertex_hash;
+    hash_combine(seed, value.is_quad);
+    hash_combine(seed, value.vertex_count);
+    for (const CompareMeshVertexKey &vertex : value.vertices) {
+      hash_combine(seed, vertex_hash(vertex));
+    }
+    return seed;
+  }
+};
+
+struct MeshFingerprint {
+  std::string error;
+  uint32_t vertex_count = 0;
+  uint32_t triangle_count = 0;
+  std::unordered_map<MeshTriangleKey, int, MeshTriangleKeyHash> triangles;
+  std::vector<MeshTriangleKey> sorted_triangles;
+};
+
+struct MeshVertexMultiset {
+  std::string error;
+  std::unordered_map<CompareMeshVertexKey, int, CompareMeshVertexKeyHash> vertices;
+};
+
+struct MeshFaceCover {
+  std::string error;
+  std::unordered_map<MeshFaceCoverKey, int, MeshFaceCoverKeyHash> faces;
+};
+
+CompareMeshVertexKey mesh_vertex_key(const ll::Mesh &mesh, const uint32_t vertex_index)
+{
+  CompareMeshVertexKey key;
+  for (int axis = 0; axis < 3; axis++) {
+    key.position[axis] = quantized_float(mesh.positions()->Get(vertex_index * 3 + axis), 1e-5);
+    key.normal[axis] = quantized_float(mesh.normals()->Get(vertex_index * 3 + axis), 1e-3);
+  }
+  for (int axis = 0; axis < 2; axis++) {
+    key.texcoord[axis] = quantized_float(mesh.texcoords()->Get(vertex_index * 2 + axis), 1e-6);
+  }
+  key.has_skinning = vector_size(mesh.joint_indices()) > 0 || vector_size(mesh.joint_weights()) > 0;
+  if (key.has_skinning) {
+    for (int influence = 0; influence < 4; influence++) {
+      key.joint_indices[influence] = mesh.joint_indices() ?
+                                         mesh.joint_indices()->Get(vertex_index * 4 + influence) :
+                                         0;
+      key.joint_weights[influence] = mesh.joint_weights() ?
+                                         quantized_float(mesh.joint_weights()->Get(vertex_index * 4 + influence), 1e-5) :
+                                         0;
+    }
+  }
+  return key;
+}
+
+MeshFingerprint mesh_fingerprint(const ll::Mesh &mesh)
+{
+  MeshFingerprint fingerprint;
+  if (vector_size(mesh.positions()) % 3 != 0) {
+    fingerprint.error = "positions length is not divisible by 3";
+    return fingerprint;
+  }
+  if (vector_size(mesh.indices()) % 3 != 0) {
+    fingerprint.error = "indices length is not divisible by 3";
+    return fingerprint;
+  }
+  fingerprint.vertex_count = vector_size(mesh.positions()) / 3;
+  fingerprint.triangle_count = vector_size(mesh.indices()) / 3;
+  if (vector_size(mesh.normals()) != vector_size(mesh.positions())) {
+    fingerprint.error = "normals length does not match positions length";
+    return fingerprint;
+  }
+  if (vector_size(mesh.texcoords()) != fingerprint.vertex_count * 2) {
+    fingerprint.error = "texcoords length does not match vertex count";
+    return fingerprint;
+  }
+  if (vector_size(mesh.joint_indices()) != 0 && vector_size(mesh.joint_indices()) != fingerprint.vertex_count * 4) {
+    fingerprint.error = "joint_indices length does not match vertex count";
+    return fingerprint;
+  }
+  if (vector_size(mesh.joint_weights()) != 0 && vector_size(mesh.joint_weights()) != fingerprint.vertex_count * 4) {
+    fingerprint.error = "joint_weights length does not match vertex count";
+    return fingerprint;
+  }
+  fingerprint.triangles.reserve(fingerprint.triangle_count);
+  for (uint32_t triangle_start = 0; triangle_start < vector_size(mesh.indices()); triangle_start += 3) {
+    MeshTriangleKey triangle;
+    for (int corner = 0; corner < 3; corner++) {
+      const uint32_t vertex_index = mesh.indices()->Get(triangle_start + corner);
+      if (vertex_index >= fingerprint.vertex_count) {
+        fingerprint.error = "indices reference missing vertex";
+        return fingerprint;
+      }
+      triangle.vertices[corner] = mesh_vertex_key(mesh, vertex_index);
+    }
+    std::sort(triangle.vertices.begin(), triangle.vertices.end());
+    fingerprint.triangles[triangle]++;
+    fingerprint.sorted_triangles.push_back(triangle);
+  }
+  std::sort(fingerprint.sorted_triangles.begin(),
+            fingerprint.sorted_triangles.end(),
+            [](const MeshTriangleKey &a, const MeshTriangleKey &b) {
+              return a.vertices < b.vertices;
+            });
+  return fingerprint;
+}
+
+MeshTriangleKey triangle_without_normals(MeshTriangleKey triangle)
+{
+  for (CompareMeshVertexKey &vertex : triangle.vertices) {
+    vertex.normal = {0, 0, 0};
+  }
+  return triangle;
+}
+
+MeshEdgeKey mesh_edge_key(CompareMeshVertexKey a, CompareMeshVertexKey b)
+{
+  MeshEdgeKey edge;
+  if (b < a) {
+    std::swap(a, b);
+  }
+  edge.vertices = {a, b};
+  return edge;
+}
+
+int64_t mesh_edge_length_sq(const MeshEdgeKey &edge)
+{
+  int64_t length_sq = 0;
+  for (int axis = 0; axis < 3; axis++) {
+    const int64_t delta = edge.vertices[0].position[axis] - edge.vertices[1].position[axis];
+    length_sq += delta * delta;
+  }
+  return length_sq;
+}
+
+std::optional<std::array<CompareMeshVertexKey, 4>> merged_quad_vertices(const MeshTriangleKey &a,
+                                                                        const MeshTriangleKey &b)
+{
+  std::array<CompareMeshVertexKey, 6> candidates = {
+      a.vertices[0],
+      a.vertices[1],
+      a.vertices[2],
+      b.vertices[0],
+      b.vertices[1],
+      b.vertices[2],
+  };
+  std::sort(candidates.begin(), candidates.end());
+
+  std::array<CompareMeshVertexKey, 4> unique_vertices;
+  int unique_count = 0;
+  for (const CompareMeshVertexKey &candidate : candidates) {
+    if (unique_count == 0 || !(candidate == unique_vertices[unique_count - 1])) {
+      if (unique_count >= 4) {
+        return std::nullopt;
+      }
+      unique_vertices[unique_count++] = candidate;
+    }
+  }
+
+  if (unique_count != 4) {
+    return std::nullopt;
+  }
+  return unique_vertices;
+}
+
+MeshFaceCover mesh_face_cover_from_fingerprint(const MeshFingerprint &fingerprint,
+                                               const bool include_normals)
+{
+  MeshFaceCover cover;
+  if (!fingerprint.error.empty()) {
+    cover.error = fingerprint.error;
+    return cover;
+  }
+
+  std::vector<MeshTriangleKey> triangles = fingerprint.sorted_triangles;
+  if (!include_normals) {
+    for (MeshTriangleKey &triangle : triangles) {
+      triangle = triangle_without_normals(triangle);
+    }
+    std::sort(triangles.begin(), triangles.end(), [](const MeshTriangleKey &a, const MeshTriangleKey &b) {
+      return a.vertices < b.vertices;
+    });
+  }
+
+  std::unordered_map<MeshEdgeKey, std::vector<size_t>, MeshEdgeKeyHash> edge_to_triangle_indices;
+  edge_to_triangle_indices.reserve(triangles.size() * 3);
+  for (size_t triangle_index = 0; triangle_index < triangles.size(); triangle_index++) {
+    const MeshTriangleKey &triangle = triangles[triangle_index];
+    const MeshEdgeKey edges[3] = {
+        mesh_edge_key(triangle.vertices[0], triangle.vertices[1]),
+        mesh_edge_key(triangle.vertices[1], triangle.vertices[2]),
+        mesh_edge_key(triangle.vertices[2], triangle.vertices[0]),
+    };
+    for (const MeshEdgeKey &edge : edges) {
+      edge_to_triangle_indices[edge].push_back(triangle_index);
+    }
+  }
+
+  std::vector<bool> used(triangles.size(), false);
+  for (size_t triangle_index = 0; triangle_index < triangles.size(); triangle_index++) {
+    if (used[triangle_index]) {
+      continue;
+    }
+
+    const MeshTriangleKey &triangle = triangles[triangle_index];
+    std::optional<size_t> best_match_index;
+    std::optional<std::array<CompareMeshVertexKey, 4>> best_quad;
+    int64_t best_edge_length_sq = 0;
+    const MeshEdgeKey edges[3] = {
+        mesh_edge_key(triangle.vertices[0], triangle.vertices[1]),
+        mesh_edge_key(triangle.vertices[1], triangle.vertices[2]),
+        mesh_edge_key(triangle.vertices[2], triangle.vertices[0]),
+    };
+
+    for (const MeshEdgeKey &edge : edges) {
+      const auto edge_it = edge_to_triangle_indices.find(edge);
+      if (edge_it == edge_to_triangle_indices.end()) {
+        continue;
+      }
+      for (const size_t candidate_index : edge_it->second) {
+        if (candidate_index == triangle_index || used[candidate_index]) {
+          continue;
+        }
+        const std::optional<std::array<CompareMeshVertexKey, 4>> quad = merged_quad_vertices(
+            triangle, triangles[candidate_index]);
+        if (!quad) {
+          continue;
+        }
+        const int64_t edge_length_sq = mesh_edge_length_sq(edge);
+        if (!best_quad || edge_length_sq > best_edge_length_sq ||
+            (edge_length_sq == best_edge_length_sq && *quad < *best_quad))
+        {
+          best_quad = quad;
+          best_edge_length_sq = edge_length_sq;
+          best_match_index = candidate_index;
+        }
+      }
+    }
+
+    MeshFaceCoverKey key;
+    if (best_match_index && best_quad) {
+      used[triangle_index] = true;
+      used[*best_match_index] = true;
+      key.is_quad = true;
+      key.vertex_count = 4;
+      key.vertices = *best_quad;
+    }
+    else {
+      used[triangle_index] = true;
+      key.is_quad = false;
+      key.vertex_count = 3;
+      key.vertices[0] = triangle.vertices[0];
+      key.vertices[1] = triangle.vertices[1];
+      key.vertices[2] = triangle.vertices[2];
+    }
+    cover.faces[key]++;
+  }
+
+  return cover;
+}
+
+MeshVertexMultiset mesh_indexed_vertex_multiset(const ll::Mesh &mesh)
+{
+  MeshVertexMultiset multiset;
+  if (vector_size(mesh.positions()) % 3 != 0) {
+    multiset.error = "positions length is not divisible by 3";
+    return multiset;
+  }
+  const uint32_t vertex_count = vector_size(mesh.positions()) / 3;
+  if (vector_size(mesh.normals()) != vector_size(mesh.positions())) {
+    multiset.error = "normals length does not match positions length";
+    return multiset;
+  }
+  if (vector_size(mesh.texcoords()) != vertex_count * 2) {
+    multiset.error = "texcoords length does not match vertex count";
+    return multiset;
+  }
+  if (vector_size(mesh.joint_indices()) != 0 && vector_size(mesh.joint_indices()) != vertex_count * 4) {
+    multiset.error = "joint_indices length does not match vertex count";
+    return multiset;
+  }
+  if (vector_size(mesh.joint_weights()) != 0 && vector_size(mesh.joint_weights()) != vertex_count * 4) {
+    multiset.error = "joint_weights length does not match vertex count";
+    return multiset;
+  }
+  multiset.vertices.reserve(vector_size(mesh.indices()));
+  for (uint32_t index = 0; index < vector_size(mesh.indices()); index++) {
+    const uint32_t vertex_index = mesh.indices()->Get(index);
+    if (vertex_index >= vertex_count) {
+      multiset.error = "indices reference missing vertex";
+      return multiset;
+    }
+    multiset.vertices[mesh_vertex_key(mesh, vertex_index)]++;
+  }
+  return multiset;
+}
+
+std::array<int64_t, 3> quantized_position(const ll::Mesh &mesh, const uint32_t vertex_index)
+{
+  return {quantized_float(mesh.positions()->Get(vertex_index * 3 + 0), 1e-5),
+          quantized_float(mesh.positions()->Get(vertex_index * 3 + 1), 1e-5),
+          quantized_float(mesh.positions()->Get(vertex_index * 3 + 2), 1e-5)};
+}
+
+std::array<int64_t, 3> quantized_normal(const ll::Mesh &mesh, const uint32_t vertex_index)
+{
+  return {quantized_float(mesh.normals()->Get(vertex_index * 3 + 0), 1e-3),
+          quantized_float(mesh.normals()->Get(vertex_index * 3 + 1), 1e-3),
+          quantized_float(mesh.normals()->Get(vertex_index * 3 + 2), 1e-3)};
+}
+
+std::array<int64_t, 2> quantized_texcoord(const ll::Mesh &mesh, const uint32_t vertex_index)
+{
+  return {quantized_float(mesh.texcoords()->Get(vertex_index * 2 + 0), 1e-6),
+          quantized_float(mesh.texcoords()->Get(vertex_index * 2 + 1), 1e-6)};
+}
+
+template<size_t Size> struct ArrayHash {
+  size_t operator()(const std::array<int64_t, Size> &value) const
+  {
+    size_t seed = 0;
+    for (const int64_t component : value) {
+      hash_combine(seed, component);
+    }
+    return seed;
+  }
+};
+
+bool mesh_flat_surface_payload_equal(const ll::Mesh &native_mesh, const ll::Mesh &python_mesh)
+{
+  const uint32_t native_vertex_count = vector_size(native_mesh.positions()) / 3;
+  const uint32_t python_vertex_count = vector_size(python_mesh.positions()) / 3;
+  if (vector_size(native_mesh.indices()) != vector_size(python_mesh.indices())) {
+    return false;
+  }
+  if (vector_size(native_mesh.joint_indices()) != 0 || vector_size(python_mesh.joint_indices()) != 0 ||
+      vector_size(native_mesh.joint_weights()) != 0 || vector_size(python_mesh.joint_weights()) != 0)
+  {
+    return false;
+  }
+
+  std::unordered_map<std::array<int64_t, 3>, int, ArrayHash<3>> native_positions;
+  std::unordered_map<std::array<int64_t, 3>, int, ArrayHash<3>> python_positions;
+  std::unordered_map<std::array<int64_t, 3>, int, ArrayHash<3>> native_normals;
+  std::unordered_map<std::array<int64_t, 3>, int, ArrayHash<3>> python_normals;
+  std::unordered_map<std::array<int64_t, 2>, int, ArrayHash<2>> native_texcoords;
+  std::unordered_map<std::array<int64_t, 2>, int, ArrayHash<2>> python_texcoords;
+
+  for (uint32_t vertex_index = 0; vertex_index < native_vertex_count; vertex_index++) {
+    native_positions[quantized_position(native_mesh, vertex_index)]++;
+    native_normals[quantized_normal(native_mesh, vertex_index)]++;
+    native_texcoords[quantized_texcoord(native_mesh, vertex_index)]++;
+  }
+  for (uint32_t vertex_index = 0; vertex_index < python_vertex_count; vertex_index++) {
+    python_positions[quantized_position(python_mesh, vertex_index)]++;
+    python_normals[quantized_normal(python_mesh, vertex_index)]++;
+    python_texcoords[quantized_texcoord(python_mesh, vertex_index)]++;
+  }
+
+  return native_positions == python_positions && native_normals == python_normals &&
+         native_normals.size() == 1 && native_texcoords == python_texcoords;
+}
+
+std::string mesh_summary(const ll::Mesh &mesh)
+{
+  std::ostringstream stream;
+  stream << "{positions: " << vector_size(mesh.positions()) << ", normals: " << vector_size(mesh.normals())
+         << ", texcoords: " << vector_size(mesh.texcoords()) << ", indices: " << vector_size(mesh.indices())
+         << ", joint_indices: " << vector_size(mesh.joint_indices())
+         << ", joint_weights: " << vector_size(mesh.joint_weights())
+         << ", material_ids: " << vector_size(mesh.material_ids()) << ", armature_id: " << mesh.armature_id()
+         << "}";
+  return stream.str();
+}
+
+void compare_mesh(DiffList &diffs, const std::string &path, const ll::Mesh *native_mesh, const ll::Mesh *python_mesh)
+{
+  compare_exact(diffs, path + ".present", native_mesh != nullptr, python_mesh != nullptr);
+  if (!native_mesh || !python_mesh) {
+    return;
+  }
+  compare_exact(diffs, path + ".armature_id", native_mesh->armature_id(), python_mesh->armature_id());
+  compare_exact_vector(diffs, path + ".material_ids", native_mesh->material_ids(), python_mesh->material_ids());
+  compare_matrix(diffs, path + ".mesh_to_armature", native_mesh->mesh_to_armature(), python_mesh->mesh_to_armature(), 1e-4);
+  compare_matrix(diffs, path + ".armature_to_mesh", native_mesh->armature_to_mesh(), python_mesh->armature_to_mesh(), 1e-4);
+
+  if (vector_exact_equal(native_mesh->positions(), python_mesh->positions()) &&
+      vector_exact_equal(native_mesh->normals(), python_mesh->normals()) &&
+      vector_exact_equal(native_mesh->texcoords(), python_mesh->texcoords()) &&
+      vector_exact_equal(native_mesh->indices(), python_mesh->indices()) &&
+      vector_exact_equal(native_mesh->joint_indices(), python_mesh->joint_indices()) &&
+      vector_exact_equal(native_mesh->joint_weights(), python_mesh->joint_weights()))
+  {
+    return;
+  }
+
+  const MeshFingerprint native_fingerprint = mesh_fingerprint(*native_mesh);
+  const MeshFingerprint python_fingerprint = mesh_fingerprint(*python_mesh);
+  if (!native_fingerprint.error.empty() || !python_fingerprint.error.empty()) {
+    diffs.add(path + ".canonicalization_error: native=" + native_fingerprint.error +
+              " python=" + python_fingerprint.error);
+    return;
+  }
+  compare_exact(diffs, path + ".triangles.length", native_fingerprint.triangle_count, python_fingerprint.triangle_count);
+  if (native_fingerprint.triangles == python_fingerprint.triangles) {
+    return;
+  }
+
+  const MeshFaceCover native_cover = mesh_face_cover_from_fingerprint(native_fingerprint, true);
+  const MeshFaceCover python_cover = mesh_face_cover_from_fingerprint(python_fingerprint, true);
+  if (native_cover.error.empty() && python_cover.error.empty() && native_cover.faces == python_cover.faces) {
+    return;
+  }
+
+  const MeshFaceCover native_cover_without_normals = mesh_face_cover_from_fingerprint(native_fingerprint,
+                                                                                      false);
+  const MeshFaceCover python_cover_without_normals = mesh_face_cover_from_fingerprint(python_fingerprint,
+                                                                                      false);
+  if (native_cover_without_normals.error.empty() && python_cover_without_normals.error.empty() &&
+      native_cover_without_normals.faces == python_cover_without_normals.faces)
+  {
+    const MeshVertexMultiset native_vertices = mesh_indexed_vertex_multiset(*native_mesh);
+    const MeshVertexMultiset python_vertices = mesh_indexed_vertex_multiset(*python_mesh);
+    if (native_vertices.error.empty() && python_vertices.error.empty() &&
+        native_vertices.vertices == python_vertices.vertices)
+    {
+      return;
+    }
+  }
+
+  const MeshVertexMultiset native_vertices = mesh_indexed_vertex_multiset(*native_mesh);
+  const MeshVertexMultiset python_vertices = mesh_indexed_vertex_multiset(*python_mesh);
+  if (native_vertices.error.empty() && python_vertices.error.empty() &&
+      native_vertices.vertices == python_vertices.vertices)
+  {
+    return;
+  }
+
+  if (mesh_flat_surface_payload_equal(*native_mesh, *python_mesh)) {
+    return;
+  }
+
+  diffs.add(path + ".raw_lengths: native=" + mesh_summary(*native_mesh) + " python=" +
+            mesh_summary(*python_mesh));
+  diffs.add(path + ".triangles: topology_or_attribute_mismatch native_triangles=" +
+            std::to_string(native_fingerprint.triangle_count) + " python_triangles=" +
+            std::to_string(python_fingerprint.triangle_count));
+}
+
+void compare_rigid_body(DiffList &diffs,
+                        const std::string &path,
+                        const ll::RigidBody *native_value,
+                        const ll::RigidBody *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (native_value && python_value) {
+    compare_exact(diffs, path + ".is_dynamic", native_value->is_dynamic(), python_value->is_dynamic());
+    compare_float(diffs, path + ".mass", native_value->mass(), python_value->mass());
+  }
+}
+
+void compare_light(DiffList &diffs, const std::string &path, const ll::Light *native_value, const ll::Light *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_exact(diffs, path + ".type", int(native_value->type()), int(python_value->type()));
+  compare_vec3(diffs, path + ".color", native_value->color(), python_value->color());
+  compare_exact(diffs, path + ".use_shadow", native_value->use_shadow(), python_value->use_shadow());
+  compare_exact(diffs, path + ".point_light.present", native_value->point_light() != nullptr, python_value->point_light() != nullptr);
+  if (native_value->point_light() && python_value->point_light()) {
+    compare_float(diffs, path + ".point_light.power", native_value->point_light()->power(), python_value->point_light()->power());
+  }
+  compare_exact(diffs, path + ".spot_light.present", native_value->spot_light() != nullptr, python_value->spot_light() != nullptr);
+  if (native_value->spot_light() && python_value->spot_light()) {
+    compare_float(diffs, path + ".spot_light.power", native_value->spot_light()->power(), python_value->spot_light()->power());
+    compare_float(diffs, path + ".spot_light.beam_angle", native_value->spot_light()->beam_angle(), python_value->spot_light()->beam_angle());
+    compare_float(diffs, path + ".spot_light.edge_blend", native_value->spot_light()->edge_blend(), python_value->spot_light()->edge_blend());
+  }
+  compare_exact(diffs, path + ".sun_light.present", native_value->sun_light() != nullptr, python_value->sun_light() != nullptr);
+  if (native_value->sun_light() && python_value->sun_light()) {
+    compare_float(diffs, path + ".sun_light.power", native_value->sun_light()->power(), python_value->sun_light()->power());
+    compare_exact(diffs, path + ".sun_light.cast_shadows", native_value->sun_light()->cast_shadows(), python_value->sun_light()->cast_shadows());
+  }
+}
+
+void compare_component(DiffList &diffs,
+                       const std::string &path,
+                       const ll::GameplayComponentContainer *native_value,
+                       const ll::GameplayComponentContainer *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_exact(diffs, path + ".value_type", int(native_value->value_type()), int(python_value->value_type()));
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCharacter &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentCharacter)
+  {
+    const ll::GameplayComponentCharacter *native_character = native_value->value_as_GameplayComponentCharacter();
+    const ll::GameplayComponentCharacter *python_character = python_value->value_as_GameplayComponentCharacter();
+    compare_exact(diffs, path + ".character.present", native_character != nullptr, python_character != nullptr);
+    if (native_character && python_character) {
+      compare_exact(diffs, path + ".character.player_controlled", native_character->player_controlled(), python_character->player_controlled());
+      compare_float(diffs, path + ".character.move_speed", native_character->move_speed(), python_character->move_speed());
+      compare_float(diffs, path + ".character.jump_speed", native_character->jump_speed(), python_character->jump_speed());
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCameraControl &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentCameraControl)
+  {
+    const ll::GameplayComponentCameraControl *native_camera = native_value->value_as_GameplayComponentCameraControl();
+    const ll::GameplayComponentCameraControl *python_camera = python_value->value_as_GameplayComponentCameraControl();
+    compare_exact(diffs, path + ".camera_control.present", native_camera != nullptr, python_camera != nullptr);
+    if (native_camera && python_camera) {
+      compare_float(diffs, path + ".camera_control.follow_distance", native_camera->follow_distance(), python_camera->follow_distance());
+      compare_float(diffs, path + ".camera_control.follow_speed", native_camera->follow_speed(), python_camera->follow_speed());
+    }
+  }
+}
+
+std::vector<const ll::GameplayComponentContainer *> sorted_components(
+    const flatbuffers::Vector<flatbuffers::Offset<ll::GameplayComponentContainer>> *components)
+{
+  std::vector<const ll::GameplayComponentContainer *> result;
+  if (!components) {
+    return result;
+  }
+  for (const ll::GameplayComponentContainer *component : *components) {
+    result.push_back(component);
+  }
+  std::sort(result.begin(), result.end(), [](const auto *a, const auto *b) {
+    return int(a->value_type()) < int(b->value_type());
+  });
+  return result;
+}
+
+void compare_components(DiffList &diffs,
+                        const std::string &path,
+                        const ll::Object &native_object,
+                        const ll::Object &python_object)
+{
+  const std::vector<const ll::GameplayComponentContainer *> native_components = sorted_components(native_object.components());
+  const std::vector<const ll::GameplayComponentContainer *> python_components = sorted_components(python_object.components());
+  compare_exact(diffs, path + ".length", native_components.size(), python_components.size());
+  for (size_t index = 0; index < std::min(native_components.size(), python_components.size()); index++) {
+    compare_component(diffs,
+                      path + "[" + std::to_string(int(native_components[index]->value_type())) + "]",
+                      native_components[index],
+                      python_components[index]);
+  }
+}
+
+void compare_bone(DiffList &diffs, const std::string &path, const ll::Bone &native_value, const ll::Bone &python_value)
+{
+  compare_string(diffs, path + ".name", fb_string(native_value.name()), fb_string(python_value.name()));
+  compare_string(diffs, path + ".parent_name", fb_string(native_value.parent_name()), fb_string(python_value.parent_name()));
+  compare_exact(diffs, path + ".parent_index", native_value.parent_index(), python_value.parent_index());
+  compare_matrix(diffs, path + ".inverse_bind_matrix", native_value.inverse_bind_matrix(), python_value.inverse_bind_matrix());
+}
+
+void compare_animation(DiffList &diffs,
+                       const std::string &path,
+                       const ll::Animation &native_value,
+                       const ll::Animation &python_value)
+{
+  compare_string(diffs, path + ".name", fb_string(native_value.name()), fb_string(python_value.name()));
+  compare_float(diffs, path + ".frame_rate", native_value.frame_rate(), python_value.frame_rate());
+  compare_float(diffs, path + ".duration_seconds", native_value.duration_seconds(), python_value.duration_seconds());
+  compare_exact(diffs, path + ".frame_count", native_value.frame_count(), python_value.frame_count());
+  compare_exact(diffs, path + ".bone_count", native_value.bone_count(), python_value.bone_count());
+  compare_float_vector(
+      diffs, path + ".skin_matrices", native_value.skin_matrices(), python_value.skin_matrices(), 1e-4);
+}
+
+void compare_armature(DiffList &diffs,
+                      const std::string &path,
+                      const ll::Armature *native_value,
+                      const ll::Armature *python_value)
+{
+  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_exact(diffs, path + ".bones.length", vector_size(native_value->bones()), vector_size(python_value->bones()));
+  for (uint32_t index = 0; index < std::min(vector_size(native_value->bones()), vector_size(python_value->bones())); index++) {
+    compare_bone(diffs,
+                 path + ".bones[" + std::to_string(index) + "]",
+                 *native_value->bones()->Get(index),
+                 *python_value->bones()->Get(index));
+  }
+  compare_exact(diffs, path + ".animations.length", vector_size(native_value->animations()), vector_size(python_value->animations()));
+  for (uint32_t index = 0; index < std::min(vector_size(native_value->animations()), vector_size(python_value->animations())); index++) {
+    compare_animation(diffs,
+                      path + ".animations[" + std::to_string(index) + "]",
+                      *native_value->animations()->Get(index),
+                      *python_value->animations()->Get(index));
+  }
+}
+
+void compare_object(DiffList &diffs,
+                    const std::string &path,
+                    const ll::Object &native_value,
+                    const ll::Object &python_value)
+{
+  compare_string(diffs, path + ".name", fb_string(native_value.name()), fb_string(python_value.name()));
+  compare_exact(diffs, path + ".unique_id", native_value.unique_id(), python_value.unique_id());
+  compare_exact(diffs, path + ".visibility", native_value.visibility(), python_value.visibility());
+  compare_vec3(diffs, path + ".location", native_value.location(), python_value.location());
+  compare_vec3(diffs, path + ".scale", native_value.scale(), python_value.scale());
+  compare_quat(diffs, path + ".rotation", native_value.rotation(), python_value.rotation());
+  compare_mesh(diffs, path + ".mesh", native_value.mesh(), python_value.mesh());
+  compare_armature(diffs, path + ".armature", native_value.armature(), python_value.armature());
+  compare_rigid_body(diffs, path + ".rigid_body", native_value.rigid_body(), python_value.rigid_body());
+  compare_light(diffs, path + ".light", native_value.light(), python_value.light());
+  compare_components(diffs, path + ".components", native_value, python_value);
+}
+
+void compare_material(DiffList &diffs,
+                      const std::string &path,
+                      const ll::Material &native_value,
+                      const ll::Material &python_value)
+{
+  compare_exact(diffs, path + ".unique_id", native_value.unique_id(), python_value.unique_id());
+  compare_string(diffs, path + ".name", fb_string(native_value.name()), fb_string(python_value.name()));
+  compare_vec4(diffs, path + ".base_color", native_value.base_color(), python_value.base_color());
+  compare_exact(diffs, path + ".base_color_image_id", native_value.base_color_image_id(), python_value.base_color_image_id());
+  compare_float(diffs, path + ".metallic", native_value.metallic(), python_value.metallic());
+  compare_exact(diffs, path + ".metallic_image_id", native_value.metallic_image_id(), python_value.metallic_image_id());
+  compare_float(diffs, path + ".roughness", native_value.roughness(), python_value.roughness());
+  compare_exact(diffs, path + ".roughness_image_id", native_value.roughness_image_id(), python_value.roughness_image_id());
+  compare_vec4(diffs, path + ".emission_color", native_value.emission_color(), python_value.emission_color());
+  compare_exact(diffs, path + ".emission_color_image_id", native_value.emission_color_image_id(), python_value.emission_color_image_id());
+  compare_float(diffs, path + ".emission_strength", native_value.emission_strength(), python_value.emission_strength());
+}
+
+void compare_image(DiffList &diffs, const std::string &path, const ll::Image &native_value, const ll::Image &python_value)
+{
+  compare_exact(diffs, path + ".unique_id", native_value.unique_id(), python_value.unique_id());
+  compare_exact(diffs, path + ".width", native_value.width(), python_value.width());
+  compare_exact(diffs, path + ".height", native_value.height(), python_value.height());
+  compare_exact_vector(diffs, path + ".data", native_value.data(), python_value.data());
+}
+
+template<typename T, typename IdFn>
+std::unordered_map<int32_t, const T *> table_by_id(
+    const flatbuffers::Vector<flatbuffers::Offset<T>> *values,
+    IdFn id_fn)
+{
+  std::unordered_map<int32_t, const T *> result;
+  if (!values) {
+    return result;
+  }
+  result.reserve(values->size());
+  for (const T *value : *values) {
+    result[id_fn(*value)] = value;
+  }
+  return result;
+}
+
+template<typename MapT> std::vector<int32_t> sorted_common_ids(const MapT &native_map, const MapT &python_map)
+{
+  std::vector<int32_t> ids;
+  for (const auto &item : native_map) {
+    if (python_map.find(item.first) != python_map.end()) {
+      ids.push_back(item.first);
+    }
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
+template<typename MapT>
+void compare_id_sets(DiffList &diffs, const std::string &path, const MapT &native_map, const MapT &python_map)
+{
+  size_t missing_from_native = 0;
+  size_t missing_from_python = 0;
+  for (const auto &item : python_map) {
+    missing_from_native += native_map.find(item.first) == native_map.end() ? 1 : 0;
+  }
+  for (const auto &item : native_map) {
+    missing_from_python += python_map.find(item.first) == python_map.end() ? 1 : 0;
+  }
+  if (missing_from_native > 0) {
+    diffs.add(path + ".missing_from_native: " + std::to_string(missing_from_native) + " id(s)");
+  }
+  if (missing_from_python > 0) {
+    diffs.add(path + ".missing_from_python: " + std::to_string(missing_from_python) + " id(s)");
+  }
+}
+
+std::string describe_update(const ll::Update &update)
+{
+  std::ostringstream stream;
+  stream << "objects=" << vector_size(update.objects()) << " deleted="
+         << vector_size(update.deleted_object_uids()) << " materials=" << vector_size(update.materials())
+         << " images=" << vector_size(update.images()) << " reset=" << (update.reset() ? "true" : "false");
+  return stream.str();
+}
+
+CompareResult compare_update_buffers_native(const uint8_t *native_data,
+                                            const size_t native_size,
+                                            const uint8_t *python_data,
+                                            const size_t python_size,
+                                            const int max_diffs)
+{
+  flatbuffers::Verifier native_verifier(native_data, native_size);
+  flatbuffers::Verifier python_verifier(python_data, python_size);
+  if (!ll::VerifySizePrefixedUpdateBuffer(native_verifier)) {
+    return {false, "Native buffer failed FlatBuffers verification"};
+  }
+  if (!ll::VerifySizePrefixedUpdateBuffer(python_verifier)) {
+    return {false, "Python buffer failed FlatBuffers verification"};
+  }
+
+  const ll::Update *native_update = ll::GetSizePrefixedUpdate(native_data);
+  const ll::Update *python_update = ll::GetSizePrefixedUpdate(python_data);
+
+  DiffList diffs;
+  diffs.max_diffs = std::max(max_diffs, 1);
+  compare_exact(diffs, "update.reset", native_update->reset(), python_update->reset());
+  compare_exact_vector(
+      diffs, "update.deleted_object_uids", native_update->deleted_object_uids(), python_update->deleted_object_uids());
+
+  const auto native_objects = table_by_id<ll::Object>(native_update->objects(), [](const ll::Object &object) {
+    return object.unique_id();
+  });
+  const auto python_objects = table_by_id<ll::Object>(python_update->objects(), [](const ll::Object &object) {
+    return object.unique_id();
+  });
+  compare_exact(diffs, "update.objects.length", native_objects.size(), python_objects.size());
+  compare_id_sets(diffs, "update.objects", native_objects, python_objects);
+  const std::vector<int32_t> object_ids = sorted_common_ids(native_objects, python_objects);
+  std::vector<DiffList> object_diffs(object_ids.size());
+  threading::parallel_for(IndexRange(object_ids.size()), 1, [&](const IndexRange range) {
+    for (const int64_t index : range) {
+      object_diffs[index].max_diffs = diffs.max_diffs;
+      const int32_t object_id = object_ids[index];
+      compare_object(object_diffs[index],
+                     "update.objects[id=" + std::to_string(object_id) + "]",
+                     *native_objects.at(object_id),
+                     *python_objects.at(object_id));
+    }
+  });
+  for (const DiffList &object_diff : object_diffs) {
+    diffs.merge(object_diff);
+  }
+
+  const auto native_materials = table_by_id<ll::Material>(native_update->materials(), [](const ll::Material &material) {
+    return material.unique_id();
+  });
+  const auto python_materials = table_by_id<ll::Material>(python_update->materials(), [](const ll::Material &material) {
+    return material.unique_id();
+  });
+  compare_exact(diffs, "update.materials.length", native_materials.size(), python_materials.size());
+  compare_id_sets(diffs, "update.materials", native_materials, python_materials);
+  for (const int32_t material_id : sorted_common_ids(native_materials, python_materials)) {
+    compare_material(diffs,
+                     "update.materials[id=" + std::to_string(material_id) + "]",
+                     *native_materials.at(material_id),
+                     *python_materials.at(material_id));
+  }
+
+  const auto native_images = table_by_id<ll::Image>(native_update->images(), [](const ll::Image &image) {
+    return image.unique_id();
+  });
+  const auto python_images = table_by_id<ll::Image>(python_update->images(), [](const ll::Image &image) {
+    return image.unique_id();
+  });
+  compare_exact(diffs, "update.images.length", native_images.size(), python_images.size());
+  compare_id_sets(diffs, "update.images", native_images, python_images);
+  for (const int32_t image_id : sorted_common_ids(native_images, python_images)) {
+    compare_image(diffs,
+                  "update.images[id=" + std::to_string(image_id) + "]",
+                  *native_images.at(image_id),
+                  *python_images.at(image_id));
+  }
+
+  diffs.finish();
+  if (diffs.diffs.empty()) {
+    return {true,
+            "Native/Python exports semantically match: native_bytes=" + std::to_string(native_size) +
+                " python_bytes=" + std::to_string(python_size) + " " + describe_update(*native_update)};
+  }
+
+  std::ostringstream message;
+  message << "Native/Python exports differ semantically: native_bytes=" << native_size
+          << " python_bytes=" << python_size << " native(" << describe_update(*native_update)
+          << ") python(" << describe_update(*python_update) << ")\n"
+          << "Live Link Native/Python Semantic Differences:";
+  for (const std::string &diff : diffs.diffs) {
+    message << "\n  - " << diff;
+  }
+  return {false, message.str()};
+}
+
 }  // namespace
 
 PyObject *BPY_live_link_make_update(PyObject *objects,
@@ -1395,6 +2528,48 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
 
   return PyBytes_FromStringAndSize(reinterpret_cast<const char *>(builder.GetBufferPointer()),
                                    Py_ssize_t(builder.GetSize()));
+}
+
+PyObject *BPY_live_link_compare_updates(PyObject *native_bytes,
+                                        PyObject *python_bytes,
+                                        int max_diffs)
+{
+  Py_buffer native_view;
+  Py_buffer python_view;
+  if (PyObject_GetBuffer(native_bytes, &native_view, PyBUF_SIMPLE) < 0) {
+    PyErr_SetString(PyExc_TypeError, "native_bytes must support the buffer protocol");
+    return nullptr;
+  }
+  if (PyObject_GetBuffer(python_bytes, &python_view, PyBUF_SIMPLE) < 0) {
+    PyBuffer_Release(&native_view);
+    PyErr_SetString(PyExc_TypeError, "python_bytes must support the buffer protocol");
+    return nullptr;
+  }
+
+  CompareResult result;
+  Py_BEGIN_ALLOW_THREADS
+  result = compare_update_buffers_native(static_cast<const uint8_t *>(native_view.buf),
+                                         size_t(native_view.len),
+                                         static_cast<const uint8_t *>(python_view.buf),
+                                         size_t(python_view.len),
+                                         max_diffs);
+  Py_END_ALLOW_THREADS
+
+  PyBuffer_Release(&python_view);
+  PyBuffer_Release(&native_view);
+
+  PyObject *matched = PyBool_FromLong(result.matched ? 1 : 0);
+  PyObject *message = PyUnicode_FromString(result.message.c_str());
+  if (!matched || !message) {
+    Py_XDECREF(matched);
+    Py_XDECREF(message);
+    return nullptr;
+  }
+
+  PyObject *tuple = PyTuple_Pack(2, matched, message);
+  Py_DECREF(matched);
+  Py_DECREF(message);
+  return tuple;
 }
 
 }  // namespace blender

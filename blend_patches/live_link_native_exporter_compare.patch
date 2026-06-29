@@ -1,0 +1,61 @@
+diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/intern/bpy_app.cc
+--- a/source/blender/python/intern/bpy_app.cc
++++ b/source/blender/python/intern/bpy_app.cc
+@@ -818,7 +818,46 @@ static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
+   return BPY_live_link_make_update(
+       objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence);
+ }
+ 
++PyDoc_STRVAR(
++    /* Wrap. */
++    bpy_app_live_link_compare_updates_doc,
++    ".. staticmethod:: live_link_compare_updates(native_bytes, python_bytes, max_diffs=100)\n"
++    "\n"
++    "   Compare native and Python Blender Live Link update bytes semantically.\n"
++    "\n"
++    "   :param native_bytes: Size-prefixed native Live Link update bytes.\n"
++    "   :type native_bytes: bytes\n"
++    "   :param python_bytes: Size-prefixed Python Live Link update bytes.\n"
++    "   :type python_bytes: bytes\n"
++    "   :param max_diffs: Maximum diagnostic differences to report.\n"
++    "   :type max_diffs: int\n"
++    "   :return: ``(matched, message)``.\n"
++    "   :rtype: tuple[bool, str]\n");
++static PyObject *bpy_app_live_link_compare_updates(PyObject * /*self*/,
++                                                  PyObject *args,
++                                                  PyObject *kwds)
++{
++  PyObject *native_bytes = nullptr;
++  PyObject *python_bytes = nullptr;
++  int max_diffs = 100;
++
++  static const char *_keywords[] = {"native_bytes", "python_bytes", "max_diffs", nullptr};
++  static _PyArg_Parser _parser = {
++      "OO|i" /* `native_bytes`, `python_bytes`, optional `max_diffs`. */
++      ":live_link_compare_updates",
++      _keywords,
++      nullptr,
++  };
++  if (!_PyArg_ParseTupleAndKeywordsFast(
++          args, kwds, &_parser, &native_bytes, &python_bytes, &max_diffs))
++  {
++    return nullptr;
++  }
++
++  return BPY_live_link_compare_updates(native_bytes, python_bytes, max_diffs);
++}
++
+ char *(*BPY_python_app_help_text_fn)(bool all) = nullptr;
+ 
+ PyDoc_STRVAR(
+@@ -891,6 +929,10 @@ static PyMethodDef bpy_app_methods[] = {
+      reinterpret_cast<PyCFunction>(bpy_app_live_link_make_update),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,
+      bpy_app_live_link_make_update_doc},
++    {"live_link_compare_updates",
++     reinterpret_cast<PyCFunction>(bpy_app_live_link_compare_updates),
++     METH_VARARGS | METH_KEYWORDS | METH_STATIC,
++     bpy_app_live_link_compare_updates_doc},
+     {"help_text",
+      reinterpret_cast<PyCFunction>(bpy_app_help_text),
+      METH_VARARGS | METH_KEYWORDS | METH_STATIC,

@@ -13,4 +13,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
                                     const char *update_reason,
                                     int sequence);
 
+PyObject *BPY_live_link_compare_updates(PyObject *native_bytes,
+                                        PyObject *python_bytes,
+                                        int max_diffs);
+
 }  // namespace blender
