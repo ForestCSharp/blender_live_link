@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Running ./build.sh builds native blender integration by default, then builds and runs game
-# Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender, then builds and runs game
+# Running ./build.sh builds native blender integration by default, then builds and runs game in parallel after schema generation
+# Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
 # Running ./build.sh game only rebuilds the game and runs it
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -25,6 +25,11 @@ BLENDER_BUILD_MODE_WAS_SET=false
 NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 EXTENSION_ZIP_PATH="$SCRIPT_DIR.zip"
+PARALLEL_STATUS_DIR=""
+PARALLEL_BRANCH_NAMES=()
+PARALLEL_BRANCH_PIDS=()
+PARALLEL_BRANCH_STATUS_FILES=()
+PARALLEL_BRANCH_STATUSES=()
 
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 
@@ -51,8 +56,8 @@ resolve_blend_file_arg() {
 }
 
 package_extension() {
-	cd $SCRIPT_DIR/..
-	rm -f "$EXTENSION_ZIP_PATH"
+	cd "$SCRIPT_DIR/.." || return
+	rm -f "$EXTENSION_ZIP_PATH" || return
 
 	if [[ $OS = Windows ]]; then
 		7z a -tzip "$EXTENSION_ZIP_PATH" $BASE_DIR -w $BASE_DIR/ -r \
@@ -75,7 +80,7 @@ package_extension() {
 			-x!"$BASE_DIR/.gitignore" \
 			-x!"$BASE_DIR/blender_live_link.fbs" \
 			-x!"$BASE_DIR/.DS_Store" \
-			-x!"*/.DS_Store"
+			-x!"*/.DS_Store" || return
 	else
 		zip -r "$EXTENSION_ZIP_PATH" $BASE_DIR \
 			-x "$BASE_DIR/flatbuffers/*" \
@@ -97,10 +102,10 @@ package_extension() {
 			-x "$BASE_DIR/.gitignore" \
 			-x "$BASE_DIR/blender_live_link.fbs" \
 			-x "$BASE_DIR/.DS_Store" \
-			-x "*/.DS_Store"
+			-x "*/.DS_Store" || return
 	fi
 
-	cd $SCRIPT_DIR
+	cd "$SCRIPT_DIR" || return
 }
 
 install_and_launch_installed_blender() {
@@ -109,26 +114,26 @@ install_and_launch_installed_blender() {
 	if [[ $OS = Windows ]]; then
 		# Note: blender.exe should be on system path on windows
 		# kill previous blender instances
-		taskkill.exe //F //IM blender.exe
+		taskkill.exe //F //IM blender.exe || true
 		sleep 0.5
 		# install add-on and wait for completion
-		blender.exe "${install_args[@]}"
+		blender.exe "${install_args[@]}" || return
 		sleep 0.5
 		# open blender to specified map file
-		start "" blender.exe $run_args
+		start "" blender.exe $run_args || return
 	elif [[ $OS = Mac ]]; then
 		# kill previous blender instances
-		killall Blender
+		killall Blender || true
 		# install add-on and wait for completion
-		/Applications/Blender.app/Contents/MacOS/Blender "${install_args[@]}"
+		/Applications/Blender.app/Contents/MacOS/Blender "${install_args[@]}" || return
 		sleep 0.5
 		# open blender without waiting for completion
-		open  /Applications/Blender.app --args $run_args
+		open  /Applications/Blender.app --args $run_args || return
 	fi
 }
 
 with_native_blender_profile() {
-	mkdir -p "$NATIVE_BLENDER_USER_DIR/config" "$NATIVE_BLENDER_USER_DIR/scripts" "$NATIVE_BLENDER_USER_DIR/datafiles"
+	mkdir -p "$NATIVE_BLENDER_USER_DIR/config" "$NATIVE_BLENDER_USER_DIR/scripts" "$NATIVE_BLENDER_USER_DIR/datafiles" || return
 	BLENDER_USER_CONFIG="$NATIVE_BLENDER_USER_DIR/config" \
 	BLENDER_USER_SCRIPTS="$NATIVE_BLENDER_USER_DIR/scripts" \
 	BLENDER_USER_DATAFILES="$NATIVE_BLENDER_USER_DIR/datafiles" \
@@ -151,11 +156,160 @@ install_and_launch_native_blender() {
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
 
 	echo "Installing extension into local Blender profile at $NATIVE_BLENDER_USER_DIR"
-	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "${install_args[@]}"
+	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "${install_args[@]}" || return
 	sleep 0.5
 
 	echo "Launching local Blender at $NATIVE_BLENDER_BINARY"
 	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" &
+}
+
+prepare_flatbuffers_and_schemas() {
+	# build flatbuffers, passing in OS as first arg
+	cd "$SCRIPT_DIR" || return
+	rm -rf compiled_schemas || return
+	mkdir -p compiled_schemas/cpp || return
+	./flatbuffers/build.sh "$OS" || return
+
+	if [[ $OS = Windows ]]; then
+	  FLATC_BINARY=flatbuffers/build/Debug/flatc.exe
+	else
+	  FLATC_BINARY=flatbuffers/build/flatc
+	fi
+
+	# compile schema for cpp
+	touch compiled_schemas/__init__.py || return
+	echo FLATC IS $FLATC_BINARY
+	$FLATC_BINARY -o compiled_schemas/cpp --cpp blender_live_link.fbs || return
+
+	mkdir -p compiled_schemas/python || return
+	touch compiled_schemas/python/__init__.py || return
+	$FLATC_BINARY -o compiled_schemas/python --python blender_live_link.fbs || return
+
+	# copy flatbuffers python package
+	cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || return
+}
+
+run_blender_side_build_and_launch() {
+	cd "$SCRIPT_DIR" || return
+
+	if [[ $BLENDER_BUILD_MODE = native ]]; then
+		"$SCRIPT_DIR/build_blend_src.sh" || return
+	fi
+
+	package_extension || return
+
+	if [[ $BLENDER_BUILD_MODE = python ]]; then
+		install_and_launch_installed_blender
+	else
+		install_and_launch_native_blender
+	fi
+}
+
+run_game_build_and_launch() {
+	cd "$SCRIPT_DIR/game" || return
+	./build.sh "$OS"
+}
+
+cleanup_parallel_status_dir() {
+	if [[ -n "$PARALLEL_STATUS_DIR" && -d "$PARALLEL_STATUS_DIR" ]]; then
+		rm -rf "$PARALLEL_STATUS_DIR"
+	fi
+	PARALLEL_STATUS_DIR=""
+}
+
+terminate_process_tree() {
+	local pid=$1
+
+	if ! kill -0 "$pid" 2> /dev/null; then
+		return
+	fi
+
+	if command -v pgrep > /dev/null 2>&1; then
+		local child_pid
+		for child_pid in $(pgrep -P "$pid" 2> /dev/null); do
+			terminate_process_tree "$child_pid"
+		done
+	fi
+
+	kill "$pid" 2> /dev/null || true
+}
+
+terminate_active_parallel_branches() {
+	local failed_index=$1
+	local branch_index
+
+	for (( branch_index = 0; branch_index < ${#PARALLEL_BRANCH_PIDS[@]}; branch_index++ )); do
+		if [[ $branch_index -eq $failed_index || ${PARALLEL_BRANCH_STATUSES[$branch_index]} -ne -1 ]]; then
+			continue
+		fi
+
+		echo "Stopping ${PARALLEL_BRANCH_NAMES[$branch_index]} branch after ${PARALLEL_BRANCH_NAMES[$failed_index]} branch failed"
+		terminate_process_tree "${PARALLEL_BRANCH_PIDS[$branch_index]}"
+	done
+}
+
+start_parallel_branch() {
+	local branch_name=$1
+	shift
+
+	if [[ -z "$PARALLEL_STATUS_DIR" ]]; then
+		PARALLEL_STATUS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/blender_live_link_build.XXXXXX") || return
+	fi
+
+	local branch_index=${#PARALLEL_BRANCH_PIDS[@]}
+	local status_file="$PARALLEL_STATUS_DIR/$branch_index.status"
+
+	echo "Starting $branch_name branch"
+	(
+		"$@"
+		local branch_status=$?
+		printf "%s\n" "$branch_status" > "$status_file"
+		exit "$branch_status"
+	) &
+
+	PARALLEL_BRANCH_NAMES+=("$branch_name")
+	PARALLEL_BRANCH_PIDS+=("$!")
+	PARALLEL_BRANCH_STATUS_FILES+=("$status_file")
+	PARALLEL_BRANCH_STATUSES+=(-1)
+}
+
+wait_for_parallel_branches() {
+	local remaining=${#PARALLEL_BRANCH_PIDS[@]}
+	local branch_index
+
+	while (( remaining > 0 )); do
+		for (( branch_index = 0; branch_index < ${#PARALLEL_BRANCH_PIDS[@]}; branch_index++ )); do
+			if [[ ${PARALLEL_BRANCH_STATUSES[$branch_index]} -ne -1 ]]; then
+				continue
+			fi
+
+			local status_file="${PARALLEL_BRANCH_STATUS_FILES[$branch_index]}"
+			if [[ ! -f "$status_file" ]]; then
+				continue
+			fi
+
+			local branch_status
+			branch_status=$(cat "$status_file")
+			wait "${PARALLEL_BRANCH_PIDS[$branch_index]}" 2> /dev/null || true
+			PARALLEL_BRANCH_STATUSES[$branch_index]=$branch_status
+			remaining=$((remaining - 1))
+
+			if [[ $branch_status -eq 0 ]]; then
+				echo "${PARALLEL_BRANCH_NAMES[$branch_index]} branch finished successfully"
+			else
+				echo "Error: ${PARALLEL_BRANCH_NAMES[$branch_index]} branch failed with status $branch_status"
+				terminate_active_parallel_branches "$branch_index"
+				cleanup_parallel_status_dir
+				return "$branch_status"
+			fi
+		done
+
+		if (( remaining > 0 )); then
+			sleep 1
+		fi
+	done
+
+	cleanup_parallel_status_dir
 }
 
 POSITIONAL_ARGS=()
@@ -189,53 +343,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if ! [ "$BUILD_ONLY_GAME" = "true" ]; then
-
-	echo "FULL BUILD ($BLENDER_BUILD_MODE)"
-
-	# build flattbuffers, passing in OS as first arg
-	cd $SCRIPT_DIR
-	rm -rf compiled_schemas
-	mkdir -p compiled_schemas/cpp
-	./flatbuffers/build.sh $OS
-
-
-	if [[ $OS = Windows ]]; then
-	  FLATC_BINARY=flatbuffers/build/Debug/flatc.exe
-	else
-	  FLATC_BINARY=flatbuffers/build/flatc
+if [[ "$BUILD_ONLY_GAME" = "true" ]]; then
+	if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
+		echo "Skipping game build/run because BLENDER_LIVE_LINK_SKIP_GAME=1"
+		exit 0
 	fi
 
-	# compile schema for cpp
-	touch compiled_schemas/__init__.py
-	echo FLATC IS $FLATC_BINARY
-	$FLATC_BINARY -o compiled_schemas/cpp --cpp blender_live_link.fbs 
-
-	mkdir -p compiled_schemas/python
-	touch compiled_schemas/python/__init__.py
-	$FLATC_BINARY -o compiled_schemas/python --python blender_live_link.fbs
-
-	# copy flatbuffers python package
-	cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers
-
-	if [[ $BLENDER_BUILD_MODE = native ]]; then
-		"$SCRIPT_DIR/build_blend_src.sh"
-	fi
-
-	package_extension
-
-	if [[ $BLENDER_BUILD_MODE = python ]]; then
-		install_and_launch_installed_blender
-	else
-		install_and_launch_native_blender
-	fi
+	run_game_build_and_launch
+	exit 0
 fi
 
+echo "FULL BUILD ($BLENDER_BUILD_MODE)"
+prepare_flatbuffers_and_schemas || exit
+
 if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
+	run_blender_side_build_and_launch || exit
 	echo "Skipping game build/run because BLENDER_LIVE_LINK_SKIP_GAME=1"
 	exit 0
 fi
 
-# Compile game, passing in OS as first arg
-cd $SCRIPT_DIR/game
-./build.sh $OS
+start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
+start_parallel_branch "Game" run_game_build_and_launch || exit
+wait_for_parallel_branches

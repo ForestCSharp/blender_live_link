@@ -113,8 +113,10 @@ Run commands from the repository root.
 
 On macOS, this builds FlatBuffers schemas, builds or updates the local native
 Blender integration, packages and installs the Blender extension into the local
-Blender profile, launches Blender with `blend_files/test_file.blend`, then
-builds and runs the C++ game. In this mode the extension calls the native
+Blender profile, and launches Blender with `blend_files/test_file.blend`. After
+FlatBuffers schemas are generated, the Blender-side build/install/launch branch
+and the C++ game build/run branch execute in parallel. In this mode the
+extension calls the native
 `bpy.app.live_link_make_update` hook, so FlatBuffer creation happens in C++.
 
 ### Python Serialization Path
@@ -124,7 +126,8 @@ builds and runs the C++ game. In this mode the extension calls the native
 ```
 
 This packages the same Blender extension, installs it into the system Blender,
-launches Blender, then builds and runs the game. In this mode there is no native
+and launches Blender in parallel with the game build/run after FlatBuffers
+schemas are generated. In this mode there is no native
 `bpy.app.live_link_make_update` hook, so FlatBuffer creation happens in the
 extension's Python exporter code. That means the extension can be used without
 building Blender from source, unlike the native serialization path.
