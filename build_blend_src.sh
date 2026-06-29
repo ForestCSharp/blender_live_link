@@ -16,10 +16,75 @@ BLENDER_PATCH_SENTINEL_DIR="$BLEND_SRC_DIR/.patches_applied"
 BLENDER_LIVE_LINK_SCHEMA_HEADER="$SCRIPT_DIR/compiled_schemas/cpp/blender_live_link_generated.h"
 BLENDER_LIVE_LINK_FLATBUFFERS_HEADER="$SCRIPT_DIR/flatbuffers/include/flatbuffers/flatbuffers.h"
 SOURCE_INDEX_URL="${BLENDER_SOURCE_INDEX_URL:-https://download.blender.org/source/}"
+DEFAULT_BLENDER_SOURCE_VERSION=5.1.2
 BOOTSTRAP_CMAKE_VERSION="${BLENDER_BOOTSTRAP_CMAKE_VERSION:-3.31.6}"
 FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
 RUBBERBAND_CPP_ARGS="-include cstddef"
 BLENDER_PATCHES_CHANGED=false
+BLENDER_SOURCE_MODE=version
+BLENDER_SOURCE_VERSION_EXPLICIT=false
+REQUESTED_BLENDER_SOURCE_VERSION="$DEFAULT_BLENDER_SOURCE_VERSION"
+REQUESTED_BLENDER_ARCHIVE=""
+
+usage() {
+	cat <<EOF
+Usage: $0 [--latest | --version X.Y.Z]
+
+Ensures Blender source exists under blend_src/blender, applies Live Link patches,
+and builds the local native Blender on macOS.
+
+Options:
+  --latest          Use the highest stable blender-X.Y.Z.tar.xz from the official source index.
+  --version X.Y.Z  Use a specific official Blender source archive.
+  -h, --help       Show this help text.
+
+Default:
+  Uses pinned Blender source version $DEFAULT_BLENDER_SOURCE_VERSION.
+EOF
+}
+
+parse_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--latest)
+				if [[ "$BLENDER_SOURCE_MODE" != "version" || "$BLENDER_SOURCE_VERSION_EXPLICIT" == "true" ]]; then
+					echo "Error: --latest and --version are mutually exclusive"
+					exit 1
+				fi
+				BLENDER_SOURCE_MODE=latest
+				REQUESTED_BLENDER_SOURCE_VERSION=""
+				shift
+				;;
+			--version)
+				if [[ "$BLENDER_SOURCE_MODE" == "latest" ]]; then
+					echo "Error: --latest and --version are mutually exclusive"
+					exit 1
+				fi
+				if [[ $# -lt 2 || "$2" == -* ]]; then
+					echo "Error: --version requires a value like 5.1.2"
+					exit 1
+				fi
+				if [[ ! "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+					echo "Error: invalid Blender source version '$2'; expected X.Y.Z"
+					exit 1
+				fi
+				BLENDER_SOURCE_MODE=version
+				BLENDER_SOURCE_VERSION_EXPLICIT=true
+				REQUESTED_BLENDER_SOURCE_VERSION="$2"
+				shift 2
+				;;
+			-h|--help)
+				usage
+				exit 0
+				;;
+			*)
+				echo "Error: unknown argument '$1'"
+				usage
+				exit 1
+				;;
+		esac
+	done
+}
 
 is_valid_blender_source() {
 	[[ -f "$BLENDER_SRC_DIR/CMakeLists.txt" && -d "$BLENDER_SRC_DIR/source/creator" ]]
@@ -98,11 +163,81 @@ find_latest_blender_archive() {
 		sed -E 's/^[0-9]+ [0-9]+ [0-9]+ //'
 }
 
-ensure_blender_source() {
-	require_command curl
-	require_command tar
+archive_to_version() {
+	local archive_name=$1
+	printf "%s" "$archive_name" | sed -E 's/^blender-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz$/\1/'
+}
 
+source_archive_url() {
+	local archive_name=$1
+	printf "%s/%s" "${SOURCE_INDEX_URL%/}" "$archive_name"
+}
+
+resolve_requested_blender_source() {
+	case "$BLENDER_SOURCE_MODE" in
+		version)
+			REQUESTED_BLENDER_ARCHIVE="blender-$REQUESTED_BLENDER_SOURCE_VERSION.tar.xz"
+			echo "Using pinned/requested Blender source version $REQUESTED_BLENDER_SOURCE_VERSION"
+			;;
+		latest)
+			require_command curl
+			echo "Checking Blender source releases at $SOURCE_INDEX_URL"
+			local source_index
+			source_index=$(curl -fsSL "$SOURCE_INDEX_URL")
+			REQUESTED_BLENDER_ARCHIVE=$(printf "%s" "$source_index" | find_latest_blender_archive || true)
+			if [[ -z "$REQUESTED_BLENDER_ARCHIVE" ]]; then
+				echo "Error: could not determine latest Blender source archive"
+				exit 1
+			fi
+			REQUESTED_BLENDER_SOURCE_VERSION=$(archive_to_version "$REQUESTED_BLENDER_ARCHIVE")
+			echo "Using latest Blender source version $REQUESTED_BLENDER_SOURCE_VERSION"
+			;;
+		*)
+			echo "Error: unknown Blender source mode '$BLENDER_SOURCE_MODE'"
+			exit 1
+			;;
+	esac
+}
+
+current_blender_source_version() {
+	local version_header="$BLENDER_SRC_DIR/source/blender/blenkernel/BKE_blender_version.h"
+	if [[ ! -f "$version_header" ]]; then
+		return 1
+	fi
+
+	local version_code
+	local patch_version
+	version_code=$(awk '/^#define BLENDER_VERSION / { print $3; exit }' "$version_header")
+	patch_version=$(awk '/^#define BLENDER_VERSION_PATCH / { print $3; exit }' "$version_header")
+
+	if [[ ! "$version_code" =~ ^[0-9]+$ || ! "$patch_version" =~ ^[0-9]+$ ]]; then
+		return 1
+	fi
+
+	local major=$((version_code / 100))
+	local minor=$((version_code % 100))
+	printf "%s.%s.%s\n" "$major" "$minor" "$patch_version"
+}
+
+ensure_existing_source_matches_requested_version() {
+	local current_version
+	if ! current_version=$(current_blender_source_version); then
+		echo "Error: could not determine Blender source version from $BLENDER_SRC_DIR"
+		echo "Expected source/blender/blenkernel/BKE_blender_version.h. Move blend_src/blender aside before retrying."
+		exit 1
+	fi
+
+	if [[ "$current_version" != "$REQUESTED_BLENDER_SOURCE_VERSION" ]]; then
+		echo "Error: existing Blender source is version $current_version, but requested $REQUESTED_BLENDER_SOURCE_VERSION"
+		echo "Refusing to replace $BLENDER_SRC_DIR automatically."
+		echo "Move or remove blend_src/blender and native build outputs under blend_src/ before retrying."
+		exit 1
+	fi
+}
+
+ensure_blender_source() {
 	if is_valid_blender_source; then
+		ensure_existing_source_matches_requested_version
 		echo "Blender source already present at $BLENDER_SRC_DIR"
 		return
 	fi
@@ -119,33 +254,24 @@ ensure_blender_source() {
 
 	mkdir -p "$DOWNLOAD_DIR"
 
-	echo "Checking Blender source releases at $SOURCE_INDEX_URL"
-	local source_index
-	local archive_name
-	source_index=$(curl -fsSL "$SOURCE_INDEX_URL")
-	archive_name=$(printf "%s" "$source_index" | find_latest_blender_archive || true)
-
-	if [[ -z "$archive_name" ]]; then
-		echo "Error: could not determine latest Blender source archive"
-		exit 1
-	fi
-
 	local archive_url
 	local archive_path
 	local partial_archive_path
-	archive_url="$SOURCE_INDEX_URL$archive_name"
-	archive_path="$DOWNLOAD_DIR/$archive_name"
+	archive_url=$(source_archive_url "$REQUESTED_BLENDER_ARCHIVE")
+	archive_path="$DOWNLOAD_DIR/$REQUESTED_BLENDER_ARCHIVE"
 	partial_archive_path="$archive_path.partial"
 
 	if [[ -f "$archive_path" ]]; then
 		echo "Using existing Blender source archive $archive_path"
 	else
+		require_command curl
 		echo "Downloading $archive_url"
 		rm -f "$partial_archive_path"
 		curl -fL "$archive_url" -o "$partial_archive_path"
 		mv "$partial_archive_path" "$archive_path"
 	fi
 
+	require_command tar
 	local extract_dir
 	extract_dir=$(mktemp -d "$BLEND_SRC_DIR/extract.XXXXXX")
 	cleanup() {
@@ -154,7 +280,7 @@ ensure_blender_source() {
 	}
 	trap cleanup EXIT
 
-	echo "Extracting $archive_name"
+	echo "Extracting $REQUESTED_BLENDER_ARCHIVE"
 	tar -xf "$archive_path" -C "$extract_dir"
 
 	local extracted_root
@@ -170,6 +296,7 @@ ensure_blender_source() {
 	fi
 
 	mv "$extracted_root" "$BLENDER_SRC_DIR"
+	ensure_existing_source_matches_requested_version
 	echo "Blender source ready at $BLENDER_SRC_DIR"
 }
 
@@ -476,6 +603,8 @@ build_mac_blender() {
 	echo "Blender built at $BLENDER_BINARY"
 }
 
+parse_args "$@"
+resolve_requested_blender_source
 ensure_blender_source
 ensure_native_schema_inputs
 apply_blender_patches
