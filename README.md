@@ -26,10 +26,6 @@ The live link protocol currently covers:
 - Gameplay component payloads for character and camera-control experiments.
 - Python exporter and native Blender exporter parity checks.
 
-Planned and experimental rendering work lives in the source tree and docs, but
-this README only documents behavior that is represented in the current scripts
-and schema.
-
 ## How It Works
 
 The data path is:
