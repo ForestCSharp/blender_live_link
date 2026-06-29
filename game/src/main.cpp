@@ -2397,19 +2397,19 @@ void frame(void)
 				move_speed *= 5.0f;
 			}
 
-			if (is_key_pressed(SAPP_KEYCODE_W))
+			if (is_key_pressed(SAPP_KEYCODE_W) || is_key_pressed(SAPP_KEYCODE_UP))
 			{
 				camera.location += camera.forward * move_speed;
 			}
-			if (is_key_pressed(SAPP_KEYCODE_S))
-			{
-				camera.location -= camera.forward * move_speed;
-			}
-			if (is_key_pressed(SAPP_KEYCODE_D))
+			if (is_key_pressed(SAPP_KEYCODE_S) || is_key_pressed(SAPP_KEYCODE_DOWN))
+            {
+                camera.location -= camera.forward * move_speed;
+            }
+			if (is_key_pressed(SAPP_KEYCODE_D) || is_key_pressed(SAPP_KEYCODE_RIGHT))
 			{
 				camera.location += camera_right * move_speed;
 			}
-			if (is_key_pressed(SAPP_KEYCODE_A))
+			if (is_key_pressed(SAPP_KEYCODE_A) || is_key_pressed(SAPP_KEYCODE_LEFT))
 			{
 				camera.location -= camera_right * move_speed;
 			}
