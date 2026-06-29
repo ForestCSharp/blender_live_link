@@ -15,17 +15,12 @@ from bpy.app.handlers import persistent
 import bmesh
 import builtins
 import numpy as np
-import os
 import socket
 import struct
-import sys
 import traceback
 import time
 
 from io import StringIO
-
-from os.path import dirname, realpath, basename, isfile, join
-import glob
 
 # ignore SIGPIPE so that writing to a closed socket raises a Python exception
 import signal
@@ -34,10 +29,6 @@ try:
 except Exception:
     # Not all platforms expose SIGPIPE (Windows), ignore failures
     pass
-
-path_to_append = dirname(realpath(__file__)) + "/compiled_schemas/python"
-if path_to_append not in sys.path:
-    sys.path.append(path_to_append)
 
 from .compiled_schemas.python import flatbuffers
 from .compiled_schemas.python.Blender.LiveLink import Armature

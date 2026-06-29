@@ -187,6 +187,23 @@ prepare_flatbuffers_and_schemas() {
 
 	# copy flatbuffers python package
 	cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || return
+	rm -rf compiled_schemas/python/flatbuffers/reflection || return
+	rewrite_python_schema_imports || return
+}
+
+rewrite_python_schema_imports() {
+	local schema_dir="compiled_schemas/python/Blender/LiveLink"
+	if [[ ! -d "$schema_dir" ]]; then
+		echo "Error: expected generated Python schemas at $schema_dir"
+		return 1
+	fi
+
+	perl -0pi -e '
+		s/^import flatbuffers$/from ... import flatbuffers/mg;
+		s/^from flatbuffers\.compat import import_numpy$/from ...flatbuffers.compat import import_numpy/mg;
+		s/^(\s*)from flatbuffers\.table import Table$/${1}from ...flatbuffers.table import Table/mg;
+		s/^(\s*)from Blender\.LiveLink\.([A-Za-z_][A-Za-z0-9_]*) import ([A-Za-z_][A-Za-z0-9_]*)$/${1}from .${2} import ${3}/mg;
+	' "$schema_dir"/*.py || return
 }
 
 run_blender_side_build_and_launch() {
