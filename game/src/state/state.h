@@ -147,7 +147,7 @@ struct State
 
 	struct RenderPassState
 	{
-		RenderPass passes[(int)ERenderPass::COUNT];
+		RenderPassEntry passes[(int)ERenderPass::COUNT];
 	} render_passes;
 
 	struct SceneState

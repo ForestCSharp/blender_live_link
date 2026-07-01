@@ -391,6 +391,11 @@ void reset_materials()
 
 RenderPass& get_render_pass(const ERenderPass in_pass_id)
 {
+	return state.render_passes.passes[static_cast<int>(in_pass_id)].final_pass();
+}
+
+RenderPassEntry& get_render_pass_entry(const ERenderPass in_pass_id)
+{
 	return state.render_passes.passes[static_cast<int>(in_pass_id)];
 }
 
@@ -1297,14 +1302,15 @@ void handle_resize(bool force_resize = false)
 		const int render_pass_count = (int) ERenderPass::COUNT;
 		for (i32 pass_index = 0; pass_index < render_pass_count; ++pass_index)
 		{
-			RenderPass& render_pass = state.render_passes.passes[pass_index];
+			RenderPassEntry& render_pass_entry = state.render_passes.passes[pass_index];
+			RenderPass& render_pass = render_pass_entry.final_pass();
 			if (render_pass.desc.type == ERenderPassType::Swapchain)
 			{
-				render_pass.handle_resize(state.window.width, state.window.height);
+				render_pass_entry.handle_resize(state.window.width, state.window.height);
 			}
 			else
 			{
-				render_pass.handle_resize(state.window.render_width, state.window.render_height);
+				render_pass_entry.handle_resize(state.window.render_width, state.window.render_height);
 			}
 		}
 
@@ -1382,7 +1388,7 @@ void init(void)
 	get_render_pass(ERenderPass::ShadowDepth).init(ShadowDepthPass::make_render_pass_desc(SG_PIXELFORMAT_DEPTH));
 
 	// Init shadow VSM blur pass
-	get_render_pass(ERenderPass::ShadowBlur).init(ShadowBlurPass::make_render_pass_desc());
+	ShadowBlurPass::init_separable(get_render_pass_entry(ERenderPass::ShadowBlur));
 
 	// Init shadow cascade debug pass
 	get_render_pass(ERenderPass::ShadowCascadeDebug).init(ShadowCascadeDebugPass::make_render_pass_desc());
@@ -1469,41 +1475,16 @@ void init(void)
 		}
 	}
 
-	RenderPassDesc ssao_blur_pass_desc = {
-		.pipeline_desc = (sg_pipeline_desc) {
-			.shader = sg_make_shader(blur_blur_shader_desc(sg_query_backend())),
-			.depth = {
-				.pixel_format = SG_PIXELFORMAT_NONE,
-			},
-			.color_count = 1,
-			.colors[0] = {
-				.pixel_format = ssao_pixel_format,
-			},
-			.cull_mode = SG_CULLMODE_NONE,
-			.label = "blur-pipeline",
-		},
-		.num_outputs = 1,
-		.outputs[0] = {
-			.pixel_format = ssao_pixel_format,
-			.load_action = SG_LOADACTION_DONTCARE,
-			.store_action = SG_STOREACTION_STORE,
-		},
-		.num_scratch_outputs = 1,
-		.scratch_outputs = {
-			[0] = {
-				.pixel_format = ssao_pixel_format,
-				.load_action = SG_LOADACTION_DONTCARE,
-				.store_action = SG_STOREACTION_STORE,
-			},
-		},
-		.width_scale = 0.5f,
-		.height_scale = 0.5f,
-		.debug_label = "SSAO Blur Vertical",
-		.scratch_debug_label = "SSAO Blur Horizontal",
-	};
-	get_render_pass(ERenderPass::SSAO_Blur).init(ssao_blur_pass_desc);
+	BlurPass::init_separable(
+		get_render_pass_entry(ERenderPass::SSAO_Blur),
+		ssao_pixel_format,
+		0.5f,
+		0.5f,
+		"SSAO Blur Horizontal",
+		"SSAO Blur Vertical"
+	);
 
-	get_render_pass(ERenderPass::ScreenSpaceShadows).init(ScreenSpaceShadowsPass::make_render_pass_desc(ssao_pixel_format));
+	ScreenSpaceShadowsPass::init(get_render_pass_entry(ERenderPass::ScreenSpaceShadows), ssao_pixel_format);
 
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(scene_color_format));
 
@@ -2865,7 +2846,7 @@ void frame(void)
 				if (state.shadow.blur_enable && ShadowDepthPass::has_valid_shadow_map && !ShadowDepthPass::has_valid_shadow_blur)
 				{
 					ShadowBlurPass::execute_separable(
-						get_render_pass(ERenderPass::ShadowBlur),
+						get_render_pass_entry(ERenderPass::ShadowBlur),
 						get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).get_texture_array_view(),
 						state.gpu.linear_sampler,
 						HMM_V2(
@@ -2994,7 +2975,7 @@ void frame(void)
 			{ // SSAO Blur
 				RenderPass& ssao_blur_pass = get_render_pass(ERenderPass::SSAO_Blur);
 				BlurPass::execute_separable(
-					ssao_blur_pass,
+					get_render_pass_entry(ERenderPass::SSAO_Blur),
 					ssao_pass.get_color_output(0).get_texture_view(0),
 					state.gpu.linear_sampler,
 					HMM_V2((f32)ssao_blur_pass.current_width, (f32)ssao_blur_pass.current_height),
@@ -3010,10 +2991,9 @@ void frame(void)
 			if (screen_space_shadow_sun)
 			{
 				RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
-				RenderPass& screen_space_shadows_pass = get_render_pass(ERenderPass::ScreenSpaceShadows);
 				HMM_Vec3 sun_light_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0, 0, -1), screen_space_shadow_sun->current_transform.rotation));
 				ScreenSpaceShadowsPass::execute(
-					screen_space_shadows_pass,
+					get_render_pass_entry(ERenderPass::ScreenSpaceShadows),
 					geometry_pass.get_color_output(1).get_texture_view(0),
 					geometry_pass.get_color_output(2).get_texture_view(0),
 					state.gpu.linear_sampler,

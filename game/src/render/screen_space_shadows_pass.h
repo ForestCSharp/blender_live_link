@@ -11,7 +11,6 @@ namespace ScreenSpaceShadowsPass
 {
 	optional<sg_shader> trace_shader;
 	optional<sg_shader> filter_shader;
-	optional<sg_pipeline> filter_pipeline;
 
 	sg_pipeline_desc make_trace_pipeline_desc(sg_pixel_format color_format)
 	{
@@ -34,29 +33,24 @@ namespace ScreenSpaceShadowsPass
 		};
 	}
 
-	sg_pipeline make_filter_pipeline(sg_pixel_format color_format)
+	sg_pipeline_desc make_filter_pipeline_desc(sg_pixel_format color_format)
 	{
 		if (!filter_shader.has_value())
 		{
 			filter_shader = sg_make_shader(screen_space_shadows_filter_shader_desc(sg_query_backend()));
 		}
 
-		if (!filter_pipeline.has_value())
-		{
-			sg_pipeline_desc desc = {};
-			desc.shader = filter_shader.value();
-			desc.depth.pixel_format = SG_PIXELFORMAT_NONE;
-			desc.color_count = 1;
-			desc.colors[0].pixel_format = color_format;
-			desc.cull_mode = SG_CULLMODE_NONE;
-			desc.label = "screen-space-shadows-filter-pipeline";
-			filter_pipeline = sg_make_pipeline(desc);
-		}
-
-		return filter_pipeline.value();
+		sg_pipeline_desc desc = {};
+		desc.shader = filter_shader.value();
+		desc.depth.pixel_format = SG_PIXELFORMAT_NONE;
+		desc.color_count = 1;
+		desc.colors[0].pixel_format = color_format;
+		desc.cull_mode = SG_CULLMODE_NONE;
+		desc.label = "screen-space-shadows-filter-pipeline";
+		return desc;
 	}
 
-	RenderPassDesc make_render_pass_desc(sg_pixel_format color_format)
+	RenderPassDesc make_trace_render_pass_desc(sg_pixel_format color_format)
 	{
 		return (RenderPassDesc) {
 			.pipeline_desc = make_trace_pipeline_desc(color_format),
@@ -67,8 +61,18 @@ namespace ScreenSpaceShadowsPass
 				.store_action = SG_STOREACTION_STORE,
 				.clear_value = {1.0f, 1.0f, 1.0f, 1.0f},
 			},
-			.num_scratch_outputs = 1,
-			.scratch_outputs[0] = {
+			.width_scale = 0.5f,
+			.height_scale = 0.5f,
+			.debug_label = "Screen Space Shadows Trace",
+		};
+	}
+
+	RenderPassDesc make_filter_render_pass_desc(sg_pixel_format color_format)
+	{
+		return (RenderPassDesc) {
+			.pipeline_desc = make_filter_pipeline_desc(color_format),
+			.num_outputs = 1,
+			.outputs[0] = {
 				.pixel_format = color_format,
 				.load_action = SG_LOADACTION_CLEAR,
 				.store_action = SG_STOREACTION_STORE,
@@ -77,12 +81,17 @@ namespace ScreenSpaceShadowsPass
 			.width_scale = 0.5f,
 			.height_scale = 0.5f,
 			.debug_label = "Screen Space Shadows Filter",
-			.scratch_debug_label = "Screen Space Shadows Trace",
 		};
 	}
 
+	void init(RenderPassEntry& in_entry, sg_pixel_format color_format)
+	{
+		in_entry.init_intermediate(make_trace_render_pass_desc(color_format));
+		in_entry.init_final(make_filter_render_pass_desc(color_format));
+	}
+
 	void execute(
-		RenderPass& in_pass,
+		RenderPassEntry& in_entry,
 		sg_view in_position_view,
 		sg_view in_normal_view,
 		sg_sampler in_sampler,
@@ -96,12 +105,14 @@ namespace ScreenSpaceShadowsPass
 		i32 in_filter_radius
 	)
 	{
-		in_pass.execute_scratch(
-			0,
+		RenderPass& trace_pass = in_entry.intermediate_pass();
+		RenderPass& filter_pass = in_entry.final_pass();
+
+		trace_pass.execute(
 			[&](const i32)
 			{
 				const screen_space_shadows_trace_fs_params_t trace_fs_params = {
-					.screen_size = HMM_V2((f32)in_pass.current_width, (f32)in_pass.current_height),
+					.screen_size = HMM_V2((f32)trace_pass.current_width, (f32)trace_pass.current_height),
 					.view = in_view,
 					.projection = in_projection,
 					.light_direction = in_light_direction,
@@ -125,20 +136,18 @@ namespace ScreenSpaceShadowsPass
 			}
 		);
 
-		in_pass.execute(
+		filter_pass.execute(
 			[&](const i32)
 			{
-				sg_apply_pipeline(make_filter_pipeline(in_pass.desc.outputs[0].pixel_format));
-
 				const screen_space_shadows_filter_fs_params_t filter_fs_params = {
-					.screen_size = HMM_V2((f32)in_pass.current_width, (f32)in_pass.current_height),
+					.screen_size = HMM_V2((f32)filter_pass.current_width, (f32)filter_pass.current_height),
 					.filter_radius = in_filter_radius,
 				};
 				sg_apply_uniforms(0, SG_RANGE(filter_fs_params));
 
 				sg_bindings bindings = {
 					.views = {
-						[0] = in_pass.get_scratch_color_output(0).get_texture_view(0),
+						[0] = trace_pass.get_color_output(0).get_texture_view(0),
 						[1] = in_position_view,
 						[2] = in_normal_view,
 					},
