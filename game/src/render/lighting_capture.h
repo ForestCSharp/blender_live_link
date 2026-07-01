@@ -62,7 +62,7 @@ public:
 	RenderPass lighting_pass;
 	RenderPass radial_depth_pass;
 	RenderPass cube_to_oct_pass;
-	sg_pipeline radiance_projection_pipeline;
+	sg_pipeline radiance_projection_pipeline = {};
 
 	bool is_initialized = false;
 
@@ -72,6 +72,7 @@ public:
 public:
 	void init(const LightingCaptureDesc& in_desc)
 	{
+		cleanup();
 		desc = in_desc;
 
 		// Render geometry pass for 6 cube faces (separate textures, ERenderPassType::Multi)
@@ -164,6 +165,22 @@ public:
 		is_initialized = true;
 	}
 
+	void cleanup()
+	{
+		geometry_pass.cleanup();
+		lighting_pass.cleanup();
+		radial_depth_pass.cleanup();
+		cube_to_oct_pass.cleanup();
+
+		if (radiance_projection_pipeline.id != SG_INVALID_ID)
+		{
+			sg_destroy_pipeline(radiance_projection_pipeline);
+			radiance_projection_pipeline = {};
+		}
+
+		is_initialized = false;
+	}
+
 	void render(
 		State& in_state,
 		const HMM_Vec3 in_location,
@@ -196,8 +213,9 @@ public:
 		}
 
 		geometry_pass.execute(
-			[&](const i32 face_idx)
+			[&](const RenderPassExecutionContext& context)
 	   		{
+				const i32 face_idx = context.image_idx;
 				HMM_Mat4& view_matrix = view_matrices[face_idx];
 				HMM_Mat4& view_projection_matrix = view_projection_matrices[face_idx];
 
@@ -235,8 +253,9 @@ public:
 		);
 
 		lighting_pass.execute(
-			[&](const i32 face_idx)
+			[&](const RenderPassExecutionContext& context)
 	   		{
+				const i32 face_idx = context.slice_idx;
 				lighting_fs_params_t fs_params = in_state.lighting.fs_params;
 				fs_params.view_position = in_location;
 				fs_params.view_forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
@@ -284,8 +303,9 @@ public:
 		);
 
 		radial_depth_pass.execute(
-			[&](const i32 face_idx)
+			[&](const RenderPassExecutionContext& context)
 	   		{
+				const i32 face_idx = context.slice_idx;
 				const HMM_Mat4& view_projection_matrix = view_projection_matrices[face_idx];
 
 				radial_depth_fs_params_t fs_params = {

@@ -63,13 +63,13 @@ namespace ShadowBlurPass
 	{
 		in_pass.execute_scratch(
 			0,
-			[&](const i32 pass_idx)
+			[&](const RenderPassExecutionContext& context)
 			{
 				const shadow_blur_fs_params_t blur_fs_params = {
 					.screen_size = in_screen_size,
 					.direction = HMM_V2(1.0f, 0.0f),
 					.blur_size = in_blur_size,
-					.array_layer = pass_idx,
+					.array_layer = context.slice_idx,
 				};
 				sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
 
@@ -85,13 +85,13 @@ namespace ShadowBlurPass
 		);
 
 		in_pass.execute(
-			[&](const i32 pass_idx)
+			[&](const RenderPassExecutionContext& context)
 			{
 				const shadow_blur_fs_params_t blur_fs_params = {
 					.screen_size = in_screen_size,
 					.direction = HMM_V2(0.0f, 1.0f),
 					.blur_size = in_blur_size,
-					.array_layer = pass_idx,
+					.array_layer = context.slice_idx,
 				};
 				sg_apply_uniforms(0, SG_RANGE(blur_fs_params));
 

@@ -65,12 +65,20 @@ namespace SkyBakePass
 				},
 				.debug_label = "Sky Bake",
 			};
-			RenderPass new_render_pass;
-			new_render_pass.init(render_pass_desc);
-			render_pass = new_render_pass;
+			render_pass.emplace();
+			render_pass.value().init(render_pass_desc);
 		}
 
 		return render_pass.value();
+	}
+
+	void cleanup()
+	{
+		if (render_pass.has_value())
+		{
+			render_pass.value().cleanup();
+			render_pass.reset();
+		}
 	}
 
 	HMM_Vec3 get_sun_dir(State& in_state)

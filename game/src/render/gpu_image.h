@@ -7,6 +7,7 @@
 #include <cassert>
 #include <optional>
 #include <string>
+#include <utility>
 
 using std::optional;
 
@@ -30,6 +31,26 @@ public:
 	GpuImage(const GpuImageDesc& in_desc)
 	{		
 		recreate(in_desc);
+	}
+
+	GpuImage(const GpuImage&) = delete;
+	GpuImage& operator=(const GpuImage&) = delete;
+
+	GpuImage(GpuImage&& other) noexcept
+	{
+		move_from(std::move(other));
+	}
+
+	GpuImage& operator=(GpuImage&& other) noexcept
+	{
+		if (this == &other)
+		{
+			return *this;
+		}
+
+		cleanup();
+		move_from(std::move(other));
+		return *this;
 	}
 
 	void recreate(const GpuImageDesc& in_desc)
@@ -70,12 +91,19 @@ public:
 		{
 			if (texture_views[i].has_value())
 			{
-				sg_destroy_view(texture_views[i].value());
+				if (texture_views[i].value().id != SG_INVALID_ID)
+				{
+					sg_destroy_view(texture_views[i].value());
+				}
+				texture_views[i].reset();
 			}
 		}
 		if (texture_array_view.has_value())
 		{
-			sg_destroy_view(texture_array_view.value());
+			if (texture_array_view.value().id != SG_INVALID_ID)
+			{
+				sg_destroy_view(texture_array_view.value());
+			}
 			texture_array_view.reset();
 		}
 
@@ -83,13 +111,21 @@ public:
 		{
 			if (attachment_views[i].has_value())
 			{
-				sg_destroy_view(attachment_views[i].value());
+				if (attachment_views[i].value().id != SG_INVALID_ID)
+				{
+					sg_destroy_view(attachment_views[i].value());
+				}
+				attachment_views[i].reset();
 			}
 		}
 		
-		if (gpu_image.has_value() != SG_INVALID_ID)
+		if (gpu_image.has_value())
 		{
-			sg_destroy_image(gpu_image.value());	
+			if (gpu_image.value().id != SG_INVALID_ID)
+			{
+				sg_destroy_image(gpu_image.value());
+			}
+			gpu_image.reset();
 		}
 	}
 
@@ -197,6 +233,25 @@ public:
 	const GpuImageDesc& get_desc() const { return desc; }
 
 protected:
+	void move_from(GpuImage&& other)
+	{
+		desc = other.desc;
+		gpu_image = other.gpu_image;
+		other.gpu_image.reset();
+
+		for (i32 i = 0; i < NUM_CUBE_FACES; ++i)
+		{
+			texture_views[i] = other.texture_views[i];
+			other.texture_views[i].reset();
+
+			attachment_views[i] = other.attachment_views[i];
+			other.attachment_views[i].reset();
+		}
+
+		texture_array_view = other.texture_array_view;
+		other.texture_array_view.reset();
+	}
+
 	GpuImageDesc desc = {};
 	optional<sg_image> gpu_image;
 

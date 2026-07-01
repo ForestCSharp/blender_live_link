@@ -2852,9 +2852,9 @@ void frame(void)
 					RenderPass& shadow_depth_pass = get_render_pass(ERenderPass::ShadowDepth);
 					shadow_depth_pass.set_pass_count_override(ShadowDepthPass::get_active_cascade_count(state));
 					shadow_depth_pass.execute(
-						[&](const i32 pass_idx)
+						[&](const RenderPassExecutionContext& context)
 						{
-							ShadowDepthPass::render(state, pass_idx);
+							ShadowDepthPass::render(state, context.slice_idx);
 						}
 					);
 					shadow_depth_pass.set_pass_count_override(-1);
@@ -3268,7 +3268,7 @@ void frame(void)
 			const i32 previous_history_index = (temporal_aa_output_index + 1) % 2;
 			temporal_aa_pass.execute_one(
 				temporal_aa_output_index,
-				[&](const i32)
+				[&](const RenderPassExecutionContext& context)
 				{
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
@@ -3307,6 +3307,7 @@ void frame(void)
 					gpu_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
+					assert(context.image_idx == temporal_aa_output_index);
 				}
 			);
 
@@ -3414,6 +3415,7 @@ void frame(void)
 					GpuImage& image_to_copy_to_swapchain = state.temporal_aa.enable_fxaa
 						? fxaa_pass.get_color_output(0)
 						: tonemapping_pass.get_color_output(0);
+					GpuImage* image_to_copy_to_swapchain_ptr = &image_to_copy_to_swapchain;
 
 					DEBUG_UI(
 						const i32 num_images = state.images.items.length();
@@ -3438,14 +3440,14 @@ void frame(void)
 
 							if (state.images.enable_debug_fullscreen)
 							{
-								image_to_copy_to_swapchain = state.images.items[state.images.debug_index];
+								image_to_copy_to_swapchain_ptr = &state.images.items[state.images.debug_index];
 							}
 						}
 					);
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = image_to_copy_to_swapchain.get_texture_view(0),
+							[0] = image_to_copy_to_swapchain_ptr->get_texture_view(0),
 							[1] = debug_text_pass.get_color_output(0).get_texture_view(0),
 						},
 						.samplers[0] = state.gpu.nearest_sampler,
@@ -3478,6 +3480,13 @@ void cleanup(void)
 	// Tell live_link_thread we're done running and wait for it to complete
 	state.runtime.game_running = false;
 	state.live_link.thread.join();
+
+	for (i32 pass_index = 0; pass_index < (i32)ERenderPass::COUNT; ++pass_index)
+	{
+		state.render_passes.passes[pass_index].cleanup();
+	}
+	SkyBakePass::cleanup();
+	gi_scene.lighting_capture.cleanup();
 
 	jolt_shutdown();
 
