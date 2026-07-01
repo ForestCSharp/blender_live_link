@@ -18,7 +18,8 @@ or replaces those resources on object update, delete, or reset.
 - `Update.images`: image payloads referenced by exported materials in the same batch.
 - `Update.reset`: when true, the runtime clears scene objects, materials, images, and cached scene indexes.
 
-Mesh vectors are flat arrays:
+Mesh vectors are flat arrays. Blender `MESH` objects and supported baked curve
+objects are both exported as evaluated mesh payloads:
 
 - `positions`: `float`, 3 values per vertex.
 - `normals`: `float`, 3 values per vertex.
@@ -28,6 +29,10 @@ Mesh vectors are flat arrays:
 
 Animation matrices are frame-major, then bone-major, with 16 column-major floats
 per matrix.
+
+Native Blender grease-pencil objects are not a separate wire type in this
+contract. Assets that originate as grease pencil but are baked to curves or
+meshes are sent through the mesh path.
 
 ## Output Layout
 

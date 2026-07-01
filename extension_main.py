@@ -89,6 +89,9 @@ def scene_uses_python_export_fallback(scene=None):
         scene = bpy.context.scene
     return bool(getattr(scene, "live_link_use_python_export_fallback", False))
 
+def is_mesh_export_object(obj):
+    return obj is not None and obj.type in {'MESH', 'CURVE'}
+
 # Class to manage our live link connection
 class LiveLinkConnection():
     def __init__(self):
@@ -195,7 +198,7 @@ class LiveLinkConnection():
             bpy.context.view_layer.update()
 
         try:
-            if obj.mode == 'EDIT':
+            if obj.type == 'MESH' and obj.mode == 'EDIT':
                 # TODO: we shouldn't do this for meshes that are too complex
                 bm = bmesh.from_edit_mesh(obj.data)
                 mesh = bpy.data.meshes.new("Modified_Mesh")
@@ -212,12 +215,7 @@ class LiveLinkConnection():
 
             self.add_export_timing(export_stats, "mesh_eval", time.perf_counter() - mesh_eval_start)
             triangulation_start = time.perf_counter()
-            if self.mesh_needs_triangulation(mesh):
-                bm = bmesh.new()
-                bm.from_mesh(mesh)
-                bmesh.ops.triangulate(bm, faces=bm.faces[:])
-                bm.to_mesh(mesh)
-                bm.free()
+            mesh.calc_loop_triangles()
             self.add_export_timing(export_stats, "triangulation", time.perf_counter() - triangulation_start)
             return mesh
         finally:
@@ -365,13 +363,12 @@ class LiveLinkConnection():
 
         # Mesh Data
         mesh_fb = None
-        if obj.type == 'MESH': 
+        if is_mesh_export_object(obj):
             mesh_armature = self.get_mesh_armature(obj)
             mesh = self.get_mesh(obj, dependency_graph, mesh_armature is not None, export_stats)
 
             vertex_count = len(mesh.vertices)
             loop_count = len(mesh.loops)
-            poly_count = len(mesh.polygons)
 
             # --- Positions and normals per vertex ---
             positions = np.zeros(vertex_count * 3, dtype=np.float32)
@@ -384,12 +381,6 @@ class LiveLinkConnection():
             # --- Loop -> vertex index mapping ---
             loop_vertex_indices = np.zeros(loop_count, dtype=np.int32)
             mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
-
-            # --- Polygon loop ranges ---
-            poly_loop_starts = np.zeros(poly_count, dtype=np.int32)
-            poly_loop_totals = np.zeros(poly_count, dtype=np.int32)
-            mesh.polygons.foreach_get("loop_start", poly_loop_starts)
-            mesh.polygons.foreach_get("loop_total", poly_loop_totals)
 
             # --- UVs per loop (or zeros if none) ---
             if mesh.uv_layers.active:
@@ -413,10 +404,14 @@ class LiveLinkConnection():
             new_indices = inverse_indices.astype(np.int32)
             new_vertex_count = len(unique_keys)
             self.add_export_timing(export_stats, "vertex_dedupe", time.perf_counter() - vertex_dedupe_start)
+            loop_triangle_indices = np.asarray(
+                [loop_index for triangle in mesh.loop_triangles for loop_index in triangle.loops],
+                dtype=np.int32
+            )
             if export_stats is not None:
                 export_stats["mesh_count"] += 1
                 export_stats["mesh_vertex_count"] += int(new_vertex_count)
-                export_stats["mesh_index_count"] += int(loop_count)
+                export_stats["mesh_index_count"] += int(len(loop_triangle_indices))
 
             # --- Build new vertex buffers ---
             mesh_positions = positions[unique_keys['v']]
@@ -425,10 +420,8 @@ class LiveLinkConnection():
             mesh_uvs[:, 0] = unique_keys['u'] / 1e6
             mesh_uvs[:, 1] = unique_keys['v2'] / 1e6
 
-            # --- Build face index buffer ---
-            indices = np.empty(loop_count, dtype=np.int32)
-            for start, total in zip(poly_loop_starts, poly_loop_totals):
-                indices[start:start+total] = new_indices[start:start+total]
+            # --- Build triangle index buffer ---
+            indices = new_indices[loop_triangle_indices].astype(np.int32)
 
             # --- Flatten arrays for FlatBuffers ---
             mesh_positions_fb = builder.CreateNumpyVector(mesh_positions.flatten())
@@ -493,17 +486,20 @@ class LiveLinkConnection():
 
             # --- Material IDs (optional) ---
             # Get Materials
-            material_ids = np.empty(0, dtype=np.int32)
-            if obj.data.materials:
-                for material in obj.data.materials:
+            material_ids = []
+            material_slots = list(getattr(obj, "material_slots", []))
+            if material_slots:
+                for material_slot in material_slots:
+                    material = material_slot.material
                     if material is None:
                         continue
                     material_id = material.session_uid
                     # append to our material list
-                    material_ids = np.append(material_ids, material_id)
+                    material_ids.append(material_id)
                     # Add to referenced material dict
                     if referenced_materials.get(material_id) is None:
                         referenced_materials[material_id] = material
+            material_ids = np.asarray(material_ids, dtype=np.int32)
             material_ids_fb = builder.CreateNumpyVector(material_ids)
             if export_stats is not None:
                 export_stats["material_slot_count"] += int(len(material_ids))

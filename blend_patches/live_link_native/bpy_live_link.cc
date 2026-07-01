@@ -1047,6 +1047,13 @@ flatbuffers::Offset<ll::Armature> export_armature(flatbuffers::FlatBufferBuilder
                             builder.CreateVector(animation_offsets));
 }
 
+bool object_exports_as_mesh(const Object *object)
+{
+  return object &&
+         (object->type == OB_MESH || object->type == OB_CURVES_LEGACY ||
+          object->type == OB_CURVES);
+}
+
 flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &builder,
                                               PyObject *py_object,
                                               Object *object,
@@ -1067,7 +1074,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   const ll::Quat rotation_fb(quaternion[1], quaternion[2], quaternion[3], quaternion[0]);
 
   flatbuffers::Offset<ll::Mesh> mesh_fb = 0;
-  if (object->type == OB_MESH) {
+  if (object_exports_as_mesh(object)) {
     mesh_fb = export_mesh(
         builder, object, mesh_armature_object(object), bmain, depsgraph, referenced_materials);
   }
