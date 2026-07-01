@@ -93,6 +93,8 @@ using ankerl::unordered_dense::map;
 #include "render/lighting_pass.h"
 #include "render/blur_pass.h"
 #include "render/wire_overlay_pass.h"
+#include "render/temporal_aa_pass.h"
+#include "render/fxaa_pass.h"
 #include "render/sky_pass.h"
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
@@ -1305,6 +1307,8 @@ void handle_resize(bool force_resize = false)
 				render_pass.handle_resize(state.window.render_width, state.window.render_height);
 			}
 		}
+
+		TemporalAAPass::invalidate_history(state);
 	}
 }
 
@@ -1321,8 +1325,8 @@ void init(void)
 		.buffer_pool_size = 4096,
 		.image_pool_size = 4096,
 		//.sampler_pool_size = 1024,
-		//.shader_pool_size =
-		//.pipeline_pool_size =
+		.shader_pool_size = 128,
+		.pipeline_pool_size = 256,
 		.view_pool_size = 8192,
         .logger.func = slog_func,
 	   	.environment = sglue_environment(),
@@ -1330,6 +1334,7 @@ void init(void)
 	gpu_frame_timings_init();
 
 	sg_swapchain swapchain = sglue_swapchain();
+	const sg_pixel_format scene_color_format = SG_PIXELFORMAT_RGBA32F;
 
 	state_init();
 
@@ -1500,7 +1505,7 @@ void init(void)
 
 	get_render_pass(ERenderPass::ScreenSpaceShadows).init(ScreenSpaceShadowsPass::make_render_pass_desc(ssao_pixel_format));
 
-	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(swapchain.color_format));
+	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(scene_color_format));
 
 	RenderPassDesc dof_combine_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1508,20 +1513,26 @@ void init(void)
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.color_count = 1,
+			.colors[0] = {
+				.pixel_format = scene_color_format,
+			},
 			.cull_mode = SG_CULLMODE_NONE,
 			.label = "dof-combine-pipeline",
 		},
 		.num_outputs = 1,
 		.outputs[0] = {
-			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
+			.pixel_format = scene_color_format,
+			.load_action = SG_LOADACTION_DONTCARE,
 			.store_action = SG_STOREACTION_STORE,
 		},
 		.debug_label = "DOF Combine",
 	};
 	get_render_pass(ERenderPass::DOF_Combine).init(dof_combine_pass_desc);
 
-	get_render_pass(ERenderPass::WireOverlay).init(WireOverlayPass::make_render_pass_desc(swapchain.color_format));
+	get_render_pass(ERenderPass::WireOverlay).init(WireOverlayPass::make_render_pass_desc(scene_color_format));
+
+	get_render_pass(ERenderPass::TemporalAA).init(TemporalAAPass::make_render_pass_desc(scene_color_format));
 
 	RenderPassDesc tonemapping_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1529,18 +1540,24 @@ void init(void)
 			.depth = {
 				.pixel_format = SG_PIXELFORMAT_NONE,
 			},
+			.color_count = 1,
+			.colors[0] = {
+				.pixel_format = swapchain.color_format,
+			},
 			.cull_mode = SG_CULLMODE_NONE,
 			.label = "tonemapping-pipeline",
 		},
 		.num_outputs = 1,
 		.outputs[0] = {
 			.pixel_format = swapchain.color_format,
-			.load_action = SG_LOADACTION_LOAD,
+			.load_action = SG_LOADACTION_DONTCARE,
 			.store_action = SG_STOREACTION_STORE,
 		},
 		.debug_label = "Tonemapping",
 	};
 	get_render_pass(ERenderPass::Tonemapping).init(tonemapping_pass_desc);
+
+	get_render_pass(ERenderPass::FXAA).init(FXAAPass::make_render_pass_desc(swapchain.color_format));
 
 	RenderPassDesc debug_text_pass_desc = {
 		// Don't set optional pipeline_desc
@@ -1565,6 +1582,10 @@ void init(void)
 				.pixel_format = swapchain.depth_format,
 				.compare = SG_COMPAREFUNC_ALWAYS,
 				.write_enabled = false,
+			},
+			.color_count = 1,
+			.colors[0] = {
+				.pixel_format = swapchain.color_format,
 			},
 			.cull_mode = SG_CULLMODE_NONE,
 			.label = "copy-to-swapchain-pipeline",
@@ -1843,6 +1864,7 @@ void frame(void)
 
 			reset_materials();
 			reset_images();
+			TemporalAAPass::invalidate_history(state);
 		}
 
 		scene_ensure_indexes(state);
@@ -1877,6 +1899,7 @@ void frame(void)
 				object_reset_jolt_body(object);
 			}
 		}
+		TemporalAAPass::invalidate_history(state);
 	);
 
 	DEBUG_UI(
@@ -2067,7 +2090,10 @@ void frame(void)
 
 			if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe);
+				if (ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe))
+				{
+					TemporalAAPass::invalidate_history(state);
+				}
 				ImGui::SliderFloat("Wire Width", &state.wireframe.width, 0.5f, 4.0f, "%.2f px");
 				ImGui::SliderFloat("Wire Softness", &state.wireframe.softness, 0.25f, 3.0f, "%.2f px");
 				ImGui::SliderFloat("Wire Opacity", &state.wireframe.opacity, 0.0f, 1.0f, "%.2f");
@@ -2079,10 +2105,34 @@ void frame(void)
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
 				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+				if (ImGui::CollapsingHeader("Antialiasing", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					bool taa_changed = false;
+					taa_changed |= ImGui::Checkbox("Temporal AA", &state.temporal_aa.enable);
+					ImGui::Checkbox("FXAA", &state.temporal_aa.enable_fxaa);
+					ImGui::BeginDisabled(!state.temporal_aa.enable);
+					taa_changed |= ImGui::SliderFloat("TAA History Blend", &state.temporal_aa.blend_alpha, 0.0f, 1.0f, "%.2f");
+					taa_changed |= ImGui::SliderFloat("TAA Sharpen", &state.temporal_aa.sharpen_strength, 0.0f, 0.5f, "%.3f");
+					taa_changed |= ImGui::SliderFloat("TAA Rejection", &state.temporal_aa.rejection_threshold, 0.0f, 1.0f, "%.3f");
+					static const char* temporal_aa_debug_modes[] = {
+						"Off",
+						"History Acceptance",
+						"Previous UV",
+					};
+					taa_changed |= ImGui::Combo("TAA Debug", &state.temporal_aa.debug_mode, temporal_aa_debug_modes, IM_ARRAYSIZE(temporal_aa_debug_modes));
+					ImGui::EndDisabled();
+					if (taa_changed)
+					{
+						TemporalAAPass::invalidate_history(state);
+					}
+				}
 				ImGui::Checkbox("SSAO", &state.ssao.enable);
 				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					ImGui::Checkbox("Enable DoF", &state.dof.enable);
+					if (ImGui::Checkbox("Enable DoF", &state.dof.enable))
+					{
+						TemporalAAPass::invalidate_history(state);
+					}
 					ImGui::BeginDisabled(!state.dof.enable);
 					ImGui::SliderFloat("Focus Distance", &state.dof.focus_distance, 0.1f, 500.0f, "%.1f");
 					ImGui::SliderFloat("Focus Range", &state.dof.focus_range, 0.1f, 200.0f, "%.1f");
@@ -2523,6 +2573,8 @@ void frame(void)
 		HMM_Mat4 projection_matrix = HMM_M4D(1.0f);
 		HMM_Mat4 view_matrix = HMM_M4D(1.0f);
 		HMM_Mat4 view_projection_matrix = HMM_M4D(1.0f);
+		HMM_Mat4 unjittered_view_projection_matrix = HMM_M4D(1.0f);
+		i32 temporal_aa_output_index = state.temporal_aa.history_index;
 
 		{
 			CPU_TIMING_SCOPE("Render Preparation");
@@ -2722,6 +2774,21 @@ void frame(void)
 
 				HMM_Vec3 target = camera.location + camera.forward * 10;
 				view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
+				unjittered_view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+				if (state.temporal_aa.enable)
+				{
+					state.temporal_aa.jitter_phase = (i32)(state.data_oriented.frame_index & 1);
+					state.temporal_aa.current_jitter_pixels = TemporalAAPass::get_decima_jitter_pixels(state.temporal_aa.jitter_phase);
+					projection_matrix = TemporalAAPass::apply_projection_jitter(
+						projection_matrix,
+						state.temporal_aa.current_jitter_pixels,
+						HMM_V2(w, h)
+					);
+				}
+				else
+				{
+					state.temporal_aa.current_jitter_pixels = HMM_V2(0.0f, 0.0f);
+				}
 				view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 				if (!state.shadow.depth_freeze)
 				{
@@ -2843,7 +2910,7 @@ void frame(void)
 		CullResult cull_result;
 		{
 			CPU_TIMING_SCOPE("Geometry Culling");
-			cull_result = cull_objects(state, view_projection_matrix, cull_bounds_padding);
+			cull_result = cull_objects(state, unjittered_view_projection_matrix, cull_bounds_padding);
 		}
 
 		{ // Geometry Pass
@@ -3122,7 +3189,7 @@ void frame(void)
 
 					{
 						CPU_TIMING_SCOPE("Wire Overlay Meshes");
-						sg_apply_pipeline(WireOverlayPass::get_mesh_overlay_pipeline(sglue_swapchain().color_format));
+						sg_apply_pipeline(WireOverlayPass::get_mesh_overlay_pipeline(SG_PIXELFORMAT_RGBA32F));
 
 						wire_overlay_mesh_fs_params_t mesh_fs_params = {
 							.color = state.wireframe.color,
@@ -3194,6 +3261,60 @@ void frame(void)
 			);
 		}
 
+		if (state.temporal_aa.enable)
+		{
+			RenderPass& temporal_aa_pass = get_render_pass(ERenderPass::TemporalAA);
+			temporal_aa_output_index = state.temporal_aa.history_index;
+			const i32 previous_history_index = (temporal_aa_output_index + 1) % 2;
+			temporal_aa_pass.execute_one(
+				temporal_aa_output_index,
+				[&](const i32)
+				{
+					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
+					RenderPass& wire_overlay_pass = get_render_pass(ERenderPass::WireOverlay);
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+
+					GpuImage& source_color_image = state.wireframe.shaded_wireframe
+						? wire_overlay_pass.get_color_output(0)
+						: state.dof.enable
+						? dof_combine_pass.get_color_output(0)
+						: lighting_pass.get_color_output(0);
+
+					const temporal_aa_fs_params_t fs_params = {
+						.previous_view_projection = state.temporal_aa.previous_view_projection,
+						.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
+						.sharpen_axis = (state.temporal_aa.jitter_phase & 1) == 1 ? HMM_V2(1.0f, 0.0f) : HMM_V2(0.0f, 1.0f),
+						.blend_alpha = state.temporal_aa.blend_alpha,
+						.sharpen_strength = state.temporal_aa.sharpen_strength,
+						.rejection_threshold = state.temporal_aa.rejection_threshold,
+						.history_valid = state.temporal_aa.history_valid ? 1 : 0,
+						.debug_mode = state.temporal_aa.debug_mode,
+					};
+					sg_apply_uniforms(0, SG_RANGE(fs_params));
+
+					sg_bindings bindings = {
+						.views = {
+							[0] = source_color_image.get_texture_view(0),
+							[1] = geometry_pass.get_color_output(1).get_texture_view(0),
+							[2] = temporal_aa_pass.get_color_output(1, previous_history_index).get_texture_view(0),
+						},
+						.samplers = {
+							[0] = state.gpu.linear_sampler,
+							[1] = state.gpu.nearest_sampler,
+						},
+					};
+					gpu_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+
+			state.temporal_aa.previous_view_projection = view_projection_matrix;
+			state.temporal_aa.history_valid = true;
+			state.temporal_aa.history_index = previous_history_index;
+		}
+
 		{ // Tonemapping Pass
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&](const i32)
@@ -3201,12 +3322,15 @@ void frame(void)
 					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 					RenderPass& wire_overlay_pass = get_render_pass(ERenderPass::WireOverlay);
+					RenderPass& temporal_aa_pass = get_render_pass(ERenderPass::TemporalAA);
 
 					sg_apply_uniforms(0, SG_RANGE(state.tonemapping.fs_params));
 
 					sg_bindings bindings = (sg_bindings){
 						.views = {
-							[0] = state.wireframe.shaded_wireframe
+							[0] = state.temporal_aa.enable
+								? temporal_aa_pass.get_color_output(0, temporal_aa_output_index).get_texture_view(0)
+								: state.wireframe.shaded_wireframe
 								? wire_overlay_pass.get_color_output(0).get_texture_view(0)
 								: state.dof.enable
 								? dof_combine_pass.get_color_output(0).get_texture_view(0)
@@ -3215,6 +3339,32 @@ void frame(void)
 						.samplers[0] = state.gpu.linear_sampler,
 					};
 
+					gpu_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		if (state.temporal_aa.enable_fxaa)
+		{
+			get_render_pass(ERenderPass::FXAA).execute(
+				[&](const i32)
+				{
+					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
+					const fxaa_fs_params_t fs_params = {
+						.screen_size = HMM_V2((f32)state.window.render_width, (f32)state.window.render_height),
+						.contrast_threshold = 0.0312f,
+						.relative_threshold = 0.125f,
+					};
+					sg_apply_uniforms(0, SG_RANGE(fs_params));
+
+					sg_bindings bindings = {
+						.views = {
+							[0] = tonemapping_pass.get_color_output(0).get_texture_view(0),
+						},
+						.samplers[0] = state.gpu.linear_sampler,
+					};
 					gpu_apply_bindings(&bindings);
 
 					sg_draw(0,6,1);
@@ -3257,10 +3407,13 @@ void frame(void)
 				[&](const i32)
 				{
 					RenderPass& tonemapping_pass = get_render_pass(ERenderPass::Tonemapping);
+					RenderPass& fxaa_pass = get_render_pass(ERenderPass::FXAA);
 					RenderPass& debug_text_pass = get_render_pass(ERenderPass::DebugText);
 
 					// This can be overridden by the debug image viewer below
-					GpuImage& image_to_copy_to_swapchain = tonemapping_pass.get_color_output(0);
+					GpuImage& image_to_copy_to_swapchain = state.temporal_aa.enable_fxaa
+						? fxaa_pass.get_color_output(0)
+						: tonemapping_pass.get_color_output(0);
 
 					DEBUG_UI(
 						const i32 num_images = state.images.items.length();

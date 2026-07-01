@@ -30,7 +30,9 @@ enum class ERenderPass : int
 	Lighting,
 	DOF_Combine,
 	WireOverlay,
+	TemporalAA,
 	Tonemapping,
+	FXAA,
 	DebugText,
 	CopyToSwapchain,
 	COUNT,
@@ -255,7 +257,7 @@ struct State
 		i32 fixed_factor = 4;
 		i32 max_factor = 24;
 		f32 target_pixels_per_segment = 20.0f;
-		f32 phong_strength = 0.5f;
+		f32 phong_strength = 0.0f; //TODO: per-object control of this, or even per triangle.
 		bool virtual_patches_enabled = true;
 		i32 virtual_patch_max_depth = 2;
 		i32 max_generated_patches = 256 * 1024;
@@ -311,13 +313,28 @@ struct State
 	struct DofState
 	{
 		bool enable = true;
-		f32 focus_distance = 60.0f;
+		f32 focus_distance = 30.0f;
 		f32 focus_range = 120.0f;
 		f32 max_coc_radius = 8.0f;
-		f32 foreground_blur_scale = 1.0f;
+		f32 foreground_blur_scale = 0.5f;
 		f32 background_blur_scale = 1.0f;
 		bool debug_show_coc = false;
 	} dof;
+
+	struct TemporalAAState
+	{
+		bool enable = true;
+		bool enable_fxaa = true;
+		bool history_valid = false;
+		i32 history_index = 0;
+		i32 jitter_phase = 0;
+		f32 blend_alpha = 0.5f;
+		f32 sharpen_strength = 0.08f;
+		f32 rejection_threshold = 0.25f;
+		i32 debug_mode = 0;
+		HMM_Vec2 current_jitter_pixels = HMM_V2(0.0f, 0.0f);
+		HMM_Mat4 previous_view_projection = {};
+	} temporal_aa;
 
 	struct TonemappingState
 	{
@@ -572,6 +589,8 @@ void state_init()
         .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
     });
+
+	state.temporal_aa.previous_view_projection = HMM_M4D(1.0f);
 }
 
 //FCS TODO: member methods on state once it's not a global

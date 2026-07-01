@@ -42,7 +42,7 @@ namespace LightingPass
 		.num_outputs = num_pass_outputs,
 		.outputs[0] = {
 			.pixel_format = color_format,
-			.load_action = SG_LOADACTION_LOAD,
+			.load_action = SG_LOADACTION_DONTCARE,
 			.store_action = SG_STOREACTION_STORE,
 		},
 		.debug_label = "Lighting",

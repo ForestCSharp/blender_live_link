@@ -509,72 +509,79 @@ public: // Functions
 		}
 	}
 
-	// pass_idx arg on in_callback is used for cubemap render passes
-	void execute(std::function<void(const i32 pass_idx)> in_callback)
+	void execute_one(i32 in_pass_idx, std::function<void(const i32 pass_idx)> in_callback)
 	{
 		assert(current_width > 0 && current_height > 0);
 
 		const bool render_to_swapchain = desc.type == ERenderPassType::Swapchain;
+		const i32 pass_count = get_pass_count();
+		assert(in_pass_idx >= 0 && in_pass_idx < pass_count);
 
+		char pass_debug_label_buffer[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+		const char* pass_debug_label = get_debug_label_for_pass(
+			in_pass_idx,
+			false,
+			pass_debug_label_buffer,
+			sizeof(pass_debug_label_buffer)
+		);
+		sg_pass pass = {
+			.attachments = !render_to_swapchain ? attachments[in_pass_idx] : (sg_attachments){},
+			.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
+			.label = pass_debug_label,
+		};
+
+		for (int i = 0; i < desc.num_outputs; ++i)
+		{
+			const RenderPassOutputDesc& output_desc = desc.outputs[i];
+
+			pass.action.colors[i] = {
+				.load_action = output_desc.load_action,
+				.store_action = output_desc.store_action,
+				.clear_value = output_desc.clear_value,
+			};
+		}
+
+		if (depth_output.has_value())
+		{
+			const RenderPassOutputDesc& output_desc = desc.depth_output;
+
+			pass.action.depth = {
+				.load_action = output_desc.load_action,
+				.store_action = output_desc.store_action,
+				.clear_value = output_desc.clear_value.r,
+			};
+		}
+
+		sg_begin_pass(pass);
+
+		{
+			CPU_TIMING_SCOPE(pass_debug_label);
+			char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
+			render_pass_format_attachment_writes(pass.attachments, render_to_swapchain, writes, sizeof(writes));
+			gpu_frame_timings_set_next_scope_writes(writes);
+			GpuDebugScope debug_scope(pass_debug_label);
+
+			if (pipeline.id != SG_INVALID_ID)
+			{
+				sg_apply_pipeline(pipeline);
+			}
+
+			in_callback(in_pass_idx);
+		}
+
+		{
+			CPU_TIMING_BACKEND_SCOPE("sg_end_pass", pass_debug_label);
+			sg_end_pass();
+		}
+	}
+
+	// pass_idx arg on in_callback is used for cubemap render passes
+	void execute(std::function<void(const i32 pass_idx)> in_callback)
+	{
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
-			char pass_debug_label_buffer[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
-			const char* pass_debug_label = get_debug_label_for_pass(
-				pass_idx,
-				false,
-				pass_debug_label_buffer,
-				sizeof(pass_debug_label_buffer)
-			);
-			sg_pass pass = {
-				.attachments = !render_to_swapchain ? attachments[pass_idx] : (sg_attachments){},
-				.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
-				.label = pass_debug_label,
-			};
-
-			for (int i = 0; i < desc.num_outputs; ++i)
-			{
-				const RenderPassOutputDesc& output_desc = desc.outputs[i];
-
-				pass.action.colors[i] = {
-					.load_action = output_desc.load_action,
-					.store_action = output_desc.store_action,
-					.clear_value = output_desc.clear_value,
-				};
-			}
-
-			if (depth_output.has_value())
-			{
-				const RenderPassOutputDesc& output_desc = desc.depth_output;
-
-				pass.action.depth = {
-					.load_action = output_desc.load_action,
-					.store_action = output_desc.store_action,
-					.clear_value = output_desc.clear_value.r,
-				};
-			}
-
-			sg_begin_pass(pass);
-
-			{
-				CPU_TIMING_SCOPE(pass_debug_label);
-				char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
-				render_pass_format_attachment_writes(pass.attachments, render_to_swapchain, writes, sizeof(writes));
-				gpu_frame_timings_set_next_scope_writes(writes);
-				GpuDebugScope debug_scope(pass_debug_label);
-
-				if (pipeline.id != SG_INVALID_ID)
-				{
-					sg_apply_pipeline(pipeline);
-				}
-
-				in_callback(pass_idx);
-			}
-
-			{
-				CPU_TIMING_BACKEND_SCOPE("sg_end_pass", pass_debug_label);
-				sg_end_pass();
-			}
+			execute_one(pass_idx, in_callback);
 		}
 	}
 
