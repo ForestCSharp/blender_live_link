@@ -1799,6 +1799,49 @@ void frame(void)
     const float ui_dpi_scale = sapp_dpi_scale();
 	data_oriented_begin_frame(state);
 
+	state.debug_ui.immediate_frame_time_ms = (f32)(delta_time * 1000.0);
+	state.debug_ui.immediate_fps = delta_time > 0.0 ? (f32)(1.0 / delta_time) : 0.0f;
+
+	f64 immediate_cpu_time_ms = 0.0;
+	state.debug_ui.immediate_cpu_time_valid = cpu_timings_get_display_frame_total_ms(false, immediate_cpu_time_ms);
+	if (state.debug_ui.immediate_cpu_time_valid)
+	{
+		state.debug_ui.immediate_cpu_time_ms = (f32)immediate_cpu_time_ms;
+		state.debug_ui.cpu_time_sample_sum_ms += immediate_cpu_time_ms;
+		state.debug_ui.cpu_time_sample_count += 1;
+		if (!state.debug_ui.cpu_time_valid)
+		{
+			state.debug_ui.cpu_time_ms = (f32)immediate_cpu_time_ms;
+			state.debug_ui.cpu_time_valid = true;
+		}
+	}
+
+	f64 immediate_gpu_time_ms = 0.0;
+	bool immediate_gpu_time_pending = false;
+	state.debug_ui.immediate_gpu_time_valid = gpu_timings_get_display_frame_total_ms(false, immediate_gpu_time_ms, immediate_gpu_time_pending);
+	state.debug_ui.immediate_gpu_time_pending = !state.debug_ui.immediate_gpu_time_valid && immediate_gpu_time_pending;
+	if (state.debug_ui.immediate_gpu_time_valid)
+	{
+		state.debug_ui.immediate_gpu_time_ms = (f32)immediate_gpu_time_ms;
+		state.debug_ui.gpu_time_sample_sum_ms += immediate_gpu_time_ms;
+		state.debug_ui.gpu_time_sample_count += 1;
+		if (!state.debug_ui.gpu_time_valid)
+		{
+			state.debug_ui.gpu_time_ms = (f32)immediate_gpu_time_ms;
+			state.debug_ui.gpu_time_valid = true;
+			state.debug_ui.gpu_time_pending = false;
+		}
+	}
+	else if (state.debug_ui.immediate_gpu_time_pending)
+	{
+		state.debug_ui.gpu_time_pending = !state.debug_ui.gpu_time_valid;
+	}
+	else
+	{
+		state.debug_ui.gpu_time_valid = false;
+		state.debug_ui.gpu_time_pending = false;
+	}
+
 	state.debug_ui.stats_sample_elapsed += delta_time;
 	state.debug_ui.stats_sample_count += 1;
 	if (state.debug_ui.fps == 0.0f && delta_time > 0.0)
@@ -1811,8 +1854,27 @@ void frame(void)
 		const double average_delta_time = state.debug_ui.stats_sample_elapsed / state.debug_ui.stats_sample_count;
 		state.debug_ui.frame_time_ms = average_delta_time * 1000.0;
 		state.debug_ui.fps = state.debug_ui.stats_sample_count / state.debug_ui.stats_sample_elapsed;
+		if (state.debug_ui.cpu_time_sample_count > 0)
+		{
+			state.debug_ui.cpu_time_ms = (f32)(state.debug_ui.cpu_time_sample_sum_ms / state.debug_ui.cpu_time_sample_count);
+			state.debug_ui.cpu_time_valid = true;
+		}
+		if (state.debug_ui.gpu_time_sample_count > 0)
+		{
+			state.debug_ui.gpu_time_ms = (f32)(state.debug_ui.gpu_time_sample_sum_ms / state.debug_ui.gpu_time_sample_count);
+			state.debug_ui.gpu_time_valid = true;
+			state.debug_ui.gpu_time_pending = false;
+		}
+		else if (!state.debug_ui.gpu_time_valid)
+		{
+			state.debug_ui.gpu_time_pending = state.debug_ui.immediate_gpu_time_pending;
+		}
 		state.debug_ui.stats_sample_elapsed = 0.0;
 		state.debug_ui.stats_sample_count = 0;
+		state.debug_ui.cpu_time_sample_sum_ms = 0.0;
+		state.debug_ui.cpu_time_sample_count = 0;
+		state.debug_ui.gpu_time_sample_sum_ms = 0.0;
+		state.debug_ui.gpu_time_sample_count = 0;
 	}
 
 	DEBUG_UI(
@@ -1973,8 +2035,55 @@ void frame(void)
 			{
 				handle_resize(true);
 			}
-			ImGui::Text("frame time: %.2f ms", state.debug_ui.frame_time_ms);
-			ImGui::Text("FPS: %.1f", state.debug_ui.fps);
+			const bool show_immediate_timings = state.debug_ui.show_immediate_timings;
+			const ImGuiTableFlags timing_table_flags =
+				ImGuiTableFlags_SizingStretchProp |
+				ImGuiTableFlags_RowBg |
+				ImGuiTableFlags_BordersInnerV |
+				ImGuiTableFlags_NoSavedSettings;
+			if (ImGui::BeginTable("##TimingStats", 4, timing_table_flags))
+			{
+				stats_ui_table_columns();
+
+				ImGui::TableNextRow();
+				stats_ui_cell_label("Frame Time");
+				ImGui::TableNextColumn();
+				ImGui::Text("%.2f ms", show_immediate_timings ? state.debug_ui.immediate_frame_time_ms : state.debug_ui.frame_time_ms);
+				stats_ui_cell_label("FPS");
+				ImGui::TableNextColumn();
+				ImGui::Text("%.1f", show_immediate_timings ? state.debug_ui.immediate_fps : state.debug_ui.fps);
+
+				ImGui::TableNextRow();
+				stats_ui_cell_label("CPU Time");
+				ImGui::TableNextColumn();
+				if (show_immediate_timings ? state.debug_ui.immediate_cpu_time_valid : state.debug_ui.cpu_time_valid)
+				{
+					ImGui::Text("%.2f ms", show_immediate_timings ? state.debug_ui.immediate_cpu_time_ms : state.debug_ui.cpu_time_ms);
+				}
+				else
+				{
+					ImGui::TextDisabled("pending");
+				}
+				stats_ui_cell_label("GPU Time");
+				ImGui::TableNextColumn();
+				if (show_immediate_timings ? state.debug_ui.immediate_gpu_time_valid : state.debug_ui.gpu_time_valid)
+				{
+					ImGui::Text("%.2f ms", show_immediate_timings ? state.debug_ui.immediate_gpu_time_ms : state.debug_ui.gpu_time_ms);
+				}
+				else
+				{
+					const bool gpu_time_pending = show_immediate_timings
+						? state.debug_ui.immediate_gpu_time_pending
+						: state.debug_ui.gpu_time_pending;
+					ImGui::TextDisabled("%s", gpu_time_pending ? "pending" : "unavailable");
+				}
+
+				ImGui::TableNextRow();
+				stats_ui_cell_label("Timing Mode");
+				ImGui::TableNextColumn();
+				ImGui::Checkbox("Immediate##TimingMode", &state.debug_ui.show_immediate_timings);
+				ImGui::EndTable();
+			}
 			ImGui::Spacing();
 		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
 			ImGui::Spacing();

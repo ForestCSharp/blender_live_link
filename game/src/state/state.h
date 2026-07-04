@@ -358,8 +358,25 @@ struct State
 	{
 		double stats_sample_elapsed = 0.0;
 		i32 stats_sample_count = 0;
+		double cpu_time_sample_sum_ms = 0.0;
+		i32 cpu_time_sample_count = 0;
+		double gpu_time_sample_sum_ms = 0.0;
+		i32 gpu_time_sample_count = 0;
+		f32 immediate_frame_time_ms = 0.0f;
+		f32 immediate_fps = 0.0f;
+		f32 immediate_cpu_time_ms = 0.0f;
+		bool immediate_cpu_time_valid = false;
+		f32 immediate_gpu_time_ms = 0.0f;
+		bool immediate_gpu_time_valid = false;
+		bool immediate_gpu_time_pending = false;
 		f32 frame_time_ms = 0.0f;
 		f32 fps = 0.0f;
+		f32 cpu_time_ms = 0.0f;
+		bool cpu_time_valid = false;
+		f32 gpu_time_ms = 0.0f;
+		bool gpu_time_valid = false;
+		bool gpu_time_pending = false;
+		bool show_immediate_timings = false;
 		bool show_profiler = false;
 		bool freeze_profiler = false;
 		bool show_profiler_unaccounted = false;
