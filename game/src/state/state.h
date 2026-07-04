@@ -86,9 +86,11 @@ const char* EProbeRadianceModeNames[(i32)EProbeRadianceMode::MAX] = {
 };
 
 static constexpr i32 MAX_SHADOW_CASCADES = 4;
-static constexpr i32 DEFAULT_TARGET_RENDER_WIDTH = 1920;
-static constexpr i32 DEFAULT_TARGET_RENDER_HEIGHT = 1080;
-static constexpr f32 DEFAULT_TARGET_RENDER_ASPECT_RATIO = (f32)DEFAULT_TARGET_RENDER_WIDTH / (f32)DEFAULT_TARGET_RENDER_HEIGHT;
+static constexpr i32 DEFAULT_WINDOW_WIDTH = 1920;
+static constexpr i32 DEFAULT_WINDOW_HEIGHT = 1080;
+static constexpr i32 MIN_RENDER_RESOLUTION_PERCENTAGE = 1;
+static constexpr i32 MAX_RENDER_RESOLUTION_PERCENTAGE = 100;
+static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 50;
 
 enum class EShadowCascadePlacementMode : i32
 {
@@ -140,12 +142,9 @@ struct State
 	{
 		int width = 0;
 		int height = 0;
-		int target_render_width = DEFAULT_TARGET_RENDER_WIDTH;
-		int target_render_height = DEFAULT_TARGET_RENDER_HEIGHT;
-		bool maintain_target_aspect_ratio = true;
-		f32 target_render_aspect_ratio = DEFAULT_TARGET_RENDER_ASPECT_RATIO;
-		int render_width = DEFAULT_TARGET_RENDER_WIDTH;
-		int render_height = DEFAULT_TARGET_RENDER_HEIGHT;
+		int resolution_percentage = DEFAULT_RENDER_RESOLUTION_PERCENTAGE;
+		int render_width = DEFAULT_WINDOW_WIDTH;
+		int render_height = DEFAULT_WINDOW_HEIGHT;
 	} window;
 
 	struct RenderPassState

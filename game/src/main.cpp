@@ -1263,29 +1263,18 @@ void live_link_thread_function()
 
 void update_render_resolution()
 {
-	state.window.target_render_width = std::max(1, state.window.target_render_width);
-	state.window.target_render_height = std::max(1, state.window.target_render_height);
+	state.window.resolution_percentage = std::clamp(
+		state.window.resolution_percentage,
+		MIN_RENDER_RESOLUTION_PERCENTAGE,
+		MAX_RENDER_RESOLUTION_PERCENTAGE
+	);
 
-	if (state.window.width <= 0 || state.window.height <= 0)
-	{
-		state.window.render_width = state.window.target_render_width;
-		state.window.render_height = state.window.target_render_height;
-		return;
-	}
+	const i32 source_width = state.window.width > 0 ? state.window.width : DEFAULT_WINDOW_WIDTH;
+	const i32 source_height = state.window.height > 0 ? state.window.height : DEFAULT_WINDOW_HEIGHT;
+	const f32 resolution_scale = (f32)state.window.resolution_percentage / 100.0f;
 
-	const f32 window_aspect = (f32)state.window.width / (f32)state.window.height;
-	const f32 target_aspect = (f32)state.window.target_render_width / (f32)state.window.target_render_height;
-
-	if (window_aspect > target_aspect)
-	{
-		state.window.render_height = state.window.target_render_height;
-		state.window.render_width = std::max(1, (i32)((f32)state.window.target_render_height * window_aspect + 0.5f));
-	}
-	else
-	{
-		state.window.render_width = state.window.target_render_width;
-		state.window.render_height = std::max(1, (i32)((f32)state.window.target_render_width / window_aspect + 0.5f));
-	}
+	state.window.render_width = std::max(1, (i32)((f32)source_width * resolution_scale + 0.5f));
+	state.window.render_height = std::max(1, (i32)((f32)source_height * resolution_scale + 0.5f));
 }
 
 void handle_resize(bool force_resize = false)
@@ -1304,7 +1293,7 @@ void handle_resize(bool force_resize = false)
 		{
 			RenderPassEntry& render_pass_entry = state.render_passes.passes[pass_index];
 			RenderPass& render_pass = render_pass_entry.final_pass();
-			if (render_pass.desc.type == ERenderPassType::Swapchain)
+			if (render_pass.desc.type == ERenderPassType::Swapchain || pass_index == (i32)ERenderPass::DebugText)
 			{
 				render_pass_entry.handle_resize(state.window.width, state.window.height);
 			}
@@ -1973,40 +1962,14 @@ void frame(void)
 			ImGui::Text("Window Resolution: %d x %d", state.window.width, state.window.height);
 			ImGui::Text("Render Resolution: %d x %d", state.window.render_width, state.window.render_height);
 
-			ImGui::Text("Target Resolution:");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(96.0f);
-			const bool target_width_changed = ImGui::InputInt("##Target Resolution Width", &state.window.target_render_width);
-			const bool target_width_active = ImGui::IsItemActive();
-			ImGui::SameLine();
-			ImGui::Text("x");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(96.0f);
-			const bool target_height_changed = ImGui::InputInt("##Target Resolution Height", &state.window.target_render_height);
-			const bool target_height_active = ImGui::IsItemActive();
-			ImGui::Checkbox("Maintain Target Aspect Ratio", &state.window.maintain_target_aspect_ratio);
-
-			if (state.window.maintain_target_aspect_ratio)
-			{
-				if (target_width_changed && !target_height_changed)
-				{
-					state.window.target_render_height = std::max(1, (i32)((f32)state.window.target_render_width / state.window.target_render_aspect_ratio + 0.5f));
-				}
-				else if (target_height_changed && !target_width_changed)
-				{
-					state.window.target_render_width = std::max(1, (i32)((f32)state.window.target_render_height * state.window.target_render_aspect_ratio + 0.5f));
-				}
-			}
-
-			if (!target_width_active && !target_height_active)
-			{
-				const i32 target_render_width = std::max(1, state.window.target_render_width);
-				const i32 target_render_height = std::max(1, state.window.target_render_height);
-				state.window.target_render_aspect_ratio = (f32)target_render_width / (f32)target_render_height;
-			}
-
-			const bool target_resolution_changed = target_width_changed || target_height_changed;
-			if (target_resolution_changed)
+			ImGui::SetNextItemWidth(220.0f);
+			if (ImGui::SliderInt(
+				"Resolution Percentage",
+				&state.window.resolution_percentage,
+				MIN_RENDER_RESOLUTION_PERCENTAGE,
+				MAX_RENDER_RESOLUTION_PERCENTAGE,
+				"%d%%"
+			))
 			{
 				handle_resize(true);
 			}
@@ -3392,7 +3355,7 @@ void frame(void)
 				{
 					// Larger numbers scales down text
 					const f32 text_scale = 0.5f;
-					sdtx_canvas(state.window.render_width * text_scale, state.window.render_height * text_scale);
+					sdtx_canvas(state.window.width * text_scale, state.window.height * text_scale);
 					sdtx_origin(1.0f, 2.0f);
 					sdtx_home();
 
