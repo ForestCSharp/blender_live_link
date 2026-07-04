@@ -26,10 +26,13 @@ NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Co
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 EXTENSION_ZIP_PATH="$SCRIPT_DIR.zip"
 PARALLEL_STATUS_DIR=""
+PARALLEL_LOG_DIR=""
 PARALLEL_BRANCH_NAMES=()
 PARALLEL_BRANCH_PIDS=()
 PARALLEL_BRANCH_STATUS_FILES=()
 PARALLEL_BRANCH_STATUSES=()
+PARALLEL_BRANCH_LOG_FILES=()
+PARALLEL_BRANCH_RENDERED_LINES=()
 
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 
@@ -253,6 +256,183 @@ cleanup_parallel_status_dir() {
 	PARALLEL_STATUS_DIR=""
 }
 
+initialize_parallel_dirs() {
+	if [[ -z "$PARALLEL_STATUS_DIR" ]]; then
+		PARALLEL_STATUS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/blender_live_link_build.XXXXXX") || return
+	fi
+
+	if [[ -z "$PARALLEL_LOG_DIR" ]]; then
+		local log_timestamp
+		log_timestamp=$(date +"%Y%m%d_%H%M%S")
+		PARALLEL_LOG_DIR="$SCRIPT_DIR/blend_src/build_logs/$log_timestamp"
+		if [[ -e "$PARALLEL_LOG_DIR" ]]; then
+			PARALLEL_LOG_DIR="$SCRIPT_DIR/blend_src/build_logs/${log_timestamp}_$$"
+		fi
+		mkdir -p "$PARALLEL_LOG_DIR" || return
+	fi
+}
+
+parallel_log_name_for_branch() {
+	printf "%s" "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '_'
+}
+
+parallel_renderer_enabled() {
+	[[ "${BLENDER_LIVE_LINK_SIDE_BY_SIDE:-1}" != "0" ]] || return 1
+	[[ -t 1 ]] || return 1
+	[[ -n "${TERM:-}" ]] || return 1
+}
+
+parallel_branch_status_label() {
+	local branch_index=$1
+	local branch_status=${PARALLEL_BRANCH_STATUSES[$branch_index]}
+	local status_file="${PARALLEL_BRANCH_STATUS_FILES[$branch_index]}"
+
+	if [[ $branch_status -eq -1 ]]; then
+		if [[ -f "$status_file" ]]; then
+			printf "finishing"
+		else
+			printf "running"
+		fi
+	elif [[ $branch_status -eq 0 ]]; then
+		printf "success"
+	else
+		printf "failed:%s" "$branch_status"
+	fi
+}
+
+print_two_column_line() {
+	local left=$1
+	local right=$2
+	local pane_width=$3
+
+	printf "%-*s | %-*s\n" "$pane_width" "$left" "$pane_width" "$right"
+}
+
+parallel_terminal_cols() {
+	local cols
+	cols="${BLENDER_LIVE_LINK_RENDER_COLS:-}"
+	if [[ -z "$cols" ]]; then
+		local stty_size
+		stty_size=$(stty size 2> /dev/null || printf "")
+		if [[ "$stty_size" =~ ^[0-9]+[[:space:]]+([0-9]+)$ ]]; then
+			cols="${BASH_REMATCH[1]}"
+		fi
+	fi
+	if [[ -z "$cols" ]]; then
+		cols=$(tput cols 2> /dev/null || printf "")
+	fi
+	if [[ -z "$cols" || ! "$cols" =~ ^[0-9]+$ ]]; then
+		cols=120
+	fi
+	if (( cols < 60 )); then
+		cols=60
+	fi
+	printf "%s\n" "$cols"
+}
+
+parallel_pane_width() {
+	local cols
+	cols=$(parallel_terminal_cols)
+	printf "%s\n" "$(((cols - 3) / 2))"
+}
+
+truncate_parallel_log_line() {
+	local pane_width=$1
+	awk -v width="$pane_width" '
+	{
+		gsub(/\r/, "")
+		gsub(/\t/, "  ")
+		if (length($0) > width) {
+			print substr($0, 1, width - 1) ">"
+		}
+		else {
+			print $0
+		}
+	}'
+}
+
+print_parallel_render_header() {
+	local pane_width
+	pane_width=$(parallel_pane_width)
+
+	local left_index=0
+	local right_index=1
+	local left_header="${PARALLEL_BRANCH_NAMES[$left_index]} pid ${PARALLEL_BRANCH_PIDS[$left_index]}"
+	local right_header="${PARALLEL_BRANCH_NAMES[$right_index]} pid ${PARALLEL_BRANCH_PIDS[$right_index]}"
+	local cols
+	cols=$(parallel_terminal_cols)
+
+	print_two_column_line "$left_header" "$right_header" "$pane_width"
+	printf "%s\n" "$(printf "%*s" "$cols" "" | tr ' ' '-')"
+}
+
+write_new_parallel_lines_for_branch() {
+	local branch_index=$1
+	local pane_width
+	pane_width=$(parallel_pane_width)
+	local log_file="${PARALLEL_BRANCH_LOG_FILES[$branch_index]}"
+	local rendered_lines=${PARALLEL_BRANCH_RENDERED_LINES[$branch_index]}
+	local current_lines
+
+	current_lines=$(wc -l < "$log_file" 2> /dev/null || printf "0")
+	current_lines=${current_lines//[[:space:]]/}
+	if [[ -z "$current_lines" || ! "$current_lines" =~ ^[0-9]+$ ]]; then
+		current_lines=0
+	fi
+
+	if (( current_lines <= rendered_lines )); then
+		: > "$PARALLEL_STATUS_DIR/render_${branch_index}.new"
+		return
+	fi
+
+	sed -n "$((rendered_lines + 1)),${current_lines}p" "$log_file" | truncate_parallel_log_line "$pane_width" > "$PARALLEL_STATUS_DIR/render_${branch_index}.new"
+	PARALLEL_BRANCH_RENDERED_LINES[$branch_index]=$current_lines
+}
+
+render_parallel_logs() {
+	local branch_count=${#PARALLEL_BRANCH_PIDS[@]}
+	if (( branch_count < 2 )); then
+		return
+	fi
+
+	local pane_width
+	pane_width=$(parallel_pane_width)
+
+	write_new_parallel_lines_for_branch 0
+	write_new_parallel_lines_for_branch 1
+
+	paste "$PARALLEL_STATUS_DIR/render_0.new" "$PARALLEL_STATUS_DIR/render_1.new" | awk -v left_w="$pane_width" -v right_w="$pane_width" -F '\t' '
+	{
+		printf "%-*s | %-*s\n", left_w, $1, right_w, $2
+	}'
+}
+
+print_parallel_status_summary() {
+	local pane_width
+	pane_width=$(parallel_pane_width)
+	local left_status
+	local right_status
+	left_status=$(parallel_branch_status_label 0)
+	right_status=$(parallel_branch_status_label 1)
+
+	print_two_column_line "${PARALLEL_BRANCH_NAMES[0]} [$left_status]" "${PARALLEL_BRANCH_NAMES[1]} [$right_status]" "$pane_width"
+}
+
+print_parallel_log_locations() {
+	if [[ -n "$PARALLEL_LOG_DIR" ]]; then
+		echo "Parallel build logs: $PARALLEL_LOG_DIR"
+	fi
+}
+
+print_parallel_log_tails() {
+	local branch_index
+	print_parallel_log_locations
+	for (( branch_index = 0; branch_index < ${#PARALLEL_BRANCH_LOG_FILES[@]}; branch_index++ )); do
+		echo "--- ${PARALLEL_BRANCH_NAMES[$branch_index]} log tail (${PARALLEL_BRANCH_LOG_FILES[$branch_index]}) ---"
+		tail -n 40 "${PARALLEL_BRANCH_LOG_FILES[$branch_index]}" 2> /dev/null || true
+	done
+}
+
 terminate_process_tree() {
 	local pid=$1
 
@@ -288,34 +468,45 @@ start_parallel_branch() {
 	local branch_name=$1
 	shift
 
-	if [[ -z "$PARALLEL_STATUS_DIR" ]]; then
-		PARALLEL_STATUS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/blender_live_link_build.XXXXXX") || return
-	fi
+	initialize_parallel_dirs || return
 
 	local branch_index=${#PARALLEL_BRANCH_PIDS[@]}
 	local status_file="$PARALLEL_STATUS_DIR/$branch_index.status"
+	local log_name
+	log_name=$(parallel_log_name_for_branch "$branch_name")
+	local log_file="$PARALLEL_LOG_DIR/$log_name.log"
+	: > "$log_file" || return
 
 	(
-		log_build "$branch_name branch started"
-		"$@"
-		local branch_status=$?
-		log_build "$branch_name branch completed with status $branch_status"
-		printf "%s\n" "$branch_status" > "$status_file"
-		exit "$branch_status"
+		{
+			log_build "$branch_name branch started"
+			"$@"
+			local branch_status=$?
+			log_build "$branch_name branch completed with status $branch_status"
+			printf "%s\n" "$branch_status" > "$status_file"
+			exit "$branch_status"
+		} > "$log_file" 2>&1
 	) &
 
 	local branch_pid=$!
-	log_build "Started $branch_name branch as pid $branch_pid"
+	log_build "Started $branch_name branch as pid $branch_pid (log: $log_file)"
 
 	PARALLEL_BRANCH_NAMES+=("$branch_name")
 	PARALLEL_BRANCH_PIDS+=("$branch_pid")
 	PARALLEL_BRANCH_STATUS_FILES+=("$status_file")
 	PARALLEL_BRANCH_STATUSES+=(-1)
+	PARALLEL_BRANCH_LOG_FILES+=("$log_file")
+	PARALLEL_BRANCH_RENDERED_LINES+=(0)
 }
 
 wait_for_parallel_branches() {
 	local remaining=${#PARALLEL_BRANCH_PIDS[@]}
 	local branch_index
+	local use_parallel_renderer=false
+	if parallel_renderer_enabled; then
+		use_parallel_renderer=true
+		print_parallel_render_header
+	fi
 
 	while (( remaining > 0 )); do
 		for (( branch_index = 0; branch_index < ${#PARALLEL_BRANCH_PIDS[@]}; branch_index++ )); do
@@ -335,20 +526,35 @@ wait_for_parallel_branches() {
 			remaining=$((remaining - 1))
 
 			if [[ $branch_status -eq 0 ]]; then
-				echo "${PARALLEL_BRANCH_NAMES[$branch_index]} branch finished successfully"
+				if [[ $use_parallel_renderer != true ]]; then
+					echo "${PARALLEL_BRANCH_NAMES[$branch_index]} branch finished successfully"
+				fi
 			else
-				echo "Error: ${PARALLEL_BRANCH_NAMES[$branch_index]} branch failed with status $branch_status"
 				terminate_active_parallel_branches "$branch_index"
+				if [[ $use_parallel_renderer = true ]]; then
+					render_parallel_logs
+				fi
+				echo "Error: ${PARALLEL_BRANCH_NAMES[$branch_index]} branch failed with status $branch_status"
+				print_parallel_log_tails
 				cleanup_parallel_status_dir
 				return "$branch_status"
 			fi
 		done
+
+		if [[ $use_parallel_renderer = true ]]; then
+			render_parallel_logs
+		fi
 
 		if (( remaining > 0 )); then
 			sleep 1
 		fi
 	done
 
+	if [[ $use_parallel_renderer = true ]]; then
+		render_parallel_logs
+		print_parallel_status_summary
+	fi
+	print_parallel_log_locations
 	cleanup_parallel_status_dir
 }
 
