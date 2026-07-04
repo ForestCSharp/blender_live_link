@@ -336,17 +336,33 @@ parallel_pane_width() {
 	printf "%s\n" "$(((cols - 3) / 2))"
 }
 
-truncate_parallel_log_line() {
+format_parallel_log_lines() {
 	local pane_width=$1
-	awk -v width="$pane_width" '
+	local wrap_lines="${BLENDER_LIVE_LINK_WRAP_LINES:-1}"
+	awk -v width="$pane_width" -v wrap_lines="$wrap_lines" '
 	{
 		gsub(/\r/, "")
 		gsub(/\t/, "  ")
-		if (length($0) > width) {
-			print substr($0, 1, width - 1) ">"
+		if (wrap_lines == "0") {
+			if (length($0) > width) {
+				print substr($0, 1, width - 1) ">"
+			}
+			else {
+				print $0
+			}
 		}
 		else {
-			print $0
+			line = $0
+			if (line == "") {
+				print ""
+			}
+			while (length(line) > width) {
+				print substr(line, 1, width)
+				line = substr(line, width + 1)
+			}
+			if (line != "") {
+				print line
+			}
 		}
 	}'
 }
@@ -385,7 +401,7 @@ write_new_parallel_lines_for_branch() {
 		return
 	fi
 
-	sed -n "$((rendered_lines + 1)),${current_lines}p" "$log_file" | truncate_parallel_log_line "$pane_width" > "$PARALLEL_STATUS_DIR/render_${branch_index}.new"
+	sed -n "$((rendered_lines + 1)),${current_lines}p" "$log_file" | format_parallel_log_lines "$pane_width" > "$PARALLEL_STATUS_DIR/render_${branch_index}.new"
 	PARALLEL_BRANCH_RENDERED_LINES[$branch_index]=$current_lines
 }
 
