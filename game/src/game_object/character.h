@@ -103,11 +103,23 @@ void character_destroy(Character& in_character)
 	}
 }
 
-void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump)
+void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump, f32 in_delta_time)
 {
 	JPH::Character* mCharacter = in_character.jph_character;
 
 	JPH::Vec3 movement_direction = JPH::Vec3(in_move_vec.X, in_move_vec.Y, in_move_vec.Z);
+	movement_direction.SetZ(0.0f);
+	const float movement_length_sq = movement_direction.LengthSq();
+	float move_speed_multiplier = 0.0f;
+	if (movement_length_sq > 1.0e-6f)
+	{
+		move_speed_multiplier = HMM_SqrtF(movement_length_sq);
+		movement_direction /= move_speed_multiplier;
+	}
+	else
+	{
+		movement_direction = JPH::Vec3::sZero();
+	}
 
 	// Cancel movement in opposite direction of normal when touching something we can't walk up
 	JPH::Character::EGroundState ground_state = mCharacter->GetGroundState();
@@ -125,13 +137,11 @@ void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump)
 
 	// Update velocity
 	JPH::Vec3 current_velocity = mCharacter->GetLinearVelocity();
-	JPH::Vec3 desired_velocity = in_character.settings.move_speed * movement_direction;
-	if (!desired_velocity.IsNearZero() || current_velocity.GetY() < 0.0f || !mCharacter->IsSupported())
-	{
-		desired_velocity.SetZ(current_velocity.GetZ());
-	}
+	JPH::Vec3 desired_velocity = (in_character.settings.move_speed * move_speed_multiplier) * movement_direction;
+	desired_velocity.SetZ(current_velocity.GetZ());
 
-	JPH::Vec3 new_velocity = 0.75f * current_velocity + 0.25f * desired_velocity;
+	const float velocity_blend = HMM_Clamp(0.0f, 15.0f * in_delta_time, 1.0f);
+	JPH::Vec3 new_velocity = (1.0f - velocity_blend) * current_velocity + velocity_blend * desired_velocity;
 
 	// Jump
 	if (in_jump)// && ground_state == JPH::Character::EGroundState::OnGround)

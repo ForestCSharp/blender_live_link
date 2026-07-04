@@ -1715,6 +1715,96 @@ void pick_isolated_gi_probe()
 	}
 }
 
+void update_physics_backed_object_transforms()
+{
+	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		state.data_oriented.frame.object_update_scan_count += 1;
+
+		object_copy_physics_transform(object, body_interface);
+
+		if (object.storage_buffer_needs_update)
+		{
+			object.storage_buffer_needs_update = false;
+			object_update_storage_buffer(object);
+			state.data_oriented.frame.object_update_storage_updates += 1;
+		}
+	}
+}
+
+void update_player_character_control(f32 delta_time)
+{
+	if (!state.scene.player_character_id || state.debug_camera.active)
+	{
+		return;
+	}
+
+	if (!state.scene.objects.contains(*state.scene.player_character_id))
+	{
+		return;
+	}
+
+	const Camera& camera = get_active_camera();
+	const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+
+	Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
+	Character& player_character_state = player_character_object.character;
+
+	HMM_Vec3 projected_cam_forward = vec3_plane_projection(camera.forward, UnitVectors::Up);
+	HMM_Vec3 projected_cam_right = vec3_plane_projection(camera_right, UnitVectors::Up);
+
+	if (HMM_LenSqrV3(projected_cam_forward) > 1.0e-6f)
+	{
+		projected_cam_forward = HMM_NormV3(projected_cam_forward);
+	}
+	else
+	{
+		projected_cam_forward = UnitVectors::Forward;
+	}
+
+	if (HMM_LenSqrV3(projected_cam_right) > 1.0e-6f)
+	{
+		projected_cam_right = HMM_NormV3(projected_cam_right);
+	}
+	else
+	{
+		projected_cam_right = HMM_NormV3(HMM_Cross(projected_cam_forward, UnitVectors::Up));
+	}
+
+	HMM_Vec3 move_direction = HMM_V3(0, 0, 0);
+	if (is_key_pressed(SAPP_KEYCODE_W))
+	{
+		move_direction += projected_cam_forward;
+	}
+	if (is_key_pressed(SAPP_KEYCODE_S))
+	{
+		move_direction -= projected_cam_forward;
+	}
+	if (is_key_pressed(SAPP_KEYCODE_D))
+	{
+		move_direction += projected_cam_right;
+	}
+	if (is_key_pressed(SAPP_KEYCODE_A))
+	{
+		move_direction -= projected_cam_right;
+	}
+
+	if (HMM_LenSqrV3(move_direction) > 1.0f)
+	{
+		move_direction = HMM_NormV3(move_direction);
+	}
+
+	if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
+	{
+		move_direction *= 3.0f;
+	}
+
+	const bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
+	character_move(player_character_state, move_direction, jump, (f32)delta_time);
+}
+
 void frame(void)
 {
 	CPU_TIMING_FRAME("Frame");
@@ -2401,11 +2491,15 @@ void frame(void)
 		CPU_TIMING_SCOPE("Simulation");
 		if (state.runtime.is_simulating)
 		{
-			//FCS TODO: Game logic update here
+			update_player_character_control((f32)delta_time);
 
-			// Jolt Physics Update
 			jolt_update(delta_time);
 		}
+	}
+
+	{
+		CPU_TIMING_SCOPE("Object Transforms");
+		update_physics_backed_object_transforms();
 	}
 
 	{
@@ -2500,50 +2594,9 @@ void frame(void)
 			);
 			camera_control.camera.location = HMM_LerpV3(
 				camera.location,
-				camera_control.follow_speed * delta_time,
+				HMM_Clamp(0.0f, camera_control.follow_speed * delta_time, 1.0f),
 				desired_location
 			);
-		}
-
-		// Player Character Control
-		if (state.scene.player_character_id && !state.debug_camera.active)
-		{
-			const Camera& camera = get_active_camera();
-			const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
-
-			Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
-			Character& player_character_state = player_character_object.character;
-			f32 character_move_speed = player_character_state.settings.move_speed * delta_time;
-
-			HMM_Vec3 projected_cam_forward = HMM_NormV3(vec3_plane_projection(camera.forward, UnitVectors::Up));
-			HMM_Vec3 projected_cam_right = HMM_NormV3(vec3_plane_projection(camera_right, UnitVectors::Up));
-
-			if (is_key_pressed(SAPP_KEYCODE_LEFT_SHIFT))
-			{
-				character_move_speed *= 3.0f;
-			}
-
-			HMM_Vec3 move_vec = HMM_V3(0,0,0);
-			if (is_key_pressed(SAPP_KEYCODE_W))
-			{
-				move_vec += projected_cam_forward * character_move_speed;
-			}
-			if (is_key_pressed(SAPP_KEYCODE_S))
-			{
-				move_vec -= projected_cam_forward * character_move_speed;
-			}
-			if (is_key_pressed(SAPP_KEYCODE_D))
-			{
-				move_vec += projected_cam_right * character_move_speed;
-			}
-			if (is_key_pressed(SAPP_KEYCODE_A))
-			{
-				move_vec -= projected_cam_right * character_move_speed;
-			}
-
-			bool jump = is_key_pressed(SAPP_KEYCODE_SPACE);
-
-			character_move(player_character_state, move_vec, jump);
 		}
 	}
 
@@ -2774,29 +2827,6 @@ void frame(void)
 				if (!state.shadow.depth_freeze)
 				{
 					state.shadow.centered_square_center = camera.location + HMM_NormV3(camera.forward) * state.shadow.centered_square_lookahead_distance;
-				}
-			}
-
-			// Get our jolt body interface
-			JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
-
-			// Update Objects
-			{
-				CPU_TIMING_SCOPE("Object Updates");
-
-				for (auto& [unique_id, object] : state.scene.objects)
-				{
-					state.data_oriented.frame.object_update_scan_count += 1;
-
-					// For objects that simulate physics, copy their physics transforms into their uniform buffers
-					object_copy_physics_transform(object, body_interface);
-
-					if (object.storage_buffer_needs_update)
-					{
-						object.storage_buffer_needs_update = false;
-						object_update_storage_buffer(object);
-						state.data_oriented.frame.object_update_storage_updates += 1;
-					}
 				}
 			}
 
@@ -3542,8 +3572,8 @@ void event(const sapp_event* event)
 		{
 			app_state.mouse_position.X = event->mouse_x;
 			app_state.mouse_position.Y = event->mouse_y;
-			app_state.mouse_delta.X = event->mouse_dx;
-			app_state.mouse_delta.Y = event->mouse_dy;
+			app_state.mouse_delta.X += event->mouse_dx;
+			app_state.mouse_delta.Y += event->mouse_dy;
 			break;
 		}
 		case SAPP_EVENTTYPE_RESIZED:
