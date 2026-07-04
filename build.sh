@@ -33,6 +33,14 @@ PARALLEL_BRANCH_STATUSES=()
 
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 
+timestamp() {
+	date +"%H:%M:%S"
+}
+
+log_build() {
+	echo "[$(timestamp)] $*"
+}
+
 set_blender_build_mode() {
 	local requested_mode=$1
 	if [[ $BLENDER_BUILD_MODE_WAS_SET = true && $BLENDER_BUILD_MODE != "$requested_mode" ]]; then
@@ -56,6 +64,7 @@ resolve_blend_file_arg() {
 }
 
 package_extension() {
+	log_build "Blender branch: packaging extension"
 	cd "$SCRIPT_DIR/.." || return
 	rm -f "$EXTENSION_ZIP_PATH" || return
 
@@ -106,12 +115,14 @@ package_extension() {
 	fi
 
 	cd "$SCRIPT_DIR" || return
+	log_build "Blender branch: packaged extension at $EXTENSION_ZIP_PATH"
 }
 
 install_and_launch_installed_blender() {
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
 
 	if [[ $OS = Windows ]]; then
+		log_build "Blender branch: installing extension into installed Blender"
 		# Note: blender.exe should be on system path on windows
 		# kill previous blender instances
 		taskkill.exe //F //IM blender.exe || true
@@ -120,14 +131,17 @@ install_and_launch_installed_blender() {
 		blender.exe "${install_args[@]}" || return
 		sleep 0.5
 		# open blender to specified map file
+		log_build "Blender branch: launching installed Blender"
 		start "" blender.exe $run_args || return
 	elif [[ $OS = Mac ]]; then
+		log_build "Blender branch: installing extension into /Applications/Blender.app"
 		# kill previous blender instances
 		killall Blender || true
 		# install add-on and wait for completion
 		/Applications/Blender.app/Contents/MacOS/Blender "${install_args[@]}" || return
 		sleep 0.5
 		# open blender without waiting for completion
+		log_build "Blender branch: launching /Applications/Blender.app"
 		open  /Applications/Blender.app --args $run_args || return
 	fi
 }
@@ -208,22 +222,27 @@ rewrite_python_schema_imports() {
 
 run_blender_side_build_and_launch() {
 	cd "$SCRIPT_DIR" || return
+	log_build "Blender branch: starting $BLENDER_BUILD_MODE mode"
 
 	if [[ $BLENDER_BUILD_MODE = native ]]; then
+		log_build "Blender branch: ensuring local Blender source/build"
 		"$SCRIPT_DIR/build_blend_src.sh" || return
 	fi
 
 	package_extension || return
 
 	if [[ $BLENDER_BUILD_MODE = python ]]; then
+		log_build "Blender branch: installing and launching installed Blender"
 		install_and_launch_installed_blender
 	else
+		log_build "Blender branch: installing and launching native Blender"
 		install_and_launch_native_blender
 	fi
 }
 
 run_game_build_and_launch() {
 	cd "$SCRIPT_DIR/game" || return
+	log_build "Game branch: building and launching game"
 	./build.sh "$OS"
 }
 
@@ -276,16 +295,20 @@ start_parallel_branch() {
 	local branch_index=${#PARALLEL_BRANCH_PIDS[@]}
 	local status_file="$PARALLEL_STATUS_DIR/$branch_index.status"
 
-	echo "Starting $branch_name branch"
 	(
+		log_build "$branch_name branch started"
 		"$@"
 		local branch_status=$?
+		log_build "$branch_name branch completed with status $branch_status"
 		printf "%s\n" "$branch_status" > "$status_file"
 		exit "$branch_status"
 	) &
 
+	local branch_pid=$!
+	log_build "Started $branch_name branch as pid $branch_pid"
+
 	PARALLEL_BRANCH_NAMES+=("$branch_name")
-	PARALLEL_BRANCH_PIDS+=("$!")
+	PARALLEL_BRANCH_PIDS+=("$branch_pid")
 	PARALLEL_BRANCH_STATUS_FILES+=("$status_file")
 	PARALLEL_BRANCH_STATUSES+=(-1)
 }
@@ -379,6 +402,6 @@ if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
 	exit 0
 fi
 
-start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
 start_parallel_branch "Game" run_game_build_and_launch || exit
+start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
 wait_for_parallel_branches
