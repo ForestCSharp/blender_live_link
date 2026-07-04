@@ -6,6 +6,7 @@
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int object_index;
 };
 
 @include_block object_data
@@ -15,7 +16,7 @@ layout(location = 1) in vec4 normal;
 layout(location = 2) in vec2 texcoord;
 
 void main() {
-	vec4 world_position = object_data_array[0].model_matrix * position;
+	vec4 world_position = object_data_array[object_index].model_matrix * position;
     gl_Position = projection * view * world_position;
 }
 @end
@@ -25,6 +26,7 @@ void main() {
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int object_index;
 };
 
 @include_block object_data
@@ -39,7 +41,7 @@ layout(location = 4) in vec4 joint_weights;
 void main() {
 	mat4 skin_matrix = get_skin_matrix(joint_indices, joint_weights);
 	vec4 skinned_position = skin_matrix * position;
-	vec4 world_position = object_data_array[0].model_matrix * skinned_position;
+	vec4 world_position = object_data_array[object_index].model_matrix * skinned_position;
     gl_Position = projection * view * world_position;
 }
 @end

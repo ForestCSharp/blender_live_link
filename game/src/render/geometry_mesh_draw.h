@@ -13,6 +13,12 @@ static void draw_visible_geometry_meshes(
 	sg_pixel_format skinned_depth_format)
 {
 	state.data_oriented.frame.draw_calls += 1;
+	if (!state.render_objects.valid)
+	{
+		return;
+	}
+
+	sg_view render_object_data_view = get_render_object_snapshot_buffer(state).get_storage_view();
 
 	for (const i32 unique_id : cull_result.object_ids)
 	{
@@ -24,6 +30,10 @@ static void draw_visible_geometry_meshes(
 		Object& object = state.scene.objects[unique_id];
 
 		if (!object.has_mesh)
+		{
+			continue;
+		}
+		if (object.render_object_index < 0)
 		{
 			continue;
 		}
@@ -42,7 +52,7 @@ static void draw_visible_geometry_meshes(
 
 		sg_bindings bindings = {
 			.views = {
-				[0] = object.storage_buffer.get_storage_view(),
+				[0] = render_object_data_view,
 				[1] = get_materials_buffer().get_storage_view(),
 				[2] = base_color_image.get_texture_view(0),
 				[3] = metallic_image.get_texture_view(0),
@@ -55,7 +65,9 @@ static void draw_visible_geometry_meshes(
 		sg_apply_pipeline(uses_skinning
 			? GeometryPass::get_skinned_pipeline(skinned_depth_format)
 			: geometry_pass.pipeline);
-		sg_apply_uniforms(0, SG_RANGE(vs_params));
+		geometry_vs_params_t draw_vs_params = vs_params;
+		draw_vs_params.object_index = object.render_object_index;
+		sg_apply_uniforms(0, SG_RANGE(draw_vs_params));
 		sg_apply_uniforms(1, SG_RANGE(fs_params));
 		mesh_apply_render_bindings(bindings, mesh, render_view);
 		gpu_apply_bindings(&bindings);

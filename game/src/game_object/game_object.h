@@ -100,6 +100,7 @@ struct Object
 
 	Transform initial_transform;
 	Transform current_transform;
+	i32 render_object_index = -1;
 
 	GpuBuffer<geometry_ObjectData_t> storage_buffer; 
 	bool storage_buffer_needs_update = false;
@@ -279,7 +280,7 @@ void object_remove_camera_control(Object& in_object)
 	in_object.camera_control = {};
 }
 
-void object_update_storage_buffer(Object& in_object)
+geometry_ObjectData_t object_make_render_data(const Object& in_object)
 {
 	const Transform& current_transform = in_object.current_transform;
 	HMM_Vec4 location = current_transform.location;
@@ -295,11 +296,16 @@ void object_update_storage_buffer(Object& in_object)
 						? in_object.mesh.material_indices[0] 
 						: -1;
 
-	geometry_ObjectData_t object_data = {
+	return (geometry_ObjectData_t) {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
 		.rotation_matrix = rotation_matrix,
 		.material_index = material_index,
 	};
+}
+
+void object_update_storage_buffer(Object& in_object)
+{
+	geometry_ObjectData_t object_data = object_make_render_data(in_object);
 
 	in_object.storage_buffer.update_gpu_buffer(
 		(sg_range){
@@ -331,6 +337,7 @@ Object object_create(
 		.visibility = visibility,
 		.initial_transform = transform,
 		.current_transform = transform,
+		.render_object_index = -1,
 
 		// Create our dynamic storage buffer and mark it for update later on the game thread
 		.storage_buffer = GpuBuffer((GpuBufferDesc<geometry_ObjectData_t>){
@@ -459,7 +466,6 @@ void object_copy_physics_transform(Object& in_object, JPH::BodyInterface& in_bod
 		Transform& transform = in_object.current_transform;
 		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
 		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-		in_object.storage_buffer_needs_update = true;
 	}
 	else if (in_object.has_character && in_object.character.jph_character)
 	{
@@ -471,6 +477,5 @@ void object_copy_physics_transform(Object& in_object, JPH::BodyInterface& in_bod
 		Transform& transform = in_object.current_transform;
 		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
 		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-		in_object.storage_buffer_needs_update = true;
 	}
 }

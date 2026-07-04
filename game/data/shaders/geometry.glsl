@@ -6,6 +6,7 @@
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int object_index;
 };
 
 @include_block object_data
@@ -22,12 +23,12 @@ out flat int is_skinned_mesh;
 out flat int material_index;
 
 void main() {
-	world_position = object_data_array[0].model_matrix * position;
-	world_normal = object_data_array[0].rotation_matrix * normal;
+	world_position = object_data_array[object_index].model_matrix * position;
+	world_normal = object_data_array[object_index].rotation_matrix * normal;
 	pixel_texcoord = texcoord;
 	skin_debug_color = vec4(0.0);
 	is_skinned_mesh = 0;
-	material_index = object_data_array[0].material_index;
+	material_index = object_data_array[object_index].material_index;
 
     gl_Position = projection * view * world_position;
 }
@@ -38,6 +39,7 @@ void main() {
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int object_index;
 };
 
 @include_block object_data
@@ -61,12 +63,12 @@ void main() {
 	vec4 skinned_position = skin_matrix * position;
 	vec4 skinned_normal = vec4(normalize((skin_matrix * vec4(normal.xyz, 0.0)).xyz), 0.0);
 
-	world_position = object_data_array[0].model_matrix * skinned_position;
-	world_normal = object_data_array[0].rotation_matrix * skinned_normal;
+	world_position = object_data_array[object_index].model_matrix * skinned_position;
+	world_normal = object_data_array[object_index].rotation_matrix * skinned_normal;
 	pixel_texcoord = texcoord;
 	skin_debug_color = get_skin_debug_color(joint_indices, joint_weights);
 	is_skinned_mesh = 1;
-	material_index = object_data_array[0].material_index;
+	material_index = object_data_array[object_index].material_index;
 
     gl_Position = projection * view * world_position;
 }
@@ -187,6 +189,7 @@ void main()
 layout(binding=0) uniform vs_params {
     mat4 view;
 	mat4 projection;
+	int object_index;
 };
 
 @include_block object_data
@@ -199,8 +202,8 @@ out vec4 wire_world_position;
 out vec4 wire_world_normal;
 
 void main() {
-	wire_world_position = object_data_array[0].model_matrix * position;
-	wire_world_normal = object_data_array[0].rotation_matrix * normal;
+	wire_world_position = object_data_array[object_index].model_matrix * position;
+	wire_world_normal = object_data_array[object_index].rotation_matrix * normal;
 	gl_Position = projection * view * wire_world_position;
 }
 @end

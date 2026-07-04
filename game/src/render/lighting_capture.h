@@ -219,7 +219,7 @@ public:
 				HMM_Mat4& view_matrix = view_matrices[face_idx];
 				HMM_Mat4& view_projection_matrix = view_projection_matrices[face_idx];
 
-				geometry_vs_params_t vs_params;
+				geometry_vs_params_t vs_params = {};
 				vs_params.view = view_matrix;
 				vs_params.projection = projection_matrix;
 				geometry_fs_params_t geometry_fs_params = {

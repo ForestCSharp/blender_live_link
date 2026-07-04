@@ -1722,15 +1722,7 @@ void update_physics_backed_object_transforms()
 	for (auto& [unique_id, object] : state.scene.objects)
 	{
 		state.data_oriented.frame.object_update_scan_count += 1;
-
 		object_copy_physics_transform(object, body_interface);
-
-		if (object.storage_buffer_needs_update)
-		{
-			object.storage_buffer_needs_update = false;
-			object_update_storage_buffer(object);
-			state.data_oriented.frame.object_update_storage_updates += 1;
-		}
 	}
 }
 
@@ -2500,6 +2492,7 @@ void frame(void)
 	{
 		CPU_TIMING_SCOPE("Object Transforms");
 		update_physics_backed_object_transforms();
+		build_render_object_snapshot(state);
 	}
 
 	{
@@ -2928,7 +2921,7 @@ void frame(void)
 			get_render_pass(ERenderPass::Geometry).execute(
 				[&](const i32)
 				{
-				    geometry_vs_params_t vs_params;
+				    geometry_vs_params_t vs_params = {};
 					geometry_fs_params_t fs_params;
 					{
 						CPU_TIMING_SCOPE("Geometry Uniforms");
@@ -3215,6 +3208,11 @@ void frame(void)
 
 						GpuImage& position_texture = geometry_pass.get_color_output(1);
 						state.data_oriented.frame.draw_calls += 1;
+						if (!state.render_objects.valid)
+						{
+							return;
+						}
+						sg_view render_object_data_view = get_render_object_snapshot_buffer(state).get_storage_view();
 						for (const i32 unique_id : cull_result.object_ids)
 						{
 							if (!state.scene.objects.contains(unique_id))
@@ -3224,6 +3222,10 @@ void frame(void)
 
 							Object& object = state.scene.objects[unique_id];
 							if (!object.has_mesh)
+							{
+								continue;
+							}
+							if (object.render_object_index < 0)
 							{
 								continue;
 							}
@@ -3250,15 +3252,16 @@ void frame(void)
 							wire_overlay_mesh_vs_params_t mesh_vs_params = {
 								.view = view_matrix,
 								.projection = projection_matrix,
-								.model = transform_model_matrix(object.current_transform),
+								.object_index = object.render_object_index,
 							};
 							sg_apply_uniforms(0, SG_RANGE(mesh_vs_params));
 
 							sg_bindings mesh_bindings = {
 								.views = {
-									[0] = render_view.vertex_storage_view,
-									[1] = render_view.index_storage_view,
-									[2] = position_texture.get_texture_view(0),
+									[0] = render_object_data_view,
+									[1] = render_view.vertex_storage_view,
+									[2] = render_view.index_storage_view,
+									[3] = position_texture.get_texture_view(0),
 								},
 								.samplers[0] = state.gpu.nearest_sampler,
 							};
@@ -3494,6 +3497,10 @@ void cleanup(void)
 	for (i32 pass_index = 0; pass_index < (i32)ERenderPass::COUNT; ++pass_index)
 	{
 		state.render_passes.passes[pass_index].cleanup();
+	}
+	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
+	{
+		state.render_objects.buffers[buffer_idx].destroy_gpu_buffer();
 	}
 	SkyBakePass::cleanup();
 	gi_scene.lighting_capture.cleanup();

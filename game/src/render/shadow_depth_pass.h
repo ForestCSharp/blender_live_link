@@ -222,6 +222,12 @@ namespace ShadowDepthPass
 	{
 		CPU_TIMING_SCOPE("Shadow Draw Meshes");
 		in_state.data_oriented.frame.draw_calls += 1;
+		if (!in_state.render_objects.valid)
+		{
+			return;
+		}
+
+		sg_view render_object_data_view = get_render_object_snapshot_buffer(in_state).get_storage_view();
 
 		for (const i32 unique_id : cull_result.object_ids)
 		{
@@ -236,17 +242,23 @@ namespace ShadowDepthPass
 			{
 				continue;
 			}
+			if (object.render_object_index < 0)
+			{
+				continue;
+			}
 
 			Mesh& mesh = object.mesh;
 			MeshRenderView render_view = mesh_get_render_view(mesh);
 
 			sg_bindings bindings = {};
-			bindings.views[0] = object.storage_buffer.get_storage_view();
+			bindings.views[0] = render_object_data_view;
 			const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
 			sg_apply_pipeline(uses_skinning
 				? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
 				: get_pipeline(SG_PIXELFORMAT_DEPTH));
-			sg_apply_uniforms(0, SG_RANGE(vs_params));
+			shadow_depth_vs_params_t draw_vs_params = vs_params;
+			draw_vs_params.object_index = object.render_object_index;
+			sg_apply_uniforms(0, SG_RANGE(draw_vs_params));
 			mesh_apply_render_bindings(bindings, mesh, render_view);
 			gpu_apply_bindings(&bindings);
 			sg_draw(0, render_view.index_count, 1);
@@ -315,7 +327,7 @@ namespace ShadowDepthPass
 			cascade_distances[cascade_idx] = cascade_half_extent;
 			has_valid_shadow_map = true;
 
-			shadow_depth_vs_params_t vs_params;
+			shadow_depth_vs_params_t vs_params = {};
 			vs_params.view = light_view;
 			vs_params.projection = light_proj;
 
@@ -395,7 +407,7 @@ namespace ShadowDepthPass
 			has_valid_shadow_map = true;
 		}
 
-		shadow_depth_vs_params_t vs_params;
+		shadow_depth_vs_params_t vs_params = {};
 		vs_params.view = light_view;
 		vs_params.projection = light_proj;
 

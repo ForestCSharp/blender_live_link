@@ -40,14 +40,16 @@ struct WireOverlayIndex
 layout(binding=0) uniform mesh_vs_params {
 	mat4 view;
 	mat4 projection;
-	mat4 model;
+	int object_index;
 };
 
-layout(binding=0) readonly buffer WireOverlayVerticesBuffer {
+@include_block object_data
+
+layout(binding=1) readonly buffer WireOverlayVerticesBuffer {
 	WireOverlayVertex vertices[];
 };
 
-layout(binding=1) readonly buffer WireOverlayIndicesBuffer {
+layout(binding=2) readonly buffer WireOverlayIndicesBuffer {
 	WireOverlayIndex indices[];
 };
 
@@ -67,7 +69,7 @@ void main()
 			? vec3(0.0, 1.0, 0.0)
 			: vec3(0.0, 0.0, 1.0);
 
-	wire_world_position = model * vertex.position;
+	wire_world_position = object_data_array[object_index].model_matrix * vertex.position;
 	gl_Position = projection * view * wire_world_position;
 
 	float safe_w = abs(gl_Position.w) < 0.000001 ? 0.000001 : gl_Position.w;
@@ -89,7 +91,7 @@ layout(binding=1) uniform mesh_fs_params {
 	float visibility_tolerance;
 };
 
-layout(binding=2) uniform texture2D geometry_position_texture;
+layout(binding=3) uniform texture2D geometry_position_texture;
 layout(binding=0) uniform sampler geometry_sampler;
 
 noperspective in vec3 wire_barycentric;

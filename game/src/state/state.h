@@ -116,6 +116,9 @@ const char* ETessellationModeNames[(i32)ETessellationMode::MAX] = {
 	"Adaptive Angular (Per Triangle)",
 };
 
+static constexpr i32 RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT = 3;
+static constexpr i32 RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY = 64;
+
 struct State
 {
 	struct RuntimeState
@@ -149,6 +152,15 @@ struct State
 	{
 		RenderPassEntry passes[(int)ERenderPass::COUNT];
 	} render_passes;
+
+	struct RenderObjectSnapshotState
+	{
+		StretchyBuffer<geometry_ObjectData_t> items;
+		GpuBuffer<geometry_ObjectData_t> buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
+		i32 buffer_index = 0;
+		i32 buffer_capacity = 0;
+		bool valid = false;
+	} render_objects;
 
 	struct SceneState
 	{
@@ -515,6 +527,94 @@ void scene_ensure_indexes(State& in_state)
 	}
 
 	scene_record_index_counts(in_state);
+}
+
+void render_object_snapshot_ensure_capacity(State& in_state, i32 required_capacity)
+{
+	required_capacity = MAX(required_capacity, 1);
+	if (in_state.render_objects.buffer_capacity >= required_capacity)
+	{
+		return;
+	}
+
+	i32 new_capacity = MAX(RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY, in_state.render_objects.buffer_capacity);
+	while (new_capacity < required_capacity)
+	{
+		new_capacity *= 2;
+	}
+
+	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
+	{
+		in_state.render_objects.buffers[buffer_idx].destroy_gpu_buffer();
+		in_state.render_objects.buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<geometry_ObjectData_t>){
+			.data = nullptr,
+			.size = sizeof(geometry_ObjectData_t) * new_capacity,
+			.usage = {
+				.storage_buffer = true,
+				.stream_update = true,
+			},
+			.label = "render_object_snapshot",
+		});
+	}
+
+	in_state.render_objects.buffer_capacity = new_capacity;
+	in_state.render_objects.valid = false;
+}
+
+void build_render_object_snapshot(State& in_state)
+{
+	scene_ensure_indexes(in_state);
+
+	for (auto& [unique_id, object] : in_state.scene.objects)
+	{
+		object.render_object_index = -1;
+	}
+
+	in_state.render_objects.items.clear();
+	render_object_snapshot_ensure_capacity(in_state, (i32)in_state.scene.indexes.mesh_object_ids.length());
+
+	for (const i32 unique_id : in_state.scene.indexes.mesh_object_ids)
+	{
+		if (!in_state.scene.objects.contains(unique_id))
+		{
+			continue;
+		}
+
+		Object& object = in_state.scene.objects[unique_id];
+		if (!object.has_mesh)
+		{
+			continue;
+		}
+
+		object.render_object_index = (i32)in_state.render_objects.items.length();
+		in_state.render_objects.items.add(object_make_render_data(object));
+	}
+
+	if (in_state.render_objects.items.length() <= 0)
+	{
+		in_state.render_objects.valid = false;
+		return;
+	}
+
+	in_state.render_objects.buffer_index =
+		(in_state.render_objects.buffer_index + 1) % RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT;
+
+	GpuBuffer<geometry_ObjectData_t>& active_buffer =
+		in_state.render_objects.buffers[in_state.render_objects.buffer_index];
+
+	active_buffer.update_gpu_buffer(
+		(sg_range){
+			.ptr = in_state.render_objects.items.data(),
+			.size = sizeof(geometry_ObjectData_t) * in_state.render_objects.items.length(),
+		}
+	);
+	in_state.render_objects.valid = true;
+}
+
+GpuBuffer<geometry_ObjectData_t>& get_render_object_snapshot_buffer(State& in_state)
+{
+	assert(in_state.render_objects.valid);
+	return in_state.render_objects.buffers[in_state.render_objects.buffer_index];
 }
 
 void state_init()

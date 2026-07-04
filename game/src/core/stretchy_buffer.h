@@ -103,6 +103,20 @@ public:
 			_data = nullptr;
 		}
 	}
+	void clear()
+	{
+		if (_data)
+		{
+			if constexpr (!std::is_trivially_destructible_v<T>)
+			{
+				for (size_t i = 0; i < arrlen(_data); ++i)
+				{
+					_data[i].~T();
+				}
+			}
+			arrsetlen(_data, 0);
+		}
+	}
 	size_t length() const { return arrlen(_data); }
 	T* data() { return _data; }
 	const T* data() const { return _data; }
