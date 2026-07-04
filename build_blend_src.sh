@@ -40,6 +40,9 @@ Options:
 
 Default:
   Uses pinned Blender source version $DEFAULT_BLENDER_SOURCE_VERSION.
+
+Patch compatibility:
+  The requested Blender version must have tracked patches under blend_patches/X.Y.Z/.
 EOF
 }
 
@@ -300,46 +303,78 @@ ensure_blender_source() {
 	echo "Blender source ready at $BLENDER_SRC_DIR"
 }
 
+supported_blender_patch_versions() {
+	find "$BLENDER_PATCH_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2> /dev/null |
+		grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
+		sort
+}
+
+print_supported_blender_patch_versions() {
+	local versions
+	versions=$(supported_blender_patch_versions || true)
+	if [[ -z "$versions" ]]; then
+		echo "  - (none)"
+	else
+		printf "%s\n" "$versions" | sed 's/^/  - /'
+	fi
+}
+
 apply_blender_patches() {
-	if [[ ! -d "$BLENDER_PATCH_DIR" ]]; then
-		echo "No Blender patch directory found at $BLENDER_PATCH_DIR"
-		return
+	local release_patch_dir="$BLENDER_PATCH_DIR/$REQUESTED_BLENDER_SOURCE_VERSION"
+	local release_sentinel_dir="$BLENDER_PATCH_SENTINEL_DIR/$REQUESTED_BLENDER_SOURCE_VERSION"
+
+	if [[ ! -d "$release_patch_dir" ]]; then
+		echo "Error: no Blender patch set found for Blender $REQUESTED_BLENDER_SOURCE_VERSION"
+		echo "Expected release patch directory: $release_patch_dir"
+		echo "Supported Blender patch versions:"
+		print_supported_blender_patch_versions
+		echo "Using --latest or --version requires a matching blend_patches/X.Y.Z/ patch set."
+		exit 1
 	fi
 
 	shopt -s nullglob
-	local patches=("$BLENDER_PATCH_DIR"/*.patch)
+	local patches=("$release_patch_dir"/*.patch)
 	shopt -u nullglob
 
 	if (( ${#patches[@]} == 0 )); then
-		echo "No Blender patches found in $BLENDER_PATCH_DIR"
-		return
+		echo "Error: no Blender patch files found for Blender $REQUESTED_BLENDER_SOURCE_VERSION"
+		echo "Expected one or more .patch files in: $release_patch_dir"
+		echo "Supported Blender patch versions:"
+		print_supported_blender_patch_versions
+		echo "Using --latest or --version requires a matching blend_patches/X.Y.Z/ patch set."
+		exit 1
 	fi
 
 	require_command patch
-	mkdir -p "$BLENDER_PATCH_SENTINEL_DIR"
+	mkdir -p "$release_sentinel_dir"
 
 	local patch_path
 	for patch_path in "${patches[@]}"; do
 		local patch_name
 		local patch_sha
 		local sentinel_path
+		local legacy_sentinel_path
 		patch_name=$(basename "$patch_path")
 		patch_sha=$(file_checksum "$patch_path")
-		sentinel_path="$BLENDER_PATCH_SENTINEL_DIR/$patch_name.sha256"
+		sentinel_path="$release_sentinel_dir/$patch_name.sha256"
+		legacy_sentinel_path="$BLENDER_PATCH_SENTINEL_DIR/$patch_name.sha256"
 
 		if patch --batch --forward --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
-			echo "Applying Blender patch: $patch_name"
+			echo "Applying Blender $REQUESTED_BLENDER_SOURCE_VERSION patch: $patch_name"
 			patch --batch --forward -p1 -d "$BLENDER_SRC_DIR" < "$patch_path"
 			printf "%s\n" "$patch_sha" > "$sentinel_path"
 			BLENDER_PATCHES_CHANGED=true
 		elif [[ -f "$sentinel_path" && "$(cat "$sentinel_path")" == "$patch_sha" ]]; then
-			echo "Blender patch already applied: $patch_name"
+			echo "Blender $REQUESTED_BLENDER_SOURCE_VERSION patch already applied: $patch_name"
+		elif [[ -f "$legacy_sentinel_path" && "$(cat "$legacy_sentinel_path")" == "$patch_sha" ]]; then
+			echo "Blender $REQUESTED_BLENDER_SOURCE_VERSION patch already applied; migrating patch state: $patch_name"
+			printf "%s\n" "$patch_sha" > "$sentinel_path"
 		elif patch --batch --reverse --dry-run -p1 -d "$BLENDER_SRC_DIR" < "$patch_path" > /dev/null 2>&1; then
-			echo "Blender patch already present; recording patch state: $patch_name"
+			echo "Blender $REQUESTED_BLENDER_SOURCE_VERSION patch already present; recording patch state: $patch_name"
 			printf "%s\n" "$patch_sha" > "$sentinel_path"
 		else
 			echo "Error: Blender patch '$patch_name' could not be applied or cleanly detected as already applied"
-			echo "Source may be partially patched or the patch may not match this Blender release."
+			echo "Source may be partially patched or the patch may not match Blender $REQUESTED_BLENDER_SOURCE_VERSION."
 			exit 1
 		fi
 	done
