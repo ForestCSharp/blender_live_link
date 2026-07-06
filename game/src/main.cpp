@@ -2337,6 +2337,8 @@ void frame(void)
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
 				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.fs_params.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+				ImGui::Checkbox("SSAO", &state.ssao.enable);
+				ImGui::Checkbox("Fog", &state.fog.debug_active);
 				if (ImGui::CollapsingHeader("Antialiasing", ImGuiTreeNodeFlags_DefaultOpen))
 				{
 					bool taa_changed = false;
@@ -2358,7 +2360,6 @@ void frame(void)
 						TemporalAAPass::invalidate_history(state);
 					}
 				}
-				ImGui::Checkbox("SSAO", &state.ssao.enable);
 				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
 				{
 					if (ImGui::Checkbox("Enable DoF", &state.dof.enable))
@@ -3294,7 +3295,8 @@ void frame(void)
 			);
 		}
 
-		if (state.fog.active)
+		const bool fog_render_active = state.fog.active && state.fog.debug_active;
+		if (fog_render_active)
 		{
 			get_render_pass(ERenderPass::Fog).execute(
 				[&](const i32)
@@ -3320,7 +3322,7 @@ void frame(void)
 		}
 
 		auto get_post_fog_lighting_output = [&]() -> GpuImage& {
-			return state.fog.active
+			return fog_render_active
 				? get_render_pass(ERenderPass::Fog).get_color_output(0)
 				: get_render_pass(ERenderPass::Lighting).get_color_output(0);
 		};

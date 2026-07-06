@@ -230,6 +230,7 @@ struct State
 
 	struct FogState
 	{
+		bool debug_active = true;
 		bool active = false;
 		fog_fs_params_t fs_params = {};
 	} fog;
