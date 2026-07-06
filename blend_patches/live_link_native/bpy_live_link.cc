@@ -990,7 +990,7 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       }
       const auto value = ll::CreateGameplayComponentCameraControl(
           builder,
-          py_float_attr(camera_control, "follow_distance", 5.0f),
+          py_float_attr(camera_control, "follow_distance", 10.0f),
           py_float_attr(camera_control, "follow_speed", 10.0f));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentCameraControl, value.Union()));

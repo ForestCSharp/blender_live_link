@@ -1466,7 +1466,7 @@ class Component_CameraControl(Component):
     label = 'Camera Control'
 
     # Properties
-    follow_distance: FloatProperty(name="Follow Distance", default=5.0)
+    follow_distance: FloatProperty(name="Follow Distance", default=10.0)
     follow_speed: FloatProperty(name="Follow Speed", default=10.0)
 
     # Adds component to flatbuffers component list
@@ -1602,14 +1602,6 @@ class OBJECT_OT_add_custom_item(Operator):
 
         new_component = settings.components.add()
         new_component.type = settings.add_type
-
-        # Initialize based on type
-        if new_component.type == Component_Character.type_name:
-            new_component.player.move_speed = 20.0
-        elif new_component.type == Component_CameraControl.type_name:
-            new_component.camera_control.follow_distance = 100.0
-        elif new_component.type == Component_FogController.type_name:
-            new_component.fog_controller.enabled = True
 
         return {'FINISHED'}
 
