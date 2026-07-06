@@ -28,6 +28,7 @@ enum class ERenderPass : int
 	SSAO_Blur,
 	ScreenSpaceShadows,
 	Lighting,
+	Fog,
 	DOF_Combine,
 	WireOverlay,
 	TemporalAA,
@@ -167,6 +168,7 @@ struct State
 		optional<i32> player_character_id;
 		optional<i32> camera_control_id;
 		optional<i32> primary_sun_id;
+		optional<i32> active_fog_controller_id;
 
 		struct IndexState
 		{
@@ -225,6 +227,12 @@ struct State
 		StretchyBuffer<lighting_SunLight_t> sun_lights;
 		GpuBuffer<lighting_SunLight_t> sun_lights_buffer;
 	} lighting;
+
+	struct FogState
+	{
+		bool active = false;
+		fog_fs_params_t fs_params = {};
+	} fog;
 
 	struct SsaoState
 	{

@@ -63,6 +63,22 @@ struct RigidBody
 	JPH::Body* jolt_body = nullptr;
 };
 
+struct FogController
+{
+	bool enabled = true;
+	f32 density = 0.015f;
+	f32 base_height = 0.0f;
+	f32 scale_height = 25.0f;
+	f32 max_distance = 500.0f;
+	bool ceiling_enabled = false;
+	f32 ceiling_height = 100.0f;
+	f32 ceiling_fade = 25.0f;
+	HMM_Vec3 fog_color = HMM_V3(0.55f, 0.65f, 0.75f);
+	f32 ambient_intensity = 0.4f;
+	f32 sun_intensity = 1.0f;
+	f32 anisotropy = 0.2f;
+};
+
 struct ArmatureBone
 {
 	char* name = nullptr;
@@ -128,6 +144,10 @@ struct Object
 	// Camera Control Data, stored inline
 	bool has_camera_control = false;
 	CameraControl camera_control;
+
+	// Fog Controller Data, stored inline
+	bool has_fog_controller = false;
+	FogController fog_controller;
 };
 
 BoundingBox object_get_bounding_box(const Object& in_object)

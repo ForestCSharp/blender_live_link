@@ -38,6 +38,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController
 from .compiled_schemas.python.Blender.LiveLink import Image
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import LightType
@@ -1478,14 +1479,63 @@ class Component_CameraControl(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentCameraControl
 
+class Component_FogController(Component):
+    # Blender UI Info
+    type_name = 'FOG_CONTROLLER'
+    label = 'Fog Controller'
+
+    # Properties
+    enabled: BoolProperty(name="Enabled", default=True)
+    density: FloatProperty(name="Density", default=0.015, min=0.0)
+    base_height: FloatProperty(name="Base Height", default=0.0)
+    scale_height: FloatProperty(name="Scale Height", default=25.0, min=0.001)
+    max_distance: FloatProperty(name="Max Distance", default=500.0, min=0.0)
+    ceiling_enabled: BoolProperty(name="Ceiling Enabled", default=False)
+    ceiling_height: FloatProperty(name="Ceiling Height", default=100.0)
+    ceiling_fade: FloatProperty(name="Ceiling Fade", default=25.0, min=0.0)
+    fog_color: FloatVectorProperty(
+        name="Fog Color",
+        subtype='COLOR',
+        size=3,
+        default=(0.55, 0.65, 0.75),
+        min=0.0,
+        max=1.0
+    )
+    ambient_intensity: FloatProperty(name="Ambient Intensity", default=0.4, min=0.0)
+    sun_intensity: FloatProperty(name="Sun Intensity", default=1.0, min=0.0)
+    anisotropy: FloatProperty(name="Anisotropy", default=0.2, min=-0.95, max=0.95)
+
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_value(self, builder):
+        GameplayComponentFogController.Start(builder)
+        fog_color = Vec3.CreateVec3(builder, self.fog_color[0], self.fog_color[1], self.fog_color[2])
+        GameplayComponentFogController.AddFogColor(builder, fog_color)
+        GameplayComponentFogController.AddEnabled(builder, self.enabled)
+        GameplayComponentFogController.AddDensity(builder, self.density)
+        GameplayComponentFogController.AddBaseHeight(builder, self.base_height)
+        GameplayComponentFogController.AddScaleHeight(builder, self.scale_height)
+        GameplayComponentFogController.AddMaxDistance(builder, self.max_distance)
+        GameplayComponentFogController.AddCeilingEnabled(builder, self.ceiling_enabled)
+        GameplayComponentFogController.AddCeilingHeight(builder, self.ceiling_height)
+        GameplayComponentFogController.AddCeilingFade(builder, self.ceiling_fade)
+        GameplayComponentFogController.AddAmbientIntensity(builder, self.ambient_intensity)
+        GameplayComponentFogController.AddSunIntensity(builder, self.sun_intensity)
+        GameplayComponentFogController.AddAnisotropy(builder, self.anisotropy)
+        return GameplayComponentFogController.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentFogController
+
 gameplay_component_enum = [
     Component_Character.enum_info(),
     Component_CameraControl.enum_info(),
+    Component_FogController.enum_info(),
 ]
 
 TYPE_TO_GROUP = {
     Component_Character.type_name: 'player',
-    Component_CameraControl.type_name: 'camera_control'
+    Component_CameraControl.type_name: 'camera_control',
+    Component_FogController.type_name: 'fog_controller'
 }
 
 #GROUP_TO_TYPE = {v: k for k, v in TYPE_TO_GROUP.items()}
@@ -1500,6 +1550,7 @@ class ComponentContainer(PropertyGroup):
     # Only one of these should be set, based on type
     player:         PointerProperty(type=Component_Character)
     camera_control: PointerProperty(type=Component_CameraControl)
+    fog_controller: PointerProperty(type=Component_FogController)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(self, builder):
@@ -1557,6 +1608,8 @@ class OBJECT_OT_add_custom_item(Operator):
             new_component.player.move_speed = 20.0
         elif new_component.type == Component_CameraControl.type_name:
             new_component.camera_control.follow_distance = 100.0
+        elif new_component.type == Component_FogController.type_name:
+            new_component.fog_controller.enabled = True
 
         return {'FINISHED'}
 
@@ -1639,6 +1692,7 @@ classes_to_register = [
     # Custom Property Group System
     Component_Character,
     Component_CameraControl,
+    Component_FogController,
     ComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,

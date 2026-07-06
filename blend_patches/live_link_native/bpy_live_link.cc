@@ -995,6 +995,55 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentCameraControl, value.Union()));
     }
+    else if (type == "FOG_CONTROLLER") {
+      PyPtr fog_controller(PyObject_GetAttrString(component, "fog_controller"));
+      if (!fog_controller) {
+        PyErr_Clear();
+        continue;
+      }
+      PyPtr fog_color_attr(PyObject_GetAttrString(fog_controller, "fog_color"));
+      float fog_color_values[3] = {0.55f, 0.65f, 0.75f};
+      if (fog_color_attr) {
+        PyPtr fog_color_sequence(PySequence_Fast(fog_color_attr, "fog_controller.fog_color must be a sequence"));
+        if (fog_color_sequence) {
+          const Py_ssize_t fog_color_size = PySequence_Fast_GET_SIZE(fog_color_sequence);
+          for (Py_ssize_t color_index = 0; color_index < fog_color_size && color_index < 3; color_index++) {
+            PyObject *color_value = PySequence_Fast_GET_ITEM(fog_color_sequence.value, color_index);
+            const double parsed_color = PyFloat_AsDouble(color_value);
+            if (!PyErr_Occurred()) {
+              fog_color_values[color_index] = float(parsed_color);
+            }
+            else {
+              PyErr_Clear();
+            }
+          }
+        }
+        else {
+          PyErr_Clear();
+        }
+      }
+      else {
+        PyErr_Clear();
+      }
+
+      const ll::Vec3 fog_color(fog_color_values[0], fog_color_values[1], fog_color_values[2]);
+      const auto value = ll::CreateGameplayComponentFogController(
+          builder,
+          py_bool_attr(fog_controller, "enabled", true),
+          py_float_attr(fog_controller, "density", 0.015f),
+          py_float_attr(fog_controller, "base_height", 0.0f),
+          py_float_attr(fog_controller, "scale_height", 25.0f),
+          py_float_attr(fog_controller, "max_distance", 500.0f),
+          py_bool_attr(fog_controller, "ceiling_enabled", false),
+          py_float_attr(fog_controller, "ceiling_height", 100.0f),
+          py_float_attr(fog_controller, "ceiling_fade", 25.0f),
+          &fog_color,
+          py_float_attr(fog_controller, "ambient_intensity", 0.4f),
+          py_float_attr(fog_controller, "sun_intensity", 1.0f),
+          py_float_attr(fog_controller, "anisotropy", 0.2f));
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentFogController, value.Union()));
+    }
   }
 
   return components_out;
@@ -2166,6 +2215,27 @@ void compare_component(DiffList &diffs,
     if (native_camera && python_camera) {
       compare_float(diffs, path + ".camera_control.follow_distance", native_camera->follow_distance(), python_camera->follow_distance());
       compare_float(diffs, path + ".camera_control.follow_speed", native_camera->follow_speed(), python_camera->follow_speed());
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentFogController &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentFogController)
+  {
+    const ll::GameplayComponentFogController *native_fog = native_value->value_as_GameplayComponentFogController();
+    const ll::GameplayComponentFogController *python_fog = python_value->value_as_GameplayComponentFogController();
+    compare_exact(diffs, path + ".fog_controller.present", native_fog != nullptr, python_fog != nullptr);
+    if (native_fog && python_fog) {
+      compare_exact(diffs, path + ".fog_controller.enabled", native_fog->enabled(), python_fog->enabled());
+      compare_float(diffs, path + ".fog_controller.density", native_fog->density(), python_fog->density());
+      compare_float(diffs, path + ".fog_controller.base_height", native_fog->base_height(), python_fog->base_height());
+      compare_float(diffs, path + ".fog_controller.scale_height", native_fog->scale_height(), python_fog->scale_height());
+      compare_float(diffs, path + ".fog_controller.max_distance", native_fog->max_distance(), python_fog->max_distance());
+      compare_exact(diffs, path + ".fog_controller.ceiling_enabled", native_fog->ceiling_enabled(), python_fog->ceiling_enabled());
+      compare_float(diffs, path + ".fog_controller.ceiling_height", native_fog->ceiling_height(), python_fog->ceiling_height());
+      compare_float(diffs, path + ".fog_controller.ceiling_fade", native_fog->ceiling_fade(), python_fog->ceiling_fade());
+      compare_vec3(diffs, path + ".fog_controller.fog_color", native_fog->fog_color(), python_fog->fog_color());
+      compare_float(diffs, path + ".fog_controller.ambient_intensity", native_fog->ambient_intensity(), python_fog->ambient_intensity());
+      compare_float(diffs, path + ".fog_controller.sun_intensity", native_fog->sun_intensity(), python_fog->sun_intensity());
+      compare_float(diffs, path + ".fog_controller.anisotropy", native_fog->anisotropy(), python_fog->anisotropy());
     }
   }
 }

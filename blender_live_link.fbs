@@ -156,12 +156,29 @@ table GameplayComponentCameraControl
 	follow_speed		: float;
 }
 
+table GameplayComponentFogController
+{
+	enabled				: bool = true;
+	density				: float = 0.015;
+	base_height			: float = 0.0;
+	scale_height		: float = 25.0;
+	max_distance		: float = 500.0;
+	ceiling_enabled		: bool = false;
+	ceiling_height		: float = 100.0;
+	ceiling_fade		: float = 25.0;
+	fog_color			: Vec3;
+	ambient_intensity	: float = 0.4;
+	sun_intensity		: float = 1.0;
+	anisotropy			: float = 0.2;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
 {
 	GameplayComponentCharacter,
-	GameplayComponentCameraControl
+	GameplayComponentCameraControl,
+	GameplayComponentFogController
 }
 
 table GameplayComponentContainer

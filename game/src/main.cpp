@@ -91,6 +91,7 @@ using ankerl::unordered_dense::map;
 // Render Passes
 #include "render/geometry_pass.h"
 #include "render/lighting_pass.h"
+#include "render/fog_pass.h"
 #include "render/blur_pass.h"
 #include "render/wire_overlay_pass.h"
 #include "render/temporal_aa_pass.h"
@@ -604,6 +605,66 @@ void refresh_primary_sun_id()
 	}
 }
 
+void refresh_active_fog_controller()
+{
+	state.scene.active_fog_controller_id.reset();
+	state.fog.active = false;
+	state.fog.fs_params = {};
+
+	optional<i32> selected_id;
+	for (const auto& [unique_id, object] : state.scene.objects)
+	{
+		if (!object.visibility || !object.has_fog_controller || !object.fog_controller.enabled)
+		{
+			continue;
+		}
+
+		if (!selected_id.has_value() || unique_id < selected_id.value())
+		{
+			selected_id = unique_id;
+		}
+	}
+
+	if (!selected_id.has_value())
+	{
+		return;
+	}
+
+	Object& fog_object = state.scene.objects[selected_id.value()];
+	const FogController& fog_controller = fog_object.fog_controller;
+	state.scene.active_fog_controller_id = selected_id;
+	state.fog.active = true;
+	state.fog.fs_params.camera_position = get_active_camera().location;
+	state.fog.fs_params.fog_base_height = fog_controller.base_height;
+	state.fog.fs_params.fog_color = fog_controller.fog_color;
+	state.fog.fs_params.density = fog_controller.density;
+	state.fog.fs_params.scale_height = fog_controller.scale_height;
+	state.fog.fs_params.max_distance = fog_controller.max_distance;
+	state.fog.fs_params.ceiling_enabled = fog_controller.ceiling_enabled ? 1 : 0;
+	state.fog.fs_params.ceiling_height = fog_controller.ceiling_height;
+	state.fog.fs_params.ceiling_fade = fog_controller.ceiling_fade;
+	state.fog.fs_params.ambient_intensity = fog_controller.ambient_intensity;
+	state.fog.fs_params.sun_intensity = fog_controller.sun_intensity;
+	state.fog.fs_params.anisotropy = fog_controller.anisotropy;
+	state.fog.fs_params.sun_direction = HMM_V3(0.0f, 0.0f, -1.0f);
+	state.fog.fs_params.sun_color = HMM_V3(0.0f, 0.0f, 0.0f);
+
+	if (state.scene.primary_sun_id.has_value())
+	{
+		const i32 primary_sun_id = state.scene.primary_sun_id.value();
+		if (state.scene.objects.contains(primary_sun_id))
+		{
+			const Object& sun_object = state.scene.objects[primary_sun_id];
+			if (object_is_sun_light(sun_object))
+			{
+				const HMM_Vec3 sun_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), sun_object.current_transform.rotation));
+				state.fog.fs_params.sun_direction = sun_dir;
+				state.fog.fs_params.sun_color = sun_object.light.color * sun_object.light.sun.power;
+			}
+		}
+	}
+}
+
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 {
 	if (flatbuffer_data.length() > 0)
@@ -1088,6 +1149,37 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								state.scene.camera_control_id = game_object.unique_id;
 								break;
 							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentFogController:
+							{
+								using Blender::LiveLink::GameplayComponentFogController;
+								const GameplayComponentFogController* fog_component = reinterpret_cast<const GameplayComponentFogController*>(component);
+
+								printf("\t\tFog Controller Component\n");
+								printf("\t\t\t Enabled: %s\n", fog_component->enabled() ? "true" : "false");
+								printf("\t\t\t Density: %f\n", fog_component->density());
+								printf("\t\t\t Base Height: %f\n", fog_component->base_height());
+								printf("\t\t\t Scale Height: %f\n", fog_component->scale_height());
+
+								game_object.has_fog_controller = true;
+								const HMM_Vec3 fog_color = fog_component->fog_color()
+									? flatbuffer_helpers::to_hmm_vec3(fog_component->fog_color())
+									: HMM_V3(0.55f, 0.65f, 0.75f);
+								game_object.fog_controller = (FogController) {
+									.enabled = fog_component->enabled(),
+									.density = fog_component->density(),
+									.base_height = fog_component->base_height(),
+									.scale_height = fog_component->scale_height(),
+									.max_distance = fog_component->max_distance(),
+									.ceiling_enabled = fog_component->ceiling_enabled(),
+									.ceiling_height = fog_component->ceiling_height(),
+									.ceiling_fade = fog_component->ceiling_fade(),
+									.fog_color = fog_color,
+									.ambient_intensity = fog_component->ambient_intensity(),
+									.sun_intensity = fog_component->sun_intensity(),
+									.anisotropy = fog_component->anisotropy(),
+								};
+								break;
+							}
 							default:
 								assert(false);
 						}
@@ -1476,6 +1568,7 @@ void init(void)
 	ScreenSpaceShadowsPass::init(get_render_pass_entry(ERenderPass::ScreenSpaceShadows), ssao_pixel_format);
 
 	get_render_pass(ERenderPass::Lighting).init(LightingPass::make_render_pass_desc(scene_color_format));
+	get_render_pass(ERenderPass::Fog).init(FogPass::make_render_pass_desc(scene_color_format));
 
 	RenderPassDesc dof_combine_pass_desc = {
 		.pipeline_desc = (sg_pipeline_desc) {
@@ -1803,7 +1896,7 @@ void frame(void)
 	state.debug_ui.immediate_fps = delta_time > 0.0 ? (f32)(1.0 / delta_time) : 0.0f;
 
 	f64 immediate_cpu_time_ms = 0.0;
-	state.debug_ui.immediate_cpu_time_valid = cpu_timings_get_display_frame_total_ms(false, immediate_cpu_time_ms);
+	state.debug_ui.immediate_cpu_time_valid = cpu_timings_get_latest_frame_total_ms(immediate_cpu_time_ms);
 	if (state.debug_ui.immediate_cpu_time_valid)
 	{
 		state.debug_ui.immediate_cpu_time_ms = (f32)immediate_cpu_time_ms;
@@ -1818,7 +1911,7 @@ void frame(void)
 
 	f64 immediate_gpu_time_ms = 0.0;
 	bool immediate_gpu_time_pending = false;
-	state.debug_ui.immediate_gpu_time_valid = gpu_timings_get_display_frame_total_ms(false, immediate_gpu_time_ms, immediate_gpu_time_pending);
+	state.debug_ui.immediate_gpu_time_valid = gpu_timings_get_latest_completed_frame_total_ms(immediate_gpu_time_ms, immediate_gpu_time_pending);
 	state.debug_ui.immediate_gpu_time_pending = !state.debug_ui.immediate_gpu_time_valid && immediate_gpu_time_pending;
 	if (state.debug_ui.immediate_gpu_time_valid)
 	{
@@ -1974,6 +2067,8 @@ void frame(void)
 			state.scene.camera_control_id.reset();
 			state.scene.player_character_id.reset();
 			state.scene.primary_sun_id.reset();
+			state.scene.active_fog_controller_id.reset();
+			state.fog.active = false;
 			scene_reset_indexes(state);
 
 			reset_materials();
@@ -1985,6 +2080,7 @@ void frame(void)
 	}
 
 	refresh_primary_sun_id();
+	refresh_active_fog_controller();
 
 	// Space Bar + Left Control Starts/Stops simulation
 	DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, SAPP_KEYCODE_SPACE, SAPP_KEYCODE_LEFT_CONTROL);
@@ -2082,10 +2178,11 @@ void frame(void)
 				stats_ui_cell_label("Timing Mode");
 				ImGui::TableNextColumn();
 				ImGui::Checkbox("Immediate##TimingMode", &state.debug_ui.show_immediate_timings);
+				stats_ui_cell_label("Profiler");
+				ImGui::TableNextColumn();
+				ImGui::Checkbox("##Profiler", &state.debug_ui.show_profiler);
 				ImGui::EndTable();
 			}
-			ImGui::Spacing();
-		    ImGui::Checkbox("Profiler", &state.debug_ui.show_profiler);
 			ImGui::Spacing();
 
 			draw_stats_ui(state);
@@ -3197,6 +3294,37 @@ void frame(void)
 			);
 		}
 
+		if (state.fog.active)
+		{
+			get_render_pass(ERenderPass::Fog).execute(
+				[&](const i32)
+				{
+					state.fog.fs_params.camera_position = get_active_camera().location;
+					sg_apply_uniforms(0, SG_RANGE(state.fog.fs_params));
+
+					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
+					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
+
+					sg_bindings bindings = {
+						.views = {
+							[0] = lighting_pass.get_color_output(0).get_texture_view(0),
+							[1] = geometry_pass.get_color_output(1).get_texture_view(0),
+						},
+						.samplers[0] = state.gpu.linear_sampler,
+					};
+					gpu_apply_bindings(&bindings);
+
+					sg_draw(0,6,1);
+				}
+			);
+		}
+
+		auto get_post_fog_lighting_output = [&]() -> GpuImage& {
+			return state.fog.active
+				? get_render_pass(ERenderPass::Fog).get_color_output(0)
+				: get_render_pass(ERenderPass::Lighting).get_color_output(0);
+		};
+
 		{ // DOF
 
 			if (state.dof.enable)
@@ -3204,7 +3332,6 @@ void frame(void)
 				get_render_pass(ERenderPass::DOF_Combine).execute(
 					[&](const i32)
 					{
-						RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 						RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 						const dof_combine_fs_params_t dof_combine_fs_params = {
@@ -3224,7 +3351,7 @@ void frame(void)
 
 						sg_bindings bindings = (sg_bindings){
 							.views = {
-								[0] = lighting_pass.get_color_output(0).get_texture_view(0),
+								[0] = get_post_fog_lighting_output().get_texture_view(0),
 								[1] = position_texture.get_texture_view(0),
 							},
 							.samplers[0] = state.gpu.linear_sampler,
@@ -3243,13 +3370,12 @@ void frame(void)
 			get_render_pass(ERenderPass::WireOverlay).execute(
 				[&](const i32)
 				{
-					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
 
 					GpuImage& source_color_image = state.dof.enable
 						? dof_combine_pass.get_color_output(0)
-						: lighting_pass.get_color_output(0);
+						: get_post_fog_lighting_output();
 
 					{
 						sg_bindings copy_bindings = {
@@ -3355,7 +3481,6 @@ void frame(void)
 				temporal_aa_output_index,
 				[&](const RenderPassExecutionContext& context)
 				{
-					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 					RenderPass& wire_overlay_pass = get_render_pass(ERenderPass::WireOverlay);
 					RenderPass& geometry_pass = get_render_pass(ERenderPass::Geometry);
@@ -3364,7 +3489,7 @@ void frame(void)
 						? wire_overlay_pass.get_color_output(0)
 						: state.dof.enable
 						? dof_combine_pass.get_color_output(0)
-						: lighting_pass.get_color_output(0);
+						: get_post_fog_lighting_output();
 
 					const temporal_aa_fs_params_t fs_params = {
 						.previous_view_projection = state.temporal_aa.previous_view_projection,
@@ -3405,7 +3530,6 @@ void frame(void)
 			get_render_pass(ERenderPass::Tonemapping).execute(
 				[&](const i32)
 				{
-					RenderPass& lighting_pass = get_render_pass(ERenderPass::Lighting);
 					RenderPass& dof_combine_pass = get_render_pass(ERenderPass::DOF_Combine);
 					RenderPass& wire_overlay_pass = get_render_pass(ERenderPass::WireOverlay);
 					RenderPass& temporal_aa_pass = get_render_pass(ERenderPass::TemporalAA);
@@ -3420,7 +3544,7 @@ void frame(void)
 								? wire_overlay_pass.get_color_output(0).get_texture_view(0)
 								: state.dof.enable
 								? dof_combine_pass.get_color_output(0).get_texture_view(0)
-								: lighting_pass.get_color_output(0).get_texture_view(0),
+								: get_post_fog_lighting_output().get_texture_view(0),
 						},
 						.samplers[0] = state.gpu.linear_sampler,
 					};

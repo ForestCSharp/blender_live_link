@@ -6,6 +6,7 @@
 #include "screen_space_shadows.compiled.h"
 #include "blur.compiled.h"
 #include "dof_combine.compiled.h"
+#include "fog.compiled.h"
 #include "lighting.compiled.h"
 #include "temporal_aa.compiled.h"
 #include "tonemapping.compiled.h"

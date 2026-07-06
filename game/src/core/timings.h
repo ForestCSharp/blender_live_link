@@ -329,6 +329,21 @@ bool cpu_timings_get_display_frame_total_ms(bool in_freeze, f64& out_ms)
 	return false;
 }
 
+bool cpu_timings_get_latest_frame_total_ms(f64& out_ms)
+{
+	const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_previous_frame();
+	for (const CpuTimingEvent& event : events)
+	{
+		if (event.parent_index == -1 && event.elapsed_ms > 0.0)
+		{
+			out_ms = event.elapsed_ms;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 enum class GpuTimingEventType : i32
 {
 	Unknown,
@@ -690,6 +705,47 @@ bool gpu_timings_get_display_frame_total_ms(bool in_freeze, f64& out_ms, bool& o
 	return false;
 }
 
+bool gpu_timings_get_latest_completed_frame_total_ms(f64& out_ms, bool& out_pending)
+{
+	out_pending = false;
+	if (!gpu_timings_are_available())
+	{
+		return false;
+	}
+
+	GpuTimings& timings = gpu_timings_get();
+	std::lock_guard<std::mutex> lock(timings.mutex);
+
+	i64 latest_frame_index = -1;
+	f64 latest_frame_ms = 0.0;
+	for (const GpuTimingFrame& gpu_frame : timings.history_frames)
+	{
+		if (!gpu_frame.valid || gpu_frame.frame_index <= latest_frame_index)
+		{
+			continue;
+		}
+
+		for (const GpuTimingEvent& event : gpu_frame.events)
+		{
+			if (event.valid && event.type == GpuTimingEventType::Frame && event.elapsed_ms > 0.0)
+			{
+				latest_frame_index = gpu_frame.frame_index;
+				latest_frame_ms = event.elapsed_ms;
+				break;
+			}
+		}
+	}
+
+	if (latest_frame_index >= 0)
+	{
+		out_ms = latest_frame_ms;
+		return true;
+	}
+
+	out_pending = true;
+	return false;
+}
+
 struct CpuTimingScope
 {
 	explicit CpuTimingScope(const char* in_name)
@@ -780,6 +836,7 @@ i64 cpu_timings_get_current_frame_index() { return -1; }
 i64 cpu_timings_get_display_frame_index(bool, i32 = 0) { return -1; }
 i32 cpu_timings_get_display_frame_age(bool, i32 = 0) { return 0; }
 bool cpu_timings_get_display_frame_total_ms(bool, f64&) { return false; }
+bool cpu_timings_get_latest_frame_total_ms(f64&) { return false; }
 void gpu_timings_set_available(bool, const char* = nullptr) {}
 bool gpu_timings_are_available() { return false; }
 void gpu_timings_copy_unavailable_reason(char*, size_t) {}
@@ -789,6 +846,7 @@ void gpu_timings_record_completed_frame_events(i64, const GpuTimingEvent*, i32) 
 void gpu_timings_record_completed_frame(i64, f64) {}
 bool gpu_timings_copy_display_frame(bool, i32, GpuTimingFrame&) { return false; }
 bool gpu_timings_get_display_frame_total_ms(bool, f64&, bool& out_pending) { out_pending = false; return false; }
+bool gpu_timings_get_latest_completed_frame_total_ms(f64&, bool& out_pending) { out_pending = false; return false; }
 
 #define CPU_TIMING_SCOPE(name)
 #define CPU_TIMING_BACKEND_SCOPE(api_name, pass_name)
