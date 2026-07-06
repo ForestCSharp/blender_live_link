@@ -12,6 +12,10 @@ layout(binding=0) buffer ClearCountersBuffer {
 
 layout(local_size_x=32, local_size_y=1, local_size_z=1) in;
 
+/**
+ * clear_counters resets the tessellation counter buffer before a new planning pass.
+ * Only one invocation writes the shared counter record for the dispatch.
+ */
 void main()
 {
 	if (gl_LocalInvocationID.x != 0u)
@@ -69,11 +73,18 @@ layout(binding=2) buffer MeasureCountersBuffer {
 
 layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
 
+/**
+ * Transforms a source vertex from mesh-local space into world space for screen-size LOD measurement.
+ */
 vec3 measure_world_position(vec3 local_position)
 {
 	return (model_matrix * vec4(local_position, 1.0)).xyz;
 }
 
+/**
+ * Estimates the tessellation LOD for an edge from its world-space length and distance to the camera.
+ * The result is expressed as desired segments based on approximate projected pixel length.
+ */
 float measure_raw_lod_for_edge_at_distance(float edge_length, float distance_to_camera)
 {
 	float safe_distance = max(distance_to_camera, 0.001);
@@ -83,6 +94,9 @@ float measure_raw_lod_for_edge_at_distance(float edge_length, float distance_to_
 	return max(pixel_length / max(target_pixels_per_segment, 1.0), 1.0);
 }
 
+/**
+ * Estimates the tessellation LOD for a world-space edge using the edge midpoint as the camera-distance sample.
+ */
 float measure_raw_lod_for_edge(vec3 a, vec3 b)
 {
 	vec3 midpoint = (a + b) * 0.5;
@@ -90,6 +104,10 @@ float measure_raw_lod_for_edge(vec3 a, vec3 b)
 	return measure_raw_lod_for_edge_at_distance(length(b - a), distance_to_camera);
 }
 
+/**
+ * measure_mesh_factor scans source triangles and records the highest adaptive factor needed by this mesh.
+ * The planner later uses this value for adaptive per-mesh tessellation.
+ */
 void main()
 {
 	uint source_triangle_index = uint(base_triangle_index) + gl_WorkGroupID.x;
@@ -159,11 +177,18 @@ const int TESS_MODE_FIXED = 0;
 const int TESS_MODE_ADAPTIVE_PER_MESH = 1;
 const int TESS_MODE_ADAPTIVE_PER_TRIANGLE = 2;
 
+/**
+ * Transforms a source vertex from mesh-local space into world space for patch planning.
+ */
 vec3 plan_world_position(vec3 local_position)
 {
 	return (model_matrix * vec4(local_position, 1.0)).xyz;
 }
 
+/**
+ * Estimates the tessellation LOD for an edge from its world-space length and distance to the camera.
+ * The result is expressed as desired segments based on approximate projected pixel length.
+ */
 float plan_raw_lod_for_edge_at_distance(float edge_length, float distance_to_camera)
 {
 	float safe_distance = max(distance_to_camera, 0.001);
@@ -173,6 +198,9 @@ float plan_raw_lod_for_edge_at_distance(float edge_length, float distance_to_cam
 	return max(pixel_length / max(target_pixels_per_segment, 1.0), 1.0);
 }
 
+/**
+ * Estimates the tessellation LOD for a world-space edge using the edge midpoint as the camera-distance sample.
+ */
 float plan_raw_lod_for_edge(vec3 a, vec3 b)
 {
 	vec3 midpoint = (a + b) * 0.5;
@@ -180,6 +208,10 @@ float plan_raw_lod_for_edge(vec3 a, vec3 b)
 	return plan_raw_lod_for_edge_at_distance(length(b - a), distance_to_camera);
 }
 
+/**
+ * Finds the closest point on a triangle to the camera or another world-space sample point.
+ * Virtual patch planning uses this to account for large triangles whose closest point is not on an edge midpoint.
+ */
 vec3 plan_closest_point_on_triangle(vec3 point, vec3 a, vec3 b, vec3 c)
 {
 	vec3 ab = b - a;
@@ -226,6 +258,9 @@ vec3 plan_closest_point_on_triangle(vec3 point, vec3 a, vec3 b, vec3 c)
 	return a + ab * v + ac * w;
 }
 
+/**
+ * Rounds a positive segment request up to the next power of two for regular virtual-patch subdivision.
+ */
 uint plan_next_power_of_two(uint value)
 {
 	uint result = 1u;
@@ -236,6 +271,10 @@ uint plan_next_power_of_two(uint value)
 	return result;
 }
 
+/**
+ * Chooses how many virtual segments should split a source triangle before per-patch tessellation.
+ * Splitting is only enabled for adaptive per-triangle mode and is capped by the configured virtual patch depth.
+ */
 uint plan_split_segments(vec3 p0, vec3 p1, vec3 p2)
 {
 	if (tessellation_mode != TESS_MODE_ADAPTIVE_PER_TRIANGLE || virtual_patches_enabled == 0)
@@ -262,12 +301,19 @@ uint plan_split_segments(vec3 p0, vec3 p1, vec3 p2)
 	return min(plan_next_power_of_two(requested_segments), max_segments);
 }
 
+/**
+ * Converts a virtual-patch grid coordinate into UV coordinates inside the source triangle domain.
+ */
 vec2 plan_domain_grid_point(uint split_segments, uint row, uint col)
 {
 	float inv_segments = 1.0 / float(max(split_segments, 1u));
 	return vec2(float(col) * inv_segments, float(row) * inv_segments);
 }
 
+/**
+ * Builds the domain triangle for one virtual patch inside a split source triangle.
+ * The returned TessellationPatch carries only domain coordinates; the planner fills offsets, counts, and LODs later.
+ */
 TessellationPatch plan_virtual_patch_domain(uint split_segments, uint patch_index)
 {
 	uint row = 0u;
@@ -316,6 +362,9 @@ TessellationPatch plan_virtual_patch_domain(uint split_segments, uint patch_inde
 	return out_patch;
 }
 
+/**
+ * Interpolates a source-triangle position from UV coordinates in that triangle's barycentric domain.
+ */
 vec3 plan_source_position_from_domain(vec3 p0, vec3 p1, vec3 p2, vec2 uv)
 {
 	float b1 = uv.x;
@@ -324,6 +373,10 @@ vec3 plan_source_position_from_domain(vec3 p0, vec3 p1, vec3 p2, vec2 uv)
 	return p0 * b0 + p1 * b1 + p2 * b2;
 }
 
+/**
+ * Fills a planned patch with edge LODs, tessellation factor, and generated vertex/index counts.
+ * Fixed and per-mesh modes use uniform factors, while per-triangle mode measures each patch domain edge.
+ */
 void plan_fill_patch_lods(inout TessellationPatch out_patch, vec3 source_p0, vec3 source_p1, vec3 source_p2)
 {
 	uint max_factor_u = uint(clamp(max_factor, 1, 31));
@@ -363,6 +416,10 @@ void plan_fill_patch_lods(inout TessellationPatch out_patch, vec3 source_p0, vec
 	out_patch.index_count = tess_index_count_for_factor(out_patch.tess_factor);
 }
 
+/**
+ * plan_patches emits TessellationPatch records for source triangles or their virtual subpatches.
+ * It atomically reserves generated buffer ranges and marks overflow when the configured budgets are exceeded.
+ */
 void main()
 {
 	uint source_triangle_index = uint(base_triangle_index) + gl_WorkGroupID.x;
@@ -463,6 +520,10 @@ layout(binding=4) readonly buffer GpuEmitCountersBuffer {
 
 layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
 
+/**
+ * emit_vertices_gpu builds the generated vertex grid for each planned patch.
+ * It remaps patch-local barycentrics through the patch domain, applies edge LOD morphing, and writes interpolated vertex attributes.
+ */
 void main()
 {
 	uint patch_index = uint(base_index) + gl_WorkGroupID.x;
@@ -551,6 +612,10 @@ layout(binding=3) readonly buffer GpuIndexCountersBuffer {
 
 layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
 
+/**
+ * emit_indices_gpu writes triangle and wireframe index buffers for each generated patch grid.
+ * Each patch produces tess_factor * tess_factor small triangles in the same compact grid ordering used by vertex emission.
+ */
 void main()
 {
 	uint patch_index = uint(base_index) + gl_WorkGroupID.x;
