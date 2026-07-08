@@ -1,5 +1,6 @@
 
 /game/bin/*
+/game2/bin/*
 /compiled_schemas/*
 /flatbuffers/build/*
 /__pycache__/*
@@ -9,3 +10,10 @@
 
 # Blender backup files
 *.blend1
+
+# PyCache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+

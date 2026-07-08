@@ -3,6 +3,7 @@
 # Running ./build.sh builds native blender integration by default, then builds and runs game in parallel after schema generation
 # Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
 # Running ./build.sh game only rebuilds the game and runs it
+# Passing -game2 uses the Vulkan game (game2/) instead of game/ in any of the above modes
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 BASE_DIR="${SCRIPT_DIR##*/}"
@@ -20,6 +21,8 @@ esac
 echo OS is ${OS}
 
 BUILD_ONLY_GAME=false
+GAME_DIR=game
+GAME_BRANCH_LABEL=Game
 BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
 NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
@@ -244,8 +247,8 @@ run_blender_side_build_and_launch() {
 }
 
 run_game_build_and_launch() {
-	cd "$SCRIPT_DIR/game" || return
-	log_build "Game branch: building and launching game"
+	cd "$SCRIPT_DIR/$GAME_DIR" || return
+	log_build "$GAME_BRANCH_LABEL branch: building and launching $GAME_DIR"
 	./build.sh "$OS"
 }
 
@@ -581,6 +584,11 @@ while [[ $# -gt 0 ]]; do
     	BUILD_ONLY_GAME=true
     	shift # past argument
     	;;
+    -game2|--game2)
+    	GAME_DIR=game2
+    	GAME_BRANCH_LABEL=Game2
+    	shift # past argument
+    	;;
     -python|--python)
 		set_blender_build_mode python
     	shift # past argument
@@ -624,6 +632,6 @@ if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
 	exit 0
 fi
 
-start_parallel_branch "Game" run_game_build_and_launch || exit
+start_parallel_branch "$GAME_BRANCH_LABEL" run_game_build_and_launch || exit
 start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
 wait_for_parallel_branches
