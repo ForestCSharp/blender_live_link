@@ -7,21 +7,19 @@
 #include "render/frame_data.h"
 #include "game_object/mesh.h"
 
-// Simple forward pass: camera + sun come from the per-frame UBO, per-object
-// transforms from the ObjectData snapshot SSBO, materials/textures via the
-// bindless bindings (all descriptor set 0); each draw pushes its object
-// index + skin matrix arena offset. Static and skinned pipeline variants
-// share the frag shader and pipeline layout. Future passes (shadows, GI,
-// etc.) get their own files like game/src/render/*_pass.h.
+// Deferred geometry pass: writes the 4-attachment G-buffer (see
+// geometry.frag for the layout). Same descriptor set 0 (layout A) and push
+// constants as the old forward pass; materials/bindless textures are baked
+// into the G-buffer here and consumed by the lighting pass.
 
-struct ForwardPassPushConstants
+struct GeometryPassPushConstants
 {
 	i32 object_index;
 	i32 skin_matrix_offset;	// arena offset for skinned draws; ignored otherwise
 };
-static_assert(sizeof(ForwardPassPushConstants) == 8, "Push constants: object index + skin matrix arena offset");
+static_assert(sizeof(GeometryPassPushConstants) == 8, "Push constants: object index + skin matrix arena offset");
 
-struct ForwardPass
+struct GeometryPass
 {
 	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
@@ -31,14 +29,13 @@ struct ForwardPass
 	VkPipeline bound_pipeline = VK_NULL_HANDLE;
 };
 
-static ForwardPass forward_pass;
+static GeometryPass geometry_pass;
 
-// Builds one forward pipeline variant. Skinned adds vertex buffer binding 1
-// (SkinnedVertex: joint indices + weights, attrs 3/4).
-static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
+// Builds one geometry pipeline variant (static or skinned vertex input)
+static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
 {
 	VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vertex_shader_path);
-	VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/forward.frag.spv");
+	VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/geometry.frag.spv");
 
 	VkPipelineShaderStageCreateInfo shader_stages[] = {
 		{
@@ -110,19 +107,15 @@ static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* i
 	// CULL_NONE: game/ parity (geometry_pass.h uses SG_CULLMODE_NONE)
 	VkPipelineRasterizationStateCreateInfo rasterization = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.depthClampEnable = VK_FALSE,
-		.rasterizerDiscardEnable = VK_FALSE,
 		.polygonMode = VK_POLYGON_MODE_FILL,
 		.cullMode = VK_CULL_MODE_NONE,
 		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-		.depthBiasEnable = VK_FALSE,
 		.lineWidth = 1.0f,
 	};
 
 	VkPipelineMultisampleStateCreateInfo multisampling = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-		.sampleShadingEnable = VK_FALSE,
 	};
 
 	VkPipelineDepthStencilStateCreateInfo depth_stencil = {
@@ -130,28 +123,36 @@ static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* i
 		.depthTestEnable = VK_TRUE,
 		.depthWriteEnable = VK_TRUE,
 		.depthCompareOp = Render::DEPTH_COMPARE_OP,
-		.depthBoundsTestEnable = VK_FALSE,
-		.stencilTestEnable = VK_FALSE,
 	};
 
-	VkPipelineColorBlendAttachmentState color_blend_attachment = {
-		.blendEnable = VK_FALSE,
-		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
-						| VK_COLOR_COMPONENT_G_BIT
-						| VK_COLOR_COMPONENT_B_BIT
-						| VK_COLOR_COMPONENT_A_BIT,
-	};
+	VkPipelineColorBlendAttachmentState color_blend_attachments[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 attachment_idx = 0; attachment_idx < Render::GBUFFER_OUTPUT_COUNT; ++attachment_idx)
+	{
+		color_blend_attachments[attachment_idx] = (VkPipelineColorBlendAttachmentState) {
+			.blendEnable = VK_FALSE,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
+							| VK_COLOR_COMPONENT_G_BIT
+							| VK_COLOR_COMPONENT_B_BIT
+							| VK_COLOR_COMPONENT_A_BIT,
+		};
+	}
 
 	VkPipelineColorBlendStateCreateInfo color_blending = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		.attachmentCount = 1,
-		.pAttachments = &color_blend_attachment,
+		.attachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pAttachments = color_blend_attachments,
 	};
+
+	VkFormat color_formats[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 format_idx = 0; format_idx < Render::GBUFFER_OUTPUT_COUNT; ++format_idx)
+	{
+		color_formats[format_idx] = Render::GBUFFER_FORMAT;
+	}
 
 	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &Render::SCENE_COLOR_FORMAT,
+		.colorAttachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pColorAttachmentFormats = color_formats,
 		.depthAttachmentFormat = Render::SCENE_DEPTH_FORMAT,
 	};
 
@@ -168,7 +169,7 @@ static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* i
 		.pDepthStencilState = &depth_stencil,
 		.pColorBlendState = &color_blending,
 		.pDynamicState = &dynamic_state,
-		.layout = forward_pass.pipeline_layout,
+		.layout = geometry_pass.pipeline_layout,
 		.renderPass = VK_NULL_HANDLE,
 	};
 
@@ -181,12 +182,12 @@ static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* i
 	return pipeline;
 }
 
-void forward_pass_init(VulkanContext* ctx)
+void geometry_pass_init(VulkanContext* ctx)
 {
 	VkPushConstantRange push_constant_range = {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
 		.offset = 0,
-		.size = sizeof(ForwardPassPushConstants),
+		.size = sizeof(GeometryPassPushConstants),
 	};
 
 	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
@@ -197,59 +198,53 @@ void forward_pass_init(VulkanContext* ctx)
 		.pPushConstantRanges = &push_constant_range,
 	};
 
-	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &forward_pass.pipeline_layout));
+	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &geometry_pass.pipeline_layout));
 
-	forward_pass.pipeline = forward_pass_create_pipeline(ctx, "bin/shaders/forward.vert.spv", /*in_skinned*/ false);
-	forward_pass.skinned_pipeline = forward_pass_create_pipeline(ctx, "bin/shaders/forward_skinned.vert.spv", /*in_skinned*/ true);
+	geometry_pass.pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry.vert.spv", /*in_skinned*/ false);
+	geometry_pass.skinned_pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry_skinned.vert.spv", /*in_skinned*/ true);
 }
 
-// Binds the per-frame descriptor set and resets the pipeline tracker. Called
-// inside the framework's execute callback (render begin/end, viewport, and
-// target transitions are the framework's job).
-void forward_pass_bind(VulkanContext* ctx)
+void geometry_pass_bind(VulkanContext* ctx)
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
-	forward_pass.bound_pipeline = VK_NULL_HANDLE;
+	geometry_pass.bound_pipeline = VK_NULL_HANDLE;
 
 	vkCmdBindDescriptorSets(
 		command_buffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		forward_pass.pipeline_layout,
+		geometry_pass.pipeline_layout,
 		0, 1, &frame_data.per_frame_sets[ctx->frame_index],
 		0, nullptr
 	);
 }
 
-// Lazy GPU buffer creation happens here, on the main thread (mirrors game/'s
-// pattern where the first draw after a live-link update creates buffers)
-void forward_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
+// Lazy GPU buffer creation happens here, on the main thread
+void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
 	const bool skinned = in_mesh.has_skinned_vertices;
 	if (skinned && in_mesh.skin_matrix_arena_offset < 0)
 	{
-		// Animation update didn't pack this mesh this frame — skip rather
-		// than index a stale arena layout
 		return;
 	}
 
-	VkPipeline wanted_pipeline = skinned ? forward_pass.skinned_pipeline : forward_pass.pipeline;
-	if (forward_pass.bound_pipeline != wanted_pipeline)
+	VkPipeline wanted_pipeline = skinned ? geometry_pass.skinned_pipeline : geometry_pass.pipeline;
+	if (geometry_pass.bound_pipeline != wanted_pipeline)
 	{
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
-		forward_pass.bound_pipeline = wanted_pipeline;
+		geometry_pass.bound_pipeline = wanted_pipeline;
 	}
 
-	ForwardPassPushConstants push_constants = {
+	GeometryPassPushConstants push_constants = {
 		.object_index = in_object_index,
 		.skin_matrix_offset = skinned ? in_mesh.skin_matrix_arena_offset : -1,
 	};
 
 	vkCmdPushConstants(
 		command_buffer,
-		forward_pass.pipeline_layout,
+		geometry_pass.pipeline_layout,
 		VK_SHADER_STAGE_VERTEX_BIT,
 		0,
 		sizeof(push_constants),
@@ -272,9 +267,9 @@ void forward_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_ind
 	vkCmdDrawIndexed(command_buffer, in_mesh.index_count, 1, 0, 0, 0);
 }
 
-void forward_pass_shutdown(VulkanContext* ctx)
+void geometry_pass_shutdown(VulkanContext* ctx)
 {
-	vkDestroyPipeline(ctx->device, forward_pass.skinned_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, forward_pass.pipeline, nullptr);
-	vkDestroyPipelineLayout(ctx->device, forward_pass.pipeline_layout, nullptr);
+	vkDestroyPipeline(ctx->device, geometry_pass.skinned_pipeline, nullptr);
+	vkDestroyPipeline(ctx->device, geometry_pass.pipeline, nullptr);
+	vkDestroyPipelineLayout(ctx->device, geometry_pass.pipeline_layout, nullptr);
 }

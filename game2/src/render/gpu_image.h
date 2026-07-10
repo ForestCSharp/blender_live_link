@@ -12,17 +12,27 @@ struct GpuImageDesc
 	VkFormat format;
 	VkImageUsageFlags usage;
 	VkImageAspectFlags aspect;
+	u32 array_layers = 1;	// > 1 = 2D array (per-layer attachment views + array sampled view)
 };
 
 struct GpuImage
 {
 	VkImage image = VK_NULL_HANDLE;
+
+	// Whole-image view: 2D for single-layer images, 2D_ARRAY when layered
+	// (this is what gets sampled)
 	VkImageView view = VK_NULL_HANDLE;
+
+	// Per-layer 2D views for rendering into individual slices (layered only)
+	StretchyBuffer<VkImageView> layer_views;
+
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	VkExtent2D extent = {};
+	u32 array_layers = 1;
 
 	// Tracked so gpu_image_transition can derive correct src barriers
+	// (transitions always span all layers)
 	VkImageLayout current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
@@ -120,7 +130,7 @@ void gpu_image_transition(
 			.baseMipLevel = 0,
 			.levelCount = 1,
 			.baseArrayLayer = 0,
-			.layerCount = 1,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,	// transitions span all layers
 		},
 	};
 
@@ -136,9 +146,12 @@ void gpu_image_transition(
 
 GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const GpuImageDesc& in_desc)
 {
+	const u32 array_layers = MAX(in_desc.array_layers, 1u);
+
 	GpuImage result = {
 		.format = in_desc.format,
 		.extent = { in_desc.width, in_desc.height },
+		.array_layers = array_layers,
 	};
 
 	VkImageCreateInfo image_create_info = {
@@ -151,7 +164,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 			.depth = 1,
 		},
 		.mipLevels = 1,
-		.arrayLayers = 1,
+		.arrayLayers = array_layers,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = in_desc.usage,
@@ -175,24 +188,54 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 	VkImageViewCreateInfo image_view_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = result.image,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.viewType = array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
 		.format = in_desc.format,
 		.subresourceRange = {
 			.aspectMask = in_desc.aspect,
 			.baseMipLevel = 0,
 			.levelCount = 1,
 			.baseArrayLayer = 0,
-			.layerCount = 1,
+			.layerCount = array_layers,
 		},
 	};
 
 	VK_CHECK(vkCreateImageView(in_device, &image_view_create_info, nullptr, &result.view));
+
+	// Per-layer 2D views for slice rendering
+	if (array_layers > 1)
+	{
+		for (u32 layer_idx = 0; layer_idx < array_layers; ++layer_idx)
+		{
+			VkImageViewCreateInfo layer_view_create_info = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image = result.image,
+				.viewType = VK_IMAGE_VIEW_TYPE_2D,
+				.format = in_desc.format,
+				.subresourceRange = {
+					.aspectMask = in_desc.aspect,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = layer_idx,
+					.layerCount = 1,
+				},
+			};
+			VkImageView layer_view = VK_NULL_HANDLE;
+			VK_CHECK(vkCreateImageView(in_device, &layer_view_create_info, nullptr, &layer_view));
+			result.layer_views.add(layer_view);
+		}
+	}
 
 	return result;
 }
 
 void gpu_image_destroy(VmaAllocator in_allocator, VkDevice in_device, GpuImage& in_image)
 {
+	for (VkImageView layer_view : in_image.layer_views)
+	{
+		vkDestroyImageView(in_device, layer_view, nullptr);
+	}
+	in_image.layer_views.reset();
+
 	if (in_image.view != VK_NULL_HANDLE)
 	{
 		vkDestroyImageView(in_device, in_image.view, nullptr);

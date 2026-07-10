@@ -11,23 +11,26 @@ layout(location = 4) in vec4 in_joint_weights;
 layout(push_constant) uniform PushConstants
 {
 	int object_index;
-	int skin_matrix_offset;	// this mesh's base offset in the arena
+	int skin_matrix_offset;
 } pc;
 
-layout(location = 0) out vec3 out_world_normal;
-layout(location = 1) out vec2 out_texcoord;
-layout(location = 2) flat out int out_material_index;
+layout(location = 0) out vec4 out_world_position;
+layout(location = 1) out vec4 out_world_normal;
+layout(location = 2) out vec2 out_texcoord;
+layout(location = 3) flat out int out_material_index;
 
 void main()
 {
 	ObjectData obj = object_data_array[pc.object_index];
 
 	mat4 skin_matrix = get_skin_matrix(pc.skin_matrix_offset, in_joint_indices, in_joint_weights);
-	vec4 skinned_position = skin_matrix * vec4(in_position.xyz, 1.0);
-	vec3 skinned_normal = normalize((skin_matrix * vec4(in_normal.xyz, 0.0)).xyz);
+	vec4 skinned_position = skin_matrix * in_position;
+	vec4 skinned_normal = vec4(normalize((skin_matrix * vec4(in_normal.xyz, 0.0)).xyz), 0.0);
 
-	gl_Position = per_frame.view_projection * obj.model_matrix * vec4(skinned_position.xyz, 1.0);
-	out_world_normal = normalize(mat3(obj.rotation_matrix) * skinned_normal);
+	out_world_position = obj.model_matrix * skinned_position;
+	out_world_normal = obj.rotation_matrix * skinned_normal;
 	out_texcoord = in_texcoord;
 	out_material_index = obj.material_index;
+
+	gl_Position = per_frame.view_projection * out_world_position;
 }

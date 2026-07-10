@@ -91,6 +91,7 @@ from. Ordered roughly by suggested sequence — early items unblock later ones.
       **skin-matrix arena** (triple-buffered ring like the snapshot; no
       per-mesh skin buffers — game2's mapped stream buffers would race
       frames in flight). In-shader skinning via `forward_skinned.vert`
+      — renamed `geometry_skinned.vert` in Phase 3a —
       (vertex buffer 1 = SkinnedVertex, `get_skin_matrix` weighted blend,
       push-constant arena offset). Verified: identity clip renders
       byte-identical to a static mesh; translated clip offsets it.
@@ -126,22 +127,55 @@ registration; per-pass files in `game/src/render/`, shaders in
 `game/data/shaders/*.glsl`). Each needs its GLSL rewritten as plain
 Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
 
-- [ ] Geometry pass (G-buffer) — `geometry_pass.h`, `geometry.glsl`,
-      `geometry_mesh_draw.h`, `culling.h`. Replaces/absorbs the scaffold
-      `forward_pass.h`.
-- [ ] Lighting pass — `lighting_pass.h`, `lighting.glsl` (+ `brdf.h`);
-      point/spot/sun light buffers (`state.lighting` in `state.h`).
-- [ ] Tonemapping pass — `tonemapping.glsl` (scene HDR color → swapchain).
-      Worth porting right after lighting so output looks right.
-- [ ] Cascaded shadow maps — `shadow_depth_pass.h` (depth-only pass over
-      shadow casters), `shadow_blur_pass.h` (separable blur),
-      `shadow_cascade_debug_pass.h`, `radial_depth.glsl`.
+### Phase 3a — deferred core  ✅ (2026-07-10)
+
+- [x] Reverse-Z (game/ `USE_INVERSE_DEPTH` parity): `mat4_perspective`
+      near/far swap, GREATER_OR_EQUAL, depth clear 0.0, fullscreen far
+      quads at z=0, shadow ortho far/near swap. Visual no-op vs goldens.
+- [x] Geometry pass (G-buffer) — 4× RGBA32F MRTs (base/emission color,
+      world pos w=1-valid, world normal vec4(0)=sky sentinel,
+      roughness/metallic/emission-strength) + D32, bindless texture reads
+      baked in. Missing material renders LIT grey (deviation from game/'s
+      magenta+sentinel). Replaced the scaffold `forward_pass.h` (deleted).
+- [x] Lighting pass — cook-torrance `brdf.h` port, point/spot/sun light
+      SSBOs as **3-deep ring buffers** (`state.lighting`, rebuilt when
+      dirty, uploaded every frame), descriptor layout C (fs_params UBO +
+      4 G-buffer CIS + shadow moments array CIS + 3 light SSBOs).
+      fs_params keeps game/'s full `lighting_fs_params_t` byte layout
+      (GI/SSAO/SSS toggles forced 0 until 3b/3c).
+- [x] Tonemapping pass — Reinhard + `exposure_bias` push constant,
+      BGRA8_SRGB offscreen target sampled by the copy pass.
+- [x] Sky — `sky_atmosphere.h` + `octahedral_helpers.h` ports, 256²
+      RGBA32F octahedral bake cached on sun-direction change, composite
+      drawn inside the geometry pass at the far plane (4-MRT sentinel
+      write). Lighting passes sky color through via the normal sentinel;
+      tonemapping applies (deviation: game/ composites sky after tonemap).
+- [x] Cascaded EVSM shadow maps — `shadow_depth_pass.h` port (Frustum
+      placement mode, exponential-doubling splits, sphere-bounded frustum
+      fit, no texel snapping), RenderPass **Array** type (layered
+      2048²×4 RGBA16F moments + per-layer attachment views),
+      `compute_cascade_matrices` on the CPU before the fs_params upload,
+      EVSM4 warp/chebyshev sampling in `lighting.frag` (always compiled
+      with `-DSHADOWS_ENABLED`).
+- [x] CPU frustum culling — `culling.h` port wired into geometry + shadow
+      cascade draws (skinned meshes bypass the frustum test, game/ parity).
+- [x] Shadow moments separable blur — `shadow_blur_pass.h` port (21-tap
+      gaussian, horizontal intermediate + vertical final Array passes,
+      `state.shadow.blur_enable` default true like game/). This is what
+      makes EVSM shadows soft — chebyshev over raw moments is near-binary.
+      Note: game2 re-renders + re-blurs every frame (~4.5ms of GPU on
+      M2 Max at 2048²×3 cascades); game/ caches the blur until the shadow
+      map re-renders — port that caching with the 3b shadow polish.
+
+### Phase 3b — post effects & shadow polish
+
+- [ ] Shadow polish — blur/shadow-map caching (`has_valid_shadow_blur` +
+      re-render-on-change, see 3a blur note), `shadow_cascade_debug_pass.h`,
+      `radial_depth.glsl`, CenteredSquares cascade placement mode.
 - [ ] SSAO + SSAO blur — ssao pass desc (`game/src/main.cpp:1485-1560`),
       `ssao.glsl`, `ssao_constants.h`, shared `blur_pass.h`.
 - [ ] Screen-space shadows — `screen_space_shadows_pass.h`,
       `screen_space_shadows.glsl`.
-- [ ] Sky — `sky_pass.h`, `sky_pass.glsl`, `sky_bake.glsl`,
-      `sky_atmosphere.h` (SkyBakePass renders sky to probes too).
 - [ ] Height fog pass — `fog_pass.h`, `fog.glsl` (+ fog controller from
       Phase 2, sun direction plumbing `game/src/main.cpp:655-663`).
 - [ ] DOF combine — pass desc at `game/src/main.cpp:1573-1594`,
@@ -151,20 +185,21 @@ Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
 - [ ] Temporal AA — `temporal_aa_pass.h`, `temporal_aa.glsl`, projection
       jitter (`game/src/main.cpp:2975-2988`).
 - [ ] FXAA — `fxaa_pass.h`, `fxaa.glsl`.
-- [ ] Copy-to-swapchain pass (`game/src/main.cpp:1641-1662`,
-      `overlay_texture.glsl`) — needed once the chain renders offscreen at
-      render scale instead of straight to the swapchain.
+
+### Phase 3c — GI & tessellation
+
 - [ ] GI system — `gi.h` (probe grid, octahedral encoding:
-      `octahedral_helpers.h`, `cubemap_to_octahedral.glsl`,
+      `octahedral_helpers.h` shipped with 3a, `cubemap_to_octahedral.glsl`,
       `probe_radiance_projection.glsl`, `gi_helpers.h`),
-      `lighting_capture.h` (cubemap captures), `gi_debug_pass.h` +
-      `gi_debug.glsl` + probe picking (`pick_isolated_gi_probe`,
-      `game/src/main.cpp:3755`). Biggest single item; depends on most of
-      the chain above.
+      `lighting_capture.h` (cubemap captures — needs the RenderPass
+      Cubemap type), `gi_debug_pass.h` + `gi_debug.glsl` + probe picking
+      (`pick_isolated_gi_probe`, `game/src/main.cpp:3755`). Biggest single
+      item; depends on most of the chain above.
 - [ ] GPU tessellation — `tessellation.h` (compute-based, GPU slots +
       counter readbacks), `tessellation.glsl`, `tessellation_common.h`,
       `TessellatedGeometry` on `Mesh`, `mesh_get_render_view` indirection.
       Needs a `sg_buffer_readback` equivalent (buffer → host readback).
+      GPU skinning compute pass (deferred from Phase 2) lands here too.
 
 ## Phase 4 — debug UI & tooling
 

@@ -66,19 +66,45 @@ struct RenderPass
 {
 	RenderPassDesc desc = {};
 
-	// One image per color output (Single); Multi/Array/Cubemap grow this in Phase 3
+	// One image per color output. Array passes allocate a single layered
+	// image per output (pass_count layers, per-layer attachment views).
 	StretchyBuffer<GpuImage> color_outputs;
 	optional<GpuImage> depth_output;
 
 	i32 current_width = -1;
 	i32 current_height = -1;
 
+	// Renders only the first N slices of an Array pass this frame
+	// (game/'s set_pass_count_override; -1 = all)
+	i32 pass_count_override = -1;
+
 	void validate_desc()
 	{
 		const bool has_any_output = desc.num_outputs > 0 || desc.depth_output.format != VK_FORMAT_UNDEFINED;
 		assert(has_any_output || desc.type == ERenderPassType::Swapchain);
 		assert(desc.num_outputs <= RENDER_PASS_MAX_COLOR_OUTPUTS);
-		assert(desc.type == ERenderPassType::Single || desc.type == ERenderPassType::Swapchain); // Multi/Array/Cubemap: Phase 3
+		assert(desc.type == ERenderPassType::Single
+			|| desc.type == ERenderPassType::Swapchain
+			|| desc.type == ERenderPassType::Array);	// Multi/Cubemap: later phases
+		assert(desc.type != ERenderPassType::Array || desc.pass_count >= 1);
+	}
+
+	i32 get_pass_count() const
+	{
+		if (desc.type != ERenderPassType::Array)
+		{
+			return 1;
+		}
+		if (pass_count_override >= 0)
+		{
+			return MIN(pass_count_override, desc.pass_count);
+		}
+		return desc.pass_count;
+	}
+
+	void set_pass_count_override(i32 in_count)
+	{
+		pass_count_override = in_count;
 	}
 
 	void release_targets()
@@ -103,6 +129,8 @@ struct RenderPass
 			return;
 		}
 
+		const u32 array_layers = desc.type == ERenderPassType::Array ? (u32) desc.pass_count : 1u;
+
 		for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 		{
 			color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
@@ -113,6 +141,7 @@ struct RenderPass
 					   | VK_IMAGE_USAGE_SAMPLED_BIT
 					   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 				.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+				.array_layers = array_layers,
 			}));
 		}
 
@@ -124,6 +153,7 @@ struct RenderPass
 				.format = desc.depth_output.format,
 				.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 				.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.array_layers = array_layers,
 			});
 		}
 	}
@@ -188,6 +218,7 @@ struct RenderPass
 	// Transitions outputs, begins dynamic rendering with the declared
 	// attachments, sets the Y-flipped viewport + scissor, runs the callback,
 	// ends rendering. The callback binds its own pipeline/sets and draws.
+	// Array passes loop once per slice (callback receives the slice index).
 	void execute(VulkanContext* ctx, const std::function<void(i32)>& in_callback)
 	{
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
@@ -196,9 +227,11 @@ struct RenderPass
 		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
 
 		const bool is_swapchain = desc.type == ERenderPassType::Swapchain;
+		const bool is_array = desc.type == ERenderPassType::Array;
 
 		// Own outputs -> attachment layouts (before BeginRendering; the
-		// swapchain image was already transitioned by begin_frame)
+		// swapchain image was already transitioned by begin_frame).
+		// Transitions span all layers.
 		if (!is_swapchain)
 		{
 			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
@@ -217,85 +250,90 @@ struct RenderPass
 			? ctx->swapchain_extent
 			: (VkExtent2D) { (u32) current_width, (u32) current_height };
 
-		VkRenderingAttachmentInfo color_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
-		u32 color_attachment_count = 0;
+		const i32 pass_count = get_pass_count();
+		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
+		{
+			VkRenderingAttachmentInfo color_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
+			u32 color_attachment_count = 0;
 
-		if (is_swapchain)
-		{
-			// Swapchain passes render straight to the acquired image. Ops come
-			// from outputs[0] when declared, else overwrite-everything defaults.
-			const RenderPassOutputDesc& output_desc = desc.outputs[0];
-			color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
-				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.loadOp = desc.num_outputs > 0 ? output_desc.load_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-				.storeOp = desc.num_outputs > 0 ? output_desc.store_op : VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = output_desc.clear_value,
-			};
-		}
-		else
-		{
-			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			if (is_swapchain)
 			{
+				// Swapchain passes render straight to the acquired image. Ops
+				// come from outputs[0] when declared, else overwrite defaults.
+				const RenderPassOutputDesc& output_desc = desc.outputs[0];
 				color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = color_outputs[output_idx].view,
+					.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
 					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.loadOp = desc.outputs[output_idx].load_op,
-					.storeOp = desc.outputs[output_idx].store_op,
-					.clearValue = desc.outputs[output_idx].clear_value,
+					.loadOp = desc.num_outputs > 0 ? output_desc.load_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.storeOp = desc.num_outputs > 0 ? output_desc.store_op : VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = output_desc.clear_value,
 				};
 			}
-		}
+			else
+			{
+				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+				{
+					GpuImage& output_image = color_outputs[output_idx];
+					color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+						.imageView = is_array ? output_image.layer_views[pass_idx] : output_image.view,
+						.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.loadOp = desc.outputs[output_idx].load_op,
+						.storeOp = desc.outputs[output_idx].store_op,
+						.clearValue = desc.outputs[output_idx].clear_value,
+					};
+				}
+			}
 
-		VkRenderingAttachmentInfo depth_attachment = {};
-		if (depth_output.has_value())
-		{
-			depth_attachment = (VkRenderingAttachmentInfo) {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = depth_output->view,
-				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-				.loadOp = desc.depth_output.load_op,
-				.storeOp = desc.depth_output.store_op,
-				.clearValue = desc.depth_output.clear_value,
+			VkRenderingAttachmentInfo depth_attachment = {};
+			if (depth_output.has_value())
+			{
+				depth_attachment = (VkRenderingAttachmentInfo) {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = is_array ? depth_output->layer_views[pass_idx] : depth_output->view,
+					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.loadOp = desc.depth_output.load_op,
+					.storeOp = desc.depth_output.store_op,
+					.clearValue = desc.depth_output.clear_value,
+				};
+			}
+
+			VkRenderingInfo rendering_info = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = {
+					.offset = { 0, 0 },
+					.extent = render_extent,
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = color_attachment_count,
+				.pColorAttachments = color_attachment_count > 0 ? color_attachments : nullptr,
+				.pDepthAttachment = depth_output.has_value() ? &depth_attachment : nullptr,
 			};
-		}
 
-		VkRenderingInfo rendering_info = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-			.renderArea = {
+			vkCmdBeginRendering(command_buffer, &rendering_info);
+
+			// Uniform Y-flip convention across all passes
+			VkViewport flipped_viewport = {
+				.x = 0.0f,
+				.y = (f32) render_extent.height,
+				.width = (f32) render_extent.width,
+				.height = -(f32) render_extent.height,
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f,
+			};
+			vkCmdSetViewport(command_buffer, 0, 1, &flipped_viewport);
+
+			VkRect2D scissor = {
 				.offset = { 0, 0 },
 				.extent = render_extent,
-			},
-			.layerCount = 1,
-			.colorAttachmentCount = color_attachment_count,
-			.pColorAttachments = color_attachment_count > 0 ? color_attachments : nullptr,
-			.pDepthAttachment = depth_output.has_value() ? &depth_attachment : nullptr,
-		};
+			};
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-		vkCmdBeginRendering(command_buffer, &rendering_info);
+			in_callback(pass_idx);
 
-		// Uniform Y-flip convention across all passes
-		VkViewport flipped_viewport = {
-			.x = 0.0f,
-			.y = (f32) render_extent.height,
-			.width = (f32) render_extent.width,
-			.height = -(f32) render_extent.height,
-			.minDepth = 0.0f,
-			.maxDepth = 1.0f,
-		};
-		vkCmdSetViewport(command_buffer, 0, 1, &flipped_viewport);
-
-		VkRect2D scissor = {
-			.offset = { 0, 0 },
-			.extent = render_extent,
-		};
-		vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-
-		in_callback(0);
-
-		vkCmdEndRendering(command_buffer);
+			vkCmdEndRendering(command_buffer);
+		}
 
 		gpu_timestamps_end_scope(ctx, gpu_timing_slot);
 	}

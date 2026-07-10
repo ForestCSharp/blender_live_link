@@ -46,7 +46,12 @@ using std::optional;
 #include "render/gpu_buffer.h"
 #include "game_object/game_object.h"
 #include "state/state.h"
-#include "render/forward_pass.h"
+#include "render/geometry_pass.h"
+#include "render/shadow_depth_pass.h"
+#include "render/shadow_blur_pass.h"
+#include "render/lighting_pass.h"
+#include "render/tonemapping_pass.h"
+#include "render/sky_pass.h"
 #include "render/copy_to_swapchain_pass.h"
 
 // Key with no binding, used as the "no modifier" sentinel in the event macros
@@ -1022,6 +1027,11 @@ void live_link_drain_channels()
 				}
 			}
 
+			if (updated_object.has_light)
+			{
+				mark_lighting_dirty(state);
+			}
+
 			state.scene.objects[updated_object_uid] = updated_object;
 			scene_mark_indexes_dirty(state);
 		}
@@ -1032,6 +1042,10 @@ void live_link_drain_channels()
 			if (state.scene.objects.contains(deleted_object_uid))
 			{
 				printf("Removing object. UID: %i\n", deleted_object_uid);
+				if (state.scene.objects[deleted_object_uid].has_light)
+				{
+					mark_lighting_dirty(state);
+				}
 				object_cleanup(state.scene.objects[deleted_object_uid]);
 				state.scene.objects.erase(deleted_object_uid);
 				scene_mark_indexes_dirty(state);
@@ -1063,6 +1077,7 @@ void live_link_drain_channels()
 			state.scene.player_character_id.reset();
 			state.fog.active_fog_controller_id.reset();
 			state.fog.active = false;
+			mark_lighting_dirty(state);
 			scene_reset_indexes(state);
 			reset_materials();
 			reset_images();
@@ -1626,6 +1641,8 @@ void frame(f32 in_delta_time)
 		refresh_primary_sun_id();
 		refresh_active_fog_controller();
 		build_render_object_snapshot(state);
+		pack_lights(state);
+		upload_lights(state);
 	}
 
 	{
@@ -1654,13 +1671,15 @@ void frame(f32 in_delta_time)
 	const HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 	const HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
-	// Per-frame UBO. Sun sourced from the scene's primary sun; the fallback
-	// is the scaffold's original hardcoded sun (deliberate deviation from
-	// game/'s black fallback) so sunless scenes look unchanged.
+	// Per-frame UBO. Sun sourced from the scene's primary sun; the hardcoded
+	// fallback only drives the sky bake now (deviation from game/'s black
+	// fallback) — geometry lighting comes solely from the light buffers, so
+	// sunless scenes render unlit meshes under a daytime sky.
 	PerFrameData per_frame_data = {
 		.view = view_matrix,
 		.projection = projection_matrix,
 		.view_projection = view_projection_matrix,
+		.inv_view_projection = HMM_InvGeneralM4(view_projection_matrix),
 		.camera_position = HMM_V4V(camera.location, 1.0f),
 		.camera_forward = HMM_V4V(camera.forward, 0.0f),
 		.sun_direction = HMM_V4V(-HMM_NormV3(HMM_V3(0.3f, 0.5f, 0.8f)), 0.0f),
@@ -1676,7 +1695,8 @@ void frame(f32 in_delta_time)
 	}
 
 	// Descriptor writes happen before any of this frame's binds are recorded
-	RenderPass& forward_render_pass = get_render_pass(ERenderPass::Forward);
+	RenderPass& geometry_render_pass = get_render_pass(ERenderPass::Geometry);
+	RenderPass& lighting_render_pass = get_render_pass(ERenderPass::Lighting);
 	frame_data_update(
 		&state.vk,
 		per_frame_data,
@@ -1686,16 +1706,115 @@ void frame(f32 in_delta_time)
 		state.images.items.data(),
 		(i32) state.images.items.length()
 	);
-	frame_data_write_copy_input(&state.vk, forward_render_pass.get_color_output(0).view);
+	RenderPass& tonemapping_render_pass = get_render_pass(ERenderPass::Tonemapping);
+	frame_data_write_copy_input(&state.vk, tonemapping_render_pass.get_color_output(0).view);
+	tonemapping_pass_update(&state.vk, lighting_render_pass.get_color_output(0).view, frame_data.linear_sampler);
+	sky_pass_update(&state.vk);
 
-	// Forward: scene meshes -> offscreen HDR target at render resolution
-	forward_render_pass.execute(&state.vk, [&](i32)
+	// Re-bake the octahedral sky when the sun moved (records before the
+	// geometry pass, which samples it for the composite). The atmosphere
+	// wants the direction toward the sun — the negated light-travel
+	// direction (game/ sky_pass.h:96)
+	sky_pass_bake_if_needed(&state.vk, -per_frame_data.sun_direction.XYZ);
+
+	// Cascade matrices are CPU-side inputs to both the shadow draw and the
+	// lighting shader's receiver reprojection — compute before the fs_params
+	// upload below
+	ShadowDepthPass::compute_cascade_matrices(state, camera);
+
+	// Lighting fs_params: game/'s layout with GI/SSAO/SSS toggles forced 0
+	// (those systems port in 3b/3c)
+	LightingFsParams lighting_fs_params = {};
+	lighting_fs_params.view_position = camera.location;
+	lighting_fs_params.view_forward = camera.forward;
+	lighting_fs_params.num_point_lights = (i32) state.lighting.point_lights.length();
+	lighting_fs_params.num_spot_lights = (i32) state.lighting.spot_lights.length();
+	lighting_fs_params.num_sun_lights = (i32) state.lighting.sun_lights.length();
+	lighting_fs_params.direct_lighting_enable = 1;
+	lighting_fs_params.shadow_bias = state.shadow.shadow_bias;
+	lighting_fs_params.shadow_map_texel_size = HMM_V2(
+		1.0f / (f32) ShadowDepthPass::ShadowMapResolution,
+		1.0f / (f32) ShadowDepthPass::ShadowMapResolution
+	);
+	if (ShadowDepthPass::has_valid_shadow_map)
 	{
-		forward_pass_bind(&state.vk);
+		lighting_fs_params.shadow_map_enable = 1;
+		lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
+		lighting_fs_params.shadow_cascade_distances = HMM_V4(
+			ShadowDepthPass::cascade_distances[0],
+			ShadowDepthPass::cascade_distances[1],
+			ShadowDepthPass::cascade_distances[2],
+			ShadowDepthPass::cascade_distances[3]
+		);
+		for (i32 cascade_idx = 0; cascade_idx < MAX_SHADOW_CASCADES; ++cascade_idx)
+		{
+			lighting_fs_params.shadow_view_projections[cascade_idx] = ShadowDepthPass::shadow_view_projections[cascade_idx];
+		}
+	}
+
+	RenderPass& shadow_render_pass = get_render_pass(ERenderPass::ShadowDepth);
+	RenderPassEntry& shadow_blur_entry = get_render_pass_entry(ERenderPass::ShadowBlur);
+	// Lighting samples the blurred moments (soft penumbra) unless the blur is
+	// disabled — game/'s default is blurred
+	VkImageView shadow_moments_view = state.shadow.blur_enable
+		? shadow_blur_entry.final_pass().get_color_output(0).view
+		: shadow_render_pass.get_color_output(0).view;
+	lighting_pass_update(
+		&state.vk,
+		lighting_fs_params,
+		geometry_render_pass.color_outputs.data(),
+		shadow_moments_view,
+		state.lighting.point_buffers[state.lighting.buffer_index].get_gpu_buffer(),
+		state.lighting.spot_buffers[state.lighting.buffer_index].get_gpu_buffer(),
+		state.lighting.sun_buffers[state.lighting.buffer_index].get_gpu_buffer()
+	);
+
+	// Shadow cascades: one moments slice per active cascade. Skipped entirely
+	// without a valid shadow sun; the transition below still runs so the
+	// (cleared or stale) moments image is legal to have bound — the lighting
+	// shader only samples it when shadow_map_enable is set.
+	if (ShadowDepthPass::has_valid_shadow_map)
+	{
+		shadow_render_pass.set_pass_count_override(ShadowDepthPass::get_active_cascade_count(state));
+		shadow_render_pass.execute(&state.vk, [&](i32 in_cascade_idx)
+		{
+			ShadowDepthPass::render_cascade(&state.vk, state, in_cascade_idx);
+		});
+		shadow_render_pass.set_pass_count_override(-1);
+	}
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		shadow_render_pass.get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+
+	// Separable blur over the moments — the source of EVSM's soft penumbra.
+	// The final target's transition runs even when the blur is skipped so the
+	// (possibly stale/cleared) image bound to the lighting set stays legal.
+	if (ShadowDepthPass::has_valid_shadow_map && state.shadow.blur_enable)
+	{
+		ShadowBlurPass::execute_separable(
+			&state.vk,
+			shadow_blur_entry,
+			ShadowDepthPass::get_active_cascade_count(state)
+		);
+	}
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		shadow_blur_entry.final_pass().get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+
+	// Geometry: scene meshes -> G-buffer at render resolution, camera-frustum
+	// culled on the CPU (game/ parity; skinned meshes bypass the frustum test)
+	geometry_render_pass.execute(&state.vk, [&](i32)
+	{
+		geometry_pass_bind(&state.vk);
 
 		if (state.render_objects.valid)
 		{
-			for (i32 mesh_object_id : state.scene.indexes.mesh_object_ids)
+			CullResult cull_result = cull_objects(state, view_projection_matrix, 0.0f);
+			for (i32 mesh_object_id : cull_result.object_ids)
 			{
 				auto found = state.scene.objects.find(mesh_object_id);
 				if (found == state.scene.objects.end())
@@ -1704,19 +1823,50 @@ void frame(f32 in_delta_time)
 				}
 
 				Object& object = found->second;
-				if (object.visibility && object.render_object_index >= 0)
+				if (object.render_object_index >= 0)
 				{
-					forward_pass_draw_mesh(&state.vk, object.mesh, object.render_object_index);
+					geometry_pass_draw_mesh(&state.vk, object.mesh, object.render_object_index);
 				}
 			}
 		}
+
+		// Sky composite fills the background at the far plane
+		if (state.sky.rendering_enable)
+		{
+			sky_pass_draw_composite(&state.vk);
+		}
 	});
 
-	// Copy to swapchain: sample the scene color (transition before execute —
+	// Lighting reads the whole G-buffer (transitions before execute —
 	// barriers are illegal inside dynamic rendering)
+	for (i32 gbuffer_idx = 0; gbuffer_idx < Render::GBUFFER_OUTPUT_COUNT; ++gbuffer_idx)
+	{
+		gpu_image_transition(
+			state.vk.command_buffers[state.vk.frame_index],
+			geometry_render_pass.get_color_output(gbuffer_idx),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+	}
+	lighting_render_pass.execute(&state.vk, [&](i32)
+	{
+		lighting_pass_draw(&state.vk);
+	});
+
+	// Tonemapping reads the lit HDR scene color
 	gpu_image_transition(
 		state.vk.command_buffers[state.vk.frame_index],
-		forward_render_pass.get_color_output(0),
+		lighting_render_pass.get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+	tonemapping_render_pass.execute(&state.vk, [&](i32)
+	{
+		tonemapping_pass_draw(&state.vk, state.tonemapping.exposure_bias);
+	});
+
+	// Copy to swapchain samples the tonemapped LDR target
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		tonemapping_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
 	get_render_pass(ERenderPass::CopyToSwapchain).execute(&state.vk, [&](i32)
@@ -1786,7 +1936,12 @@ int main(int argc, char** argv)
 
 	vulkan_context_init(&state.vk, window);
 	frame_data_init(&state.vk);
-	forward_pass_init(&state.vk);
+	geometry_pass_init(&state.vk);
+	ShadowDepthPass::init(&state.vk);
+	ShadowBlurPass::init(&state.vk);
+	lighting_pass_init(&state.vk, frame_data.linear_sampler);
+	tonemapping_pass_init(&state.vk);
+	sky_pass_init(&state.vk);
 	copy_to_swapchain_pass_init(&state.vk);
 
 	// These buffers must exist even for empty scenes: descriptor set 0
@@ -1794,6 +1949,7 @@ int main(int argc, char** argv)
 	render_object_snapshot_ensure_capacity(state, 1);
 	init_materials_buffer(state);
 	skin_matrix_arena_ensure_capacity(state, 1);
+	init_lighting_buffers(state);
 
 	// Render-scale override for testing (percentage, 25..100)
 	if (const char* render_scale_env = getenv("GAME2_RENDER_SCALE"))
@@ -1802,14 +1958,98 @@ int main(int argc, char** argv)
 	}
 
 	// Register render passes and size their targets
-	get_render_pass_entry(ERenderPass::Forward).init_final((RenderPassDesc) {
+	// Fixed-size cascaded shadow map: one moments image with a layer per
+	// cascade. Clear {1,1,0,0} = "fully lit" EVSM moments so unrendered
+	// cascades never darken receivers.
+	get_render_pass_entry(ERenderPass::ShadowDepth).init_final((RenderPassDesc) {
+		.initial_width = ShadowDepthPass::ShadowMapResolution,
+		.initial_height = ShadowDepthPass::ShadowMapResolution,
+		.pass_count = MAX_SHADOW_CASCADES,
 		.num_outputs = 1,
 		.outputs = {
 			{
-				.format = Render::SCENE_COLOR_FORMAT,
+				.format = Render::SHADOW_MOMENTS_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				.clear_value = {{{ 1.0f, 1.0f, 0.0f, 0.0f }}},
+			},
+		},
+		.depth_output = {
+			.format = Render::SCENE_DEPTH_FORMAT,
+			.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.clear_value = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
+		},
+		.resize_with_window = false,
+		.type = ERenderPassType::Array,
+		.debug_label = "Shadow Depth",
+	});
+
+	// Separable moments blur: horizontal (intermediate) -> vertical (final),
+	// same layered layout as the shadow map, no depth
+	const auto make_shadow_blur_desc = [](const char* in_debug_label)
+	{
+		return (RenderPassDesc) {
+			.initial_width = ShadowDepthPass::ShadowMapResolution,
+			.initial_height = ShadowDepthPass::ShadowMapResolution,
+			.pass_count = MAX_SHADOW_CASCADES,
+			.num_outputs = 1,
+			.outputs = {
+				{
+					.format = Render::SHADOW_MOMENTS_FORMAT,
+					.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+					.clear_value = {{{ 1.0f, 1.0f, 0.0f, 0.0f }}},
+				},
+			},
+			.resize_with_window = false,
+			.type = ERenderPassType::Array,
+			.debug_label = in_debug_label,
+		};
+	};
+	get_render_pass_entry(ERenderPass::ShadowBlur).init_intermediate(make_shadow_blur_desc("Shadow Blur Horizontal"));
+	get_render_pass_entry(ERenderPass::ShadowBlur).init_final(make_shadow_blur_desc("Shadow Blur Vertical"));
+
+	// The blur's input sets are static: both source images are fixed-size and
+	// never recreated
+	ShadowBlurPass::init_sets(
+		&state.vk,
+		get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).view,
+		get_render_pass_entry(ERenderPass::ShadowBlur).intermediate_pass().get_color_output(0).view,
+		frame_data.linear_sampler
+	);
+
+	get_render_pass_entry(ERenderPass::Geometry).init_final((RenderPassDesc) {
+		.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
+		.outputs = {
+			// 0: base/emission color — sky-blue clear keeps empty scenes
+			// readable until the sky pass lands (game/ clears {0,0,0,1})
+			{
+				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 				.clear_value = {{{ 0.1f, 0.2f, 0.4f, 1.0f }}},
+			},
+			// 1: world position (w=1 valid)
+			{
+				.format = Render::GBUFFER_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				.clear_value = {{{ 0.0f, 0.0f, 0.0f, 0.0f }}},
+			},
+			// 2: world normal (vec4(0) = no-geometry sentinel)
+			{
+				.format = Render::GBUFFER_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				.clear_value = {{{ 0.0f, 0.0f, 0.0f, 0.0f }}},
+			},
+			// 3: roughness / metallic / emission strength
+			{
+				.format = Render::GBUFFER_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				.clear_value = {{{ 0.0f, 0.0f, 0.0f, 0.0f }}},
 			},
 		},
 		.depth_output = {
@@ -1819,7 +2059,33 @@ int main(int argc, char** argv)
 			.clear_value = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
 		},
 		.type = ERenderPassType::Single,
-		.debug_label = "Forward",
+		.debug_label = "Geometry",
+	});
+
+	get_render_pass_entry(ERenderPass::Lighting).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = Render::SCENE_COLOR_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "Lighting",
+	});
+
+	get_render_pass_entry(ERenderPass::Tonemapping).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = state.vk.surface_format.format,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "Tonemapping",
 	});
 
 	get_render_pass_entry(ERenderPass::CopyToSwapchain).init_final((RenderPassDesc) {
@@ -1908,8 +2174,20 @@ int main(int argc, char** argv)
 
 	jolt_shutdown();
 
+	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
+	{
+		state.lighting.point_buffers[buffer_idx].destroy_gpu_buffer();
+		state.lighting.spot_buffers[buffer_idx].destroy_gpu_buffer();
+		state.lighting.sun_buffers[buffer_idx].destroy_gpu_buffer();
+	}
+
 	copy_to_swapchain_pass_shutdown(&state.vk);
-	forward_pass_shutdown(&state.vk);
+	sky_pass_shutdown(&state.vk);
+	tonemapping_pass_shutdown(&state.vk);
+	lighting_pass_shutdown(&state.vk);
+	ShadowBlurPass::shutdown(&state.vk);
+	ShadowDepthPass::shutdown(&state.vk);
+	geometry_pass_shutdown(&state.vk);
 	frame_data_shutdown(&state.vk);
 	vulkan_context_shutdown(&state.vk);
 

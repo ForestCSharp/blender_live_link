@@ -32,6 +32,7 @@ struct PerFrameData
 	mat4 view;
 	mat4 projection;
 	mat4 view_projection;
+	mat4 inv_view_projection;	// sky ray reconstruction (TAA/fog reuse later)
 	vec4 camera_position;	// w unused
 	vec4 camera_forward;	// w unused
 	vec4 sun_direction;		// xyz = light travel direction; w unused
@@ -48,6 +49,43 @@ struct ObjectData
 	int _pad0;
 	int _pad1;
 	int _pad2;
+};
+
+// Light data for the lighting pass SSBOs. Byte-identical to game/'s
+// lighting_*Light_t layouts; trailing vec3s become vec4 (std430 vec3 has
+// vec4 alignment, so the layout is unchanged — .xyz used, .w padding).
+// Named *Data to avoid colliding with the C++ gameplay Light structs.
+
+struct PointLightData	// 48 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	float _pad0;
+	float _pad1;
+	float _pad2;
+};
+
+struct SpotLightData	// 64 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	float spot_angle_radians;
+	float edge_blend;
+	float _pad0;
+	vec4 direction;		// xyz = light travel direction
+};
+
+struct SunLightData		// 64 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	int cast_shadows;
+	float _pad0;
+	float _pad1;
+	vec4 direction;		// xyz = light travel direction
 };
 
 // Material. std430, 64-byte stride — field order matches game/'s

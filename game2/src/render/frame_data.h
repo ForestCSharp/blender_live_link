@@ -7,7 +7,7 @@
 // GLSL-shared struct definitions (PerFrameData, ObjectData)
 #include "shader_common.h"
 
-static_assert(sizeof(PerFrameData) == 256, "PerFrameData must match its std140 layout (vec4/mat4 members only)");
+static_assert(sizeof(PerFrameData) == 320, "PerFrameData must match its std140 layout (vec4/mat4 members only)");
 static_assert(sizeof(ObjectData) == 144, "ObjectData must match game/'s geometry_ObjectData_t stride");
 static_assert(sizeof(Material) == 64, "Material must match game/'s geometry_Material_t stride");
 

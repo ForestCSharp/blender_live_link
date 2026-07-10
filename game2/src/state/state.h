@@ -19,6 +19,7 @@
 
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT = 3;
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY = 64;
+static constexpr i32 MAX_LIGHTS_PER_TYPE = 1024;
 
 static constexpr i32 MIN_RENDER_RESOLUTION_PERCENTAGE = 25;
 static constexpr i32 MAX_RENDER_RESOLUTION_PERCENTAGE = 100;
@@ -26,9 +27,15 @@ static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 100;
 
 // Frame-order pass registry (game/'s lives in state.h too; game/'s full list
 // slots back in here as passes are ported in Phase 3)
+static constexpr i32 MAX_SHADOW_CASCADES = 4;
+
 enum class ERenderPass : i32
 {
-	Forward,
+	ShadowDepth,
+	ShadowBlur,
+	Geometry,
+	Lighting,
+	Tonemapping,
 	CopyToSwapchain,
 
 	COUNT,
@@ -199,6 +206,45 @@ struct State
 		i32 buffer_capacity = 0;
 		bool valid = false;
 	} skin_matrices;
+
+	// Packed light data for the lighting pass. CPU arrays rebuilt when
+	// needs_data_update; GPU side is a 3-ring per type uploaded every frame
+	// (same hazard fix as the snapshot — game2's mapped stream buffers
+	// would otherwise race frames in flight)
+	struct LightingState
+	{
+		bool needs_data_update = true;
+
+		StretchyBuffer<PointLightData> point_lights;
+		StretchyBuffer<SpotLightData> spot_lights;
+		StretchyBuffer<SunLightData> sun_lights;
+
+		GpuBuffer<PointLightData> point_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
+		GpuBuffer<SpotLightData> spot_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
+		GpuBuffer<SunLightData> sun_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
+		i32 buffer_index = 0;
+	} lighting;
+
+	struct TonemappingState
+	{
+		f32 exposure_bias = 0.0f;
+	} tonemapping;
+
+	struct SkyState
+	{
+		bool rendering_enable = true;
+	} sky;
+
+	// Cascaded shadow settings (minimal port of game/'s ShadowState;
+	// CenteredSquares mode + blur + debug fields arrive in 3b)
+	struct ShadowState
+	{
+		bool rendering_enable = true;
+		bool blur_enable = true;
+		i32 num_cascades = 3;
+		f32 frustum_cascade_distance_scale = 1.0f;
+		f32 shadow_bias = 0.001f;
+	} shadow;
 
 	// Fog controller selection (data only — fs_params + the fog render pass
 	// arrive in Phase 3). Deviation from game/: active_fog_controller_id
@@ -462,6 +508,140 @@ void skin_matrix_arena_upload(State& in_state)
 GpuBuffer<HMM_Mat4>& get_skin_matrix_arena_buffer(State& in_state)
 {
 	return in_state.skin_matrices.buffers[in_state.skin_matrices.buffer_index];
+}
+
+void mark_lighting_dirty(State& in_state)
+{
+	in_state.lighting.needs_data_update = true;
+}
+
+// Fixed-size light SSBO rings, created once at init (bindings must always
+// be valid, even with zero lights)
+void init_lighting_buffers(State& in_state)
+{
+	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
+	{
+		in_state.lighting.point_buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<PointLightData>){
+			.data = nullptr,
+			.size = sizeof(PointLightData) * MAX_LIGHTS_PER_TYPE,
+			.usage = { .storage_buffer = true, .stream_update = true },
+			.label = "State::point_lights",
+		});
+		in_state.lighting.spot_buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<SpotLightData>){
+			.data = nullptr,
+			.size = sizeof(SpotLightData) * MAX_LIGHTS_PER_TYPE,
+			.usage = { .storage_buffer = true, .stream_update = true },
+			.label = "State::spot_lights",
+		});
+		in_state.lighting.sun_buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<SunLightData>){
+			.data = nullptr,
+			.size = sizeof(SunLightData) * MAX_LIGHTS_PER_TYPE,
+			.usage = { .storage_buffer = true, .stream_update = true },
+			.label = "State::sun_lights",
+		});
+	}
+}
+
+// Rebuilds the packed CPU light arrays from the scene when dirty
+// (port of game/src/main.cpp:2830-2909)
+void pack_lights(State& in_state)
+{
+	if (!in_state.lighting.needs_data_update)
+	{
+		return;
+	}
+	in_state.lighting.needs_data_update = false;
+
+	State::LightingState& lighting = in_state.lighting;
+	lighting.point_lights.clear();
+	lighting.spot_lights.clear();
+	lighting.sun_lights.clear();
+
+	scene_ensure_indexes(in_state);
+	for (i32 light_object_id : in_state.scene.indexes.light_object_ids)
+	{
+		auto found = in_state.scene.objects.find(light_object_id);
+		if (found == in_state.scene.objects.end())
+		{
+			continue;
+		}
+
+		Object& object = found->second;
+		if (!object.has_light || !object.visibility)
+		{
+			continue;
+		}
+
+		const Transform& transform = object.current_transform;
+		const HMM_Vec4 location = HMM_V4(transform.location.X, transform.location.Y, transform.location.Z, 1.0f);
+		const HMM_Vec4 color = HMM_V4(object.light.color.X, object.light.color.Y, object.light.color.Z, 1.0f);
+		const HMM_Vec3 direction = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), transform.rotation));
+
+		switch (object.light.type)
+		{
+			case LightType::Point:
+			{
+				if (lighting.point_lights.length() >= MAX_LIGHTS_PER_TYPE) { break; }
+				lighting.point_lights.add((PointLightData) {
+					.location = location,
+					.color = color,
+					.power = object.light.point.power,
+				});
+				break;
+			}
+			case LightType::Spot:
+			{
+				if (lighting.spot_lights.length() >= MAX_LIGHTS_PER_TYPE) { break; }
+				lighting.spot_lights.add((SpotLightData) {
+					.location = location,
+					.color = color,
+					.power = object.light.spot.power,
+					.spot_angle_radians = object.light.spot.beam_angle / 2.0f,
+					.edge_blend = object.light.spot.edge_blend,
+					.direction = HMM_V4V(direction, 0.0f),
+				});
+				break;
+			}
+			case LightType::Sun:
+			{
+				if (lighting.sun_lights.length() >= MAX_LIGHTS_PER_TYPE) { break; }
+				lighting.sun_lights.add((SunLightData) {
+					.location = location,
+					.color = color,
+					.power = object.light.sun.power,
+					.cast_shadows = object.light.sun.cast_shadows ? 1 : 0,
+					.direction = HMM_V4V(direction, 0.0f),
+				});
+				break;
+			}
+			default:
+				break;
+		}
+	}
+}
+
+// Advances the light ring and uploads this frame's arrays (runs before
+// begin_frame; ring depth 3 vs 2 frames in flight)
+void upload_lights(State& in_state)
+{
+	State::LightingState& lighting = in_state.lighting;
+	lighting.buffer_index = (lighting.buffer_index + 1) % RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT;
+
+	if (lighting.point_lights.length() > 0)
+	{
+		lighting.point_buffers[lighting.buffer_index].update_gpu_buffer(
+			lighting.point_lights.data(), sizeof(PointLightData) * lighting.point_lights.length());
+	}
+	if (lighting.spot_lights.length() > 0)
+	{
+		lighting.spot_buffers[lighting.buffer_index].update_gpu_buffer(
+			lighting.spot_lights.data(), sizeof(SpotLightData) * lighting.spot_lights.length());
+	}
+	if (lighting.sun_lights.length() > 0)
+	{
+		lighting.sun_buffers[lighting.buffer_index].update_gpu_buffer(
+			lighting.sun_lights.data(), sizeof(SunLightData) * lighting.sun_lights.length());
+	}
 }
 
 bool is_key_pressed(i32 in_keycode)
