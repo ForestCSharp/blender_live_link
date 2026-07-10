@@ -3,10 +3,12 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <vector>
 
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
+#include "core/timings.h"
 
 #define VK_CHECK(f)                                                                 \
 {                                                                                   \
@@ -21,6 +23,11 @@
 #include "render/gpu_image.h"
 
 static const u32 MAX_FRAMES_IN_FLIGHT = 2;
+
+// GPU timestamp queries: one pool per frame in flight; query 0/1 span the
+// frame, 2+2i / 3+2i bracket timed scope i (one per render pass today)
+static constexpr i32 MAX_GPU_TIMED_SCOPES = 16;
+static constexpr i32 GPU_TIMESTAMP_QUERY_COUNT = 2 + 2 * MAX_GPU_TIMED_SCOPES;
 
 // GPU resources can't be destroyed while a frame that references them is still
 // in flight. Deletions are queued with the frame number they were requested on
@@ -52,9 +59,6 @@ struct VulkanContext
 	std::vector<VkImage> swapchain_images;
 	std::vector<VkImageView> swapchain_image_views;
 
-	VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
-	GpuImage depth_image;
-
 	VkCommandPool command_pool = VK_NULL_HANDLE;
 
 	// Per frame-in-flight
@@ -73,6 +77,18 @@ struct VulkanContext
 	// When set, end_frame dumps the frame to this path (between submit and
 	// present, while the swapchain image is still acquired) then clears it
 	const char* pending_frame_dump = nullptr;
+
+	// GPU timestamp state
+	bool timestamps_supported = false;
+	f32 timestamp_period_ns = 0.0f;
+	VkQueryPool timestamp_pools[MAX_FRAMES_IN_FLIGHT] = {};
+	struct GpuTimestampFrameState
+	{
+		i64 cpu_frame_index = -1;
+		i32 scope_count = 0;
+		char scope_names[MAX_GPU_TIMED_SCOPES][CPU_TIMINGS_MAX_NAME_LENGTH] = {};
+		bool submitted = false;
+	} timestamp_frames[MAX_FRAMES_IN_FLIGHT];
 
 	StretchyBuffer<PendingBufferDelete> deletion_queue;
 };
@@ -179,20 +195,10 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 		VK_CHECK(vkCreateSemaphore(ctx->device, &semaphore_create_info, nullptr, &ctx->render_finished_semaphores[image_idx]));
 	}
 
-	// Depth buffer matches the swapchain extent
-	ctx->depth_image = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
-		.width = extent.width,
-		.height = extent.height,
-		.format = ctx->depth_format,
-		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-		.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-	});
 }
 
 void vulkan_context_destroy_swapchain_resources(VulkanContext* ctx)
 {
-	gpu_image_destroy(ctx->allocator, ctx->device, ctx->depth_image);
-
 	for (VkImageView image_view : ctx->swapchain_image_views)
 	{
 		vkDestroyImageView(ctx->device, image_view, nullptr);
@@ -415,6 +421,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		VkPhysicalDeviceVulkan12Features enabled_features_1_2 = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 			.descriptorIndexing = VK_TRUE,
+			// PARTIALLY_BOUND on the bindless texture array (not implied by
+			// descriptorIndexing — must be enabled explicitly)
+			.descriptorBindingPartiallyBound = VK_TRUE,
 			.descriptorBindingVariableDescriptorCount = VK_TRUE,
 			.runtimeDescriptorArray = VK_TRUE,
 			.bufferDeviceAddress = VK_TRUE,
@@ -492,6 +501,256 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			VK_CHECK(vkCreateFence(ctx->device, &fence_create_info, nullptr, &ctx->frame_fences[frame_idx]));
 		}
 	}
+
+	// GPU timestamp queries (feeds the GpuTimings system in core/timings.h)
+	{
+		VkPhysicalDeviceProperties properties = {};
+		vkGetPhysicalDeviceProperties(ctx->physical_device, &properties);
+		ctx->timestamp_period_ns = properties.limits.timestampPeriod;
+
+		u32 queue_family_count = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &queue_family_count, nullptr);
+		std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &queue_family_count, queue_families.data());
+
+		const u32 timestamp_valid_bits = queue_families[ctx->graphics_queue_family_index].timestampValidBits;
+		ctx->timestamps_supported = timestamp_valid_bits != 0 && ctx->timestamp_period_ns > 0.0f;
+
+		if (ctx->timestamps_supported)
+		{
+			for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+			{
+				VkQueryPoolCreateInfo query_pool_create_info = {
+					.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+					.queryType = VK_QUERY_TYPE_TIMESTAMP,
+					.queryCount = GPU_TIMESTAMP_QUERY_COUNT,
+				};
+				VK_CHECK(vkCreateQueryPool(ctx->device, &query_pool_create_info, nullptr, &ctx->timestamp_pools[frame_idx]));
+			}
+			gpu_timings_set_available(true);
+		}
+		else
+		{
+			gpu_timings_set_available(false, "timestamp queries unsupported on the graphics queue");
+		}
+	}
+}
+
+// Brackets a GPU-timed scope (used by RenderPass::execute). Returns the slot
+// or -1 when unsupported/full — pass the result to gpu_timestamps_end_scope.
+i32 gpu_timestamps_begin_scope(VulkanContext* ctx, const char* in_name)
+{
+	if (!ctx->timestamps_supported)
+	{
+		return -1;
+	}
+
+	VulkanContext::GpuTimestampFrameState& frame_state = ctx->timestamp_frames[ctx->frame_index];
+	if (frame_state.scope_count >= MAX_GPU_TIMED_SCOPES)
+	{
+		return -1;
+	}
+
+	const i32 slot = frame_state.scope_count++;
+	snprintf(frame_state.scope_names[slot], CPU_TIMINGS_MAX_NAME_LENGTH, "%s", in_name ? in_name : "(unnamed)");
+
+	vkCmdWriteTimestamp2(
+		ctx->command_buffers[ctx->frame_index],
+		VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+		ctx->timestamp_pools[ctx->frame_index],
+		2 + slot * 2
+	);
+	return slot;
+}
+
+void gpu_timestamps_end_scope(VulkanContext* ctx, i32 in_slot)
+{
+	if (in_slot < 0)
+	{
+		return;
+	}
+
+	vkCmdWriteTimestamp2(
+		ctx->command_buffers[ctx->frame_index],
+		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		ctx->timestamp_pools[ctx->frame_index],
+		3 + in_slot * 2
+	);
+}
+
+// Reads this slot's queries from its last submission (safe: the slot's fence
+// was just waited) and forwards frame + per-pass events to GpuTimings
+void gpu_timestamps_harvest(VulkanContext* ctx)
+{
+	VulkanContext::GpuTimestampFrameState& frame_state = ctx->timestamp_frames[ctx->frame_index];
+	if (!ctx->timestamps_supported || !frame_state.submitted)
+	{
+		return;
+	}
+	frame_state.submitted = false;
+
+	const u32 query_count = 2 + (u32) frame_state.scope_count * 2;
+	u64 results[GPU_TIMESTAMP_QUERY_COUNT] = {};
+	VK_CHECK(vkGetQueryPoolResults(
+		ctx->device,
+		ctx->timestamp_pools[ctx->frame_index],
+		0, query_count,
+		sizeof(results), results, sizeof(u64),
+		VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+	));
+
+	const f64 ticks_to_ms = (f64) ctx->timestamp_period_ns / 1000000.0;
+	const u64 frame_start = results[0];
+	const u64 frame_end = results[1];
+
+	GpuTimingEvent events[1 + MAX_GPU_TIMED_SCOPES] = {};
+
+	GpuTimingEvent& frame_event = events[0];
+	gpu_timing_event_set_name(frame_event, "GPU Frame");
+	frame_event.depth = 0;
+	frame_event.parent_index = -1;
+	frame_event.type = GpuTimingEventType::Frame;
+	frame_event.timestamp_source = GpuTimingTimestampSource::CommandBuffer;
+	frame_event.timestamp_confidence = GpuTimingTimestampConfidence::Authoritative;
+	frame_event.start_offset_ms = 0.0;
+	frame_event.elapsed_ms = (f64)(frame_end - frame_start) * ticks_to_ms;
+	frame_event.valid = true;
+
+	for (i32 scope_idx = 0; scope_idx < frame_state.scope_count; ++scope_idx)
+	{
+		const u64 scope_start = results[2 + scope_idx * 2];
+		const u64 scope_end = results[3 + scope_idx * 2];
+
+		GpuTimingEvent& scope_event = events[1 + scope_idx];
+		gpu_timing_event_set_name(scope_event, frame_state.scope_names[scope_idx]);
+		scope_event.depth = 1;
+		scope_event.parent_index = 0;
+		scope_event.type = GpuTimingEventType::RenderPass;
+		scope_event.timestamp_source = GpuTimingTimestampSource::CommandBuffer;
+		// TOP/ALL_COMMANDS pairs can overlap neighboring GPU work — honest label
+		scope_event.timestamp_confidence = GpuTimingTimestampConfidence::Sampled;
+		scope_event.start_offset_ms = (f64)(scope_start - frame_start) * ticks_to_ms;
+		scope_event.elapsed_ms = (f64)(scope_end - scope_start) * ticks_to_ms;
+		scope_event.valid = true;
+	}
+
+	gpu_timings_record_completed_frame_events(frame_state.cpu_frame_index, events, 1 + frame_state.scope_count);
+
+	// Periodic debug print (Phase 4's profiler UI is the real consumer)
+	static const bool print_timings = getenv("GAME2_PRINT_GPU_TIMINGS") != nullptr;
+	if (print_timings && (ctx->frame_number % 120) == 0)
+	{
+		printf("GPU Frame %.3fms", frame_event.elapsed_ms);
+		for (i32 scope_idx = 0; scope_idx < frame_state.scope_count; ++scope_idx)
+		{
+			printf(" | %s %.3fms", frame_state.scope_names[scope_idx], events[1 + scope_idx].elapsed_ms);
+		}
+		printf("\n");
+	}
+}
+
+// Records and submits a one-shot command buffer, waiting for completion.
+// Main-thread only; used for staging uploads.
+void vulkan_context_immediate_submit(VulkanContext* ctx, const std::function<void(VkCommandBuffer)>& in_record)
+{
+	VkCommandBufferAllocateInfo allocate_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = ctx->command_pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	VkCommandBuffer command_buffer;
+	VK_CHECK(vkAllocateCommandBuffers(ctx->device, &allocate_info, &command_buffer));
+
+	VkCommandBufferBeginInfo begin_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+	in_record(command_buffer);
+	VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+	VkSubmitInfo submit_info = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &command_buffer,
+	};
+	VK_CHECK(vkQueueSubmit(ctx->graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
+	VK_CHECK(vkQueueWaitIdle(ctx->graphics_queue));
+
+	vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &command_buffer);
+}
+
+// Creates a sampled image and uploads pixel data through a staging buffer
+// (main thread only — submits on the graphics queue and waits idle).
+// Ends in SHADER_READ_ONLY_OPTIMAL. Lives here (not gpu_image.h) because it
+// needs VulkanContext + immediate_submit.
+GpuImage gpu_image_create_from_data(
+	VulkanContext* ctx,
+	u32 in_width,
+	u32 in_height,
+	VkFormat in_format,
+	const void* in_pixels,
+	u64 in_byte_count
+)
+{
+	GpuImage image = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
+		.width = in_width,
+		.height = in_height,
+		.format = in_format,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+	});
+
+	VkBufferCreateInfo staging_create_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = in_byte_count,
+		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	};
+	VmaAllocationCreateInfo staging_allocation_create_info = {
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+			   | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+
+	VkBuffer staging_buffer = VK_NULL_HANDLE;
+	VmaAllocation staging_allocation = VK_NULL_HANDLE;
+	VmaAllocationInfo staging_allocation_info = {};
+	VK_CHECK(vmaCreateBuffer(
+		ctx->allocator,
+		&staging_create_info,
+		&staging_allocation_create_info,
+		&staging_buffer,
+		&staging_allocation,
+		&staging_allocation_info
+	));
+	memcpy(staging_allocation_info.pMappedData, in_pixels, in_byte_count);
+
+	vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
+	{
+		gpu_image_transition(in_command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, /*in_discard_contents*/ true);
+
+		VkBufferImageCopy copy_region = {
+			.bufferOffset = 0,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.mipLevel = 0,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+			.imageOffset = { 0, 0, 0 },
+			.imageExtent = { in_width, in_height, 1 },
+		};
+		vkCmdCopyBufferToImage(in_command_buffer, staging_buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+		gpu_image_transition(in_command_buffer, image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	});
+
+	// immediate_submit waited for the queue — staging can go immediately
+	vmaDestroyBuffer(ctx->allocator, staging_buffer, staging_allocation);
+
+	return image;
 }
 
 // Queue a buffer for destruction once no in-flight frame can reference it
@@ -532,6 +791,8 @@ bool vulkan_context_begin_frame(VulkanContext* ctx)
 
 	VK_CHECK(vkWaitForFences(ctx->device, 1, &ctx->frame_fences[ctx->frame_index], VK_TRUE, UINT64_MAX));
 
+	gpu_timestamps_harvest(ctx);
+
 	vulkan_context_flush_deletion_queue(ctx, false);
 
 	VkResult acquire_result = vkAcquireNextImageKHR(
@@ -562,6 +823,19 @@ bool vulkan_context_begin_frame(VulkanContext* ctx)
 	};
 	VK_CHECK(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info));
 
+	// Start this frame's GPU timing (pool was harvested above; reset must be
+	// recorded, hostQueryReset is deliberately not enabled)
+	if (ctx->timestamps_supported)
+	{
+		vkCmdResetQueryPool(command_buffer, ctx->timestamp_pools[ctx->frame_index], 0, GPU_TIMESTAMP_QUERY_COUNT);
+		vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, ctx->timestamp_pools[ctx->frame_index], 0);
+
+		VulkanContext::GpuTimestampFrameState& frame_state = ctx->timestamp_frames[ctx->frame_index];
+		frame_state.scope_count = 0;
+		frame_state.cpu_frame_index = cpu_timings_get_current_frame_index();
+		frame_state.submitted = false;
+	}
+
 	// Swapchain image: UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL (contents are cleared each frame)
 	VkImageMemoryBarrier2 to_color_attachment = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -583,32 +857,10 @@ bool vulkan_context_begin_frame(VulkanContext* ctx)
 		},
 	};
 
-	// Depth image: UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL (cleared each frame)
-	VkImageMemoryBarrier2 to_depth_attachment = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-		.srcAccessMask = 0,
-		.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-		.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = ctx->depth_image.image,
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
-		},
-	};
-
-	VkImageMemoryBarrier2 begin_barriers[] = { to_color_attachment, to_depth_attachment };
 	VkDependencyInfo begin_dependency_info = {
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 2,
-		.pImageMemoryBarriers = begin_barriers,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &to_color_attachment,
 	};
 	vkCmdPipelineBarrier2(command_buffer, &begin_dependency_info);
 
@@ -649,6 +901,12 @@ void vulkan_context_end_frame(VulkanContext* ctx)
 	};
 	vkCmdPipelineBarrier2(command_buffer, &end_dependency_info);
 
+	// Close this frame's GPU timing span
+	if (ctx->timestamps_supported)
+	{
+		vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, ctx->timestamp_pools[ctx->frame_index], 1);
+	}
+
 	VK_CHECK(vkEndCommandBuffer(command_buffer));
 
 	VkSemaphoreSubmitInfo wait_semaphore_info = {
@@ -679,6 +937,11 @@ void vulkan_context_end_frame(VulkanContext* ctx)
 	};
 
 	VK_CHECK(vkQueueSubmit2(ctx->graphics_queue, 1, &submit_info, ctx->frame_fences[ctx->frame_index]));
+
+	if (ctx->timestamps_supported)
+	{
+		ctx->timestamp_frames[ctx->frame_index].submitted = true;
+	}
 
 	if (ctx->pending_frame_dump != nullptr)
 	{
@@ -855,6 +1118,14 @@ void vulkan_context_shutdown(VulkanContext* ctx)
 		vkDestroySemaphore(ctx->device, semaphore, nullptr);
 	}
 	ctx->render_finished_semaphores.clear();
+
+	if (ctx->timestamps_supported)
+	{
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+		{
+			vkDestroyQueryPool(ctx->device, ctx->timestamp_pools[frame_idx], nullptr);
+		}
+	}
 
 	vkFreeCommandBuffers(ctx->device, ctx->command_pool, MAX_FRAMES_IN_FLIGHT, ctx->command_buffers);
 	vkDestroyCommandPool(ctx->device, ctx->command_pool, nullptr);

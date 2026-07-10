@@ -4,30 +4,40 @@
 #include "render/vulkan_context.h"
 #include "render/render_types.h"
 #include "render/shader_module.h"
+#include "render/frame_data.h"
 #include "game_object/mesh.h"
 
-// Simple forward pass: one pipeline, per-object push constants, flat sun
-// shading. Future passes (shadows, GI, etc.) get their own files like
-// game/src/render/*_pass.h.
+// Simple forward pass: camera + sun come from the per-frame UBO, per-object
+// transforms from the ObjectData snapshot SSBO, materials/textures via the
+// bindless bindings (all descriptor set 0); each draw pushes its object
+// index + skin matrix arena offset. Static and skinned pipeline variants
+// share the frag shader and pipeline layout. Future passes (shadows, GI,
+// etc.) get their own files like game/src/render/*_pass.h.
 
 struct ForwardPassPushConstants
 {
-	HMM_Mat4 mvp;
-	HMM_Mat4 model;
+	i32 object_index;
+	i32 skin_matrix_offset;	// arena offset for skinned draws; ignored otherwise
 };
-static_assert(sizeof(ForwardPassPushConstants) == 128, "Push constants must fit the 128-byte guaranteed minimum");
+static_assert(sizeof(ForwardPassPushConstants) == 8, "Push constants: object index + skin matrix arena offset");
 
 struct ForwardPass
 {
 	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkPipeline skinned_pipeline = VK_NULL_HANDLE;
+
+	// Bind-on-change tracker, reset each pass begin
+	VkPipeline bound_pipeline = VK_NULL_HANDLE;
 };
 
 static ForwardPass forward_pass;
 
-void forward_pass_init(VulkanContext* ctx)
+// Builds one forward pipeline variant. Skinned adds vertex buffer binding 1
+// (SkinnedVertex: joint indices + weights, attrs 3/4).
+static VkPipeline forward_pass_create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
 {
-	VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, "bin/shaders/forward.vert.spv");
+	VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vertex_shader_path);
 	VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/forward.frag.spv");
 
 	VkPipelineShaderStageCreateInfo shader_stages[] = {
@@ -56,24 +66,32 @@ void forward_pass_init(VulkanContext* ctx)
 		.pDynamicStates = dynamic_states,
 	};
 
-	// Vertex layout: the 48-byte Vertex from render_types.h
-	VkVertexInputBindingDescription vertex_binding = {
-		.binding = 0,
-		.stride = sizeof(Vertex),
-		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+	VkVertexInputBindingDescription vertex_bindings[] = {
+		{
+			.binding = 0,
+			.stride = sizeof(Vertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
+		{
+			.binding = 1,
+			.stride = sizeof(SkinnedVertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
 	};
 
 	VkVertexInputAttributeDescription vertex_attributes[] = {
 		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, position) },
 		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, normal) },
 		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, texcoord) },
+		{ .location = 3, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_indices) },
+		{ .location = 4, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_weights) },
 	};
 
 	VkPipelineVertexInputStateCreateInfo vertex_input = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = &vertex_binding,
-		.vertexAttributeDescriptionCount = sizeof(vertex_attributes) / sizeof(vertex_attributes[0]),
+		.vertexBindingDescriptionCount = in_skinned ? 2u : 1u,
+		.pVertexBindingDescriptions = vertex_bindings,
+		.vertexAttributeDescriptionCount = in_skinned ? 5u : 3u,
 		.pVertexAttributeDescriptions = vertex_attributes,
 	};
 
@@ -89,8 +107,7 @@ void forward_pass_init(VulkanContext* ctx)
 		.scissorCount = 1,
 	};
 
-	// Cull disabled for the scaffold: live Blender data can have either
-	// winding until we verify against real scene meshes
+	// CULL_NONE: game/ parity (geometry_pass.h uses SG_CULLMODE_NONE)
 	VkPipelineRasterizationStateCreateInfo rasterization = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.depthClampEnable = VK_FALSE,
@@ -127,30 +144,15 @@ void forward_pass_init(VulkanContext* ctx)
 
 	VkPipelineColorBlendStateCreateInfo color_blending = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		.logicOpEnable = VK_FALSE,
 		.attachmentCount = 1,
 		.pAttachments = &color_blend_attachment,
 	};
 
-	VkPushConstantRange push_constant_range = {
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-		.offset = 0,
-		.size = sizeof(ForwardPassPushConstants),
-	};
-
-	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.pushConstantRangeCount = 1,
-		.pPushConstantRanges = &push_constant_range,
-	};
-
-	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &forward_pass.pipeline_layout));
-
 	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &ctx->surface_format.format,
-		.depthAttachmentFormat = ctx->depth_format,
+		.pColorAttachmentFormats = &Render::SCENE_COLOR_FORMAT,
+		.depthAttachmentFormat = Render::SCENE_DEPTH_FORMAT,
 	};
 
 	VkGraphicsPipelineCreateInfo pipeline_create_info = {
@@ -170,78 +172,79 @@ void forward_pass_init(VulkanContext* ctx)
 		.renderPass = VK_NULL_HANDLE,
 	};
 
-	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &forward_pass.pipeline));
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
 
 	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
+
+	return pipeline;
 }
 
-// Begins dynamic rendering (clear color + depth) and binds the pipeline.
-// Negative-height viewport flips Vulkan's Y so HMM/game/ math works unchanged.
-void forward_pass_begin(VulkanContext* ctx)
+void forward_pass_init(VulkanContext* ctx)
+{
+	VkPushConstantRange push_constant_range = {
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+		.offset = 0,
+		.size = sizeof(ForwardPassPushConstants),
+	};
+
+	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &frame_data.per_frame_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &push_constant_range,
+	};
+
+	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &forward_pass.pipeline_layout));
+
+	forward_pass.pipeline = forward_pass_create_pipeline(ctx, "bin/shaders/forward.vert.spv", /*in_skinned*/ false);
+	forward_pass.skinned_pipeline = forward_pass_create_pipeline(ctx, "bin/shaders/forward_skinned.vert.spv", /*in_skinned*/ true);
+}
+
+// Binds the per-frame descriptor set and resets the pipeline tracker. Called
+// inside the framework's execute callback (render begin/end, viewport, and
+// target transitions are the framework's job).
+void forward_pass_bind(VulkanContext* ctx)
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
-	VkRenderingAttachmentInfo color_attachment = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
-		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-		.clearValue = {{{ 0.1f, 0.2f, 0.4f, 1.0f }}},
-	};
+	forward_pass.bound_pipeline = VK_NULL_HANDLE;
 
-	VkRenderingAttachmentInfo depth_attachment = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = ctx->depth_image.view,
-		.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-		.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-		.clearValue = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
-	};
-
-	VkRenderingInfo rendering_info = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-		.renderArea = {
-			.offset = { 0, 0 },
-			.extent = ctx->swapchain_extent,
-		},
-		.layerCount = 1,
-		.colorAttachmentCount = 1,
-		.pColorAttachments = &color_attachment,
-		.pDepthAttachment = &depth_attachment,
-	};
-
-	vkCmdBeginRendering(command_buffer, &rendering_info);
-
-	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_pass.pipeline);
-
-	VkViewport flipped_viewport = {
-		.x = 0.0f,
-		.y = (f32) ctx->swapchain_extent.height,
-		.width = (f32) ctx->swapchain_extent.width,
-		.height = -(f32) ctx->swapchain_extent.height,
-		.minDepth = 0.0f,
-		.maxDepth = 1.0f,
-	};
-	vkCmdSetViewport(command_buffer, 0, 1, &flipped_viewport);
-
-	VkRect2D scissor = {
-		.offset = { 0, 0 },
-		.extent = ctx->swapchain_extent,
-	};
-	vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+	vkCmdBindDescriptorSets(
+		command_buffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		forward_pass.pipeline_layout,
+		0, 1, &frame_data.per_frame_sets[ctx->frame_index],
+		0, nullptr
+	);
 }
 
 // Lazy GPU buffer creation happens here, on the main thread (mirrors game/'s
 // pattern where the first draw after a live-link update creates buffers)
-void forward_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, const HMM_Mat4& in_view_projection, const HMM_Mat4& in_model)
+void forward_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
+	const bool skinned = in_mesh.has_skinned_vertices;
+	if (skinned && in_mesh.skin_matrix_arena_offset < 0)
+	{
+		// Animation update didn't pack this mesh this frame — skip rather
+		// than index a stale arena layout
+		return;
+	}
+
+	VkPipeline wanted_pipeline = skinned ? forward_pass.skinned_pipeline : forward_pass.pipeline;
+	if (forward_pass.bound_pipeline != wanted_pipeline)
+	{
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
+		forward_pass.bound_pipeline = wanted_pipeline;
+	}
+
 	ForwardPassPushConstants push_constants = {
-		.mvp = HMM_MulM4(in_view_projection, in_model),
-		.model = in_model,
+		.object_index = in_object_index,
+		.skin_matrix_offset = skinned ? in_mesh.skin_matrix_arena_offset : -1,
 	};
 
 	vkCmdPushConstants(
@@ -257,19 +260,21 @@ void forward_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, const HMM_Mat4& i
 	VkDeviceSize vertex_buffer_offset = 0;
 	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_buffer_offset);
 
+	if (skinned)
+	{
+		VkBuffer skinned_vertex_buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
+		VkDeviceSize skinned_offset = 0;
+		vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+	}
+
 	vkCmdBindIndexBuffer(command_buffer, in_mesh.index_buffer.get_gpu_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
 	vkCmdDrawIndexed(command_buffer, in_mesh.index_count, 1, 0, 0, 0);
 }
 
-void forward_pass_end(VulkanContext* ctx)
-{
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
-	vkCmdEndRendering(command_buffer);
-}
-
 void forward_pass_shutdown(VulkanContext* ctx)
 {
+	vkDestroyPipeline(ctx->device, forward_pass.skinned_pipeline, nullptr);
 	vkDestroyPipeline(ctx->device, forward_pass.pipeline, nullptr);
 	vkDestroyPipelineLayout(ctx->device, forward_pass.pipeline_layout, nullptr);
 }

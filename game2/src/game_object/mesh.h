@@ -13,6 +13,18 @@ struct MeshInitData
 
 	u32 num_vertices = 0;
 	Vertex* vertices = nullptr;
+
+	// Material ids from the flatbuffer (raw ids on the live-link thread;
+	// resolved to indices at drain — see resolve_mesh_material_indices)
+	u32 num_material_indices = 0;
+	i32* material_indices = nullptr;
+
+	// Skinning (armature_id > 0 gates the whole block)
+	SkinnedVertex* skinned_vertices = nullptr;
+	u32 skin_matrix_count = 0;
+	i32 armature_id = -1;
+	HMM_Mat4 mesh_to_armature = HMM_M4D(1.0f);
+	HMM_Mat4 armature_to_mesh = HMM_M4D(1.0f);
 };
 
 MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
@@ -100,6 +112,26 @@ struct Mesh
 	Vertex* vertices;
 	GpuBuffer<Vertex> vertex_buffer;
 
+	// Raw material IDS until resolve_mesh_material_indices runs at drain;
+	// after that, indices into state.materials.items (-1 = none)
+	u32 material_indices_count;
+	i32* material_indices;
+
+	// Skinning. skin_matrices is the CPU array update_skinned_animations
+	// fills each frame and appends into the shared arena SSBO; there is no
+	// per-mesh GPU skin matrix buffer (deviation from game/ — the arena ring
+	// makes per-frame writes safe vs frames in flight). The Phase 3 GPU
+	// skinning compute pass reads the same arena.
+	bool has_skinned_vertices;
+	SkinnedVertex* skinned_vertices;
+	GpuBuffer<SkinnedVertex> skinned_vertex_buffer;
+	u32 skin_matrix_count;
+	HMM_Mat4* skin_matrices;
+	i32 skin_matrix_arena_offset;	// -1 when not written this frame
+	i32 armature_id;
+	HMM_Mat4 mesh_to_armature;
+	HMM_Mat4 armature_to_mesh;
+
 	BoundingBox bounding_box;
 };
 
@@ -170,8 +202,40 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 			},
 			.label = "Mesh::vertex_buffer",
 		}),
+		.material_indices_count = in_init_data.num_material_indices,
+		.material_indices = in_init_data.material_indices,
+		.has_skinned_vertices = false,
+		.skinned_vertices = in_init_data.skinned_vertices,
+		.skin_matrix_count = 0,
+		.skin_matrices = nullptr,
+		.skin_matrix_arena_offset = -1,
+		.armature_id = in_init_data.armature_id,
+		.mesh_to_armature = in_init_data.mesh_to_armature,
+		.armature_to_mesh = in_init_data.armature_to_mesh,
 		.bounding_box = bounding_box,
 	};
+
+	if (in_init_data.skinned_vertices != nullptr)
+	{
+		out_mesh.has_skinned_vertices = true;
+		out_mesh.skin_matrix_count = MAX(in_init_data.skin_matrix_count, 1);
+
+		out_mesh.skinned_vertex_buffer = GpuBuffer((GpuBufferDesc<SkinnedVertex>){
+			.data = in_init_data.skinned_vertices,
+			.size = sizeof(SkinnedVertex) * in_init_data.num_vertices,
+			.usage = {
+				.vertex_buffer = true,
+				.storage_buffer = true,
+			},
+			.label = "Mesh::skinned_vertex_buffer",
+		});
+
+		out_mesh.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * out_mesh.skin_matrix_count);
+		for (u32 matrix_idx = 0; matrix_idx < out_mesh.skin_matrix_count; ++matrix_idx)
+		{
+			out_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+		}
+	}
 
 	return out_mesh;
 }

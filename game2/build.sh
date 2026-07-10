@@ -55,6 +55,17 @@ if [[ $OS_ARG = Mac ]]; then
 				-o bin/libvma.a
 	fi
 
+	# Compile Jolt as a static library, but only if it doesn't exist.
+	# IMPORTANT: keep the JPH_* define set EMPTY and identical between this
+	# compile and the main build below — mismatched defines break Jolt's ABI.
+	if [ ! -f ./bin/libjolt.a ]; then
+		echo "libjolt.a not found, building"
+		clang -c src/extern/Jolt/jolt_single_file.cpp \
+				--std=c++20 \
+				-I src/extern \
+				-o bin/libjolt.a
+	fi
+
 	# Main Mac Build
 	clang src/main.cpp \
 		-g -O0 \
@@ -64,6 +75,7 @@ if [[ $OS_ARG = Mac ]]; then
 		-I src/extern \
 		-I src/extern/glfw/include \
 		-I data \
+		-I data/shaders \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
@@ -72,6 +84,7 @@ if [[ $OS_ARG = Mac ]]; then
 		-lc++ \
 		-lglfw \
 		-lvma \
+		-ljolt \
 		-framework Cocoa \
 		-framework IOKit \
 		-framework QuartzCore
@@ -121,6 +134,17 @@ elif [[ $OS_ARG = Windows ]]; then
 				-o bin/vma.lib
 	fi
 
+	# Compile Jolt as a static library, but only if it doesn't exist
+	# (NOTE: correct src/extern/Jolt path — game/'s Windows branch still
+	# points at a stale location. Keep JPH_* defines empty on both compiles.)
+	if [ ! -f ./bin/jolt.lib ]; then
+		echo "jolt.lib not found, building"
+		clang -c src/extern/Jolt/jolt_single_file.cpp \
+				--std=c++20 \
+				-I src/extern \
+				-o bin/jolt.lib
+	fi
+
 	# Main Windows Build
 	clang src/main.cpp \
 		-g -O0 \
@@ -131,6 +155,7 @@ elif [[ $OS_ARG = Windows ]]; then
 		-I src/extern/glfw/include \
 		-I "$VULKAN_SDK/Include" \
 		-I data \
+		-I data/shaders \
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
@@ -139,6 +164,7 @@ elif [[ $OS_ARG = Windows ]]; then
 		-L./bin \
 		-lglfw \
 		-lvma \
+		-ljolt \
 		-lUser32 \
 		-lgdi32 \
 		-lshell32

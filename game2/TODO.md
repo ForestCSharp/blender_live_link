@@ -25,64 +25,99 @@ from. Ordered roughly by suggested sequence — early items unblock later ones.
       + the reference build.bat — **untested on Windows**). Linux remains a
       stub, same as game/.
 
-## Phase 1 — renderer foundations (prerequisites for the pass chain)
+## Phase 1 — renderer foundations (prerequisites for the pass chain)  ✅ (2026-07-09)
 
-- [ ] Per-frame UBO via descriptor set 0 (camera view/proj, camera position,
-      sun direction/color from the scene's `SunLight`) replacing the
-      hardcoded sun in `forward.frag` and per-object 128-byte push constants
-      as the only data path. First real descriptor-set architecture decision.
-- [ ] Per-object storage buffer equivalent of `geometry_ObjectData_t`
-      (model/rotation matrix + material index,
-      `game/src/game_object/game_object.h:303-336`) and the render-object
-      snapshot (`build_render_object_snapshot`, `game/src/main.cpp:2665`).
-- [ ] Render pass framework: port `game/src/render/render_pass.h`
-      (`ERenderPass` enum, `RenderPassDesc`, color/depth output images,
-      resize handling) onto dynamic rendering. This is what the whole chain
-      in Phase 3 hangs off.
-- [ ] Offscreen render targets: extend `gpu_image.h` (sampled usage,
-      mip levels, formats, samplers) + resolution percentage / render scale
-      (`update_render_resolution`, `game/src/main.cpp:1356`;
-      `state.window.render_width/height`).
-- [ ] Shader infrastructure: shared GLSL headers via `glslc -I` includes
-      (game/ preprocesses with `clang -E` then sokol-shdc; game2 can pass
-      `data/shaders` as an include dir to glslc). Port
-      `shader_common.h`, `fullscreen_vs.h`, `brdf.h` first.
-- [ ] Staging-buffer upload path in `gpu_buffer.h` for device-local memory
-      (currently everything is host-visible mapped; fine on Apple Silicon,
-      wrong default for discrete GPUs on Windows/Linux).
-- [ ] Back-face culling: verify Blender mesh winding against a real scene,
-      then enable `VK_CULL_MODE_BACK_BIT` in `forward_pass.h` (currently
-      CULL_NONE).
-- [ ] GPU profiler/timestamps: port `gpu_profiler_resources.h` +
-      `gpu_frame_timings` onto `vkCmdWriteTimestamp2`.
+- [x] Per-frame UBO via descriptor set 0 (`src/render/frame_data.h` +
+      `data/shaders/shader_common.h`): camera matrices/position/forward +
+      sun direction/color from the scene's primary `SunLight`
+      (`refresh_primary_sun_id`), with the scaffold's original hardcoded sun
+      as the sunless fallback. Descriptor sets are per-frame-in-flight and
+      rewritten each frame after the fence wait.
+- [x] Per-object ObjectData SSBO (144-byte stride matching game/'s
+      `geometry_ObjectData_t`), triple-buffered snapshot ring +
+      `build_render_object_snapshot` + scene indexes in `state.h`; draws
+      push only a 4-byte `object_index`. Verified through >64-object growth.
+- [x] Render pass framework (`src/render/render_pass.h`) on dynamic
+      rendering: Single + Swapchain types, framework-owned targets/resize/
+      barriers/Y-flip viewport/timing scopes; Multi/Array/Cubemap assert
+      until Phase 3 needs them. `GpuImage` gained tracked layouts +
+      `gpu_image_transition`.
+- [x] Offscreen conversion: forward renders to R16G16B16A16_SFLOAT + D32 at
+      `render_width/height` (`update_render_resolution`, `handle_resize`,
+      `GAME2_RENDER_SCALE` env); `copy_to_swapchain_pass` presents via
+      fullscreen triangle. Only image cost: 1-LSB FP16 quantization on
+      0.02% of pixels vs the direct-to-swapchain scaffold.
+- [x] Shader infrastructure: `glslc -I data/shaders --target-env=vulkan1.3`;
+      dual-mode C++/GLSL `shader_common.h` (vec4-only members; note
+      "object_data" is a reserved Metal keyword — MoltenVK requires the
+      game/-style `object_data_array` name). `fullscreen_vs.h`/`brdf.h` port
+      with their passes in Phase 3.
+- [x] Staging upload path: `GpuBufferUsage.prefer_device_local` +
+      device-local default off-Apple; `vulkan_context_immediate_submit` +
+      staging copy for non-host-visible allocations.
+      `GAME2_FORCE_DEVICE_LOCAL=1` verified on MoltenVK (UMA lands
+      host-visible so it exercises the map branch; the vkCmdCopyBuffer
+      branch needs a discrete GPU to run).
+- [x] ~~Back-face culling~~ Resolved as no-change: game/ itself uses
+      `SG_CULLMODE_NONE` everywhere (`geometry_pass.h:57,134,181`), so
+      game2 keeps `VK_CULL_MODE_NONE` for parity.
+- [x] GPU timestamps: per-frame-in-flight `VkQueryPool`s, frame +
+      per-render-pass events feeding
+      `gpu_timings_record_completed_frame_events` with CPU frame-index
+      correlation; `GAME2_PRINT_GPU_TIMINGS=1` prints e.g.
+      `GPU Frame 0.225ms | Forward 0.097ms | Copy To Swapchain 0.104ms`.
+      `gpu_profiler_resources.h` (view-name registry) ports with the
+      profiler UI in Phase 4.
 
-## Phase 2 — content systems
+## Phase 2 — content systems  ✅ (2026-07-09)
 
-- [ ] Materials: `register_material`, `state.materials` (id→index map,
-      materials storage buffer, `update_materials_buffer`,
-      `game/src/main.cpp` + `game/src/state/state.h`), and
-      `Mesh.material_ids` parsing (dropped in game2's
-      `parse_flatbuffer_data`).
-- [ ] Images/textures: `register_image` (`game/src/main.cpp:693`), image
-      GPU upload (needs staging + layout transitions + samplers +
-      descriptor indexing — the 1.2 features are already enabled).
-- [ ] Armatures + animations parsing (`game/src/main.cpp:936-1017`,
-      `Armature`/`AnimationClip`/`ArmatureBone` structs stripped from
-      `game_object.h`) and `update_skinned_animations`
-      (`game/src/main.cpp:2670`).
-- [ ] GPU skinning compute pass (`game/src/render/gpu_skinning.h`,
-      `data/shaders/gpu_skinning.glsl`; `SkinnedVertex` + skinned vertex
-      cache buffers stripped from `mesh.h`).
-- [ ] Jolt physics: vendor `src/extern/Jolt` (copy from game/), cached
-      static lib in `build.sh` like game/'s, port
-      `physics/physics_system.h`, `RigidBody` on `Object`, jolt body
-      add/remove/reset (`game/src/game_object/game_object.h:175-277`),
-      `update_physics_backed_object_transforms`, and rigid-body parsing.
-- [ ] Character controller: `game_object/character.h`,
-      `GameplayComponentCharacter` parsing (`game/src/main.cpp:1097-1120`),
-      player movement (`game/src/main.cpp:1813+`). Depends on Jolt.
-- [ ] Fog controller component parsing (`game/src/main.cpp:1152-1182`,
-      `FogController` struct) — data side of the fog pass below.
+- [x] Materials: `register_material`/`reset_materials` +
+      `MaterialState` (fixed 1024-slot SSBO, set 0 binding 2) and
+      `Mesh.material_ids` parsing. Registration happens at drain on the main
+      thread via the composite `Channel<SceneUpdate>` (deviation from game/'s
+      live-link-thread registration — Vulkan queue submits are main-thread);
+      mesh material ids stay raw until `resolve_mesh_material_indices` runs
+      at drain. Forward shading consumes base color + emission; metallic/
+      roughness stored for Phase 3. Missing material renders grey, not
+      game/'s magenta (keeps pre-material goldens valid).
+- [x] Images/textures: `gpu_image_create_from_data` (staging upload via
+      `immediate_submit`), **bindless** `texture2D scene_textures[128]`
+      (set 0 binding 4, PARTIALLY_BOUND, rewritten each frame) + immutable
+      sampler (binding 5). R8G8B8A8_UNORM (addon sends linear-encoded
+      bytes). 128-image cap from MoltenVK's non-update-after-bind limits
+      (maxPerStageDescriptorSampledImages 256 / maxPerStageResources 287);
+      raising it needs UPDATE_AFTER_BIND on the binding + pool.
+- [x] Armatures + animations parsing + `update_skinned_animations` with a
+      **skin-matrix arena** (triple-buffered ring like the snapshot; no
+      per-mesh skin buffers — game2's mapped stream buffers would race
+      frames in flight). In-shader skinning via `forward_skinned.vert`
+      (vertex buffer 1 = SkinnedVertex, `get_skin_matrix` weighted blend,
+      push-constant arena offset). Verified: identity clip renders
+      byte-identical to a static mesh; translated clip offsets it.
+      Ctrl+R rewinds animations (game/ only has an ImGui button).
+- [x] ~~GPU skinning compute pass~~ **moved to Phase 3** (tessellation item):
+      game/ only consumes the compute-baked vertex cache for tessellation /
+      shaded wireframe; normal skinned rendering is the in-shader path that
+      shipped here. The compute pass will read the same skin-matrix arena.
+- [x] Jolt physics: vendored stock 5.2.1 tree, cached `libjolt.a` (Mac) /
+      `jolt.lib` (Windows — with the corrected `src/extern/Jolt` path;
+      game/'s Windows branch still points at a stale location). Empty
+      `JPH_*` define set on both TUs (ABI parity). `physics_system.h`
+      near-verbatim; convex-hull bodies, add-before-map-insert at drain,
+      `update_physics_backed_object_transforms`, Space+Ctrl sim toggle,
+      Ctrl+R transform restore + body reset. Verified: dynamic cube falls
+      and rests on a static floor (two runs settle within 0.002% of pixels;
+      not bit-deterministic — raw variable dt, game/ parity).
+- [x] Character controller: `character.h` verbatim (JPH::Character capsule),
+      component parse fills settings only, Jolt character created at drain
+      (deviation: main-thread-only), `update_player_character_control`
+      (camera-relative WASD/Shift/Space, gated on is_simulating + debug
+      camera off). Verified: capsule falls + rests, transform follows.
+      WASD path is compile-verified; needs interactive mouse-lock to drive.
+- [x] Fog controller data: `FogController` parse, `FogState{debug_active,
+      active, active_fog_controller_id}` (deviation: id lives in FogState,
+      not SceneState), lowest-uid enabled+visible selection with
+      change-logging. fs_params packing + fog render pass are Phase 3.
 
 ## Phase 3 — the render pass chain
 

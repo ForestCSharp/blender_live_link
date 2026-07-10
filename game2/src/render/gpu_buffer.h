@@ -16,8 +16,23 @@ struct GpuBufferUsage
 	bool vertex_buffer = false;
 	bool index_buffer = false;
 	bool storage_buffer = false;
+	bool uniform_buffer = false;
 	bool stream_update = false;
+	bool prefer_device_local = false;
 };
+
+// Static (non-stream) buffers default to device-local + staging upload on
+// discrete GPUs. Apple Silicon is UMA, so host-visible mapped is the default
+// there; GAME2_FORCE_DEVICE_LOCAL=1 exercises the staging path anyway.
+inline bool gpu_buffer_default_device_local()
+{
+	static const bool force_device_local = getenv("GAME2_FORCE_DEVICE_LOCAL") != nullptr;
+#if defined(__APPLE__)
+	return force_device_local;
+#else
+	return true;
+#endif
+}
 
 // Helper primarily used to pass between live link and main threads.
 // We want to wait until our data is back on the main thread to create GPU resources.
@@ -83,6 +98,7 @@ public:
 			if (usage.vertex_buffer)	{ usage_flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; }
 			if (usage.index_buffer)		{ usage_flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT; }
 			if (usage.storage_buffer)	{ usage_flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; }
+			if (usage.uniform_buffer)	{ usage_flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
 
 			VkBufferCreateInfo buffer_create_info = {
 				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -91,11 +107,21 @@ public:
 				.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			};
 
+			const bool wants_device_local = !usage.stream_update
+				&& (usage.prefer_device_local || gpu_buffer_default_device_local());
+
 			VmaAllocationCreateInfo allocation_create_info = {
-				.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-					   | VMA_ALLOCATION_CREATE_MAPPED_BIT,
 				.usage = VMA_MEMORY_USAGE_AUTO,
 			};
+			if (wants_device_local)
+			{
+				allocation_create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+			}
+			else
+			{
+				allocation_create_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+											 | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+			}
 
 			VkBuffer new_buffer = VK_NULL_HANDLE;
 			VmaAllocationInfo allocation_info = {};
@@ -113,7 +139,14 @@ public:
 
 			if (data != nullptr && size > 0)
 			{
-				memcpy(mapped_data, data, size);
+				if (!wants_device_local)
+				{
+					memcpy(mapped_data, data, size);
+				}
+				else
+				{
+					upload_to_device_local(new_buffer);
+				}
 			}
 		}
 
@@ -151,6 +184,63 @@ public:
 	u64 length() const { return _length; }
 
 protected:
+	// Fills a device-local buffer: direct memcpy when the allocation happens
+	// to be host-visible (UMA), otherwise via a throwaway staging buffer +
+	// one-shot copy (safe to destroy immediately — the submit waits idle)
+	void upload_to_device_local(VkBuffer in_target_buffer)
+	{
+		VkMemoryPropertyFlags memory_properties = 0;
+		vmaGetAllocationMemoryProperties(g_vulkan_context->allocator, allocation, &memory_properties);
+
+		if (memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		{
+			void* target_mapped = nullptr;
+			VK_CHECK(vmaMapMemory(g_vulkan_context->allocator, allocation, &target_mapped));
+			memcpy(target_mapped, data, size);
+			vmaUnmapMemory(g_vulkan_context->allocator, allocation);
+			return;
+		}
+
+		VkBufferCreateInfo staging_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = size,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		};
+		VmaAllocationCreateInfo staging_allocation_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+				   | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		VkBuffer staging_buffer = VK_NULL_HANDLE;
+		VmaAllocation staging_allocation = VK_NULL_HANDLE;
+		VmaAllocationInfo staging_allocation_info = {};
+		VK_CHECK(vmaCreateBuffer(
+			g_vulkan_context->allocator,
+			&staging_create_info,
+			&staging_allocation_create_info,
+			&staging_buffer,
+			&staging_allocation,
+			&staging_allocation_info
+		));
+
+		memcpy(staging_allocation_info.pMappedData, data, size);
+
+		const u64 copy_size = size;
+		vulkan_context_immediate_submit(g_vulkan_context, [&](VkCommandBuffer in_command_buffer)
+		{
+			VkBufferCopy copy_region = {
+				.srcOffset = 0,
+				.dstOffset = 0,
+				.size = copy_size,
+			};
+			vkCmdCopyBuffer(in_command_buffer, staging_buffer, in_target_buffer, 1, &copy_region);
+		});
+
+		vmaDestroyBuffer(g_vulkan_context->allocator, staging_buffer, staging_allocation);
+	}
+
 	/* Underlying Buffer Data */
 	T* data = nullptr;
 

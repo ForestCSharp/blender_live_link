@@ -47,6 +47,7 @@ using std::optional;
 #include "game_object/game_object.h"
 #include "state/state.h"
 #include "render/forward_pass.h"
+#include "render/copy_to_swapchain_pass.h"
 
 // Key with no binding, used as the "no modifier" sentinel in the event macros
 // (GLFW key 0 is unassigned; is_key_pressed(0) is always false, so we special
@@ -113,6 +114,17 @@ namespace flatbuffer_helpers
 		);
 	}
 
+	HMM_Vec4 to_hmm_vec4(const Blender::LiveLink::Vec4* in_flatbuffers_vector)
+	{
+		assert(in_flatbuffers_vector);
+		return HMM_V4(
+			in_flatbuffers_vector->x(),
+			in_flatbuffers_vector->y(),
+			in_flatbuffers_vector->z(),
+			in_flatbuffers_vector->w()
+		);
+	}
+
 	HMM_Quat to_hmm_quat(const Blender::LiveLink::Quat* in_flatbuffers_quat)
 	{
 		assert(in_flatbuffers_quat);
@@ -122,6 +134,29 @@ namespace flatbuffer_helpers
 			in_flatbuffers_quat->z(),
 			in_flatbuffers_quat->w()
 		);
+	}
+
+	// Column-major passthrough: flatbuffer stores 16 floats column-major,
+	// HMM Elements[col][row] is column-major, GLSL mat4 is column-major —
+	// no transpose anywhere (port of game/src/main.cpp:221-239)
+	HMM_Mat4 to_hmm_mat4(const Blender::LiveLink::Matrix* in_flatbuffers_matrix)
+	{
+		HMM_Mat4 out_matrix = HMM_M4D(1.0f);
+		if (!in_flatbuffers_matrix || !in_flatbuffers_matrix->elements() || in_flatbuffers_matrix->elements()->size() < 16)
+		{
+			return out_matrix;
+		}
+
+		auto elements = in_flatbuffers_matrix->elements();
+		for (i32 col = 0; col < 4; ++col)
+		{
+			for (i32 row = 0; row < 4; ++row)
+			{
+				out_matrix.Elements[col][row] = elements->Get(col * 4 + row);
+			}
+		}
+
+		return out_matrix;
 	}
 }
 
@@ -155,6 +190,80 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	// Interpret Flatbuffer data
 	auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
 	assert(update);
+
+	// Everything in this Update is packaged into one SceneUpdate message and
+	// registered/applied on the main thread at drain time
+	SceneUpdate scene_update;
+
+	// process images from update (pixels copied here — the flatbuffer memory
+	// dies with this function; the drain frees them after GPU upload)
+	if (auto images = update->images())
+	{
+		for (u32 idx = 0; idx < images->size(); ++idx)
+		{
+			auto image = images->Get(idx);
+			assert(image);
+
+			auto image_data = image->data();
+			const i32 width = image->width();
+			const i32 height = image->height();
+			if (!image_data || width <= 0 || height <= 0)
+			{
+				printf("\tSkipping malformed image UID: %i\n", image->unique_id());
+				continue;
+			}
+
+			const u64 expected_size = (u64) width * (u64) height * 4;
+			if (image_data->size() != expected_size)
+			{
+				printf("\tSkipping image UID %i: data size %u != %llu\n",
+					image->unique_id(), image_data->size(), (unsigned long long) expected_size);
+				continue;
+			}
+
+			u8* pixels = (u8*) malloc(expected_size);
+			memcpy(pixels, image_data->data(), expected_size);
+
+			scene_update.images.add((PendingImage) {
+				.unique_id = image->unique_id(),
+				.width = width,
+				.height = height,
+				.pixels = pixels,
+			});
+		}
+	}
+
+	// process materials from update (raw image ids; resolved at drain after
+	// this update's images register)
+	if (auto materials = update->materials())
+	{
+		for (u32 idx = 0; idx < materials->size(); ++idx)
+		{
+			auto material = materials->Get(idx);
+			assert(material);
+
+			PendingMaterial pending_material = {
+				.unique_id = material->unique_id(),
+				.metallic = material->metallic(),
+				.roughness = material->roughness(),
+				.emission_strength = material->emission_strength(),
+				.base_color_image_id = material->base_color_image_id(),
+				.emission_color_image_id = material->emission_color_image_id(),
+				.metallic_image_id = material->metallic_image_id(),
+				.roughness_image_id = material->roughness_image_id(),
+			};
+			if (auto base_color = material->base_color())
+			{
+				pending_material.base_color = flatbuffer_helpers::to_hmm_vec4(base_color);
+			}
+			if (auto emission_color = material->emission_color())
+			{
+				pending_material.emission_color = flatbuffer_helpers::to_hmm_vec4(emission_color);
+			}
+
+			scene_update.materials.add(pending_material);
+		}
+	}
 
 	// process objects from update
 	if (auto objects = update->objects())
@@ -238,6 +347,54 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					printf("\tDropping malformed mesh vertex streams on object UID: %i\n", unique_id);
 				}
 
+				// Check for skinning data (port of game/src/main.cpp:816-864)
+				SkinnedVertex* skinned_vertices = nullptr;
+				u32 skin_matrix_count = 0;
+				i32 armature_id = object_mesh->armature_id();
+				auto flatbuffer_joint_indices = object_mesh->joint_indices();
+				auto flatbuffer_joint_weights = object_mesh->joint_weights();
+				if (armature_id > 0 && flatbuffer_joint_indices && flatbuffer_joint_weights)
+				{
+					const u32 num_joint_indices = flatbuffer_joint_indices->size();
+					const u32 num_joint_weights = flatbuffer_joint_weights->size();
+					u32 num_skinned_vertices = num_joint_indices / 4;
+					if (num_vertices == 0 ||
+						num_joint_indices != num_joint_weights ||
+						(num_joint_indices % 4) != 0 ||
+						num_vertices != num_skinned_vertices)
+					{
+						printf("\tDropping malformed skinning data on object UID: %i\n", unique_id);
+					}
+					else
+					{
+						i32 max_joint_index = 0;
+						skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
+						for (u32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
+						{
+							for (u32 influence_idx = 0; influence_idx < 4; ++influence_idx)
+							{
+								max_joint_index = MAX(max_joint_index, flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx));
+							}
+
+							skinned_vertices[vertex_idx] = {
+								.joint_indices = {
+									.X = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 0),
+									.Y = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 1),
+									.Z = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 2),
+									.W = (f32) flatbuffer_joint_indices->Get(vertex_idx * 4 + 3),
+								},
+								.joint_weights = {
+									.X = flatbuffer_joint_weights->Get(vertex_idx * 4 + 0),
+									.Y = flatbuffer_joint_weights->Get(vertex_idx * 4 + 1),
+									.Z = flatbuffer_joint_weights->Get(vertex_idx * 4 + 2),
+									.W = flatbuffer_joint_weights->Get(vertex_idx * 4 + 3),
+								},
+							};
+						}
+						skin_matrix_count = (u32) max_joint_index + 1;
+					}
+				}
+
 				u32 num_indices = 0;
 				u32* indices = nullptr;
 				if (auto flatbuffer_indices = object_mesh->indices())
@@ -257,6 +414,21 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					}
 				}
 
+				// Material ids stay raw here; resolve_mesh_material_indices
+				// maps them to indices at drain (game/ resolves at parse, but
+				// game2 registers materials on the main thread)
+				u32 num_material_indices = 0;
+				i32* material_indices = nullptr;
+				if (auto flatbuffer_material_ids = object_mesh->material_ids())
+				{
+					num_material_indices = flatbuffer_material_ids->size();
+					material_indices = (i32*) malloc(sizeof(i32) * num_material_indices);
+					for (u32 material_id_idx = 0; material_id_idx < num_material_indices; ++material_id_idx)
+					{
+						material_indices[material_id_idx] = flatbuffer_material_ids->Get(material_id_idx);
+					}
+				}
+
 				// Set Mesh Data on Game Object
 				if (num_vertices > 0 && num_indices > 0)
 				{
@@ -265,6 +437,13 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						.indices = indices,
 						.num_vertices = num_vertices,
 						.vertices = vertices,
+						.num_material_indices = num_material_indices,
+						.material_indices = material_indices,
+						.skinned_vertices = skinned_vertices,
+						.skin_matrix_count = skin_matrix_count,
+						.armature_id = armature_id,
+						.mesh_to_armature = flatbuffer_helpers::to_hmm_mat4(object_mesh->mesh_to_armature()),
+						.armature_to_mesh = flatbuffer_helpers::to_hmm_mat4(object_mesh->armature_to_mesh()),
 					};
 					game_object.mesh = make_mesh(mesh_init_data);
 					game_object.has_mesh = true;
@@ -273,6 +452,89 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				{
 					free(indices);
 					free(vertices);
+					free(material_indices);
+					free(skinned_vertices);
+				}
+			}
+
+			// Armature: bones + animation clips (port of game/src/main.cpp:936-1017)
+			if (auto object_armature = object->armature())
+			{
+				game_object.has_armature = true;
+				game_object.armature = {};
+
+				if (auto flatbuffer_bones = object_armature->bones())
+				{
+					game_object.armature.bone_count = flatbuffer_bones->size();
+					game_object.armature.bones = (ArmatureBone*) calloc(game_object.armature.bone_count, sizeof(ArmatureBone));
+
+					for (u32 bone_idx = 0; bone_idx < game_object.armature.bone_count; ++bone_idx)
+					{
+						auto flatbuffer_bone = flatbuffer_bones->Get(bone_idx);
+						if (!flatbuffer_bone)
+						{
+							continue;
+						}
+
+						game_object.armature.bones[bone_idx] = {
+							.name = copy_flatbuffer_string(flatbuffer_bone->name()),
+							.parent_index = flatbuffer_bone->parent_index(),
+							.inverse_bind_matrix = flatbuffer_helpers::to_hmm_mat4(flatbuffer_bone->inverse_bind_matrix()),
+						};
+					}
+				}
+
+				if (auto flatbuffer_animations = object_armature->animations())
+				{
+					game_object.armature.animation_count = flatbuffer_animations->size();
+					game_object.armature.animations = (AnimationClip*) calloc(game_object.armature.animation_count, sizeof(AnimationClip));
+
+					for (u32 animation_idx = 0; animation_idx < game_object.armature.animation_count; ++animation_idx)
+					{
+						auto flatbuffer_animation = flatbuffer_animations->Get(animation_idx);
+						if (!flatbuffer_animation)
+						{
+							continue;
+						}
+
+						AnimationClip& animation = game_object.armature.animations[animation_idx];
+						animation.name = copy_flatbuffer_string(flatbuffer_animation->name());
+						animation.frame_rate = flatbuffer_animation->frame_rate();
+						animation.duration_seconds = flatbuffer_animation->duration_seconds();
+						animation.frame_count = flatbuffer_animation->frame_count();
+						animation.bone_count = flatbuffer_animation->bone_count();
+
+						const i32 matrix_count = MAX(0, animation.frame_count * animation.bone_count);
+						if (matrix_count > 0)
+						{
+							animation.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * matrix_count);
+							for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+							{
+								animation.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+							}
+
+							if (auto flatbuffer_skin_matrices = flatbuffer_animation->skin_matrices())
+							{
+								const i32 available_float_count = (i32) flatbuffer_skin_matrices->size();
+								for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+								{
+									const i32 base_float_idx = matrix_idx * 16;
+									if (base_float_idx + 15 >= available_float_count)
+									{
+										break;
+									}
+
+									for (i32 col = 0; col < 4; ++col)
+									{
+										for (i32 row = 0; row < 4; ++row)
+										{
+											animation.skin_matrices[matrix_idx].Elements[col][row] = flatbuffer_skin_matrices->Get(base_float_idx + col * 4 + row);
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 
@@ -328,6 +590,16 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				}
 			}
 
+			if (auto object_rigid_body = object->rigid_body())
+			{
+				game_object.has_rigid_body = true;
+				game_object.rigid_body = (RigidBody) {
+					.is_dynamic = object_rigid_body->is_dynamic(),
+					.mass = object_rigid_body->mass(),
+					.jolt_body = nullptr,	// created at drain on the main thread
+				};
+			}
+
 			// Custom gameplay components we've specified on our blender objects
 			if (auto object_components = object->components())
 			{
@@ -342,6 +614,50 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					auto component_type = component_container->value_type();
 					switch (component_type)
 					{
+						case Blender::LiveLink::GameplayComponent_GameplayComponentCharacter:
+						{
+							using Blender::LiveLink::GameplayComponentCharacter;
+							const GameplayComponentCharacter* character_component = reinterpret_cast<const GameplayComponentCharacter*>(component);
+
+							// Settings only here — the Jolt character is
+							// created at drain on the main thread
+							game_object.has_character = true;
+							game_object.character = (Character) {
+								.settings = {
+									.initial_location = game_object.current_transform.location,
+									.initial_rotation = game_object.current_transform.rotation,
+									.player_controlled = character_component->player_controlled(),
+									.move_speed = character_component->move_speed(),
+									.jump_speed = character_component->jump_speed(),
+								},
+							};
+							break;
+						}
+						case Blender::LiveLink::GameplayComponent_GameplayComponentFogController:
+						{
+							using Blender::LiveLink::GameplayComponentFogController;
+							const GameplayComponentFogController* fog_component = reinterpret_cast<const GameplayComponentFogController*>(component);
+
+							game_object.has_fog_controller = true;
+							const HMM_Vec3 fog_color = fog_component->fog_color()
+								? flatbuffer_helpers::to_hmm_vec3(fog_component->fog_color())
+								: HMM_V3(0.55f, 0.65f, 0.75f);
+							game_object.fog_controller = (FogController) {
+								.enabled = fog_component->enabled(),
+								.density = fog_component->density(),
+								.base_height = fog_component->base_height(),
+								.scale_height = fog_component->scale_height(),
+								.max_distance = fog_component->max_distance(),
+								.ceiling_enabled = fog_component->ceiling_enabled(),
+								.ceiling_height = fog_component->ceiling_height(),
+								.ceiling_fade = fog_component->ceiling_fade(),
+								.fog_color = fog_color,
+								.ambient_intensity = fog_component->ambient_intensity(),
+								.sun_intensity = fog_component->sun_intensity(),
+								.anisotropy = fog_component->anisotropy(),
+							};
+							break;
+						}
 						case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
 						{
 							using Blender::LiveLink::GameplayComponentCameraControl;
@@ -376,8 +692,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				}
 			}
 
-			// Send updated object data to main thread
-			state.live_link.updated_objects.send(game_object);
+			scene_update.objects.add(game_object);
 		}
 
 		state.runtime.blender_data_loaded = true;
@@ -387,14 +702,17 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	{
 		for (i32 deleted_object_uid : *deleted_object_uids)
 		{
-			state.live_link.deleted_objects.send(deleted_object_uid);
+			scene_update.deleted_object_uids.add(deleted_object_uid);
 		}
 	}
 
 	if (update->reset())
 	{
-		state.live_link.reset.send(true);
+		scene_update.reset = true;
 	}
+
+	// Send the whole update to the main thread
+	state.live_link.scene_updates.send(scene_update);
 }
 
 // Live Link Function. Runs on its own thread
@@ -512,57 +830,580 @@ void live_link_thread_function()
 	socket_lib_quit();
 }
 
-// Drain live link channels on the main thread. GPU buffer destruction for
+// Registers one image (main thread): creates + uploads the GPU image backing
+// a bindless array slot (port of game/src/main.cpp:264-309). Takes ownership
+// of pending.pixels (frees in all paths).
+void register_image(const PendingImage& in_pending)
+{
+	if (state.images.id_to_index.contains(in_pending.unique_id))
+	{
+		free(in_pending.pixels);
+		return;
+	}
+
+	if (state.images.items.length() >= MAX_BINDLESS_IMAGES)
+	{
+		printf("Exceeded MAX_BINDLESS_IMAGES (%i); skipping image UID %i\n", MAX_BINDLESS_IMAGES, in_pending.unique_id);
+		free(in_pending.pixels);
+		return;
+	}
+
+	// UNORM (not SRGB): the addon sends linear-encoded bytes (Blender
+	// image.pixels are scene-linear floats * 255) — game/ parity. Banding in
+	// darks is the known tradeoff until the addon sends sRGB-encoded data.
+	GpuImage image = gpu_image_create_from_data(
+		&state.vk,
+		(u32) in_pending.width,
+		(u32) in_pending.height,
+		VK_FORMAT_R8G8B8A8_UNORM,
+		in_pending.pixels,
+		(u64) in_pending.width * (u64) in_pending.height * 4
+	);
+	free(in_pending.pixels);
+
+	state.images.id_to_index[in_pending.unique_id] = (i32) state.images.items.length();
+	state.images.items.add(image);
+}
+
+// Images are only destroyed on scene reset (no individual removal — game/
+// parity). The deletion queue is buffers-only, so idle the device first.
+void reset_images()
+{
+	if (state.images.items.length() > 0)
+	{
+		vkDeviceWaitIdle(state.vk.device);
+		for (GpuImage& image : state.images.items)
+		{
+			gpu_image_destroy(state.vk.allocator, state.vk.device, image);
+		}
+	}
+	state.images.items.reset();
+	state.images.id_to_index.clear();
+}
+
+// Registers one material (main thread). Returns true when it was newly
+// appended (port of game/src/main.cpp:320-384). Updates to an already
+// registered id are ignored until a scene reset — game/ parity.
+bool register_material(const PendingMaterial& in_pending)
+{
+	if (state.materials.id_to_index.contains(in_pending.unique_id))
+	{
+		return false;
+	}
+
+	if (state.materials.items.length() >= MAX_MATERIALS)
+	{
+		printf("Exceeded MAX_MATERIALS (%i)\n", MAX_MATERIALS);
+		exit(0);
+	}
+
+	Material material = {
+		.base_color = in_pending.base_color,
+		.emission_color = in_pending.emission_color,
+		.metallic = in_pending.metallic,
+		.roughness = in_pending.roughness,
+		.emission_strength = in_pending.emission_strength,
+		.base_color_image_index = -1,
+		.emission_color_image_index = -1,
+		.metallic_image_index = -1,
+		.roughness_image_index = -1,
+	};
+
+	// Resolve image ids -> bindless indices (images in the same update were
+	// registered just before materials; id 0 = no image, game/'s `> 0` guard)
+	auto resolve_image_index = [](i32 in_image_id) -> i32
+	{
+		if (in_image_id <= 0)
+		{
+			return -1;
+		}
+		auto found = state.images.id_to_index.find(in_image_id);
+		assert(found != state.images.id_to_index.end());
+		return found->second;
+	};
+	material.base_color_image_index = resolve_image_index(in_pending.base_color_image_id);
+	material.emission_color_image_index = resolve_image_index(in_pending.emission_color_image_id);
+	material.metallic_image_index = resolve_image_index(in_pending.metallic_image_id);
+	material.roughness_image_index = resolve_image_index(in_pending.roughness_image_id);
+
+	state.materials.id_to_index[in_pending.unique_id] = (i32) state.materials.items.length();
+	state.materials.items.add(material);
+	return true;
+}
+
+void reset_materials()
+{
+	state.materials.id_to_index.clear();
+	state.materials.items.reset();
+	// GPU buffer deliberately kept alive (bound every frame); stale contents
+	// are unreachable once id_to_index is empty
+}
+
+// Maps a mesh's raw material IDS (from the wire) to registered indices
+void resolve_mesh_material_indices(Mesh& in_mesh)
+{
+	for (u32 material_idx = 0; material_idx < in_mesh.material_indices_count; ++material_idx)
+	{
+		const i32 material_id = in_mesh.material_indices[material_idx];
+		in_mesh.material_indices[material_idx] = -1;
+
+		auto found = state.materials.id_to_index.find(material_id);
+		if (found == state.materials.id_to_index.end())
+		{
+			printf("\tFailed to find material with id: %i\n", material_id);
+			continue;
+		}
+		in_mesh.material_indices[material_idx] = found->second;
+	}
+}
+
+// Drains SceneUpdate messages on the main thread. GPU buffer destruction for
 // replaced/deleted objects routes through the deletion queue, so this is safe
-// while frames are in flight.
+// while frames are in flight. Per-message order mirrors game/'s parse order:
+// images -> materials -> objects -> deleted -> reset.
 void live_link_drain_channels()
 {
-	// Receive Any Updated Objects
-	while (optional<Object> received_updated_object = state.live_link.updated_objects.receive())
+	while (optional<SceneUpdate> received_update = state.live_link.scene_updates.receive())
 	{
-		Object& updated_object = *received_updated_object;
-		i32 updated_object_uid = updated_object.unique_id;
+		SceneUpdate& scene_update = *received_update;
 
-		printf("Updating Object. UID: %i\n", updated_object_uid);
-
-		// Cleanup old object
-		if (state.scene.objects.contains(updated_object_uid))
+		// Images (before materials — register_material resolves image ids)
+		for (const PendingImage& pending_image : scene_update.images)
 		{
-			object_cleanup(state.scene.objects[updated_object_uid]);
+			register_image(pending_image);
 		}
 
-		state.scene.objects[updated_object_uid] = updated_object;
-	}
-
-	// Receive Any Deleted Objects
-	while (optional<i32> received_deleted_object = state.live_link.deleted_objects.receive())
-	{
-		i32 deleted_object_uid = *received_deleted_object;
-		if (state.scene.objects.contains(deleted_object_uid))
+		// Materials
 		{
-			printf("Removing object. UID: %i\n", deleted_object_uid);
-			object_cleanup(state.scene.objects[deleted_object_uid]);
-			state.scene.objects.erase(deleted_object_uid);
-
-			if (state.scene.camera_control_id == deleted_object_uid)
+			bool materials_updated = false;
+			for (const PendingMaterial& pending_material : scene_update.materials)
 			{
-				state.scene.camera_control_id.reset();
+				materials_updated = register_material(pending_material) || materials_updated;
+			}
+			if (materials_updated)
+			{
+				update_materials_buffer(state);
 			}
 		}
-	}
 
-	// Receive any Reset Messages
-	while (optional<bool> received_reset = state.live_link.reset.receive())
-	{
-		state.runtime.blender_data_loaded = false;
-
-		for (auto& [unique_id, object] : state.scene.objects)
+		// Updated objects
+		for (Object& updated_object : scene_update.objects)
 		{
-			object_cleanup(object);
+			i32 updated_object_uid = updated_object.unique_id;
+
+			printf("Updating Object. UID: %i\n", updated_object_uid);
+
+			if (updated_object.has_mesh)
+			{
+				resolve_mesh_material_indices(updated_object.mesh);
+			}
+
+			// Cleanup old object
+			if (state.scene.objects.contains(updated_object_uid))
+			{
+				object_cleanup(state.scene.objects[updated_object_uid]);
+			}
+
+			// Create the Jolt body on the drained copy BEFORE the map insert
+			// (the JPH::Body* copies into the map — game/ main.cpp:2010)
+			if (updated_object.has_rigid_body)
+			{
+				object_add_jolt_body(updated_object);
+			}
+
+			// Finalize the character here too (parse only fills settings —
+			// Jolt creation is main-thread; deviation from game/)
+			if (updated_object.has_character)
+			{
+				updated_object.character = character_create(jolt_state, updated_object.character.settings);
+				if (updated_object.character.settings.player_controlled)
+				{
+					state.scene.player_character_id = updated_object_uid;
+				}
+			}
+
+			state.scene.objects[updated_object_uid] = updated_object;
+			scene_mark_indexes_dirty(state);
 		}
 
-		state.scene.objects.clear();
-		state.scene.camera_control_id.reset();
+		// Deleted objects
+		for (i32 deleted_object_uid : scene_update.deleted_object_uids)
+		{
+			if (state.scene.objects.contains(deleted_object_uid))
+			{
+				printf("Removing object. UID: %i\n", deleted_object_uid);
+				object_cleanup(state.scene.objects[deleted_object_uid]);
+				state.scene.objects.erase(deleted_object_uid);
+				scene_mark_indexes_dirty(state);
+
+				if (state.scene.camera_control_id == deleted_object_uid)
+				{
+					state.scene.camera_control_id.reset();
+				}
+				if (state.scene.player_character_id == deleted_object_uid)
+				{
+					state.scene.player_character_id.reset();
+				}
+			}
+		}
+
+		// Reset
+		if (scene_update.reset)
+		{
+			state.runtime.blender_data_loaded = false;
+
+			for (auto& [unique_id, object] : state.scene.objects)
+			{
+				object_cleanup(object);
+			}
+
+			state.scene.objects.clear();
+			state.scene.camera_control_id.reset();
+			state.scene.primary_sun_id.reset();
+			state.scene.player_character_id.reset();
+			state.fog.active_fog_controller_id.reset();
+			state.fog.active = false;
+			scene_reset_indexes(state);
+			reset_materials();
+			reset_images();
+		}
+	}
+}
+
+// Derives the internal render size from the window size and resolution
+// percentage (port of game/src/main.cpp:1356-1370)
+void update_render_resolution()
+{
+	state.window.resolution_percentage = CLAMP(
+		state.window.resolution_percentage,
+		MIN_RENDER_RESOLUTION_PERCENTAGE,
+		MAX_RENDER_RESOLUTION_PERCENTAGE
+	);
+
+	const i32 source_width = state.window.width > 0 ? state.window.width : 1920;
+	const i32 source_height = state.window.height > 0 ? state.window.height : 1080;
+	const f32 scale = (f32) state.window.resolution_percentage / 100.0f;
+
+	state.window.render_width = MAX(1, (i32)(source_width * scale + 0.5f));
+	state.window.render_height = MAX(1, (i32)(source_height * scale + 0.5f));
+}
+
+// Resizes all pass targets when the framebuffer size changed (port of
+// game/src/main.cpp:1372-1400). Swapchain-type passes track the window;
+// everything else tracks the scaled render resolution.
+void handle_resize(bool in_force = false)
+{
+	const i32 framebuffer_width = (i32) state.vk.swapchain_extent.width;
+	const i32 framebuffer_height = (i32) state.vk.swapchain_extent.height;
+
+	if (!in_force && framebuffer_width == state.window.width && framebuffer_height == state.window.height)
+	{
+		return;
+	}
+
+	state.window.width = framebuffer_width;
+	state.window.height = framebuffer_height;
+	update_render_resolution();
+
+	// Pass targets are destroyed immediately (the deletion queue handles
+	// buffers only) — idle covers render-scale changes; the window-resize
+	// path already idled inside recreate_swapchain
+	vkDeviceWaitIdle(state.vk.device);
+
+	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
+	{
+		RenderPassEntry& entry = state.render_passes.passes[pass_index];
+		if (entry.final_pass().desc.type == ERenderPassType::Swapchain)
+		{
+			entry.handle_resize(state.window.width, state.window.height);
+		}
+		else
+		{
+			entry.handle_resize(state.window.render_width, state.window.render_height);
+		}
+	}
+}
+
+// Camera-relative WASD player movement, Shift sprint, Space jump
+// (port of game/src/main.cpp:1811-1880). Disabled while the debug camera is
+// active or no player-controlled character exists.
+void update_player_character_control(f32 in_delta_time)
+{
+	if (!state.scene.player_character_id || state.debug_camera.active)
+	{
+		return;
+	}
+
+	if (!state.scene.objects.contains(*state.scene.player_character_id))
+	{
+		return;
+	}
+
+	const Camera& camera = get_active_camera();
+	const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+
+	Object& player_character_object = state.scene.objects[*state.scene.player_character_id];
+	Character& player_character_state = player_character_object.character;
+
+	HMM_Vec3 projected_cam_forward = vec3_plane_projection(camera.forward, UnitVectors::Up);
+	HMM_Vec3 projected_cam_right = vec3_plane_projection(camera_right, UnitVectors::Up);
+
+	if (HMM_LenSqrV3(projected_cam_forward) > 1.0e-6f)
+	{
+		projected_cam_forward = HMM_NormV3(projected_cam_forward);
+	}
+	else
+	{
+		projected_cam_forward = UnitVectors::Forward;
+	}
+
+	if (HMM_LenSqrV3(projected_cam_right) > 1.0e-6f)
+	{
+		projected_cam_right = HMM_NormV3(projected_cam_right);
+	}
+	else
+	{
+		projected_cam_right = HMM_NormV3(HMM_Cross(projected_cam_forward, UnitVectors::Up));
+	}
+
+	HMM_Vec3 move_direction = HMM_V3(0, 0, 0);
+	if (is_key_pressed(GLFW_KEY_W))
+	{
+		move_direction += projected_cam_forward;
+	}
+	if (is_key_pressed(GLFW_KEY_S))
+	{
+		move_direction -= projected_cam_forward;
+	}
+	if (is_key_pressed(GLFW_KEY_D))
+	{
+		move_direction += projected_cam_right;
+	}
+	if (is_key_pressed(GLFW_KEY_A))
+	{
+		move_direction -= projected_cam_right;
+	}
+
+	if (HMM_LenSqrV3(move_direction) > 1.0f)
+	{
+		move_direction = HMM_NormV3(move_direction);
+	}
+
+	if (is_key_pressed(GLFW_KEY_LEFT_SHIFT))
+	{
+		move_direction *= 3.0f;
+	}
+
+	const bool jump = is_key_pressed(GLFW_KEY_SPACE);
+	character_move(player_character_state, move_direction, jump, in_delta_time);
+}
+
+// Copies Jolt body transforms back into object transforms every frame
+// (unconditional — a no-op while paused since bodies don't move;
+// port of game/src/main.cpp:1800-1809)
+void update_physics_backed_object_transforms()
+{
+	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		object_copy_physics_transform(object, body_interface);
+	}
+}
+
+// ---- Skinned animation (ports of game/src/main.cpp:445-575) ----
+
+AnimationClip* armature_get_active_animation(Armature& in_armature)
+{
+	if (in_armature.animation_count == 0 || !in_armature.animations)
+	{
+		return nullptr;
+	}
+
+	in_armature.active_animation_index = CLAMP(in_armature.active_animation_index, 0, (i32) in_armature.animation_count - 1);
+	return &in_armature.animations[in_armature.active_animation_index];
+}
+
+void mesh_reset_skin_matrices(Mesh& in_mesh)
+{
+	for (u32 matrix_idx = 0; matrix_idx < in_mesh.skin_matrix_count; ++matrix_idx)
+	{
+		in_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+	}
+}
+
+void rewind_skinned_animations()
+{
+	scene_ensure_indexes(state);
+	for (i32 armature_object_id : state.scene.indexes.armature_object_ids)
+	{
+		auto found = state.scene.objects.find(armature_object_id);
+		if (found == state.scene.objects.end())
+		{
+			continue;
+		}
+
+		Armature& armature = found->second.armature;
+		armature.playback_time = 0.0f;
+		armature.current_frame = 0;
+	}
+}
+
+// Advances armature playback, computes each skinned mesh's final skin
+// matrices (armature_to_mesh * clip * mesh_to_armature), and packs them into
+// the shared per-frame arena (mesh.skin_matrix_arena_offset). Runs before
+// begin_frame — the arena ring makes the upload safe vs frames in flight.
+void update_skinned_animations(f32 in_delta_time)
+{
+	scene_ensure_indexes(state);
+
+	state.skin_matrices.items.clear();
+
+	// Phase A: advance armature playback
+	for (i32 armature_object_id : state.scene.indexes.armature_object_ids)
+	{
+		auto found = state.scene.objects.find(armature_object_id);
+		if (found == state.scene.objects.end())
+		{
+			continue;
+		}
+
+		Armature& armature = found->second.armature;
+		AnimationClip* animation = armature_get_active_animation(armature);
+		if (!animation || animation->frame_count <= 0)
+		{
+			continue;
+		}
+
+		if (state.runtime.is_simulating && state.animation.is_playing && state.animation.playback_rate > 0.0f)
+		{
+			armature.playback_time += in_delta_time * state.animation.playback_rate;
+
+			f32 duration = animation->duration_seconds;
+			if (duration <= 0.0f && animation->frame_rate > 0.0f)
+			{
+				duration = (f32) animation->frame_count / animation->frame_rate;
+			}
+			if (duration > 0.0f)
+			{
+				armature.playback_time = fmodf(armature.playback_time, duration);
+			}
+		}
+
+		if (animation->frame_rate > 0.0f)
+		{
+			armature.current_frame = CLAMP((i32)(armature.playback_time * animation->frame_rate), 0, animation->frame_count - 1);
+		}
+	}
+
+	// Phase B: compute + pack per-mesh skin matrices
+	for (i32 skinned_object_id : state.scene.indexes.skinned_mesh_object_ids)
+	{
+		auto found = state.scene.objects.find(skinned_object_id);
+		if (found == state.scene.objects.end())
+		{
+			continue;
+		}
+
+		Mesh& mesh = found->second.mesh;
+		mesh.skin_matrix_arena_offset = -1;
+		if (!mesh.has_skinned_vertices || mesh.skin_matrix_count == 0 || !mesh.skin_matrices)
+		{
+			continue;
+		}
+
+		mesh_reset_skin_matrices(mesh);
+
+		// The armature is a separate scene object referenced by id
+		auto armature_found = state.scene.objects.find(mesh.armature_id);
+		if (armature_found != state.scene.objects.end() && armature_found->second.has_armature)
+		{
+			Armature& armature = armature_found->second.armature;
+			AnimationClip* animation = armature_get_active_animation(armature);
+			if (animation && animation->skin_matrices && animation->frame_count > 0 && animation->bone_count > 0)
+			{
+				const i32 frame_idx = CLAMP(armature.current_frame, 0, animation->frame_count - 1);
+				const i32 bone_count = MIN(animation->bone_count, (i32) mesh.skin_matrix_count);
+				for (i32 bone_idx = 0; bone_idx < bone_count; ++bone_idx)
+				{
+					const HMM_Mat4& clip_matrix = animation->skin_matrices[frame_idx * animation->bone_count + bone_idx];
+					mesh.skin_matrices[bone_idx] = HMM_MulM4(
+						mesh.armature_to_mesh,
+						HMM_MulM4(clip_matrix, mesh.mesh_to_armature)
+					);
+				}
+			}
+		}
+
+		mesh.skin_matrix_arena_offset = (i32) state.skin_matrices.items.length();
+		for (u32 matrix_idx = 0; matrix_idx < mesh.skin_matrix_count; ++matrix_idx)
+		{
+			state.skin_matrices.items.add(mesh.skin_matrices[matrix_idx]);
+		}
+	}
+
+	skin_matrix_arena_upload(state);
+}
+
+// Picks the active fog controller: lowest-uid enabled+visible controller
+// (selection half of game/src/main.cpp:608-666; the fs_params packing is
+// Phase 3 with the fog render pass)
+void refresh_active_fog_controller()
+{
+	const std::optional<i32> previous_id = state.fog.active_fog_controller_id;
+
+	state.fog.active_fog_controller_id.reset();
+	state.fog.active = false;
+
+	for (auto& [unique_id, object] : state.scene.objects)
+	{
+		if (!object.has_fog_controller || !object.fog_controller.enabled || !object.visibility)
+		{
+			continue;
+		}
+
+		// Deterministic tie-break: lowest unique_id wins (map iteration is
+		// ordered, so the first hit is the lowest)
+		state.fog.active_fog_controller_id = unique_id;
+		state.fog.active = true;
+		break;
+	}
+
+	if (state.fog.active_fog_controller_id != previous_id)
+	{
+		if (state.fog.active_fog_controller_id)
+		{
+			printf("Active fog controller: UID %i\n", *state.fog.active_fog_controller_id);
+		}
+		else
+		{
+			printf("Active fog controller: none\n");
+		}
+	}
+}
+
+// Keeps state.scene.primary_sun_id pointing at a valid sun object, rescanning
+// the light index when the cached id goes stale (port of game/src/main.cpp:577-606)
+void refresh_primary_sun_id()
+{
+	if (state.scene.primary_sun_id)
+	{
+		auto found = state.scene.objects.find(*state.scene.primary_sun_id);
+		if (found != state.scene.objects.end() && object_is_sun_light(found->second))
+		{
+			return;
+		}
+		state.scene.primary_sun_id.reset();
+	}
+
+	scene_ensure_indexes(state);
+	for (i32 light_object_id : state.scene.indexes.light_object_ids)
+	{
+		auto found = state.scene.objects.find(light_object_id);
+		if (found != state.scene.objects.end() && object_is_sun_light(found->second))
+		{
+			state.scene.primary_sun_id = light_object_id;
+			return;
+		}
 	}
 }
 
@@ -741,14 +1582,55 @@ void frame(f32 in_delta_time)
 	{
 		CPU_TIMING_SCOPE("Camera + Controls");
 
+		// Space + Left Control toggle simulation (physics + animation playback)
+		DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, GLFW_KEY_SPACE, GLFW_KEY_LEFT_CONTROL);
+
 		// D + Left Control toggle debug camera
 		DEFINE_EVENT_TWO_KEYS(GLFW_KEY_D, GLFW_KEY_LEFT_CONTROL,
 			if (!state.debug_camera.active) state.debug_camera.camera = get_active_camera();
 			state.debug_camera.active = !state.debug_camera.active;
 		);
 
+		// R + Left Control: restore initial transforms (BEFORE body reset —
+		// the body rebuilds from current_transform), reset physics bodies,
+		// rewind animations
+		DEFINE_EVENT_TWO_KEYS(GLFW_KEY_R, GLFW_KEY_LEFT_CONTROL,
+			for (auto& [reset_uid, reset_object] : state.scene.objects)
+			{
+				reset_object.current_transform = reset_object.initial_transform;
+				if (reset_object.has_rigid_body && reset_object.rigid_body.jolt_body != nullptr)
+				{
+					object_reset_jolt_body(reset_object);
+				}
+			}
+			rewind_skinned_animations();
+		);
+
 		update_debug_camera(in_delta_time);
 		update_camera_control(in_delta_time);
+	}
+
+	{
+		CPU_TIMING_SCOPE("Simulation");
+		if (state.runtime.is_simulating)
+		{
+			update_player_character_control(in_delta_time);
+			jolt_update(in_delta_time);
+		}
+	}
+
+	{
+		CPU_TIMING_SCOPE("Object Transforms");
+		update_physics_backed_object_transforms();
+		scene_ensure_indexes(state);
+		refresh_primary_sun_id();
+		refresh_active_fog_controller();
+		build_render_object_snapshot(state);
+	}
+
+	{
+		CPU_TIMING_SCOPE("Skinned Animation");
+		update_skinned_animations(in_delta_time);
 	}
 
 	CPU_TIMING_SCOPE("Rendering");
@@ -759,25 +1641,88 @@ void frame(f32 in_delta_time)
 		return;
 	}
 
+	// Window size changes (begin_frame already recreated the swapchain)
+	handle_resize();
+
 	// View + Projection matrix setup
 	const Camera& camera = get_active_camera();
 	const f32 fov = HMM_AngleDeg(60.0f);
-	const f32 aspect_ratio = (f32) state.vk.swapchain_extent.width / (f32) state.vk.swapchain_extent.height;
+	const f32 aspect_ratio = (f32) state.window.render_width / (f32) state.window.render_height;
 	const HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
 
 	const HMM_Vec3 target = camera.location + camera.forward * 10;
 	const HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 	const HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
 
-	forward_pass_begin(&state.vk);
-	for (auto& [unique_id, object] : state.scene.objects)
+	// Per-frame UBO. Sun sourced from the scene's primary sun; the fallback
+	// is the scaffold's original hardcoded sun (deliberate deviation from
+	// game/'s black fallback) so sunless scenes look unchanged.
+	PerFrameData per_frame_data = {
+		.view = view_matrix,
+		.projection = projection_matrix,
+		.view_projection = view_projection_matrix,
+		.camera_position = HMM_V4V(camera.location, 1.0f),
+		.camera_forward = HMM_V4V(camera.forward, 0.0f),
+		.sun_direction = HMM_V4V(-HMM_NormV3(HMM_V3(0.3f, 0.5f, 0.8f)), 0.0f),
+		.sun_color = HMM_V4(1.0f, 1.0f, 1.0f, 1.0f),
+	};
+
+	if (state.scene.primary_sun_id)
 	{
-		if (object.has_mesh && object.visibility)
-		{
-			forward_pass_draw_mesh(&state.vk, object.mesh, view_projection_matrix, object_get_model_matrix(object));
-		}
+		Object& sun_object = state.scene.objects[*state.scene.primary_sun_id];
+		const HMM_Vec3 sun_direction = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), sun_object.current_transform.rotation));
+		per_frame_data.sun_direction = HMM_V4V(sun_direction, 0.0f);
+		per_frame_data.sun_color = HMM_V4V(sun_object.light.color * sun_object.light.sun.power, 1.0f);
 	}
-	forward_pass_end(&state.vk);
+
+	// Descriptor writes happen before any of this frame's binds are recorded
+	RenderPass& forward_render_pass = get_render_pass(ERenderPass::Forward);
+	frame_data_update(
+		&state.vk,
+		per_frame_data,
+		get_render_object_snapshot_buffer(state).get_gpu_buffer(),
+		state.materials.buffer.get_gpu_buffer(),
+		get_skin_matrix_arena_buffer(state).get_gpu_buffer(),
+		state.images.items.data(),
+		(i32) state.images.items.length()
+	);
+	frame_data_write_copy_input(&state.vk, forward_render_pass.get_color_output(0).view);
+
+	// Forward: scene meshes -> offscreen HDR target at render resolution
+	forward_render_pass.execute(&state.vk, [&](i32)
+	{
+		forward_pass_bind(&state.vk);
+
+		if (state.render_objects.valid)
+		{
+			for (i32 mesh_object_id : state.scene.indexes.mesh_object_ids)
+			{
+				auto found = state.scene.objects.find(mesh_object_id);
+				if (found == state.scene.objects.end())
+				{
+					continue;
+				}
+
+				Object& object = found->second;
+				if (object.visibility && object.render_object_index >= 0)
+				{
+					forward_pass_draw_mesh(&state.vk, object.mesh, object.render_object_index);
+				}
+			}
+		}
+	});
+
+	// Copy to swapchain: sample the scene color (transition before execute —
+	// barriers are illegal inside dynamic rendering)
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		forward_render_pass.get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+	get_render_pass(ERenderPass::CopyToSwapchain).execute(&state.vk, [&](i32)
+	{
+		copy_to_swapchain_pass_draw(&state.vk);
+	});
 
 	// Debug frame dump for automated visual verification
 	static const char* screenshot_path = getenv("GAME2_SCREENSHOT");
@@ -837,8 +1782,52 @@ int main(int argc, char** argv)
 	glfwSetCursorPosCallback(window, cursor_position_callback);
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
+	jolt_init();
+
 	vulkan_context_init(&state.vk, window);
+	frame_data_init(&state.vk);
 	forward_pass_init(&state.vk);
+	copy_to_swapchain_pass_init(&state.vk);
+
+	// These buffers must exist even for empty scenes: descriptor set 0
+	// bindings 1-3 are written every frame
+	render_object_snapshot_ensure_capacity(state, 1);
+	init_materials_buffer(state);
+	skin_matrix_arena_ensure_capacity(state, 1);
+
+	// Render-scale override for testing (percentage, 25..100)
+	if (const char* render_scale_env = getenv("GAME2_RENDER_SCALE"))
+	{
+		state.window.resolution_percentage = (i32) strtol(render_scale_env, nullptr, 10);
+	}
+
+	// Register render passes and size their targets
+	get_render_pass_entry(ERenderPass::Forward).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = Render::SCENE_COLOR_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				.clear_value = {{{ 0.1f, 0.2f, 0.4f, 1.0f }}},
+			},
+		},
+		.depth_output = {
+			.format = Render::SCENE_DEPTH_FORMAT,
+			.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.clear_value = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "Forward",
+	});
+
+	get_render_pass_entry(ERenderPass::CopyToSwapchain).init_final((RenderPassDesc) {
+		.type = ERenderPassType::Swapchain,
+		.debug_label = "Copy To Swapchain",
+	});
+
+	handle_resize(/*in_force=*/ true);
 
 	// If we passed an init file, load it as a flatbuffer Update on startup
 	// (port of game/src/main.cpp:1666-1684)
@@ -904,7 +1893,24 @@ int main(int argc, char** argv)
 	}
 	state.scene.objects.clear();
 
+	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
+	{
+		state.render_passes.passes[pass_index].cleanup();
+	}
+
+	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
+	{
+		state.render_objects.buffers[buffer_idx].destroy_gpu_buffer();
+		state.skin_matrices.buffers[buffer_idx].destroy_gpu_buffer();
+	}
+	state.materials.buffer.destroy_gpu_buffer();
+	reset_images();
+
+	jolt_shutdown();
+
+	copy_to_swapchain_pass_shutdown(&state.vk);
 	forward_pass_shutdown(&state.vk);
+	frame_data_shutdown(&state.vk);
 	vulkan_context_shutdown(&state.vk);
 
 	glfwDestroyWindow(window);

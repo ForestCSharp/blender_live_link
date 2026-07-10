@@ -12,6 +12,6 @@ for ext in vert frag comp; do
 		file_name=$(basename $f)
 		compiled_file="bin/shaders/$file_name.spv"
 		echo "compiling $f to $compiled_file"
-		glslc "$f" -o "$compiled_file"
+		glslc -I data/shaders --target-env=vulkan1.3 "$f" -o "$compiled_file"
 	done
 done
