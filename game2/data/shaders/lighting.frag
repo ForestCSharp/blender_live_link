@@ -54,6 +54,12 @@ layout(set = 0, binding = 6, std430) readonly buffer PointLightsBlock
 	PointLightData point_lights[];
 };
 
+// Blurred half-res SSAO (BlurPass output)
+layout(set = 0, binding = 9) uniform sampler2D ssao_tex;
+
+// Filtered half-res screen-space contact shadow mask
+layout(set = 0, binding = 10) uniform sampler2D screen_space_shadow_tex;
+
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
 	SpotLightData spot_lights[];
@@ -218,10 +224,36 @@ float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
 	return max(shadow_bias, shadow_bias * (1.0 + 8.0 * slope_factor));
 }
 
-// Frustum-mode cascade selection: first cascade whose view-forward distance
-// covers the receiver (game/ lighting.glsl:449-461)
+const int SHADOW_CASCADE_PLACEMENT_FRUSTUM = 0;
+const int SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES = 1;
+
+// Cascade selection (game/ lighting.glsl:420-463). Frustum mode: first
+// cascade whose view-forward distance covers the receiver. CenteredSquares
+// mode: first cascade whose square actually contains the receiver.
 int select_shadow_cascade(vec3 in_surface_position)
 {
+	if (shadow_cascade_placement_mode == SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES)
+	{
+		for (int cascade_idx = 0; cascade_idx < shadow_num_cascades; ++cascade_idx)
+		{
+			vec4 shadow_clip = shadow_view_projections[cascade_idx] * vec4(in_surface_position, 1.0);
+			if (shadow_clip.w <= 0.0)
+			{
+				continue;
+			}
+
+			vec3 ndc = shadow_clip.xyz / shadow_clip.w;
+			vec2 shadow_uv = ndc.xy * 0.5 + 0.5;
+			shadow_uv.y = 1.0 - shadow_uv.y;
+			if (shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0)
+			{
+				return cascade_idx;
+			}
+		}
+
+		return -1;
+	}
+
 	float receiver_camera_distance = dot(in_surface_position - view_position, normalize(view_forward));
 	for (int cascade_idx = 0; cascade_idx < shadow_num_cascades; ++cascade_idx)
 	{
@@ -231,6 +263,16 @@ int select_shadow_cascade(vec3 in_surface_position)
 		}
 	}
 	return -1;
+}
+
+vec3 debug_shadow_cascade_color(vec3 in_surface_position)
+{
+	int cascade_idx = select_shadow_cascade(in_surface_position);
+	if (cascade_idx == 0) { return vec3(1.0, 0.0, 0.0); }
+	if (cascade_idx == 1) { return vec3(0.0, 1.0, 0.0); }
+	if (cascade_idx == 2) { return vec3(0.0, 0.0, 1.0); }
+	if (cascade_idx == 3) { return vec3(1.0, 1.0, 0.0); }
+	return vec3(0.0);
 }
 
 float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal, vec3 in_light_direction)
@@ -250,6 +292,10 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 	vec3 biased_position = in_surface_position + normalize(in_surface_normal) * 0.02;
 
 	vec4 shadow_clip = shadow_view_projections[cascade_idx] * vec4(biased_position, 1.0);
+	if (shadow_clip.w <= 0.0)
+	{
+		return 1.0;
+	}
 	vec3 ndc = shadow_clip.xyz / shadow_clip.w;
 
 	vec2 shadow_uv = ndc.xy * 0.5 + 0.5;
@@ -305,7 +351,7 @@ void main()
 		float metallic = sampled_rme.g;
 		float emission_strength = sampled_rme.b;
 
-		float ambient_occlusion = 1.0;	// SSAO ports in 3b
+		float ambient_occlusion = (ssao_enable != 0) ? texture(ssao_tex, uv).r : 1.0;
 
 		// When emission_strength > 0, the emission color lives in color_tex
 		if (emission_strength > 0.0)
@@ -317,6 +363,14 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
+
+#if defined(SHADOWS_ENABLED)
+			if (shadow_debug_show_cascade_selection != 0)
+			{
+				frag_color = vec4(debug_shadow_cascade_color(position), 1.0);
+				return;
+			}
+#endif
 
 			if (direct_lighting_enable != 0)
 			{
@@ -339,6 +393,12 @@ void main()
 					float sun_shadow_visibility = sun_lights[i].cast_shadows != 0
 						? sample_shadow_visibility(position, normal, sun_lights[i].direction.xyz)
 						: 1.0;
+
+					if (screen_space_shadows_enable != 0 && sun_lights[i].cast_shadows != 0)
+					{
+						float screen_space_shadow_visibility = texture(screen_space_shadow_tex, uv).r;
+						sun_shadow_visibility *= mix(1.0, screen_space_shadow_visibility, screen_space_shadow_intensity);
+					}
 
 					final_color.xyz += sun_shadow_visibility * sample_sun_light(
 						sun_lights[i], view_position, position, normal,

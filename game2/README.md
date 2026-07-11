@@ -71,23 +71,26 @@ both bind the same port.
 - Shaders are plain GLSL 450 compiled by `glslc` with `#include` support
   (`-I data/shaders`); `shader_common.h` is shared between GLSL and C++.
 - Rendering goes through a `RenderPass` framework (port of game/'s) on
-  dynamic rendering, running game/'s deferred core (Phase 3a, reverse-Z):
-  cascaded EVSM shadow maps (2048²×4 layered Array pass + 21-tap separable
-  moments blur) → G-buffer geometry
-  (4× RGBA32F + D32, sky composited at the far plane from a 256² octahedral
-  bake cached on sun movement) → cook-torrance lighting (point/spot/sun SSBO
-  rings + EVSM cascade sampling) → Reinhard tonemapping → copy-to-swapchain,
-  all at render scale with CPU frustum culling. Camera + sun live in a
-  per-frame UBO; per-object transforms in a triple-buffered ObjectData SSBO
-  indexed by a push-constant `object_index` (game/'s snapshot pattern). GPU
-  timestamps feed the GpuTimings system.
+  dynamic rendering, running game/'s full post chain (Phases 3a+3b,
+  reverse-Z): cascaded EVSM shadow maps (2048²×4 layered Array pass + 21-tap
+  separable moments blur, Frustum/CenteredSquares placement) → G-buffer
+  geometry (4× RGBA32F + D32, sky composited at the far plane from a 256²
+  octahedral bake cached on sun movement) → half-res SSAO + blur → half-res
+  screen-space contact shadows (trace + edge-aware filter) → cook-torrance
+  lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
+  DOF combine → optional shaded wireframe → temporal AA (jittered projection,
+  ping-pong history) → tonemapping (exposure 1.5 + Reinhard) → FXAA →
+  copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
+  sun live in a per-frame UBO; per-object transforms in a triple-buffered
+  ObjectData SSBO indexed by a push-constant `object_index` (game/'s snapshot
+  pattern). GPU timestamps feed the GpuTimings system.
 - Content systems (Phase 2): materials + **bindless** textures (128-slot
   sampled-image array, PARTIALLY_BOUND, rewritten per frame), armatures +
   in-shader skinning (shared per-frame skin-matrix arena ring), Jolt 5.2.1
   physics (convex-hull bodies), JPH::Character controller, fog-controller
   data. Live-link registration all happens on the main thread through one
   composite `SceneUpdate` channel message per flatbuffer update.
-- Post effects (Phase 3b: SSAO, fog, DOF, TAA/FXAA, shadow-blur caching), GI +
-  tessellation (Phase 3c), and ImGui (Phase 4) are not ported yet.
+- GI + tessellation (Phase 3c) and ImGui + debug views (Phase 4) are not
+  ported yet; post-effect toggles are `GAME2_*` env vars until ImGui lands.
 
 See [TODO.md](TODO.md) for the full catalog of remaining porting work.

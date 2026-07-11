@@ -29,13 +29,28 @@ static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 100;
 // slots back in here as passes are ported in Phase 3)
 static constexpr i32 MAX_SHADOW_CASCADES = 4;
 
+enum class EShadowCascadePlacementMode : i32
+{
+	Frustum = 0,
+	CenteredSquares = 1,
+	MAX,
+};
+
 enum class ERenderPass : i32
 {
 	ShadowDepth,
 	ShadowBlur,
 	Geometry,
+	SSAO,
+	SSAO_Blur,
+	ScreenSpaceShadows,
 	Lighting,
+	Fog,
+	DofCombine,
+	WireOverlay,
+	TemporalAA,
 	Tonemapping,
+	FXAA,
 	CopyToSwapchain,
 
 	COUNT,
@@ -227,7 +242,7 @@ struct State
 
 	struct TonemappingState
 	{
-		f32 exposure_bias = 0.0f;
+		f32 exposure_bias = 1.5f;	// game/ parity (state.h:361)
 	} tonemapping;
 
 	struct SkyState
@@ -241,10 +256,72 @@ struct State
 	{
 		bool rendering_enable = true;
 		bool blur_enable = true;
+		// Debug: freeze the shadow map (skip re-render/re-blur; lighting keeps
+		// sampling the stale map with its frozen matrices)
+		bool depth_freeze = false;
+		bool force_recapture = false;
 		i32 num_cascades = 3;
 		f32 frustum_cascade_distance_scale = 1.0f;
+		f32 centered_square_cascade_distance_scale = 0.25f;
+		EShadowCascadePlacementMode cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
+		HMM_Vec3 centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);
+		f32 centered_square_lookahead_distance = 50.0f;
+		bool debug_show_cascade_selection = false;
 		f32 shadow_bias = 0.001f;
+
+		struct ScreenSpaceShadowState
+		{
+			bool enable = true;
+			bool debug_show_mask = false;
+			f32 ray_length = 1.0f;
+			f32 thickness = 0.08f;
+			f32 jitter_strength = 1.0f;
+			i32 max_steps = 24;
+			f32 intensity = 1.0f;
+			i32 filter_radius = 2;
+		} screen_space;
 	} shadow;
+
+	struct SsaoState
+	{
+		bool enable = true;
+	} ssao;
+
+	struct TemporalAAState
+	{
+		bool enable = true;
+		bool enable_fxaa = true;
+		bool history_valid = false;
+		i32 history_index = 0;
+		i32 jitter_phase = 0;
+		f32 blend_alpha = 0.5f;
+		f32 sharpen_strength = 0.08f;
+		f32 rejection_threshold = 0.25f;
+		i32 debug_mode = 0;
+		HMM_Vec2 current_jitter_pixels = HMM_V2(0.0f, 0.0f);
+		HMM_Mat4 previous_view_projection = {};
+	} temporal_aa;
+
+	struct WireframeState
+	{
+		bool shaded_wireframe = false;
+		f32 width = 0.5f;
+		f32 softness = 1.0f;
+		f32 opacity = 0.75f;
+		HMM_Vec4 color = HMM_V4(0.01f, 0.01f, 0.01f, 1.0f);
+		f32 visibility_tolerance = 0.02f;
+	} wireframe;
+
+	struct DofState
+	{
+		bool enable = true;
+		f32 focus_distance = 30.0f;
+		f32 focus_range = 120.0f;
+		f32 max_coc_radius = 8.0f;
+		f32 foreground_blur_scale = 0.5f;
+		f32 background_blur_scale = 1.0f;
+		bool debug_show_coc = false;
+	} dof;
 
 	// Fog controller selection (data only — fs_params + the fog render pass
 	// arrive in Phase 3). Deviation from game/: active_fog_controller_id

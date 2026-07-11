@@ -49,6 +49,14 @@ using std::optional;
 #include "render/geometry_pass.h"
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
+#include "render/ssao_pass.h"
+#include "render/blur_pass.h"
+#include "render/screen_space_shadows_pass.h"
+#include "render/fog_pass.h"
+#include "render/dof_combine_pass.h"
+#include "render/wire_overlay_pass.h"
+#include "render/temporal_aa_pass.h"
+#include "render/fxaa_pass.h"
 #include "render/lighting_pass.h"
 #include "render/tonemapping_pass.h"
 #include "render/sky_pass.h"
@@ -733,7 +741,26 @@ void live_link_thread_function()
 	hints.ai_socktype = SOCK_STREAM;
 
 	const char* HOST = "127.0.0.1";
-	getaddrinfo(HOST, state.live_link.port.c_str(), &hints, &res);
+
+	// getaddrinfo can transiently fail (system resolver hiccups) — retry
+	// instead of dereferencing a null result
+	res = nullptr;
+	while (state.runtime.game_running)
+	{
+		const int getaddrinfo_result = getaddrinfo(HOST, state.live_link.port.c_str(), &hints, &res);
+		if (getaddrinfo_result == 0 && res != nullptr)
+		{
+			break;
+		}
+
+		printf("live link: getaddrinfo failed (%s), retrying\n", gai_strerror(getaddrinfo_result));
+		res = nullptr;
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+	if (res == nullptr)
+	{
+		return;	// shutting down before the resolver ever succeeded
+	}
 
 	// make a socket
 	state.live_link.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
@@ -1137,6 +1164,9 @@ void handle_resize(bool in_force = false)
 			entry.handle_resize(state.window.render_width, state.window.render_height);
 		}
 	}
+
+	// The TAA history targets were just recreated
+	state.temporal_aa.history_valid = false;
 }
 
 // Camera-relative WASD player movement, Shift sprint, Space jump
@@ -1661,11 +1691,27 @@ void frame(f32 in_delta_time)
 	// Window size changes (begin_frame already recreated the swapchain)
 	handle_resize();
 
-	// View + Projection matrix setup
+	// View + Projection matrix setup (TAA jitters the projection; the
+	// unjittered previous VP is not kept — game/ reprojects with the
+	// jittered one, main.cpp:3526)
 	const Camera& camera = get_active_camera();
 	const f32 fov = HMM_AngleDeg(60.0f);
 	const f32 aspect_ratio = (f32) state.window.render_width / (f32) state.window.render_height;
-	const HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
+	HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
+	if (state.temporal_aa.enable)
+	{
+		state.temporal_aa.jitter_phase = (i32) (state.vk.frame_number & 1);
+		state.temporal_aa.current_jitter_pixels = TemporalAAPass::get_decima_jitter_pixels(state.temporal_aa.jitter_phase);
+		projection_matrix = TemporalAAPass::apply_projection_jitter(
+			projection_matrix,
+			state.temporal_aa.current_jitter_pixels,
+			HMM_V2((f32) state.window.render_width, (f32) state.window.render_height)
+		);
+	}
+	else
+	{
+		state.temporal_aa.current_jitter_pixels = HMM_V2(0.0f, 0.0f);
+	}
 
 	const HMM_Vec3 target = camera.location + camera.forward * 10;
 	const HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
@@ -1707,8 +1753,147 @@ void frame(f32 in_delta_time)
 		(i32) state.images.items.length()
 	);
 	RenderPass& tonemapping_render_pass = get_render_pass(ERenderPass::Tonemapping);
-	frame_data_write_copy_input(&state.vk, tonemapping_render_pass.get_color_output(0).view);
-	tonemapping_pass_update(&state.vk, lighting_render_pass.get_color_output(0).view, frame_data.linear_sampler);
+	// Height fog runs when an enabled fog controller exists; downstream
+	// passes read its output instead of the lighting target
+	RenderPass& fog_render_pass = get_render_pass(ERenderPass::Fog);
+	const bool fog_render_active = state.fog.active && state.fog.debug_active
+		&& state.fog.active_fog_controller_id.has_value()
+		&& state.scene.objects.contains(*state.fog.active_fog_controller_id);
+	if (fog_render_active)
+	{
+		const FogController& fog_controller = state.scene.objects[*state.fog.active_fog_controller_id].fog_controller;
+		FogFsParams fog_fs_params = {
+			.camera_position = camera.location,
+			.fog_base_height = fog_controller.base_height,
+			.fog_color = fog_controller.fog_color,
+			.density = fog_controller.density,
+			.scale_height = fog_controller.scale_height,
+			.max_distance = fog_controller.max_distance,
+			.ceiling_enabled = fog_controller.ceiling_enabled ? 1 : 0,
+			.ceiling_height = fog_controller.ceiling_height,
+			.ceiling_fade = fog_controller.ceiling_fade,
+			.ambient_intensity = fog_controller.ambient_intensity,
+			.sun_intensity = fog_controller.sun_intensity,
+			.anisotropy = fog_controller.anisotropy,
+			// game/ parity: no real sun means no sun in-scatter (the
+			// PerFrameData fallback sun only drives the sky)
+			.sun_direction = state.scene.primary_sun_id ? per_frame_data.sun_direction.XYZ : HMM_V3(0.0f, 0.0f, -1.0f),
+			.sun_color = state.scene.primary_sun_id ? per_frame_data.sun_color.XYZ : HMM_V3(0.0f, 0.0f, 0.0f),
+		};
+		fog_pass_update(
+			&state.vk,
+			fog_fs_params,
+			lighting_render_pass.get_color_output(0).view,
+			geometry_render_pass.get_color_output(1).view
+		);
+	}
+
+	VkImageView post_fog_scene_color_view = fog_render_active
+		? fog_render_pass.get_color_output(0).view
+		: lighting_render_pass.get_color_output(0).view;
+
+	// DOF gathers from the post-fog color; tonemapping reads whichever pass
+	// ran last
+	RenderPass& dof_combine_render_pass = get_render_pass(ERenderPass::DofCombine);
+	if (state.dof.enable)
+	{
+		DofCombineFsParams dof_combine_fs_params = {
+			.cam_pos = HMM_V4V(camera.location, 1.0f),
+			.cam_forward = HMM_V4V(camera.forward, 0.0f),
+			.screen_size = HMM_V2((f32) state.window.render_width, (f32) state.window.render_height),
+			.focus_distance = state.dof.focus_distance,
+			.focus_range = state.dof.focus_range,
+			.max_coc_radius = state.dof.max_coc_radius,
+			.foreground_blur_scale = state.dof.foreground_blur_scale,
+			.background_blur_scale = state.dof.background_blur_scale,
+			.debug_mode = state.dof.debug_show_coc ? 1 : 0,
+		};
+		dof_combine_pass_update(
+			&state.vk,
+			dof_combine_fs_params,
+			post_fog_scene_color_view,
+			geometry_render_pass.get_color_output(1).view
+		);
+	}
+
+	VkImageView post_dof_scene_color_view = state.dof.enable
+		? dof_combine_render_pass.get_color_output(0).view
+		: post_fog_scene_color_view;
+
+	// Shaded wireframe copies the post-DOF color and blends wires on top
+	RenderPass& wire_overlay_render_pass = get_render_pass(ERenderPass::WireOverlay);
+	if (state.wireframe.shaded_wireframe)
+	{
+		WireOverlayMeshFsParams wire_fs_params = {
+			.color = state.wireframe.color,
+			.camera_position = HMM_V4V(camera.location, 1.0f),
+			.camera_forward = HMM_V4V(HMM_NormV3(camera.forward), 0.0f),
+			.screen_size = HMM_V2((f32) state.window.render_width, (f32) state.window.render_height),
+			.width = state.wireframe.width,
+			.softness = state.wireframe.softness,
+			.opacity = state.wireframe.opacity,
+			.visibility_tolerance = state.wireframe.visibility_tolerance,
+		};
+		WireOverlayPass::update(
+			&state.vk,
+			wire_fs_params,
+			post_dof_scene_color_view,
+			geometry_render_pass.get_color_output(1).view
+		);
+	}
+
+	VkImageView post_wire_scene_color_view = state.wireframe.shaded_wireframe
+		? wire_overlay_render_pass.get_color_output(0).view
+		: post_dof_scene_color_view;
+
+	// TAA ping-pong: write into set history_index, read the other set's
+	// history output
+	RenderPassEntry& temporal_aa_entry = get_render_pass_entry(ERenderPass::TemporalAA);
+	const i32 temporal_aa_output_index = state.temporal_aa.history_index;
+	const i32 temporal_aa_previous_index = (temporal_aa_output_index + 1) % 2;
+	const auto get_temporal_aa_pass = [&](i32 in_set_idx) -> RenderPass& {
+		return in_set_idx == 0 ? temporal_aa_entry.intermediate_pass() : temporal_aa_entry.final_pass();
+	};
+	if (state.temporal_aa.enable)
+	{
+		TemporalAaFsParams temporal_aa_fs_params = {
+			.previous_view_projection = state.temporal_aa.previous_view_projection,
+			.screen_size = HMM_V2((f32) state.window.render_width, (f32) state.window.render_height),
+			.sharpen_axis = (state.temporal_aa.jitter_phase & 1) == 1 ? HMM_V2(1.0f, 0.0f) : HMM_V2(0.0f, 1.0f),
+			.blend_alpha = state.temporal_aa.blend_alpha,
+			.sharpen_strength = state.temporal_aa.sharpen_strength,
+			.rejection_threshold = state.temporal_aa.rejection_threshold,
+			.history_valid = state.temporal_aa.history_valid ? 1 : 0,
+			.debug_mode = state.temporal_aa.debug_mode,
+		};
+		TemporalAAPass::update(
+			&state.vk,
+			temporal_aa_fs_params,
+			post_wire_scene_color_view,
+			geometry_render_pass.get_color_output(1).view,
+			get_temporal_aa_pass(temporal_aa_previous_index).get_color_output(1).view
+		);
+	}
+
+	VkImageView pre_tonemap_scene_color_view = state.temporal_aa.enable
+		? get_temporal_aa_pass(temporal_aa_output_index).get_color_output(0).view
+		: post_wire_scene_color_view;
+	tonemapping_pass_update(&state.vk, pre_tonemap_scene_color_view, frame_data.linear_sampler);
+
+	// FXAA reads the tonemapped LDR target; the copy pass presents whichever
+	// ran last
+	RenderPass& fxaa_render_pass = get_render_pass(ERenderPass::FXAA);
+	const bool fxaa_active = state.temporal_aa.enable_fxaa;
+	if (fxaa_active)
+	{
+		FXAAPass::update(&state.vk, tonemapping_render_pass.get_color_output(0).view);
+	}
+	frame_data_write_copy_input(
+		&state.vk,
+		fxaa_active
+			? fxaa_render_pass.get_color_output(0).view
+			: tonemapping_render_pass.get_color_output(0).view
+	);
 	sky_pass_update(&state.vk);
 
 	// Re-bake the octahedral sky when the sun moved (records before the
@@ -1719,8 +1904,15 @@ void frame(f32 in_delta_time)
 
 	// Cascade matrices are CPU-side inputs to both the shadow draw and the
 	// lighting shader's receiver reprojection — compute before the fs_params
-	// upload below
-	ShadowDepthPass::compute_cascade_matrices(state, camera);
+	// upload below. The centered-squares anchor tracks the camera unless the
+	// shadow map is frozen (game/ main.cpp:2990).
+	if (!state.shadow.depth_freeze)
+	{
+		state.shadow.centered_square_center = camera.location
+			+ HMM_NormV3(camera.forward) * state.shadow.centered_square_lookahead_distance;
+	}
+	const bool shadow_map_updated = ShadowDepthPass::compute_cascade_matrices(state, camera);
+	state.shadow.force_recapture = false;
 
 	// Lighting fs_params: game/'s layout with GI/SSAO/SSS toggles forced 0
 	// (those systems port in 3b/3c)
@@ -1731,6 +1923,7 @@ void frame(f32 in_delta_time)
 	lighting_fs_params.num_spot_lights = (i32) state.lighting.spot_lights.length();
 	lighting_fs_params.num_sun_lights = (i32) state.lighting.sun_lights.length();
 	lighting_fs_params.direct_lighting_enable = 1;
+	lighting_fs_params.ssao_enable = state.ssao.enable ? 1 : 0;
 	lighting_fs_params.shadow_bias = state.shadow.shadow_bias;
 	lighting_fs_params.shadow_map_texel_size = HMM_V2(
 		1.0f / (f32) ShadowDepthPass::ShadowMapResolution,
@@ -1740,6 +1933,8 @@ void frame(f32 in_delta_time)
 	{
 		lighting_fs_params.shadow_map_enable = 1;
 		lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(state);
+		lighting_fs_params.shadow_cascade_placement_mode = (i32) state.shadow.cascade_placement_mode;
+		lighting_fs_params.shadow_debug_show_cascade_selection = state.shadow.debug_show_cascade_selection ? 1 : 0;
 		lighting_fs_params.shadow_cascade_distances = HMM_V4(
 			ShadowDepthPass::cascade_distances[0],
 			ShadowDepthPass::cascade_distances[1],
@@ -1754,6 +1949,20 @@ void frame(f32 in_delta_time)
 
 	RenderPass& shadow_render_pass = get_render_pass(ERenderPass::ShadowDepth);
 	RenderPassEntry& shadow_blur_entry = get_render_pass_entry(ERenderPass::ShadowBlur);
+	RenderPass& ssao_render_pass = get_render_pass(ERenderPass::SSAO);
+	RenderPassEntry& ssao_blur_entry = get_render_pass_entry(ERenderPass::SSAO_Blur);
+	RenderPassEntry& screen_space_shadows_entry = get_render_pass_entry(ERenderPass::ScreenSpaceShadows);
+
+	// Screen-space contact shadows trace toward the shadow-casting sun
+	Object* screen_space_shadow_sun = state.shadow.rendering_enable && state.shadow.screen_space.enable
+		? ShadowDepthPass::get_valid_shadow_sun(state)
+		: nullptr;
+	const bool screen_space_shadows_valid = screen_space_shadow_sun != nullptr;
+	if (screen_space_shadows_valid)
+	{
+		lighting_fs_params.screen_space_shadows_enable = 1;
+		lighting_fs_params.screen_space_shadow_intensity = state.shadow.screen_space.intensity;
+	}
 	// Lighting samples the blurred moments (soft penumbra) unless the blur is
 	// disabled — game/'s default is blurred
 	VkImageView shadow_moments_view = state.shadow.blur_enable
@@ -1764,16 +1973,50 @@ void frame(f32 in_delta_time)
 		lighting_fs_params,
 		geometry_render_pass.color_outputs.data(),
 		shadow_moments_view,
+		ssao_blur_entry.final_pass().get_color_output(0).view,
+		screen_space_shadows_entry.final_pass().get_color_output(0).view,
 		state.lighting.point_buffers[state.lighting.buffer_index].get_gpu_buffer(),
 		state.lighting.spot_buffers[state.lighting.buffer_index].get_gpu_buffer(),
 		state.lighting.sun_buffers[state.lighting.buffer_index].get_gpu_buffer()
 	);
 
+	ssao_pass_update(
+		&state.vk,
+		HMM_V2((f32) ssao_render_pass.current_width, (f32) ssao_render_pass.current_height),
+		view_matrix,
+		projection_matrix,
+		state.ssao.enable,
+		geometry_render_pass.get_color_output(1).view,	// world position
+		geometry_render_pass.get_color_output(2).view,	// world normal
+		ssao_render_pass.get_color_output(0).view,
+		ssao_blur_entry.intermediate_pass().get_color_output(0).view
+	);
+
+	{
+		RenderPass& screen_space_trace_pass = screen_space_shadows_entry.intermediate_pass();
+		const HMM_Vec3 screen_space_sun_dir = screen_space_shadows_valid
+			? HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), screen_space_shadow_sun->current_transform.rotation))
+			: HMM_V3(0.0f, 0.0f, -1.0f);
+		ScreenSpaceShadowsPass::update(
+			&state.vk,
+			state,
+			HMM_V2((f32) screen_space_trace_pass.current_width, (f32) screen_space_trace_pass.current_height),
+			view_matrix,
+			projection_matrix,
+			screen_space_sun_dir,
+			screen_space_shadows_valid,
+			geometry_render_pass.get_color_output(1).view,	// world position
+			geometry_render_pass.get_color_output(2).view,	// world normal
+			screen_space_trace_pass.get_color_output(0).view
+		);
+	}
+
 	// Shadow cascades: one moments slice per active cascade. Skipped entirely
-	// without a valid shadow sun; the transition below still runs so the
-	// (cleared or stale) moments image is legal to have bound — the lighting
-	// shader only samples it when shadow_map_enable is set.
-	if (ShadowDepthPass::has_valid_shadow_map)
+	// without a valid shadow sun, and under depth_freeze the stale map keeps
+	// being sampled with its frozen matrices; the transition below still runs
+	// so the (cleared or stale) moments image is legal to have bound — the
+	// lighting shader only samples it when shadow_map_enable is set.
+	if (shadow_map_updated)
 	{
 		shadow_render_pass.set_pass_count_override(ShadowDepthPass::get_active_cascade_count(state));
 		shadow_render_pass.execute(&state.vk, [&](i32 in_cascade_idx)
@@ -1789,9 +2032,11 @@ void frame(f32 in_delta_time)
 	);
 
 	// Separable blur over the moments — the source of EVSM's soft penumbra.
-	// The final target's transition runs even when the blur is skipped so the
-	// (possibly stale/cleared) image bound to the lighting set stays legal.
-	if (ShadowDepthPass::has_valid_shadow_map && state.shadow.blur_enable)
+	// Runs only when the shadow map re-rendered (frozen maps keep their old
+	// blur). The final target's transition runs even when the blur is skipped
+	// so the (possibly stale/cleared) image bound to the lighting set stays
+	// legal.
+	if (shadow_map_updated && state.shadow.blur_enable)
 	{
 		ShadowBlurPass::execute_separable(
 			&state.vk,
@@ -1847,28 +2092,145 @@ void frame(f32 in_delta_time)
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
 	}
+	// SSAO reads G-buffer position/normal (already SHADER_READ_ONLY), then
+	// its raw output is blurred; lighting samples the blurred result
+	ssao_render_pass.execute(&state.vk, [&](i32)
+	{
+		ssao_pass_draw(&state.vk);
+	});
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		ssao_render_pass.get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+	BlurPass::execute_separable(
+		&state.vk,
+		ssao_blur_entry,
+		ssao_pass.blur_horizontal_sets[state.vk.frame_index],
+		ssao_pass.blur_vertical_sets[state.vk.frame_index],
+		4
+	);
+
+	// Contact shadows trace + filter (skipped without a shadow sun; the
+	// transition keeps the bound mask image legal — the lighting shader only
+	// samples it when screen_space_shadows_enable is set)
+	if (screen_space_shadows_valid)
+	{
+		ScreenSpaceShadowsPass::execute(&state.vk, screen_space_shadows_entry);
+	}
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		screen_space_shadows_entry.final_pass().get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+
 	lighting_render_pass.execute(&state.vk, [&](i32)
 	{
 		lighting_pass_draw(&state.vk);
 	});
 
-	// Tonemapping reads the lit HDR scene color
+	// Fog reads the lit scene + G-buffer position; tonemapping then reads the
+	// post-fog color (or the lighting output directly when fog is off)
 	gpu_image_transition(
 		state.vk.command_buffers[state.vk.frame_index],
 		lighting_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
+	if (fog_render_active)
+	{
+		fog_render_pass.execute(&state.vk, [&](i32)
+		{
+			fog_pass_draw(&state.vk);
+		});
+		gpu_image_transition(
+			state.vk.command_buffers[state.vk.frame_index],
+			fog_render_pass.get_color_output(0),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+	}
+	if (state.dof.enable)
+	{
+		dof_combine_render_pass.execute(&state.vk, [&](i32)
+		{
+			dof_combine_pass_draw(&state.vk);
+		});
+		gpu_image_transition(
+			state.vk.command_buffers[state.vk.frame_index],
+			dof_combine_render_pass.get_color_output(0),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+	}
+	if (state.wireframe.shaded_wireframe)
+	{
+		wire_overlay_render_pass.execute(&state.vk, [&](i32)
+		{
+			WireOverlayPass::draw(&state.vk, state, view_projection_matrix);
+		});
+		gpu_image_transition(
+			state.vk.command_buffers[state.vk.frame_index],
+			wire_overlay_render_pass.get_color_output(0),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+	}
+
+	// TAA: both ping-pong sets get an unconditional transition so the bound
+	// history descriptor stays legal even on the first frames / when TAA is
+	// toggled; the shader ignores history until history_valid is set
+	for (i32 set_idx = 0; set_idx < 2; ++set_idx)
+	{
+		for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+		{
+			gpu_image_transition(
+				state.vk.command_buffers[state.vk.frame_index],
+				get_temporal_aa_pass(set_idx).get_color_output(output_idx),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			);
+		}
+	}
+	if (state.temporal_aa.enable)
+	{
+		RenderPass& temporal_aa_target_pass = get_temporal_aa_pass(temporal_aa_output_index);
+		temporal_aa_target_pass.execute(&state.vk, [&](i32)
+		{
+			TemporalAAPass::draw(&state.vk);
+		});
+		for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+		{
+			gpu_image_transition(
+				state.vk.command_buffers[state.vk.frame_index],
+				temporal_aa_target_pass.get_color_output(output_idx),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			);
+		}
+
+		state.temporal_aa.previous_view_projection = view_projection_matrix;
+		state.temporal_aa.history_valid = true;
+		state.temporal_aa.history_index = temporal_aa_previous_index;
+	}
+
 	tonemapping_render_pass.execute(&state.vk, [&](i32)
 	{
 		tonemapping_pass_draw(&state.vk, state.tonemapping.exposure_bias);
 	});
 
-	// Copy to swapchain samples the tonemapped LDR target
+	// FXAA filters the tonemapped LDR target; copy presents whichever ran last
 	gpu_image_transition(
 		state.vk.command_buffers[state.vk.frame_index],
 		tonemapping_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
+	if (fxaa_active)
+	{
+		fxaa_render_pass.execute(&state.vk, [&](i32)
+		{
+			FXAAPass::draw(&state.vk, HMM_V2((f32) state.window.render_width, (f32) state.window.render_height));
+		});
+		gpu_image_transition(
+			state.vk.command_buffers[state.vk.frame_index],
+			fxaa_render_pass.get_color_output(0),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+	}
 	get_render_pass(ERenderPass::CopyToSwapchain).execute(&state.vk, [&](i32)
 	{
 		copy_to_swapchain_pass_draw(&state.vk);
@@ -1939,6 +2301,14 @@ int main(int argc, char** argv)
 	geometry_pass_init(&state.vk);
 	ShadowDepthPass::init(&state.vk);
 	ShadowBlurPass::init(&state.vk);
+	ssao_pass_init(&state.vk, frame_data.linear_sampler);
+	BlurPass::init(&state.vk, Render::SSAO_FORMAT);
+	ScreenSpaceShadowsPass::init(&state.vk, frame_data.linear_sampler);
+	fog_pass_init(&state.vk, frame_data.linear_sampler);
+	dof_combine_pass_init(&state.vk, frame_data.linear_sampler);
+	WireOverlayPass::init(&state.vk, frame_data.linear_sampler);
+	TemporalAAPass::init(&state.vk, frame_data.linear_sampler);
+	FXAAPass::init(&state.vk, frame_data.linear_sampler);
 	lighting_pass_init(&state.vk, frame_data.linear_sampler);
 	tonemapping_pass_init(&state.vk);
 	sky_pass_init(&state.vk);
@@ -1955,6 +2325,50 @@ int main(int argc, char** argv)
 	if (const char* render_scale_env = getenv("GAME2_RENDER_SCALE"))
 	{
 		state.window.resolution_percentage = (i32) strtol(render_scale_env, nullptr, 10);
+	}
+
+	// Shadow debug overrides (ImGui owns these in Phase 4)
+	if (const char* shadow_placement_env = getenv("GAME2_SHADOW_PLACEMENT"))
+	{
+		state.shadow.cascade_placement_mode = strtol(shadow_placement_env, nullptr, 10) == 1
+			? EShadowCascadePlacementMode::CenteredSquares
+			: EShadowCascadePlacementMode::Frustum;
+	}
+	if (getenv("GAME2_SHADOW_CASCADE_DEBUG"))
+	{
+		state.shadow.debug_show_cascade_selection = true;
+	}
+	if (const char* ssao_env = getenv("GAME2_SSAO"))
+	{
+		state.ssao.enable = strtol(ssao_env, nullptr, 10) != 0;
+	}
+	if (const char* dof_env = getenv("GAME2_DOF"))
+	{
+		state.dof.enable = strtol(dof_env, nullptr, 10) != 0;
+	}
+	if (const char* dof_focus_env = getenv("GAME2_DOF_FOCUS"))
+	{
+		state.dof.focus_distance = strtof(dof_focus_env, nullptr);
+	}
+	if (const char* dof_range_env = getenv("GAME2_DOF_RANGE"))
+	{
+		state.dof.focus_range = strtof(dof_range_env, nullptr);
+	}
+	if (getenv("GAME2_DOF_DEBUG"))
+	{
+		state.dof.debug_show_coc = true;
+	}
+	if (getenv("GAME2_WIREFRAME"))
+	{
+		state.wireframe.shaded_wireframe = true;
+	}
+	if (const char* taa_env = getenv("GAME2_TAA"))
+	{
+		state.temporal_aa.enable = strtol(taa_env, nullptr, 10) != 0;
+	}
+	if (const char* fxaa_env = getenv("GAME2_FXAA"))
+	{
+		state.temporal_aa.enable_fxaa = strtol(fxaa_env, nullptr, 10) != 0;
 	}
 
 	// Register render passes and size their targets
@@ -2019,6 +2433,34 @@ int main(int argc, char** argv)
 		frame_data.linear_sampler
 	);
 
+	// SSAO at half render resolution; the generic BlurPass smooths it before
+	// lighting samples it (game/ main.cpp:1485-1566)
+	const auto make_ssao_desc = [](const char* in_debug_label)
+	{
+		return (RenderPassDesc) {
+			.num_outputs = 1,
+			.outputs = {
+				{
+					.format = Render::SSAO_FORMAT,
+					.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+					.clear_value = {{{ 1.0f, 1.0f, 1.0f, 1.0f }}},
+				},
+			},
+			.width_scale = 0.5f,
+			.height_scale = 0.5f,
+			.debug_label = in_debug_label,
+		};
+	};
+	get_render_pass_entry(ERenderPass::SSAO).init_final(make_ssao_desc("SSAO"));
+	get_render_pass_entry(ERenderPass::SSAO_Blur).init_intermediate(make_ssao_desc("SSAO Blur Horizontal"));
+	get_render_pass_entry(ERenderPass::SSAO_Blur).init_final(make_ssao_desc("SSAO Blur Vertical"));
+
+	// Screen-space contact shadows share the SSAO target shape (half res,
+	// R8, clear 1 = fully visible)
+	get_render_pass_entry(ERenderPass::ScreenSpaceShadows).init_intermediate(make_ssao_desc("Screen Space Shadows Trace"));
+	get_render_pass_entry(ERenderPass::ScreenSpaceShadows).init_final(make_ssao_desc("Screen Space Shadows Filter"));
+
 	get_render_pass_entry(ERenderPass::Geometry).init_final((RenderPassDesc) {
 		.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
 		.outputs = {
@@ -2075,6 +2517,70 @@ int main(int argc, char** argv)
 		.debug_label = "Lighting",
 	});
 
+	get_render_pass_entry(ERenderPass::Fog).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = Render::SCENE_COLOR_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "Fog",
+	});
+
+	get_render_pass_entry(ERenderPass::DofCombine).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = Render::SCENE_COLOR_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "DOF Combine",
+	});
+
+	get_render_pass_entry(ERenderPass::WireOverlay).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = Render::SCENE_COLOR_FORMAT,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "Wire Overlay",
+	});
+
+	// TAA ping-pong: two target sets (intermediate = set 0, final = set 1),
+	// each MRT [resolved, history]; the shader reads the other set's history
+	const auto make_temporal_aa_desc = [](const char* in_debug_label)
+	{
+		return (RenderPassDesc) {
+			.num_outputs = 2,
+			.outputs = {
+				{
+					.format = Render::SCENE_COLOR_FORMAT,
+					.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				},
+				{
+					.format = Render::SCENE_COLOR_FORMAT,
+					.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+				},
+			},
+			.type = ERenderPassType::Single,
+			.debug_label = in_debug_label,
+		};
+	};
+	get_render_pass_entry(ERenderPass::TemporalAA).init_intermediate(make_temporal_aa_desc("Temporal AA (Set 0)"));
+	get_render_pass_entry(ERenderPass::TemporalAA).init_final(make_temporal_aa_desc("Temporal AA (Set 1)"));
+
 	get_render_pass_entry(ERenderPass::Tonemapping).init_final((RenderPassDesc) {
 		.num_outputs = 1,
 		.outputs = {
@@ -2086,6 +2592,19 @@ int main(int argc, char** argv)
 		},
 		.type = ERenderPassType::Single,
 		.debug_label = "Tonemapping",
+	});
+
+	get_render_pass_entry(ERenderPass::FXAA).init_final((RenderPassDesc) {
+		.num_outputs = 1,
+		.outputs = {
+			{
+				.format = state.vk.surface_format.format,
+				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			},
+		},
+		.type = ERenderPassType::Single,
+		.debug_label = "FXAA",
 	});
 
 	get_render_pass_entry(ERenderPass::CopyToSwapchain).init_final((RenderPassDesc) {
@@ -2184,7 +2703,15 @@ int main(int argc, char** argv)
 	copy_to_swapchain_pass_shutdown(&state.vk);
 	sky_pass_shutdown(&state.vk);
 	tonemapping_pass_shutdown(&state.vk);
+	FXAAPass::shutdown(&state.vk);
+	TemporalAAPass::shutdown(&state.vk);
+	WireOverlayPass::shutdown(&state.vk);
+	dof_combine_pass_shutdown(&state.vk);
+	fog_pass_shutdown(&state.vk);
 	lighting_pass_shutdown(&state.vk);
+	ScreenSpaceShadowsPass::shutdown(&state.vk);
+	BlurPass::shutdown(&state.vk);
+	ssao_pass_shutdown(&state.vk);
 	ShadowBlurPass::shutdown(&state.vk);
 	ShadowDepthPass::shutdown(&state.vk);
 	geometry_pass_shutdown(&state.vk);

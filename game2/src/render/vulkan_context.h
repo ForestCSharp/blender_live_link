@@ -432,6 +432,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		VkPhysicalDeviceVulkan13Features enabled_features_1_3 = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 			.pNext = &enabled_features_1_2,
+			// glslc's vulkan1.3 target compiles `discard` to demote-to-helper
+			.shaderDemoteToHelperInvocation = VK_TRUE,
 			.synchronization2 = VK_TRUE,
 			.dynamicRendering = VK_TRUE,
 		};

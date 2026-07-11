@@ -63,7 +63,10 @@ namespace ShadowDepthPass
 
 	inline f32 get_cascade_distance(const State& in_state, i32 cascade_idx)
 	{
-		const f32 scale = fmaxf(0.01f, in_state.shadow.frustum_cascade_distance_scale);
+		const f32 active_scale = in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
+			? in_state.shadow.centered_square_cascade_distance_scale
+			: in_state.shadow.frustum_cascade_distance_scale;
+		const f32 scale = fmaxf(0.01f, active_scale);
 		if (get_active_cascade_count(in_state) == 1)
 		{
 			return BaselineCascadeDistance * scale;
@@ -71,6 +74,11 @@ namespace ShadowDepthPass
 
 		const f32 exponent = (f32) cascade_idx - 1.0f;
 		return BaselineCascadeDistance * scale * powf(2.0f, exponent);
+	}
+
+	inline f32 get_largest_active_cascade_distance(const State& in_state)
+	{
+		return get_cascade_distance(in_state, get_active_cascade_count(in_state) - 1);
 	}
 
 	inline void get_frustum_slice_corners(
@@ -264,12 +272,21 @@ namespace ShadowDepthPass
 		skinned_pipeline = create_pipeline(ctx, "bin/shaders/shadow_depth_skinned.vert.spv", /*in_skinned*/ true);
 	}
 
-	// Computes all cascade light view-projections on the CPU (Frustum placement
-	// mode, port of game/ shadow_depth_pass.h:354-408). Must run before the
+	// Computes all cascade light view-projections on the CPU (port of game/
+	// shadow_depth_pass.h:296-408, both placement modes). Must run before the
 	// lighting fs_params upload each frame — the matrices feed both the shadow
-	// draw and the lighting shader's receiver reprojection.
-	inline void compute_cascade_matrices(State& in_state, const Camera& in_camera)
+	// draw and the lighting shader's receiver reprojection. Returns true when
+	// the matrices changed and the shadow map should re-render this frame;
+	// under depth_freeze the previous matrices are kept (stale map stays
+	// consistent with them) unless force_recapture is set.
+	inline bool compute_cascade_matrices(State& in_state, const Camera& in_camera)
 	{
+		if (in_state.shadow.rendering_enable && in_state.shadow.depth_freeze
+			&& has_valid_shadow_map && !in_state.shadow.force_recapture)
+		{
+			return false;
+		}
+
 		for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
 		{
 			shadow_view_projections[i] = HMM_M4D(1.0f);
@@ -279,13 +296,13 @@ namespace ShadowDepthPass
 
 		if (!in_state.shadow.rendering_enable)
 		{
-			return;
+			return false;
 		}
 
 		Object* sun_object = get_valid_shadow_sun(in_state);
 		if (!sun_object)
 		{
-			return;
+			return false;
 		}
 
 		Transform transform = sun_object->current_transform;
@@ -303,6 +320,30 @@ namespace ShadowDepthPass
 		const i32 cascade_count = get_active_cascade_count(in_state);
 		for (i32 cascade_idx = 0; cascade_idx < cascade_count; ++cascade_idx)
 		{
+			// Centered squares: axis-aligned ortho squares around a point
+			// ahead of the camera (game/ shadow_depth_pass.h:306-333)
+			if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+			{
+				const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
+				const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
+				const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
+				HMM_Vec3 light_pos = in_state.shadow.centered_square_center - sun_dir * (light_depth_range * 0.5f);
+				HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow.centered_square_center, light_up);
+				HMM_Mat4 light_proj = mat4_orthographic(
+					-cascade_half_extent,
+					cascade_half_extent,
+					-cascade_half_extent,
+					cascade_half_extent,
+					0.01f,
+					light_depth_range
+				);
+
+				shadow_view_projections[cascade_idx] = HMM_MulM4(light_proj, light_view);
+				cascade_distances[cascade_idx] = cascade_half_extent;
+				has_valid_shadow_map = true;
+				continue;
+			}
+
 			// Frustum-slice fit
 			const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);
 			const f32 cascade_far_distance = get_cascade_distance(in_state, cascade_idx);
@@ -348,6 +389,8 @@ namespace ShadowDepthPass
 			cascade_distances[cascade_idx] = cascade_far_distance;
 			has_valid_shadow_map = true;
 		}
+
+		return has_valid_shadow_map;
 	}
 
 	// Draws shadow casters for one cascade using the matrix stored by

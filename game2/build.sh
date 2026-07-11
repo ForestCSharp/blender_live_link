@@ -18,6 +18,9 @@ mkdir -p bin
 mkdir -p bin/shaders
 
 OS_ARG=$1
+# Pass -norun as the second arg to build without launching the game
+# (used by automated verification runs)
+RUN_ARG=$2
 GAME_WARNING_FLAGS="-Wno-c99-designator"
 
 ./compile_shaders.sh $OS_ARG
@@ -98,7 +101,9 @@ if [[ $OS_ARG = Mac ]]; then
 	export VK_ICD_FILENAMES=/usr/local/share/vulkan/icd.d/MoltenVK_icd.json
 
 	## Run game
-	./bin/game
+	if [[ $RUN_ARG != -norun ]]; then
+		./bin/game
+	fi
 elif [[ $OS_ARG = Windows ]]; then
 	# NOTE: drafted from game/build.sh's Windows branch + the reference
 	# project's build.bat — not yet tested on a Windows machine.
@@ -175,7 +180,9 @@ elif [[ $OS_ARG = Windows ]]; then
 	fi
 
 	## Run game (volk finds vulkan-1.dll from the system loader install)
-	./bin/game.exe
+	if [[ $RUN_ARG != -norun ]]; then
+		./bin/game.exe
+	fi
 elif [[ $OS_ARG = Linux ]]; then
 	echo "Building game2 for Linux: [TODO]"
 else

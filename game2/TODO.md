@@ -167,24 +167,44 @@ Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
       M2 Max at 2048²×3 cascades); game/ caches the blur until the shadow
       map re-renders — port that caching with the 3b shadow polish.
 
-### Phase 3b — post effects & shadow polish
+### Phase 3b — post effects & shadow polish  ✅ (2026-07-11)
 
-- [ ] Shadow polish — blur/shadow-map caching (`has_valid_shadow_blur` +
-      re-render-on-change, see 3a blur note), `shadow_cascade_debug_pass.h`,
-      `radial_depth.glsl`, CenteredSquares cascade placement mode.
-- [ ] SSAO + SSAO blur — ssao pass desc (`game/src/main.cpp:1485-1560`),
-      `ssao.glsl`, `ssao_constants.h`, shared `blur_pass.h`.
-- [ ] Screen-space shadows — `screen_space_shadows_pass.h`,
-      `screen_space_shadows.glsl`.
-- [ ] Height fog pass — `fog_pass.h`, `fog.glsl` (+ fog controller from
-      Phase 2, sun direction plumbing `game/src/main.cpp:655-663`).
-- [ ] DOF combine — pass desc at `game/src/main.cpp:1573-1594`,
-      `dof_combine.glsl`.
-- [ ] Wire overlay — `wire_overlay_pass.h`, `wire_overlay.glsl` (needs wire
-      indices from Phase 0).
-- [ ] Temporal AA — `temporal_aa_pass.h`, `temporal_aa.glsl`, projection
-      jitter (`game/src/main.cpp:2975-2988`).
-- [ ] FXAA — `fxaa_pass.h`, `fxaa.glsl`.
+- [x] Shadow polish — `depth_freeze`/`force_recapture` semantics (frozen maps
+      keep their matrices + blur; `compute_cascade_matrices` returns whether
+      the map should re-render), CenteredSquares cascade placement mode +
+      per-square shader-side cascade selection, cascade-selection debug tint
+      (`GAME2_SHADOW_PLACEMENT` / `GAME2_SHADOW_CASCADE_DEBUG` envs until
+      ImGui). Corrected a 3a note: game/ also re-renders + re-blurs every
+      frame unless frozen, so game2 already matched — no caching item left.
+      `shadow_cascade_debug_pass.h` (ImGui-only consumer) moves to Phase 4;
+      `radial_depth.glsl` belongs to GI's lighting_capture (3c).
+- [x] SSAO + SSAO blur — `ssao_pass.h` (half res, R8, 48-sample hemisphere
+      kernel + 8x8 RGBA32F noise, view-space via G-buffer position/normal),
+      generic `blur_pass.h` (2D counterpart of the shadow blur, push-constant
+      driven), lighting samples the blurred term (`GAME2_SSAO` env).
+- [x] Screen-space shadows — `screen_space_shadows_pass.h` (half-res G-buffer
+      ray march toward the shadow sun + edge-aware filter); lighting
+      multiplies the mask into sun shadow visibility.
+- [x] Height fog pass — `fog_pass.h` + `fog.frag` (exponential height fog,
+      ceiling option, Henyey-Greenstein sun in-scatter) driven by the Phase 2
+      fog-controller data; downstream passes chain off its output.
+- [x] DOF combine — `dof_combine_pass.h` (signed-CoC 16-tap poisson gather,
+      cross-depth bleed suppression, `GAME2_DOF*` envs incl. CoC debug view).
+- [x] Wire overlay — `wire_overlay_pass.h`: copy + alpha-blended barycentric
+      wires via manual vertex pulling (per-mesh SSBO sets from a per-frame
+      reset pool), G-buffer visibility test, `GAME2_WIREFRAME` env. Skinned/
+      tessellated wires wait on the 3c GPU vertex cache. Needed
+      `shaderDemoteToHelperInvocation` enabled (glslc's vulkan1.3 `discard`).
+- [x] Temporal AA — `temporal_aa_pass.h`: Decima 2-phase jitter, jittered
+      projection, previous-VP reprojection with neighborhood clamp/rejection
+      + axis sharpen. Ping-pong via the entry's intermediate/final passes
+      (each MRT [resolved, history]); history invalidated on resize
+      (`GAME2_TAA` env).
+- [x] FXAA — `fxaa_pass.h` (luma FXAA over the tonemapped LDR target,
+      push-constant thresholds, `GAME2_FXAA` env).
+- [x] Exposure parity — `exposure_bias` default corrected to game/'s 1.5.
+- [x] Live-link robustness — getaddrinfo results are now checked + retried
+      (transient resolver failures used to segfault the socket thread).
 
 ### Phase 3c — GI & tessellation
 

@@ -50,4 +50,8 @@ namespace Render
 
 	// EVSM4 moments (warped depths + second moments)
 	constexpr VkFormat SHADOW_MOMENTS_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+	// Single-channel occlusion (game/ picks R8 when renderable + filterable —
+	// always true on MoltenVK/Metal)
+	constexpr VkFormat SSAO_FORMAT = VK_FORMAT_R8_UNORM;
 }

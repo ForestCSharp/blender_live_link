@@ -70,9 +70,10 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 {
 	lighting_pass.linear_sampler = in_linear_sampler;
 
-	// Layout C
+	// Layout C: b0 fs_params UBO, b1-4 G-buffer CIS, b5 shadow moments array
+	// CIS, b6-8 light SSBOs, b9 blurred SSAO CIS, b10 contact shadow CIS
 	{
-		VkDescriptorSetLayoutBinding bindings[9] = {};
+		VkDescriptorSetLayoutBinding bindings[11] = {};
 		bindings[0] = (VkDescriptorSetLayoutBinding) {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -97,21 +98,19 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
 		}
-
-		// Binding 5 (shadow moments) is unwritten until the shadow pass
-		// exists — legal while the shader doesn't statically use it
-		VkDescriptorBindingFlags binding_flags[9] = {};
-		binding_flags[5] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-		VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-			.bindingCount = 9,
-			.pBindingFlags = binding_flags,
-		};
+		for (u32 binding_idx = 9; binding_idx <= 10; ++binding_idx)
+		{
+			bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
+				.binding = binding_idx,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			};
+		}
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.pNext = &binding_flags_create_info,
-			.bindingCount = 9,
+			.bindingCount = 11,
 			.pBindings = bindings,
 		};
 		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &lighting_pass.set_layout));
@@ -121,7 +120,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 5 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 7 * MAX_FRAMES_IN_FLIGHT },
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
@@ -260,13 +259,14 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 }
 
 // Uploads fs_params + rewrites this frame's descriptor set (call after the
-// fence wait, before any binds record). in_shadow_moments_view may be
-// VK_NULL_HANDLE until the shadow pass exists (binding 5 stays unwritten).
+// fence wait, before any binds record).
 void lighting_pass_update(
 	VulkanContext* ctx,
 	const LightingFsParams& in_fs_params,
 	const GpuImage* in_gbuffer_outputs,	// 4 attachments
 	VkImageView in_shadow_moments_view,
+	VkImageView in_ssao_view,
+	VkImageView in_screen_space_shadow_view,
 	VkBuffer in_point_lights_buffer,
 	VkBuffer in_spot_lights_buffer,
 	VkBuffer in_sun_lights_buffer
@@ -298,7 +298,7 @@ void lighting_pass_update(
 		{ .buffer = in_sun_lights_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
 	};
 
-	VkWriteDescriptorSet writes[9] = {};
+	VkWriteDescriptorSet writes[11] = {};
 	u32 write_count = 0;
 
 	writes[write_count++] = (VkWriteDescriptorSet) {
@@ -322,23 +322,47 @@ void lighting_pass_update(
 		};
 	}
 
-	VkDescriptorImageInfo shadow_info = {};
-	if (in_shadow_moments_view != VK_NULL_HANDLE)
-	{
-		shadow_info = (VkDescriptorImageInfo) {
-			.sampler = lighting_pass.linear_sampler,
-			.imageView = in_shadow_moments_view,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		};
-		writes[write_count++] = (VkWriteDescriptorSet) {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
-			.dstBinding = 5,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.pImageInfo = &shadow_info,
-		};
-	}
+	VkDescriptorImageInfo shadow_info = {
+		.sampler = lighting_pass.linear_sampler,
+		.imageView = in_shadow_moments_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	writes[write_count++] = (VkWriteDescriptorSet) {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = lighting_pass.sets[frame_index],
+		.dstBinding = 5,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &shadow_info,
+	};
+
+	VkDescriptorImageInfo ssao_info = {
+		.sampler = lighting_pass.linear_sampler,
+		.imageView = in_ssao_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	writes[write_count++] = (VkWriteDescriptorSet) {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = lighting_pass.sets[frame_index],
+		.dstBinding = 9,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &ssao_info,
+	};
+
+	VkDescriptorImageInfo screen_space_shadow_info = {
+		.sampler = lighting_pass.linear_sampler,
+		.imageView = in_screen_space_shadow_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	writes[write_count++] = (VkWriteDescriptorSet) {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = lighting_pass.sets[frame_index],
+		.dstBinding = 10,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &screen_space_shadow_info,
+	};
 
 	for (u32 light_type_idx = 0; light_type_idx < 3; ++light_type_idx)
 	{
