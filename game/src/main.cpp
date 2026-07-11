@@ -1251,7 +1251,26 @@ void live_link_thread_function()
 	//FCS TODO: Store magic IP and Port numbers in some shared file
 	const char* HOST = "127.0.0.1";
 	const char* PORT = "65432";
-	getaddrinfo(HOST, PORT, &hints, &res);
+
+	// getaddrinfo can transiently fail (system resolver hiccups) — retry
+	// instead of dereferencing a null result
+	res = nullptr;
+	while (state.runtime.game_running)
+	{
+		const int getaddrinfo_result = getaddrinfo(HOST, PORT, &hints, &res);
+		if (getaddrinfo_result == 0 && res != nullptr)
+		{
+			break;
+		}
+
+		printf("live link: getaddrinfo failed (%s), retrying\n", gai_strerror(getaddrinfo_result));
+		res = nullptr;
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+	if (res == nullptr)
+	{
+		return;	// shutting down before the resolver ever succeeded
+	}
 
 	// make a socket
 	state.live_link.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
