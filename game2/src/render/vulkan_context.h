@@ -26,7 +26,7 @@ static const u32 MAX_FRAMES_IN_FLIGHT = 2;
 
 // GPU timestamp queries: one pool per frame in flight; query 0/1 span the
 // frame, 2+2i / 3+2i bracket timed scope i (one per render pass today)
-static constexpr i32 MAX_GPU_TIMED_SCOPES = 16;
+static constexpr i32 MAX_GPU_TIMED_SCOPES = 48;	// main chain ~15 + GI capture passes
 static constexpr i32 GPU_TIMESTAMP_QUERY_COUNT = 2 + 2 * MAX_GPU_TIMED_SCOPES;
 
 // GPU resources can't be destroyed while a frame that references them is still
@@ -638,7 +638,7 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 
 	gpu_timings_record_completed_frame_events(frame_state.cpu_frame_index, events, 1 + frame_state.scope_count);
 
-	// Periodic debug print (Phase 4's profiler UI is the real consumer)
+	// Periodic debug print; the ImGui profiler is the interactive consumer.
 	static const bool print_timings = getenv("GAME2_PRINT_GPU_TIMINGS") != nullptr;
 	if (print_timings && (ctx->frame_number % 120) == 0)
 	{

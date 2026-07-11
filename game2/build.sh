@@ -77,6 +77,7 @@ if [[ $OS_ARG = Mac ]]; then
 		-I src \
 		-I src/extern \
 		-I src/extern/glfw/include \
+		-I ../game/src/extern/imgui \
 		-I data \
 		-I data/shaders \
 		-I bin/shaders \
@@ -158,6 +159,7 @@ elif [[ $OS_ARG = Windows ]]; then
 		-I src \
 		-I src/extern \
 		-I src/extern/glfw/include \
+		-I ../game/src/extern/imgui \
 		-I "$VULKAN_SDK/Include" \
 		-I data \
 		-I data/shaders \

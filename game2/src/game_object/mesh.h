@@ -2,9 +2,48 @@
 
 #include "render/gpu_buffer.h"
 #include "render/render_types.h"
+#include "tessellation_common.h"
 
-// Stripped-down port of game/'s mesh.h: no tessellation or skinning yet —
-// those return with their render passes.
+static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout");
+static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch shader layout mismatch");
+static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters shader layout mismatch");
+
+struct TessellatedGeometry
+{
+	static constexpr u32 GPU_SLOT_COUNT = 2;
+
+	struct GpuSlot
+	{
+		bool readback_requested = false;
+		bool has_counts = false;
+		u64 ready_frame_number = 0;
+		u32 patch_capacity = 0;
+		u32 vertex_capacity = 0;
+		u32 index_capacity = 0;
+		u32 wire_index_capacity = 0;
+		TessellationCounters counters = {};
+
+		GpuBuffer<TessellationCounters> counters_buffer;
+		GpuBuffer<TessellationPatch> patch_buffer;
+		GpuBuffer<Vertex> vertex_buffer;
+		GpuBuffer<u32> index_buffer;
+		GpuBuffer<u32> wire_index_buffer;
+		GpuBuffer<TessellationCounters> counters_readback;
+	};
+
+	bool active = false;
+	bool overflowed = false;
+	bool gpu_planned = false;
+	bool readback_supported = true;
+	u32 active_gpu_slot = GPU_SLOT_COUNT;
+	u32 next_gpu_slot = 0;
+	u32 readback_age = 0;
+	u32 patch_count = 0;
+	u32 vertex_count = 0;
+	u32 index_count = 0;
+	u32 wire_index_count = 0;
+	GpuSlot gpu_slots[GPU_SLOT_COUNT];
+};
 
 struct MeshInitData
 {
@@ -132,8 +171,78 @@ struct Mesh
 	HMM_Mat4 mesh_to_armature;
 	HMM_Mat4 armature_to_mesh;
 
+	// GPU-skinned vertex cache (compute-baked; consumed by tessellation and
+	// the wire overlay via mesh_get_render_view — game/ parity)
+	GpuBuffer<Vertex> skinned_vertex_cache_buffer;
+	u32 skinned_vertex_cache_capacity = 0;
+	bool skinned_vertex_cache_valid = false;
+	TessellatedGeometry tessellated_geometry;
+
 	BoundingBox bounding_box;
 };
+
+// The buffers a renderer should draw this mesh with. Skinned meshes with a
+// valid compute cache expose it as plain static vertices (port of game/'s
+// MeshRenderView; tessellated geometry joins in the tessellation step).
+struct MeshRenderView
+{
+	VkBuffer vertex_buffer = VK_NULL_HANDLE;
+	VkBuffer index_buffer = VK_NULL_HANDLE;
+	VkBuffer wire_index_buffer = VK_NULL_HANDLE;
+	u32 index_count = 0;
+	u32 wire_index_count = 0;
+	bool uses_skinned_cache = false;
+	bool is_tessellated = false;
+};
+
+MeshRenderView mesh_get_render_view(Mesh& in_mesh)
+{
+	MeshRenderView out_view = {
+		.vertex_buffer = in_mesh.vertex_buffer.get_gpu_buffer(),
+		.index_buffer = in_mesh.index_buffer.get_gpu_buffer(),
+		.wire_index_buffer = in_mesh.wire_index_buffer.get_gpu_buffer(),
+		.index_count = in_mesh.index_count,
+		.wire_index_count = in_mesh.wire_index_count,
+	};
+
+	TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
+	if (tessellated.active && tessellated.index_count > 0
+		&& tessellated.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
+	{
+		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[tessellated.active_gpu_slot];
+		return (MeshRenderView) {
+			.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
+			.index_buffer = slot.index_buffer.get_gpu_buffer(),
+			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
+			.index_count = tessellated.index_count,
+			.wire_index_count = tessellated.wire_index_count,
+			.uses_skinned_cache = in_mesh.has_skinned_vertices,
+			.is_tessellated = true,
+		};
+	}
+
+	if (in_mesh.has_skinned_vertices && in_mesh.skinned_vertex_cache_valid)
+	{
+		out_view.vertex_buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer();
+		out_view.uses_skinned_cache = true;
+	}
+
+	return out_view;
+}
+
+void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
+{
+	for (TessellatedGeometry::GpuSlot& slot : in_mesh.tessellated_geometry.gpu_slots)
+	{
+		slot.counters_buffer.destroy_gpu_buffer();
+		slot.patch_buffer.destroy_gpu_buffer();
+		slot.vertex_buffer.destroy_gpu_buffer();
+		slot.index_buffer.destroy_gpu_buffer();
+		slot.wire_index_buffer.destroy_gpu_buffer();
+		slot.counters_readback.destroy_gpu_buffer();
+	}
+	in_mesh.tessellated_geometry = {};
+}
 
 // Takes ownership of vertices and indices. Only constructs GpuBuffer
 // descriptors — actual GPU buffers are created lazily on the main thread.

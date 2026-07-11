@@ -1,0 +1,95 @@
+#version 450
+
+#include "tessellation_common.h"
+
+layout(push_constant) uniform cs_params {
+	int count;
+	int base_index;
+	float phong_strength;
+	int padding0;
+};
+
+layout(set=0, binding=0, std430) readonly buffer GpuSourceVerticesBuffer {
+	TessellationVertex gpu_source_vertices[];
+};
+
+layout(set=0, binding=1, std430) readonly buffer GpuSourceIndicesBuffer {
+	TessellationIndex gpu_source_indices[];
+};
+
+layout(set=0, binding=2, std430) readonly buffer GpuPatchesBuffer {
+	TessellationPatch gpu_patches[];
+};
+
+layout(set=0, binding=3, std430) buffer GpuGeneratedVerticesBuffer {
+	TessellationVertex gpu_generated_vertices[];
+};
+
+layout(set=0, binding=4, std430) readonly buffer GpuEmitCountersBuffer {
+	TessellationCounters gpu_emit_counters[];
+};
+
+layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
+
+/**
+ * emit_vertices_gpu builds the generated vertex grid for each planned patch.
+ * It remaps patch-local barycentrics through the patch domain, applies edge LOD morphing, and writes interpolated vertex attributes.
+ */
+void main()
+{
+	uint patch_index = uint(base_index) + gl_WorkGroupID.x;
+	if (patch_index >= min(uint(count), gpu_emit_counters[0].patch_count))
+	{
+		return;
+	}
+
+	TessellationPatch tess_patch = gpu_patches[patch_index];
+	if (tess_patch.vertex_count == 0u)
+	{
+		return;
+	}
+
+	uint n = max(tess_patch.tess_factor, 1u);
+	uint source_index_offset = tess_patch.source_index_offset;
+
+	uint i0 = gpu_source_indices[source_index_offset + 0u].value;
+	uint i1 = gpu_source_indices[source_index_offset + 1u].value;
+	uint i2 = gpu_source_indices[source_index_offset + 2u].value;
+
+	TessellationVertex v0 = gpu_source_vertices[i0];
+	TessellationVertex v1 = gpu_source_vertices[i1];
+	TessellationVertex v2 = gpu_source_vertices[i2];
+	vec3 p0 = v0.position.xyz;
+	vec3 p1 = v1.position.xyz;
+	vec3 p2 = v2.position.xyz;
+	vec3 domain_p0 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u0, tess_patch.domain_v0));
+	vec3 domain_p1 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u1, tess_patch.domain_v1));
+	vec3 domain_p2 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u2, tess_patch.domain_v2));
+
+	for (uint local_vertex_index = gl_LocalInvocationID.x; local_vertex_index < tess_patch.vertex_count; local_vertex_index += gl_WorkGroupSize.x)
+	{
+		uint row, col;
+		float b0, b1, b2;
+		tess_grid_from_index(n, local_vertex_index, row, col);
+		tess_barycentric_from_grid(n, row, col, b0, b1, b2);
+		tess_apply_edge_lod_morph(n, row, col, domain_p0, domain_p1, domain_p2, tess_patch.edge_lod0, tess_patch.edge_lod1, tess_patch.edge_lod2, b0, b1, b2);
+
+		vec2 source_uv = tess_patch_domain_uv(tess_patch, b0, b1, b2);
+		float source_b0, source_b1, source_b2;
+		tess_source_barycentric_from_uv(source_uv, source_b0, source_b1, source_b2);
+		vec3 linear_position = p0 * source_b0 + p1 * source_b1 + p2 * source_b2;
+		vec3 projected_position =
+			phong_project(linear_position, p0, v0.normal.xyz) * source_b0 +
+			phong_project(linear_position, p1, v1.normal.xyz) * source_b1 +
+			phong_project(linear_position, p2, v2.normal.xyz) * source_b2;
+
+		TessellationVertex out_vertex;
+		out_vertex.position = vec4(mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0)), 1.0);
+		out_vertex.normal = vec4(normalize(v0.normal.xyz * source_b0 + v1.normal.xyz * source_b1 + v2.normal.xyz * source_b2), 0.0);
+		out_vertex.texcoord = v0.texcoord * source_b0 + v1.texcoord * source_b1 + v2.texcoord * source_b2;
+		out_vertex.padding0 = 0.0;
+		out_vertex.padding1 = 0.0;
+		gpu_generated_vertices[tess_patch.generated_vertex_offset + local_vertex_index] = out_vertex;
+	}
+}
+

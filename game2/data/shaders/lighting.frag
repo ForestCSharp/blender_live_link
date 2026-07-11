@@ -1,12 +1,12 @@
 #version 450
 
-// Deferred lighting (Phase 3a port of game/data/shaders/lighting.glsl).
-// GI / SSAO / screen-space-shadow bindings are intentionally omitted —
-// their fs_params toggles stay 0 until those systems port in 3b/3c.
-// EVSM shadow sampling joins in the shadow step (SHADOWS_ENABLED define).
+// Deferred lighting, including probe GI, SSAO/contact shadows, and EVSM.
 
 #include "shader_common.h"
 #include "brdf.h"
+#include "gi_helpers.h"
+#include "octahedral_helpers.h"
+#include "probe_radiance.h"
 
 // Set 0 (lighting layout C)
 layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
@@ -59,6 +59,34 @@ layout(set = 0, binding = 9) uniform sampler2D ssao_tex;
 
 // Filtered half-res screen-space contact shadow mask
 layout(set = 0, binding = 10) uniform sampler2D screen_space_shadow_tex;
+
+layout(set = 0, binding = 11, std430) readonly buffer GIProbesBlock
+{
+	GI_Probe gi_probes[];
+};
+
+layout(set = 0, binding = 12, std430) readonly buffer GICellsBlock
+{
+	GI_Cell gi_cells[];
+};
+
+layout(set = 0, binding = 13) uniform sampler2D octahedral_lighting_texture;
+layout(set = 0, binding = 14) uniform sampler2D octahedral_depth_texture;
+
+layout(set = 0, binding = 15, std430) readonly buffer SH9CoefficientsBlock
+{
+	ProbeRadianceCoefficient sh9_coefficients[];
+};
+
+layout(set = 0, binding = 16, std430) readonly buffer SG9LobesBlock
+{
+	ProbeSGLobe sg9_lobes[];
+};
+
+layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
+{
+	GI_OctreeNode gi_octree_nodes[];
+};
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -215,6 +243,100 @@ float chebyshev_upper_bound(float mean, float mean_squared, float receiver_depth
 	return variance / (variance + depth_delta * depth_delta);
 }
 
+const int PROBE_OCCLUSION_MODE_CHEBYSHEV = 0;
+const int PROBE_OCCLUSION_MODE_EVRP4 = 1;
+const int PROBE_RADIANCE_MODE_OCTAHEDRAL = 0;
+const int PROBE_RADIANCE_MODE_SH9 = 1;
+const int PROBE_RADIANCE_MODE_SG9 = 2;
+const float EVRP_POSITIVE_EXPONENT = 5.0;
+const float EVRP_NEGATIVE_EXPONENT = 5.0;
+
+vec2 evrp_warp_depth(float normalized_depth)
+{
+	return vec2(
+		exp(EVRP_POSITIVE_EXPONENT * normalized_depth),
+		-exp(-EVRP_NEGATIVE_EXPONENT * normalized_depth)
+	);
+}
+
+float square(float value)
+{
+	return value * value;
+}
+
+vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
+{
+	if (probe.atlas_idx < 0)
+	{
+		return vec3(0.0);
+	}
+
+	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SH9)
+	{
+		vec3 irradiance = vec3(0.0);
+		int coefficient_offset = probe_index * 9;
+		for (int i = 0; i < 9; ++i)
+		{
+			irradiance += sh9_coefficients[coefficient_offset + i].value.rgb
+				* sh9_basis(i, normal) * sh9_diffuse_convolution_factor(i);
+		}
+		return max(irradiance, vec3(0.0));
+	}
+
+	if (probe_radiance_mode == PROBE_RADIANCE_MODE_SG9)
+	{
+		vec3 reconstructed_radiance = vec3(0.0);
+		float weight_sum = 0.0;
+		int coefficient_offset = probe_index * 9;
+		for (int i = 0; i < 9; ++i)
+		{
+			vec4 lobe = sg9_lobes[coefficient_offset + i].params;
+			float response = sg_lobe_diffuse_response(normalize(lobe.xyz), lobe.w, normal);
+			reconstructed_radiance += sg9_lobes[coefficient_offset + i].amplitude.rgb * response;
+			weight_sum += response;
+		}
+		return max(reconstructed_radiance / max(weight_sum, 0.00001), vec3(0.0));
+	}
+
+	vec2 atlas_uv = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+	return texture(octahedral_lighting_texture, atlas_uv).rgb;
+}
+
+int find_gi_octree_payload_index(vec3 position)
+{
+	if (gi_octree_node_count <= 0)
+	{
+		return -1;
+	}
+
+	int node_index = 0;
+	GI_OctreeNode node = gi_octree_nodes[node_index];
+	if (!gi_octree_is_valid_position(node, position))
+	{
+		return -1;
+	}
+
+	int payload_index = node.payload_index;
+	for (int i = 0; i < GI_MAX_OCTREE_SEARCH_DEPTH; ++i)
+	{
+		if (node.is_leaf != 0)
+		{
+			return payload_index;
+		}
+		int child_index = node.child_indices[gi_octree_child_slot(node, position)];
+		if (child_index < 0 || child_index >= gi_octree_node_count)
+		{
+			return payload_index;
+		}
+		node = gi_octree_nodes[child_index];
+		if (node.payload_index >= 0)
+		{
+			payload_index = node.payload_index;
+		}
+	}
+	return payload_index;
+}
+
 float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
 {
 	vec3 n = normalize(in_surface_normal);
@@ -331,6 +453,20 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 
 #endif // SHADOWS_ENABLED
 
+float sample_gi_shadow_visibility(vec3 surface_position, vec3 surface_normal)
+{
+	for (int i = 0; i < num_sun_lights; ++i)
+	{
+		if (sun_lights[i].cast_shadows != 0)
+		{
+			float visibility = sample_shadow_visibility(surface_position, surface_normal, sun_lights[i].direction.xyz);
+			float normal_light = saturate(dot(normalize(surface_normal), normalize(-sun_lights[i].direction.xyz)));
+			return visibility * normal_light;
+		}
+	}
+	return 1.0;
+}
+
 void main()
 {
 	vec4 final_color = vec4(0);
@@ -363,6 +499,7 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
+			const float gi_shadow_multiplier = mix(0.5, 1.0, sample_gi_shadow_visibility(position, normal));
 
 #if defined(SHADOWS_ENABLED)
 			if (shadow_debug_show_cascade_selection != 0)
@@ -406,7 +543,108 @@ void main()
 				}
 			}
 
-			// GI lands in Phase 3c; SSAO in 3b
+			if (gi_enable != 0)
+			{
+				int cell_index = find_gi_octree_payload_index(position);
+				bool probe_isolation_active = isolated_probe_index != -1;
+
+				if (cell_index < 0)
+				{
+					if (!probe_isolation_active && gi_fallback_probe_index >= 0)
+					{
+						GI_Probe probe = gi_probes[gi_fallback_probe_index];
+						if (probe.atlas_idx >= 0)
+						{
+							vec3 irradiance = sample_probe_radiance(probe, gi_fallback_probe_index, normal);
+							final_color.xyz += irradiance * color * (1.0 - metallic) * gi_intensity * gi_shadow_multiplier;
+						}
+					}
+				}
+				else
+				{
+					GI_Cell cell = gi_cells[cell_index];
+					vec3 cell_min_pos = gi_probes[cell.probe_indices[0]].position.xyz;
+					vec3 cell_max_pos = gi_probes[cell.probe_indices[7]].position.xyz;
+					vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
+					vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
+					vec3 unoccluded_irradiance = vec3(0.0);
+					float unoccluded_weight = 0.0;
+					vec3 occluded_irradiance = vec3(0.0);
+					float occluded_weight = 0.0;
+
+					for (int i = 0; i < 8; ++i)
+					{
+						int probe_index = cell.probe_indices[i];
+						if (probe_index < 0 || (probe_isolation_active && probe_index != isolated_probe_index))
+						{
+							continue;
+						}
+						GI_Probe probe = gi_probes[probe_index];
+						if (probe.atlas_idx < 0)
+						{
+							continue;
+						}
+
+						vec3 probe_radiance = sample_probe_radiance(probe, probe_index, normal);
+						vec3 position_to_probe = probe.position.xyz - position;
+						vec3 probe_to_position = -position_to_probe;
+						float distance_to_pixel = length(probe_to_position);
+						vec3 direction_to_probe = normalize(position_to_probe);
+						vec3 direction_from_probe = -direction_to_probe;
+						float weight = (dot(direction_to_probe, normal) + 1.0) * 0.5;
+
+						float x_side = float(i & 1);
+						float y_side = float((i >> 1) & 1);
+						float z_side = float((i >> 2) & 1);
+						float trilinear_weight =
+							(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
+							(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
+							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
+						weight *= trilinear_weight + 0.001;
+
+						unoccluded_irradiance += probe_radiance * weight;
+						unoccluded_weight += weight;
+
+						if (gi_probe_occlusion != 0)
+						{
+							vec2 depth_uv = padded_atlas_uv_from_normal(
+								direction_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+							vec4 moments = texture(octahedral_depth_texture, depth_uv);
+							if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
+							{
+								float normalized_depth = clamp(distance_to_pixel / max(probe.max_radial_depth, 0.00001), 0.0, 1.0);
+								vec2 warped_depth = evrp_warp_depth(normalized_depth);
+								float positive = chebyshev_upper_bound(moments.x, moments.y, warped_depth.x, 0.00001);
+								float negative = chebyshev_upper_bound(moments.z, moments.w, warped_depth.y, 0.00001);
+								weight *= reduce_light_bleeding(min(positive, negative), 0.2);
+							}
+							else if (distance_to_pixel > moments.x)
+							{
+								float variance = abs(square(moments.x) - moments.y);
+								weight *= variance / (variance + square(distance_to_pixel - moments.x));
+							}
+						}
+
+						const float threshold = 0.01;
+						if (weight < threshold)
+						{
+							weight *= square(weight) / square(threshold);
+						}
+						occluded_irradiance += probe_radiance * weight;
+						occluded_weight += weight;
+					}
+
+					if (unoccluded_weight > 0.0 && occluded_weight > 0.0)
+					{
+						vec3 irradiance = mix(
+							unoccluded_irradiance / unoccluded_weight,
+							occluded_irradiance / occluded_weight,
+							saturate(occluded_weight));
+						final_color.xyz += irradiance * color * (1.0 - metallic) * gi_intensity * gi_shadow_multiplier;
+					}
+				}
+			}
+
 			final_color *= ambient_occlusion;
 		}
 	}

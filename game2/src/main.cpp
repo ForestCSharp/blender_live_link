@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <optional>
 
 using std::optional;
@@ -36,6 +37,11 @@ using std::optional;
 // Command line argument parsing
 #include "cxxopts/cxxopts.hpp"
 
+#define IMGUI_IMPLEMENTATION
+#include "../../game/src/extern/imgui/misc/single_file/imgui_single_file.h"
+#include "extern/imgui/backends/imgui_impl_glfw.cpp"
+#include "extern/imgui/backends/imgui_impl_vulkan.cpp"
+
 // Generated flatbuffer schema (from ../compiled_schemas/cpp)
 #include "blender_live_link_generated.h"
 
@@ -57,10 +63,18 @@ using std::optional;
 #include "render/wire_overlay_pass.h"
 #include "render/temporal_aa_pass.h"
 #include "render/fxaa_pass.h"
+#include "render/gpu_skinning.h"
+#include "render/tessellation.h"
+#include "render/lighting_capture.h"
+#include "render/gi.h"
+#include "render/gi_debug_pass.h"
 #include "render/lighting_pass.h"
 #include "render/tonemapping_pass.h"
 #include "render/sky_pass.h"
 #include "render/copy_to_swapchain_pass.h"
+#include "render/imgui_layer.h"
+
+static GI_Scene gi_scene;
 
 // Key with no binding, used as the "no modifier" sentinel in the event macros
 // (GLFW key 0 is unassigned; is_key_pressed(0) is always false, so we special
@@ -190,9 +204,8 @@ char* copy_flatbuffer_string(const flatbuffers::String* in_string)
 // Parses a size-prefixed flatbuffer Update and sends results to the main
 // thread via channels. Runs on the live link thread — GPU resources are only
 // described here (lazy GpuBuffer), never created.
-// game2 scope: objects (transform + mesh + light + camera control), deletes,
-// reset. Images, materials, armatures, rigid bodies, characters, and fog are
-// skipped until their systems are ported.
+// Parses the complete live-link payload used by game2: content resources,
+// objects/components, deletes, reset, and import statistics.
 void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 {
 	if (flatbuffer_data.length() == 0)
@@ -207,17 +220,22 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	// Everything in this Update is packaged into one SceneUpdate message and
 	// registered/applied on the main thread at drain time
 	SceneUpdate scene_update;
+	scene_update.stats.byte_count = (u64) flatbuffer_data.length();
+	scene_update.stats.generation_seconds = update->generation_seconds();
+	scene_update.stats.reset = update->reset();
 
 	// process images from update (pixels copied here — the flatbuffer memory
 	// dies with this function; the drain frees them after GPU upload)
 	if (auto images = update->images())
 	{
+		scene_update.stats.image_count = (i32) images->size();
 		for (u32 idx = 0; idx < images->size(); ++idx)
 		{
 			auto image = images->Get(idx);
 			assert(image);
 
 			auto image_data = image->data();
+			if (image_data) { scene_update.stats.image_byte_count += image_data->size(); }
 			const i32 width = image->width();
 			const i32 height = image->height();
 			if (!image_data || width <= 0 || height <= 0)
@@ -250,6 +268,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	// this update's images register)
 	if (auto materials = update->materials())
 	{
+		scene_update.stats.material_count = (i32) materials->size();
 		for (u32 idx = 0; idx < materials->size(); ++idx)
 		{
 			auto material = materials->Get(idx);
@@ -281,6 +300,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	// process objects from update
 	if (auto objects = update->objects())
 	{
+		scene_update.stats.object_count = (i32) objects->size();
 		for (u32 idx = 0; idx < objects->size(); ++idx)
 		{
 			auto object = objects->Get(idx);
@@ -713,6 +733,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 
 	if (auto deleted_object_uids = update->deleted_object_uids())
 	{
+		scene_update.stats.deleted_object_count = (i32) deleted_object_uids->size();
 		for (i32 deleted_object_uid : *deleted_object_uids)
 		{
 			scene_update.deleted_object_uids.add(deleted_object_uid);
@@ -722,6 +743,23 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	if (update->reset())
 	{
 		scene_update.reset = true;
+	}
+
+	for (const Object& object : scene_update.objects)
+	{
+		if (object.has_mesh)
+		{
+			scene_update.stats.mesh_count++;
+			scene_update.stats.mesh_vertex_count += (i32) object.mesh.vertex_count;
+			scene_update.stats.mesh_index_count += (i32) object.mesh.index_count;
+			if (object.mesh.has_skinned_vertices) { scene_update.stats.skinned_mesh_count++; }
+		}
+		if (object.has_light) { scene_update.stats.light_count++; }
+		if (object.has_armature)
+		{
+			scene_update.stats.armature_count++;
+			scene_update.stats.animation_count += (i32) object.armature.animation_count;
+		}
 	}
 
 	// Send the whole update to the main thread
@@ -998,6 +1036,12 @@ void live_link_drain_channels()
 	while (optional<SceneUpdate> received_update = state.live_link.scene_updates.receive())
 	{
 		SceneUpdate& scene_update = *received_update;
+		State::DebugUiState::LiveLinkImportStats import_stats;
+		static_cast<SceneUpdate::ImportStats&>(import_stats) = scene_update.stats;
+		import_stats.update_index = state.debug_ui.last_import.update_index + 1;
+		state.debug_ui.last_import = import_stats;
+		state.debug_ui.import_history.add(import_stats);
+		state.debug_ui.selected_import = (i32) state.debug_ui.import_history.length() - 1;
 
 		// Images (before materials — register_material resolves image ids)
 		for (const PendingImage& pending_image : scene_update.images)
@@ -1030,9 +1074,13 @@ void live_link_drain_channels()
 				resolve_mesh_material_indices(updated_object.mesh);
 			}
 
+			bool gi_scene_geometry_changed = object_contributes_to_gi_scene(updated_object);
+
 			// Cleanup old object
 			if (state.scene.objects.contains(updated_object_uid))
 			{
+				gi_scene_geometry_changed = gi_scene_geometry_changed
+					|| object_contributes_to_gi_scene(state.scene.objects[updated_object_uid]);
 				object_cleanup(state.scene.objects[updated_object_uid]);
 			}
 
@@ -1061,6 +1109,10 @@ void live_link_drain_channels()
 
 			state.scene.objects[updated_object_uid] = updated_object;
 			scene_mark_indexes_dirty(state);
+			if (gi_scene_geometry_changed)
+			{
+				state.gi.layout_dirty = true;
+			}
 		}
 
 		// Deleted objects
@@ -1073,9 +1125,14 @@ void live_link_drain_channels()
 				{
 					mark_lighting_dirty(state);
 				}
+				const bool gi_scene_geometry_changed = object_contributes_to_gi_scene(state.scene.objects[deleted_object_uid]);
 				object_cleanup(state.scene.objects[deleted_object_uid]);
 				state.scene.objects.erase(deleted_object_uid);
 				scene_mark_indexes_dirty(state);
+				if (gi_scene_geometry_changed)
+				{
+					state.gi.layout_dirty = true;
+				}
 
 				if (state.scene.camera_control_id == deleted_object_uid)
 				{
@@ -1108,6 +1165,7 @@ void live_link_drain_channels()
 			scene_reset_indexes(state);
 			reset_materials();
 			reset_images();
+			state.gi.layout_dirty = true;
 		}
 	}
 }
@@ -1151,6 +1209,7 @@ void handle_resize(bool in_force = false)
 	// buffers only) — idle covers render-scale changes; the window-resize
 	// path already idled inside recreate_swapchain
 	vkDeviceWaitIdle(state.vk.device);
+	ImGuiLayer::clear_textures();
 
 	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
 	{
@@ -1452,8 +1511,83 @@ void refresh_primary_sun_id()
 	}
 }
 
+bool ray_sphere_intersect(
+	const HMM_Vec3& in_ray_origin,
+	const HMM_Vec3& in_ray_direction,
+	const HMM_Vec3& in_sphere_center,
+	const f32 in_sphere_radius,
+	f32& out_t)
+{
+	const HMM_Vec3 oc = in_ray_origin - in_sphere_center;
+	const f32 b = HMM_DotV3(oc, in_ray_direction);
+	const f32 c = HMM_DotV3(oc, oc) - in_sphere_radius * in_sphere_radius;
+	const f32 discriminant = b * b - c;
+	if (discriminant < 0.0f)
+	{
+		return false;
+	}
+
+	const f32 sqrt_discriminant = HMM_SqrtF(discriminant);
+	f32 t = -b - sqrt_discriminant;
+	if (t < 0.0f) { t = -b + sqrt_discriminant; }
+	if (t < 0.0f) { return false; }
+	out_t = t;
+	return true;
+}
+
+void pick_isolated_gi_probe()
+{
+	i32 logical_width = 0;
+	i32 logical_height = 0;
+	glfwGetWindowSize(state.window.handle, &logical_width, &logical_height);
+	const f32 width = (f32) logical_width;
+	const f32 height = (f32) logical_height;
+	if (width <= 0.0f || height <= 0.0f)
+	{
+		return;
+	}
+
+	const f32 fov = HMM_AngleDeg(60.0f);
+	const f32 ndc_x = 2.0f * state.input.mouse_position.X / width - 1.0f;
+	const f32 ndc_y = 1.0f - 2.0f * state.input.mouse_position.Y / height;
+	const Camera& camera = get_active_camera();
+	const HMM_Vec3 camera_forward = HMM_NormV3(camera.forward);
+	const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera_forward, camera.up));
+	const HMM_Vec3 camera_up = HMM_NormV3(HMM_Cross(camera_right, camera_forward));
+	const f32 tan_half_fov = HMM_TanF(fov * 0.5f);
+	const HMM_Vec3 ray_direction = HMM_NormV3(
+		camera_forward
+		+ camera_right * (ndc_x * (width / height) * tan_half_fov)
+		+ camera_up * (ndc_y * tan_half_fov));
+
+	i32 closest_probe_index = -1;
+	f32 closest_t = std::numeric_limits<f32>::max();
+	for (i32 probe_index = 0; probe_index < gi_scene.non_fallback_probe_count; ++probe_index)
+	{
+		f32 t = 0.0f;
+		if (ray_sphere_intersect(
+			camera.location,
+			ray_direction,
+			gi_scene_probe_position_from_index(gi_scene, probe_index),
+			gi_scene_debug_probe_radius_for_probe(gi_scene, probe_index),
+			t) && t < closest_t)
+		{
+			closest_t = t;
+			closest_probe_index = probe_index;
+		}
+	}
+	if (closest_probe_index >= 0)
+	{
+		state.gi.isolated_probe_index = closest_probe_index;
+	}
+}
+
 void key_callback(GLFWwindow* in_window, i32 in_key, i32 in_scancode, i32 in_action, i32 in_mods)
 {
+	if (ImGuiLayer::initialized)
+	{
+		ImGui_ImplGlfw_KeyCallback(in_window, in_key, in_scancode, in_action, in_mods);
+	}
 	if (in_key < 0 || in_key > GLFW_KEY_LAST)
 	{
 		return;
@@ -1483,9 +1617,19 @@ void key_callback(GLFWwindow* in_window, i32 in_key, i32 in_scancode, i32 in_act
 
 void mouse_button_callback(GLFWwindow* in_window, i32 in_button, i32 in_action, i32 in_mods)
 {
+	if (ImGuiLayer::initialized)
+	{
+		ImGui_ImplGlfw_MouseButtonCallback(in_window, in_button, in_action, in_mods);
+		if (ImGui::GetIO().WantCaptureMouse) { return; }
+	}
 	// Lock Mouse on left click into game space
 	if (in_button == GLFW_MOUSE_BUTTON_LEFT && in_action == GLFW_PRESS)
 	{
+		if (state.gi.probe_isolation_enable && state.gi.show_probes)
+		{
+			pick_isolated_gi_probe();
+			return;
+		}
 		if (!is_mouse_locked())
 		{
 			set_mouse_locked(true);
@@ -1495,6 +1639,10 @@ void mouse_button_callback(GLFWwindow* in_window, i32 in_button, i32 in_action, 
 
 void cursor_position_callback(GLFWwindow* in_window, f64 in_x, f64 in_y)
 {
+	if (ImGuiLayer::initialized)
+	{
+		ImGui_ImplGlfw_CursorPosCallback(in_window, in_x, in_y);
+	}
 	static f64 last_x = 0.0;
 	static f64 last_y = 0.0;
 	static bool has_last_position = false;
@@ -1507,13 +1655,35 @@ void cursor_position_callback(GLFWwindow* in_window, f64 in_x, f64 in_y)
 
 	last_x = in_x;
 	last_y = in_y;
+	state.input.mouse_position = HMM_V2((f32) in_x, (f32) in_y);
 	has_last_position = true;
+}
+
+void char_callback(GLFWwindow* in_window, u32 in_codepoint)
+{
+	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_CharCallback(in_window, in_codepoint); }
+}
+
+void scroll_callback(GLFWwindow* in_window, f64 in_x_offset, f64 in_y_offset)
+{
+	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_ScrollCallback(in_window, in_x_offset, in_y_offset); }
+}
+
+void cursor_enter_callback(GLFWwindow* in_window, i32 in_entered)
+{
+	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_CursorEnterCallback(in_window, in_entered); }
+}
+
+void window_focus_callback(GLFWwindow* in_window, i32 in_focused)
+{
+	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_WindowFocusCallback(in_window, in_focused); }
 }
 
 void framebuffer_size_callback(GLFWwindow* in_window, i32 in_width, i32 in_height)
 {
-	state.window.width = in_width;
-	state.window.height = in_height;
+	// The swapchain owns the authoritative framebuffer extent. Keep the old
+	// values here so handle_resize() can detect the change after recreation
+	// and resize all scaled offscreen targets exactly once.
 	state.vk.needs_resize = true;
 }
 
@@ -1618,6 +1788,7 @@ void update_camera_control(f32 in_delta_time)
 void frame(f32 in_delta_time)
 {
 	CPU_TIMING_FRAME("Frame");
+	ImGuiLayer::begin_frame();
 
 	{
 		CPU_TIMING_SCOPE("Live Link");
@@ -1626,9 +1797,14 @@ void frame(f32 in_delta_time)
 
 	{
 		CPU_TIMING_SCOPE("Camera + Controls");
+		DEFINE_TOGGLE_TWO_KEYS(state.debug_ui.visible, GLFW_KEY_I, GLFW_KEY_LEFT_CONTROL);
+		const bool ui_captures_keyboard = ImGui::GetIO().WantCaptureKeyboard;
+		const bool ui_captures_mouse = ImGui::GetIO().WantCaptureMouse;
 
 		// Space + Left Control toggle simulation (physics + animation playback)
-		DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, GLFW_KEY_SPACE, GLFW_KEY_LEFT_CONTROL);
+		if (!ui_captures_keyboard)
+		{
+			DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, GLFW_KEY_SPACE, GLFW_KEY_LEFT_CONTROL);
 
 		// D + Left Control toggle debug camera
 		DEFINE_EVENT_TWO_KEYS(GLFW_KEY_D, GLFW_KEY_LEFT_CONTROL,
@@ -1650,9 +1826,13 @@ void frame(f32 in_delta_time)
 			}
 			rewind_skinned_animations();
 		);
+		}
 
-		update_debug_camera(in_delta_time);
-		update_camera_control(in_delta_time);
+		if (!ui_captures_mouse && !ui_captures_keyboard)
+		{
+			update_debug_camera(in_delta_time);
+			update_camera_control(in_delta_time);
+		}
 	}
 
 	{
@@ -1684,12 +1864,14 @@ void frame(f32 in_delta_time)
 
 	if (!vulkan_context_begin_frame(&state.vk))
 	{
+		ImGui::EndFrame();
 		reset_mouse_delta();
 		return;
 	}
 
 	// Window size changes (begin_frame already recreated the swapchain)
 	handle_resize();
+	ImGuiLayer::draw_controls(state, gi_scene);
 
 	// View + Projection matrix setup (TAA jitters the projection; the
 	// unjittered previous VP is not kept — game/ reprojects with the
@@ -1716,6 +1898,12 @@ void frame(f32 in_delta_time)
 	const HMM_Vec3 target = camera.location + camera.forward * 10;
 	const HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 	const HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+
+	// Deform source vertices first, then plan/emit tessellation. GI captures
+	// and all raster passes below consume the resulting MeshRenderView.
+	GpuSkinning::update(&state.vk, state,
+		state.tessellation.enabled || state.wireframe.shaded_wireframe);
+	Tessellation::update(&state.vk, state, camera, fov);
 
 	// Per-frame UBO. Sun sourced from the scene's primary sun; the hardcoded
 	// fallback only drives the sky bake now (deviation from game/'s black
@@ -1902,6 +2090,13 @@ void frame(f32 in_delta_time)
 	// direction (game/ sky_pass.h:96)
 	sky_pass_bake_if_needed(&state.vk, -per_frame_data.sun_direction.XYZ);
 
+	// Incrementally capture and project GI probes after GPU skinning and the
+	// sky bake, before the main pass chain samples the probe atlas.
+	{
+		CPU_TIMING_SCOPE("GI Scene Update");
+		gi_scene_update(&state.vk, gi_scene, state);
+	}
+
 	// Cascade matrices are CPU-side inputs to both the shadow draw and the
 	// lighting shader's receiver reprojection — compute before the fs_params
 	// upload below. The centered-squares anchor tracks the camera unless the
@@ -1914,16 +2109,27 @@ void frame(f32 in_delta_time)
 	const bool shadow_map_updated = ShadowDepthPass::compute_cascade_matrices(state, camera);
 	state.shadow.force_recapture = false;
 
-	// Lighting fs_params: game/'s layout with GI/SSAO/SSS toggles forced 0
-	// (those systems port in 3b/3c)
+	// Lighting fs_params: direct, shadow, post-occlusion, and probe GI state.
 	LightingFsParams lighting_fs_params = {};
 	lighting_fs_params.view_position = camera.location;
 	lighting_fs_params.view_forward = camera.forward;
 	lighting_fs_params.num_point_lights = (i32) state.lighting.point_lights.length();
 	lighting_fs_params.num_spot_lights = (i32) state.lighting.spot_lights.length();
 	lighting_fs_params.num_sun_lights = (i32) state.lighting.sun_lights.length();
-	lighting_fs_params.direct_lighting_enable = 1;
+	lighting_fs_params.direct_lighting_enable = state.lighting.direct_enable ? 1 : 0;
 	lighting_fs_params.ssao_enable = state.ssao.enable ? 1 : 0;
+	lighting_fs_params.gi_enable = state.gi.enable ? 1 : 0;
+	lighting_fs_params.gi_probe_occlusion = state.gi.probe_occlusion ? 1 : 0;
+	lighting_fs_params.probe_occlusion_mode = (i32) state.gi.probe_occlusion_mode;
+	lighting_fs_params.probe_radiance_mode = (i32) state.gi.probe_radiance_mode;
+	lighting_fs_params.gi_intensity = state.gi.intensity;
+	lighting_fs_params.atlas_total_size = GI_Scene::atlas_total_size;
+	lighting_fs_params.atlas_entry_size = GI_Scene::atlas_entry_size;
+	lighting_fs_params.gi_fallback_probe_index = gi_scene.fallback_probe_index;
+	lighting_fs_params.gi_octree_node_count = (i32) gi_scene.octree_nodes.length();
+	lighting_fs_params.isolated_probe_index = state.gi.probe_isolation_enable
+		? (state.gi.isolated_probe_index >= 0 ? state.gi.isolated_probe_index : -2)
+		: -1;
 	lighting_fs_params.shadow_bias = state.shadow.shadow_bias;
 	lighting_fs_params.shadow_map_texel_size = HMM_V2(
 		1.0f / (f32) ShadowDepthPass::ShadowMapResolution,
@@ -1977,7 +2183,14 @@ void frame(f32 in_delta_time)
 		screen_space_shadows_entry.final_pass().get_color_output(0).view,
 		state.lighting.point_buffers[state.lighting.buffer_index].get_gpu_buffer(),
 		state.lighting.spot_buffers[state.lighting.buffer_index].get_gpu_buffer(),
-		state.lighting.sun_buffers[state.lighting.buffer_index].get_gpu_buffer()
+		state.lighting.sun_buffers[state.lighting.buffer_index].get_gpu_buffer(),
+		gi_scene.probes_buffer.get_gpu_buffer(),
+		gi_scene.cells_buffer.get_gpu_buffer(),
+		gi_scene_get_octahedral_lighting_view(gi_scene),
+		gi_scene_get_octahedral_depth_view(gi_scene),
+		gi_scene.sh9_coefficients_buffer.get_gpu_buffer(),
+		gi_scene.sg9_lobes_buffer.get_gpu_buffer(),
+		gi_scene.octree_nodes_buffer.get_gpu_buffer()
 	);
 
 	ssao_pass_update(
@@ -2058,7 +2271,8 @@ void frame(f32 in_delta_time)
 
 		if (state.render_objects.valid)
 		{
-			CullResult cull_result = cull_objects(state, view_projection_matrix, 0.0f);
+			CullResult cull_result = cull_objects(state, view_projection_matrix,
+				state.tessellation.enabled ? state.tessellation.bounds_padding : 0.0f);
 			for (i32 mesh_object_id : cull_result.object_ids)
 			{
 				auto found = state.scene.objects.find(mesh_object_id);
@@ -2074,6 +2288,9 @@ void frame(f32 in_delta_time)
 				}
 			}
 		}
+
+		// Sky composite fills the background at the far plane
+		GIDebugPass::draw(&state.vk, gi_scene, state, view_projection_matrix);
 
 		// Sky composite fills the background at the far plane
 		if (state.sky.rendering_enable)
@@ -2235,6 +2452,7 @@ void frame(f32 in_delta_time)
 	{
 		copy_to_swapchain_pass_draw(&state.vk);
 	});
+	ImGuiLayer::render(&state.vk);
 
 	// Debug frame dump for automated visual verification
 	static const char* screenshot_path = getenv("GAME2_SCREENSHOT");
@@ -2292,11 +2510,17 @@ int main(int argc, char** argv)
 	glfwSetKeyCallback(window, key_callback);
 	glfwSetMouseButtonCallback(window, mouse_button_callback);
 	glfwSetCursorPosCallback(window, cursor_position_callback);
+	glfwSetCharCallback(window, char_callback);
+	glfwSetScrollCallback(window, scroll_callback);
+	glfwSetCursorEnterCallback(window, cursor_enter_callback);
+	glfwSetWindowFocusCallback(window, window_focus_callback);
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
 	jolt_init();
 
 	vulkan_context_init(&state.vk, window);
+	ImGuiLayer::init(&state.vk);
+	glfwSetMonitorCallback(ImGui_ImplGlfw_MonitorCallback);
 	frame_data_init(&state.vk);
 	geometry_pass_init(&state.vk);
 	ShadowDepthPass::init(&state.vk);
@@ -2309,6 +2533,8 @@ int main(int argc, char** argv)
 	WireOverlayPass::init(&state.vk, frame_data.linear_sampler);
 	TemporalAAPass::init(&state.vk, frame_data.linear_sampler);
 	FXAAPass::init(&state.vk, frame_data.linear_sampler);
+	GpuSkinning::init(&state.vk);
+	Tessellation::init(&state.vk);
 	lighting_pass_init(&state.vk, frame_data.linear_sampler);
 	tonemapping_pass_init(&state.vk);
 	sky_pass_init(&state.vk);
@@ -2320,6 +2546,8 @@ int main(int argc, char** argv)
 	init_materials_buffer(state);
 	skin_matrix_arena_ensure_capacity(state, 1);
 	init_lighting_buffers(state);
+	gi_scene_init(&state.vk, gi_scene, state);
+	GIDebugPass::init(&state.vk);
 
 	// Render-scale override for testing (percentage, 25..100)
 	if (const char* render_scale_env = getenv("GAME2_RENDER_SCALE"))
@@ -2327,7 +2555,7 @@ int main(int argc, char** argv)
 		state.window.resolution_percentage = (i32) strtol(render_scale_env, nullptr, 10);
 	}
 
-	// Shadow debug overrides (ImGui owns these in Phase 4)
+	// Headless shadow overrides; the ImGui panel exposes the same controls.
 	if (const char* shadow_placement_env = getenv("GAME2_SHADOW_PLACEMENT"))
 	{
 		state.shadow.cascade_placement_mode = strtol(shadow_placement_env, nullptr, 10) == 1
@@ -2369,6 +2597,30 @@ int main(int argc, char** argv)
 	if (const char* fxaa_env = getenv("GAME2_FXAA"))
 	{
 		state.temporal_aa.enable_fxaa = strtol(fxaa_env, nullptr, 10) != 0;
+	}
+	if (const char* tessellation_env = getenv("GAME2_TESSELLATION"))
+	{
+		state.tessellation.enabled = strtol(tessellation_env, nullptr, 10) != 0;
+	}
+	if (const char* tessellation_mode_env = getenv("GAME2_TESSELLATION_MODE"))
+	{
+		state.tessellation.mode = (ETessellationMode) CLAMP((i32) strtol(tessellation_mode_env, nullptr, 10), 0, 2);
+	}
+	if (const char* tessellation_factor_env = getenv("GAME2_TESSELLATION_FACTOR"))
+	{
+		state.tessellation.fixed_factor = CLAMP((i32) strtol(tessellation_factor_env, nullptr, 10), 1, (i32) Tessellation::MAX_FACTOR);
+	}
+	if (getenv("GAME2_GI_PROBES"))
+	{
+		state.gi.show_probes = true;
+	}
+	if (const char* gi_radiance_env = getenv("GAME2_GI_RADIANCE_MODE"))
+	{
+		state.gi.probe_radiance_mode = (EProbeRadianceMode) CLAMP((i32) strtol(gi_radiance_env, nullptr, 10), 0, 2);
+	}
+	if (const char* gi_occlusion_env = getenv("GAME2_GI_OCCLUSION_MODE"))
+	{
+		state.gi.probe_occlusion_mode = (EProbeOcclusionMode) CLAMP((i32) strtol(gi_occlusion_env, nullptr, 10), 0, 1);
 	}
 
 	// Register render passes and size their targets
@@ -2671,6 +2923,9 @@ int main(int argc, char** argv)
 	state.live_link.thread.join();
 
 	vkDeviceWaitIdle(state.vk.device);
+	ImGuiLayer::shutdown();
+	GIDebugPass::shutdown(&state.vk);
+	gi_scene_cleanup(&state.vk, gi_scene);
 
 	for (auto& [unique_id, object] : state.scene.objects)
 	{
@@ -2703,6 +2958,8 @@ int main(int argc, char** argv)
 	copy_to_swapchain_pass_shutdown(&state.vk);
 	sky_pass_shutdown(&state.vk);
 	tonemapping_pass_shutdown(&state.vk);
+	Tessellation::shutdown(&state.vk);
+	GpuSkinning::shutdown(&state.vk);
 	FXAAPass::shutdown(&state.vk);
 	TemporalAAPass::shutdown(&state.vk);
 	WireOverlayPass::shutdown(&state.vk);

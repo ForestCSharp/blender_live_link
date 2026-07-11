@@ -24,16 +24,18 @@ using std::optional;
 // inside dynamic rendering). There is no dependency graph — passes run in
 // ERenderPass enum order.
 
-// Phase 1 implements Single and Swapchain; Multi/Array/Cubemap arrive with
-// the passes that need them (Phase 3)
+// Single/Swapchain (Phase 1), Array (Phase 3a shadows), Multi/Cubemap
+// (Phase 3c GI captures)
 enum class ERenderPassType
 {
 	Single,
-	Multi,
-	Array,
-	Cubemap,
+	Multi,		// pass_count independent 2D target sets
+	Array,		// one layered image; one slice per pass
+	Cubemap,	// one cube image; one face per pass, sampled as CUBE
 	Swapchain,
 };
+
+static constexpr i32 NUM_CUBE_FACES = 6;
 
 static constexpr i32 RENDER_PASS_MAX_COLOR_OUTPUTS = 4;
 
@@ -66,10 +68,12 @@ struct RenderPass
 {
 	RenderPassDesc desc = {};
 
-	// One image per color output. Array passes allocate a single layered
-	// image per output (pass_count layers, per-layer attachment views).
+	// Single/Array/Cubemap: one image per color output (Array/Cubemap are
+	// layered with per-layer attachment views). Multi: one image per output
+	// per pass instance, flat-indexed [image_idx * num_outputs + output_idx].
+	// depth_outputs mirrors the image-set count.
 	StretchyBuffer<GpuImage> color_outputs;
-	optional<GpuImage> depth_output;
+	StretchyBuffer<GpuImage> depth_outputs;
 
 	i32 current_width = -1;
 	i32 current_height = -1;
@@ -83,23 +87,43 @@ struct RenderPass
 		const bool has_any_output = desc.num_outputs > 0 || desc.depth_output.format != VK_FORMAT_UNDEFINED;
 		assert(has_any_output || desc.type == ERenderPassType::Swapchain);
 		assert(desc.num_outputs <= RENDER_PASS_MAX_COLOR_OUTPUTS);
-		assert(desc.type == ERenderPassType::Single
-			|| desc.type == ERenderPassType::Swapchain
-			|| desc.type == ERenderPassType::Array);	// Multi/Cubemap: later phases
 		assert(desc.type != ERenderPassType::Array || desc.pass_count >= 1);
+		assert(desc.type != ERenderPassType::Multi || desc.pass_count >= 1);
+	}
+
+	bool has_depth() const
+	{
+		return desc.depth_output.format != VK_FORMAT_UNDEFINED;
+	}
+
+	// Independent target sets (Multi renders each instance into its own images)
+	i32 get_image_set_count() const
+	{
+		return desc.type == ERenderPassType::Multi ? desc.pass_count : 1;
+	}
+
+	i32 get_natural_pass_count() const
+	{
+		switch (desc.type)
+		{
+			case ERenderPassType::Single:		return 1;
+			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Array:		return desc.pass_count;
+			case ERenderPassType::Cubemap:		return NUM_CUBE_FACES;
+			case ERenderPassType::Swapchain:	return 1;
+		}
+		assert(false);
+		return 1;
 	}
 
 	i32 get_pass_count() const
 	{
-		if (desc.type != ERenderPassType::Array)
-		{
-			return 1;
-		}
+		const i32 natural_pass_count = get_natural_pass_count();
 		if (pass_count_override >= 0)
 		{
-			return MIN(pass_count_override, desc.pass_count);
+			return MIN(pass_count_override, natural_pass_count);
 		}
-		return desc.pass_count;
+		return natural_pass_count;
 	}
 
 	void set_pass_count_override(i32 in_count)
@@ -115,11 +139,11 @@ struct RenderPass
 		}
 		color_outputs.reset();
 
-		if (depth_output.has_value())
+		for (GpuImage& image : depth_outputs)
 		{
-			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, *depth_output);
-			depth_output.reset();
+			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, image);
 		}
+		depth_outputs.reset();
 	}
 
 	void allocate_outputs()
@@ -129,32 +153,41 @@ struct RenderPass
 			return;
 		}
 
-		const u32 array_layers = desc.type == ERenderPassType::Array ? (u32) desc.pass_count : 1u;
+		const bool is_cubemap = desc.type == ERenderPassType::Cubemap;
+		const u32 array_layers = desc.type == ERenderPassType::Array ? (u32) desc.pass_count
+								: is_cubemap ? (u32) NUM_CUBE_FACES
+								: 1u;
+		const i32 image_set_count = get_image_set_count();
 
-		for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+		for (i32 image_idx = 0; image_idx < image_set_count; ++image_idx)
 		{
-			color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
-				.width = (u32) current_width,
-				.height = (u32) current_height,
-				.format = desc.outputs[output_idx].format,
-				.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-					   | VK_IMAGE_USAGE_SAMPLED_BIT
-					   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-				.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-				.array_layers = array_layers,
-			}));
-		}
+			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			{
+				color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.outputs[output_idx].format,
+					.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+						   | VK_IMAGE_USAGE_SAMPLED_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+					.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+				}));
+			}
 
-		if (desc.depth_output.format != VK_FORMAT_UNDEFINED)
-		{
-			depth_output = gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
-				.width = (u32) current_width,
-				.height = (u32) current_height,
-				.format = desc.depth_output.format,
-				.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.array_layers = array_layers,
-			});
+			if (has_depth())
+			{
+				depth_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.depth_output.format,
+					.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+				}));
+			}
 		}
 	}
 
@@ -170,16 +203,17 @@ struct RenderPass
 		}
 	}
 
-	GpuImage& get_color_output(i32 in_output_idx = 0)
+	GpuImage& get_color_output(i32 in_output_idx = 0, i32 in_image_idx = 0)
 	{
-		assert(color_outputs.is_valid_index(in_output_idx));
-		return color_outputs[in_output_idx];
+		const i32 flat_idx = in_image_idx * desc.num_outputs + in_output_idx;
+		assert(color_outputs.is_valid_index(flat_idx));
+		return color_outputs[flat_idx];
 	}
 
-	GpuImage& get_depth_output()
+	GpuImage& get_depth_output(i32 in_image_idx = 0)
 	{
-		assert(depth_output.has_value());
-		return *depth_output;
+		assert(depth_outputs.is_valid_index(in_image_idx));
+		return depth_outputs[in_image_idx];
 	}
 
 	// Recreates targets at the new size. Destruction is immediate (the
@@ -227,22 +261,24 @@ struct RenderPass
 		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
 
 		const bool is_swapchain = desc.type == ERenderPassType::Swapchain;
-		const bool is_array = desc.type == ERenderPassType::Array;
+		const bool is_multi = desc.type == ERenderPassType::Multi;
+		const bool is_sliced = desc.type == ERenderPassType::Array || desc.type == ERenderPassType::Cubemap;
 
 		// Own outputs -> attachment layouts (before BeginRendering; the
 		// swapchain image was already transitioned by begin_frame).
-		// Transitions span all layers.
+		// Transitions span all layers and image sets.
 		if (!is_swapchain)
 		{
-			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			for (i32 flat_idx = 0; flat_idx < (i32) color_outputs.length(); ++flat_idx)
 			{
+				const i32 output_idx = desc.num_outputs > 0 ? flat_idx % desc.num_outputs : 0;
 				const bool discard = desc.outputs[output_idx].load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
-				gpu_image_transition(command_buffer, color_outputs[output_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, discard);
+				gpu_image_transition(command_buffer, color_outputs[flat_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, discard);
 			}
-			if (depth_output.has_value())
+			for (GpuImage& depth_image : depth_outputs)
 			{
 				const bool discard = desc.depth_output.load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
-				gpu_image_transition(command_buffer, *depth_output, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, discard);
+				gpu_image_transition(command_buffer, depth_image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, discard);
 			}
 		}
 
@@ -274,10 +310,10 @@ struct RenderPass
 			{
 				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 				{
-					GpuImage& output_image = color_outputs[output_idx];
+					GpuImage& output_image = get_color_output(output_idx, is_multi ? pass_idx : 0);
 					color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
 						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-						.imageView = is_array ? output_image.layer_views[pass_idx] : output_image.view,
+						.imageView = is_sliced ? output_image.layer_views[pass_idx] : output_image.view,
 						.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 						.loadOp = desc.outputs[output_idx].load_op,
 						.storeOp = desc.outputs[output_idx].store_op,
@@ -287,11 +323,12 @@ struct RenderPass
 			}
 
 			VkRenderingAttachmentInfo depth_attachment = {};
-			if (depth_output.has_value())
+			if (has_depth() && !is_swapchain)
 			{
+				GpuImage& depth_image = get_depth_output(is_multi ? pass_idx : 0);
 				depth_attachment = (VkRenderingAttachmentInfo) {
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = is_array ? depth_output->layer_views[pass_idx] : depth_output->view,
+					.imageView = is_sliced ? depth_image.layer_views[pass_idx] : depth_image.view,
 					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
 					.loadOp = desc.depth_output.load_op,
 					.storeOp = desc.depth_output.store_op,
@@ -308,7 +345,7 @@ struct RenderPass
 				.layerCount = 1,
 				.colorAttachmentCount = color_attachment_count,
 				.pColorAttachments = color_attachment_count > 0 ? color_attachments : nullptr,
-				.pDepthAttachment = depth_output.has_value() ? &depth_attachment : nullptr,
+				.pDepthAttachment = (has_depth() && !is_swapchain) ? &depth_attachment : nullptr,
 			};
 
 			vkCmdBeginRendering(command_buffer, &rendering_info);

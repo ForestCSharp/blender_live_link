@@ -11,9 +11,8 @@
 // Shaded wireframe overlay (port of game/'s wire_overlay_pass.h +
 // wire_overlay.glsl): copies the current scene color, then alpha-blends
 // anti-aliased triangle edges on top. Wires only draw where the G-buffer
-// says the surface is visible. Skinned + tessellated meshes are skipped
-// until the GPU vertex cache ports in Phase 3c (game/ gates those on
-// mesh_has_valid_skinned_vertex_cache).
+// says the surface is visible. Skinned meshes use the compute-baked cache;
+// tessellated meshes use the generated render view.
 
 // Mirrors wire_overlay_mesh.frag's mesh_fs_params (std140)
 struct WireOverlayMeshFsParams
@@ -436,8 +435,13 @@ namespace WireOverlayPass
 			}
 
 			Mesh& mesh = object.mesh;
-			// Skinned wires need the GPU-skinned vertex cache (Phase 3c)
-			if (mesh.has_skinned_vertices || mesh.index_count == 0)
+			MeshRenderView render_view = mesh_get_render_view(mesh);
+			if (render_view.index_count == 0)
+			{
+				continue;
+			}
+			// Skinned wires draw from the compute-baked vertex cache
+			if (mesh.has_skinned_vertices && !mesh.skinned_vertex_cache_valid)
 			{
 				continue;
 			}
@@ -456,8 +460,8 @@ namespace WireOverlayPass
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &mesh_set));
 
 			VkDescriptorBufferInfo buffer_infos[] = {
-				{ .buffer = mesh.vertex_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
-				{ .buffer = mesh.index_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
+				{ .buffer = render_view.vertex_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+				{ .buffer = render_view.index_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
 			};
 			VkWriteDescriptorSet writes[] = {
 				{
@@ -492,7 +496,7 @@ namespace WireOverlayPass
 				VK_SHADER_STAGE_VERTEX_BIT,
 				0, sizeof(i32), &object.render_object_index
 			);
-			vkCmdDraw(command_buffer, mesh.index_count, 1, 0, 0);
+			vkCmdDraw(command_buffer, render_view.index_count, 1, 0, 0);
 			drawn_mesh_count += 1;
 		}
 	}

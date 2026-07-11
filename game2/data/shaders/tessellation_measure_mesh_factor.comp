@@ -1,0 +1,95 @@
+#version 450
+
+#include "tessellation_common.h"
+
+layout(push_constant) uniform plan_params {
+	mat4 model_matrix;
+	vec4 camera_position;
+	int source_triangle_count;
+	int base_triangle_index;
+	int max_patch_count;
+	int max_vertex_count;
+	int max_index_count;
+	int max_factor;
+	int virtual_patches_enabled;
+	int virtual_patch_max_depth;
+	int tessellation_mode;
+	int fixed_factor;
+	int plan_padding0;
+	int plan_padding1;
+	float fov_radians;
+	float render_height;
+	float target_pixels_per_segment;
+	float padding0;
+};
+
+layout(set=0, binding=0, std430) readonly buffer MeasureSourceVerticesBuffer {
+	TessellationVertex measure_source_vertices[];
+};
+
+layout(set=0, binding=1, std430) readonly buffer MeasureSourceIndicesBuffer {
+	TessellationIndex measure_source_indices[];
+};
+
+layout(set=0, binding=2, std430) buffer MeasureCountersBuffer {
+	TessellationCounters measure_counters[];
+};
+
+layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+
+/**
+ * Transforms a source vertex from mesh-local space into world space for screen-size LOD measurement.
+ */
+vec3 measure_world_position(vec3 local_position)
+{
+	return (model_matrix * vec4(local_position, 1.0)).xyz;
+}
+
+/**
+ * Estimates the tessellation LOD for an edge from its world-space length and distance to the camera.
+ * The result is expressed as desired segments based on approximate projected pixel length.
+ */
+float measure_raw_lod_for_edge_at_distance(float edge_length, float distance_to_camera)
+{
+	float safe_distance = max(distance_to_camera, 0.001);
+	float sine_half_angle = clamp(edge_length / (2.0 * safe_distance), 0.0, 1.0);
+	float angular_length = 2.0 * asin(sine_half_angle);
+	float pixel_length = (angular_length / max(fov_radians, 0.001)) * render_height;
+	return max(pixel_length / max(target_pixels_per_segment, 1.0), 1.0);
+}
+
+/**
+ * Estimates the tessellation LOD for a world-space edge using the edge midpoint as the camera-distance sample.
+ */
+float measure_raw_lod_for_edge(vec3 a, vec3 b)
+{
+	vec3 midpoint = (a + b) * 0.5;
+	float distance_to_camera = max(length(midpoint - camera_position.xyz), 0.001);
+	return measure_raw_lod_for_edge_at_distance(length(b - a), distance_to_camera);
+}
+
+/**
+ * measure_mesh_factor scans source triangles and records the highest adaptive factor needed by this mesh.
+ * The planner later uses this value for adaptive per-mesh tessellation.
+ */
+void main()
+{
+	uint source_triangle_index = uint(base_triangle_index) + gl_WorkGroupID.x;
+	if (source_triangle_index >= uint(max(source_triangle_count, 0)) || gl_LocalInvocationID.x != 0u)
+	{
+		return;
+	}
+
+	uint source_index_offset = source_triangle_index * 3u;
+	uint i0 = measure_source_indices[source_index_offset + 0u].value;
+	uint i1 = measure_source_indices[source_index_offset + 1u].value;
+	uint i2 = measure_source_indices[source_index_offset + 2u].value;
+	vec3 p0 = measure_world_position(measure_source_vertices[i0].position.xyz);
+	vec3 p1 = measure_world_position(measure_source_vertices[i1].position.xyz);
+	vec3 p2 = measure_world_position(measure_source_vertices[i2].position.xyz);
+	uint max_factor_u = uint(clamp(max_factor, 1, 31));
+	float max_lod = max(measure_raw_lod_for_edge(p0, p1), max(measure_raw_lod_for_edge(p1, p2), measure_raw_lod_for_edge(p2, p0)));
+	uint factor = clamp(uint(ceil(max_lod)), 1u, max_factor_u);
+	atomicMax(measure_counters[0].max_factor_seen, factor);
+}
+

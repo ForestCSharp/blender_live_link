@@ -163,6 +163,13 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 	return object_has_dynamic_jolt_body(in_object) || in_object.has_character;
 }
 
+// Static visible meshes feed the GI probe layout (dynamic actors move too
+// often to bake — game/ parity)
+bool object_contributes_to_gi_scene(const Object& in_object)
+{
+	return in_object.visibility && in_object.has_mesh && !object_has_dynamic_jolt_actor(in_object);
+}
+
 void object_add_character(Object& in_object, const CharacterSettings& in_settings)
 {
 	in_object.has_character = true;
@@ -448,10 +455,12 @@ void object_cleanup(Object& in_object)
 		{
 			free(in_object.mesh.skinned_vertices);
 			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
+			in_object.mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
 			free(in_object.mesh.skin_matrices);
 		}
 
 		free(in_object.mesh.material_indices);
+		mesh_cleanup_tessellated_geometry(in_object.mesh);
 	}
 
 	object_cleanup_armature(in_object);

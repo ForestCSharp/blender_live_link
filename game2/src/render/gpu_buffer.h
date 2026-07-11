@@ -19,6 +19,8 @@ struct GpuBufferUsage
 	bool uniform_buffer = false;
 	bool stream_update = false;
 	bool prefer_device_local = false;
+	bool transfer_src = false;
+	bool readback = false;
 };
 
 // Static (non-stream) buffers default to device-local + staging upload on
@@ -99,6 +101,7 @@ public:
 			if (usage.index_buffer)		{ usage_flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT; }
 			if (usage.storage_buffer)	{ usage_flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; }
 			if (usage.uniform_buffer)	{ usage_flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
+			if (usage.transfer_src)		{ usage_flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT; }
 
 			VkBufferCreateInfo buffer_create_info = {
 				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -119,8 +122,10 @@ public:
 			}
 			else
 			{
-				allocation_create_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-											 | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+				allocation_create_info.flags = (usage.readback
+					? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+					: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
+					| VMA_ALLOCATION_CREATE_MAPPED_BIT;
 			}
 
 			VkBuffer new_buffer = VK_NULL_HANDLE;
@@ -159,6 +164,15 @@ public:
 		assert(in_size <= size);
 		get_gpu_buffer();
 		memcpy(mapped_data, in_data, in_size);
+	}
+
+	void read_gpu_buffer(T* out_data, u64 in_size)
+	{
+		assert(usage.readback);
+		assert(in_size <= size);
+		get_gpu_buffer();
+		VK_CHECK(vmaInvalidateAllocation(g_vulkan_context->allocator, allocation, 0, in_size));
+		memcpy(out_data, mapped_data, in_size);
 	}
 
 	// Destruction is deferred until no in-flight frame can reference the buffer

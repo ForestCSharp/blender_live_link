@@ -176,7 +176,7 @@ Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
       (`GAME2_SHADOW_PLACEMENT` / `GAME2_SHADOW_CASCADE_DEBUG` envs until
       ImGui). Corrected a 3a note: game/ also re-renders + re-blurs every
       frame unless frozen, so game2 already matched — no caching item left.
-      `shadow_cascade_debug_pass.h` (ImGui-only consumer) moves to Phase 4;
+      the cascade tint/layer viewer landed with Phase 4;
       `radial_depth.glsl` belongs to GI's lighting_capture (3c).
 - [x] SSAO + SSAO blur — `ssao_pass.h` (half res, R8, 48-sample hemisphere
       kernel + 8x8 RGBA32F noise, view-space via G-buffer position/normal),
@@ -206,38 +206,34 @@ Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
 - [x] Live-link robustness — getaddrinfo results are now checked + retried
       (transient resolver failures used to segfault the socket thread).
 
-### Phase 3c — GI & tessellation
+### Phase 3c — GI & tessellation  ✅ (2026-07-11)
 
-- [ ] GI system — `gi.h` (probe grid, octahedral encoding:
-      `octahedral_helpers.h` shipped with 3a, `cubemap_to_octahedral.glsl`,
-      `probe_radiance_projection.glsl`, `gi_helpers.h`),
-      `lighting_capture.h` (cubemap captures — needs the RenderPass
-      Cubemap type), `gi_debug_pass.h` + `gi_debug.glsl` + probe picking
-      (`pick_isolated_gi_probe`, `game/src/main.cpp:3755`). Biggest single
-      item; depends on most of the chain above.
-- [ ] GPU tessellation — `tessellation.h` (compute-based, GPU slots +
-      counter readbacks), `tessellation.glsl`, `tessellation_common.h`,
-      `TessellatedGeometry` on `Mesh`, `mesh_get_render_view` indirection.
-      Needs a `sg_buffer_readback` equivalent (buffer → host readback).
-      GPU skinning compute pass (deferred from Phase 2) lands here too.
+- [x] GI system — sparse static-geometry octree, shared corner probes,
+      four-probe-per-frame cubemap capture, radial-depth moments, padded
+      octahedral atlases, SH9/SG9 compute projection, deferred-lighting
+      sampling, layout invalidation on live updates, probe visualization,
+      and camera-ray isolation picking. RenderPass Multi/Cubemap and cube
+      image/view support landed with it.
+- [x] GPU tessellation — five Vulkan compute stages, fixed/adaptive-per-mesh/
+      adaptive-per-triangle modes, virtual patches, Phong projection, two
+      rotating GPU slots, fence-safe counter readbacks, overflow fallback,
+      compute-skinned inputs, and `MeshRenderView` routing for geometry,
+      shadows, GI capture, and wire overlay.
 
-## Phase 4 — debug UI & tooling
+## Phase 4 — debug UI & tooling  ✅ (2026-07-11)
 
-- [ ] Dear ImGui: vendor `imgui/` (copy from `game/src/extern`), use its
-      official GLFW + Vulkan backends in place of `sokol_imgui`; `WITH_DEBUG_UI`
-      gate, Ctrl+I toggle, mouse-capture interplay with click-to-lock
-      (`game/src/main.cpp:3719-3768`).
-- [ ] Stats UI — `game/src/ui/stats_ui.h` (import stats: also restore the
-      `LiveLinkImportStats` bookkeeping stripped from
-      `parse_flatbuffer_data`, `game/src/main.cpp:672-1234`).
-- [ ] CPU profiler UI — `game/src/ui/cpu_profiler_ui.h` (needs timings.h
-      from Phase 0).
-- [ ] Debug text overlay (game/ uses `sokol_debugtext`; ImGui overlay text
-      is probably the simplest replacement — `draw_debug_text`,
-      `game/src/main.cpp:255`).
-- [ ] Per-pass debug toggles/visualizations that live in the ImGui panels
-      (shadow cascade debug view, GI probe view, SSAO view, etc. —
-      `game/src/main.cpp:2580-2640`).
+- [x] Dear ImGui — game/'s 1.92.3-WIP core plus matching official GLFW and
+      Vulkan backends, Volk, dynamic rendering, Ctrl+I, full callback
+      forwarding, and mouse/keyboard capture gating.
+- [x] Stats UI — live-link byte/generation/object/material/image/mesh/light/
+      armature/animation history plus current tessellation statistics.
+- [x] CPU/GPU profiler UI — freezeable CPU scope and Vulkan timestamp tables
+      backed by the Phase 0 timing history.
+- [x] Debug text overlay — ImGui foreground status for connection, debug
+      camera, and paused simulation.
+- [x] Per-pass controls/visualizations — shadows, GI/probes, tessellation,
+      SSAO/fog/DOF/TAA/FXAA/wires, G-buffer, shadow layers, GI atlases,
+      SSAO/contact masks, sky bake, and imported images.
 
 ## Deliberately different from game/ (not TODO, by design)
 

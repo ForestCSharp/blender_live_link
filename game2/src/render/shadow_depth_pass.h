@@ -406,7 +406,8 @@ namespace ShadowDepthPass
 		const HMM_Mat4& light_view_proj = shadow_view_projections[in_cascade_idx];
 
 		// Cull + draw casters
-		CullResult cull_result = cull_objects(in_state, light_view_proj, 0.0f);
+		CullResult cull_result = cull_objects(in_state, light_view_proj,
+			in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
 
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 		bound_pipeline = VK_NULL_HANDLE;
@@ -434,7 +435,8 @@ namespace ShadowDepthPass
 			}
 
 			Mesh& mesh = object.mesh;
-			const bool skinned = mesh.has_skinned_vertices;
+			MeshRenderView render_view = mesh_get_render_view(mesh);
+			const bool skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
 			if (skinned && mesh.skin_matrix_arena_offset < 0)
 			{
 				continue;
@@ -454,7 +456,7 @@ namespace ShadowDepthPass
 			};
 			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
 
-			VkBuffer vertex_buffer = mesh.vertex_buffer.get_gpu_buffer();
+			VkBuffer vertex_buffer = render_view.vertex_buffer;
 			VkDeviceSize vertex_offset = 0;
 			vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_offset);
 			if (skinned)
@@ -463,8 +465,8 @@ namespace ShadowDepthPass
 				VkDeviceSize skinned_offset = 0;
 				vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 			}
-			vkCmdBindIndexBuffer(command_buffer, mesh.index_buffer.get_gpu_buffer(), 0, VK_INDEX_TYPE_UINT32);
-			vkCmdDrawIndexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
+			vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+			vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
 		}
 	}
 

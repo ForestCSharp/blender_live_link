@@ -36,6 +36,46 @@ enum class EShadowCascadePlacementMode : i32
 	MAX,
 };
 
+enum class EProbeVisMode : i32
+{
+	Irradiance = 0,
+	SH9Irradiance = 1,
+	SG9Irradiance = 2,
+	RadialDepth = 3,
+	RadialDepthSquared = 4,
+	EVRPPositiveMoment = 5,
+	MAX,
+};
+
+enum class EProbeOcclusionMode : i32
+{
+	Chebyshev = 0,
+	EVRP4 = 1,
+	MAX,
+};
+
+enum class EProbeRadianceMode : i32
+{
+	Octahedral = 0,
+	SH9 = 1,
+	SG9 = 2,
+	MAX,
+};
+
+enum class ETessellationMode : i32
+{
+	Fixed = 0,
+	AdaptiveAngularPerMesh = 1,
+	AdaptiveAngularPerTriangle = 2,
+	MAX,
+};
+
+inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
+	"Fixed",
+	"Adaptive Angular (Per Mesh)",
+	"Adaptive Angular (Per Triangle)",
+};
+
 enum class ERenderPass : i32
 {
 	ShadowDepth,
@@ -90,6 +130,24 @@ struct PendingMaterial
 
 struct SceneUpdate
 {
+	struct ImportStats
+	{
+		u64 byte_count = 0;
+		f64 generation_seconds = 0.0;
+		i32 object_count = 0;
+		i32 deleted_object_count = 0;
+		i32 material_count = 0;
+		i32 image_count = 0;
+		u64 image_byte_count = 0;
+		i32 mesh_count = 0;
+		i32 mesh_vertex_count = 0;
+		i32 mesh_index_count = 0;
+		i32 skinned_mesh_count = 0;
+		i32 light_count = 0;
+		i32 armature_count = 0;
+		i32 animation_count = 0;
+		bool reset = false;
+	} stats;
 	StretchyBuffer<PendingImage> images;
 	StretchyBuffer<PendingMaterial> materials;
 
@@ -111,6 +169,23 @@ struct State
 		bool is_simulating = true;
 		std::optional<std::string> init_file;
 	} runtime;
+
+	struct DebugUiState
+	{
+		bool visible = true;
+		bool show_profiler = false;
+		bool freeze_profiler = false;
+		bool show_texture_viewer = false;
+		f32 frame_time_ms = 0.0f;
+		f32 fps = 0.0f;
+		struct LiveLinkImportStats : SceneUpdate::ImportStats
+		{
+			u64 update_index = 0;
+		};
+		LiveLinkImportStats last_import;
+		StretchyBuffer<LiveLinkImportStats> import_history;
+		i32 selected_import = -1;
+	} debug_ui;
 
 	struct AnimationState
 	{
@@ -142,6 +217,7 @@ struct State
 	struct InputState
 	{
 		bool keycodes[GLFW_KEY_LAST + 1] = {};
+		HMM_Vec2 mouse_position = HMM_V2(0.0f, 0.0f);
 		HMM_Vec2 mouse_delta = HMM_V2(0.0f, 0.0f);
 		bool is_mouse_locked = false;
 	} input;
@@ -228,6 +304,7 @@ struct State
 	// would otherwise race frames in flight)
 	struct LightingState
 	{
+		bool direct_enable = true;
 		bool needs_data_update = true;
 
 		StretchyBuffer<PointLightData> point_lights;
@@ -244,6 +321,50 @@ struct State
 	{
 		f32 exposure_bias = 1.5f;	// game/ parity (state.h:361)
 	} tonemapping;
+
+	struct GiState
+	{
+		bool enable = true;
+		bool probe_occlusion = true;
+		i32 octree_depth = 4;
+		bool layout_dirty = true;
+		EProbeOcclusionMode probe_occlusion_mode = EProbeOcclusionMode::Chebyshev;
+		EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
+		bool render_sky_to_probes = true;
+		bool debug_constant_white_probes = false;
+		f32 intensity = 1.0f;
+		bool show_probes = false;
+		EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
+		bool probe_isolation_enable = false;
+		i32 isolated_probe_index = -1;
+		bool compute_irradiance = true;
+		bool is_updating = true;
+	} gi;
+
+	struct TessellationState
+	{
+		bool enabled = false;
+		ETessellationMode mode = ETessellationMode::AdaptiveAngularPerTriangle;
+		i32 fixed_factor = 4;
+		i32 max_factor = 24;
+		f32 target_pixels_per_segment = 20.0f;
+		f32 phong_strength = 0.0f;
+		bool virtual_patches_enabled = true;
+		i32 virtual_patch_max_depth = 2;
+		i32 max_generated_patches = 256 * 1024;
+		i32 max_generated_vertices = 4 * 1024 * 1024;
+		i32 max_generated_indices = 12 * 1024 * 1024;
+		f32 bounds_padding = 0.0f;
+		i32 source_triangle_count = 0;
+		i32 patch_count = 0;
+		i32 generated_vertex_count = 0;
+		i32 generated_index_count = 0;
+		i32 mesh_count = 0;
+		i32 overflowed_mesh_count = 0;
+		i32 max_factor_seen = 1;
+		bool readback_supported = true;
+		i32 readback_age = 0;
+	} tessellation;
 
 	struct SkyState
 	{

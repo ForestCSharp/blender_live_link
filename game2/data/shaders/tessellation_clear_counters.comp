@@ -1,0 +1,31 @@
+#version 450
+
+#include "tessellation_common.h"
+
+layout(set=0, binding=0, std430) buffer ClearCountersBuffer {
+	TessellationCounters clear_counters[];
+};
+
+layout(local_size_x=32, local_size_y=1, local_size_z=1) in;
+
+/**
+ * clear_counters resets the tessellation counter buffer before a new planning pass.
+ * Only one invocation writes the shared counter record for the dispatch.
+ */
+void main()
+{
+	if (gl_LocalInvocationID.x != 0u)
+	{
+		return;
+	}
+
+	clear_counters[0].patch_count = 0u;
+	clear_counters[0].vertex_count = 0u;
+	clear_counters[0].index_count = 0u;
+	clear_counters[0].wire_index_count = 0u;
+	clear_counters[0].source_triangle_count = 0u;
+	clear_counters[0].overflowed = 0u;
+	clear_counters[0].max_factor_seen = 1u;
+	clear_counters[0].padding0 = 0u;
+}
+

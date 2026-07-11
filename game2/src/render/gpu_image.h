@@ -13,6 +13,7 @@ struct GpuImageDesc
 	VkImageUsageFlags usage;
 	VkImageAspectFlags aspect;
 	u32 array_layers = 1;	// > 1 = 2D array (per-layer attachment views + array sampled view)
+	bool cubemap = false;	// requires array_layers == 6; sampled view is CUBE
 };
 
 struct GpuImage
@@ -154,8 +155,11 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		.array_layers = array_layers,
 	};
 
+	assert(!in_desc.cubemap || array_layers == 6);
+
 	VkImageCreateInfo image_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.flags = in_desc.cubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags) 0,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = in_desc.format,
 		.extent = {
@@ -188,7 +192,9 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 	VkImageViewCreateInfo image_view_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = result.image,
-		.viewType = array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+		.viewType = in_desc.cubemap
+			? VK_IMAGE_VIEW_TYPE_CUBE
+			: array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
 		.format = in_desc.format,
 		.subresourceRange = {
 			.aspectMask = in_desc.aspect,

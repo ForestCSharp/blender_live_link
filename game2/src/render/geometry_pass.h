@@ -224,7 +224,8 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
-	const bool skinned = in_mesh.has_skinned_vertices;
+	MeshRenderView render_view = mesh_get_render_view(in_mesh);
+	const bool skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
 	if (skinned && in_mesh.skin_matrix_arena_offset < 0)
 	{
 		return;
@@ -251,7 +252,7 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		&push_constants
 	);
 
-	VkBuffer vertex_buffer = in_mesh.vertex_buffer.get_gpu_buffer();
+	VkBuffer vertex_buffer = render_view.vertex_buffer;
 	VkDeviceSize vertex_buffer_offset = 0;
 	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_buffer_offset);
 
@@ -262,9 +263,9 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 	}
 
-	vkCmdBindIndexBuffer(command_buffer, in_mesh.index_buffer.get_gpu_buffer(), 0, VK_INDEX_TYPE_UINT32);
+	vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-	vkCmdDrawIndexed(command_buffer, in_mesh.index_count, 1, 0, 0, 0);
+	vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
 }
 
 void geometry_pass_shutdown(VulkanContext* ctx)

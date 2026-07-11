@@ -12,10 +12,15 @@
 //   1-4 = G-buffer attachments 0-3        (FS, combined image samplers)
 //   5 = shadow moments texture array      (FS; written once shadows exist)
 //   6-8 = point/spot/sun light SSBOs      (FS)
+//   9-10 = SSAO/contact-shadow images     (FS)
+//   11-12 = GI probe/cell SSBOs           (FS)
+//   13-14 = GI lighting/depth atlases     (FS)
+//   15-17 = SH9/SG9/octree SSBOs          (FS)
+
+static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 18;
 
 // C++ mirror of the lighting fs_params UBO. Byte-identical to game/'s
-// lighting_fs_params_t (lighting.compiled.h:136-166) — GI/SSAO/SSS fields
-// are carried (zeroed) for later phases.
+// lighting_fs_params_t (lighting.compiled.h:136-166), including GI/SSAO/SSS.
 struct LightingFsParams
 {
 	HMM_Vec3 view_position;
@@ -73,7 +78,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	// Layout C: b0 fs_params UBO, b1-4 G-buffer CIS, b5 shadow moments array
 	// CIS, b6-8 light SSBOs, b9 blurred SSAO CIS, b10 contact shadow CIS
 	{
-		VkDescriptorSetLayoutBinding bindings[11] = {};
+		VkDescriptorSetLayoutBinding bindings[LIGHTING_DESCRIPTOR_BINDING_COUNT] = {};
 		bindings[0] = (VkDescriptorSetLayoutBinding) {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -107,10 +112,28 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
 		}
+		for (u32 binding_idx : { 11u, 12u, 15u, 16u, 17u })
+		{
+			bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
+				.binding = binding_idx,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			};
+		}
+		for (u32 binding_idx = 13; binding_idx <= 14; ++binding_idx)
+		{
+			bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
+				.binding = binding_idx,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			};
+		}
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 11,
+			.bindingCount = LIGHTING_DESCRIPTOR_BINDING_COUNT,
 			.pBindings = bindings,
 		};
 		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &lighting_pass.set_layout));
@@ -120,8 +143,8 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 7 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 9 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -269,7 +292,14 @@ void lighting_pass_update(
 	VkImageView in_screen_space_shadow_view,
 	VkBuffer in_point_lights_buffer,
 	VkBuffer in_spot_lights_buffer,
-	VkBuffer in_sun_lights_buffer
+	VkBuffer in_sun_lights_buffer,
+	VkBuffer in_gi_probes_buffer,
+	VkBuffer in_gi_cells_buffer,
+	VkImageView in_gi_lighting_view,
+	VkImageView in_gi_depth_view,
+	VkBuffer in_sh9_buffer,
+	VkBuffer in_sg9_buffer,
+	VkBuffer in_gi_octree_buffer
 )
 {
 	const u32 frame_index = ctx->frame_index;
@@ -298,7 +328,7 @@ void lighting_pass_update(
 		{ .buffer = in_sun_lights_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
 	};
 
-	VkWriteDescriptorSet writes[11] = {};
+	VkWriteDescriptorSet writes[LIGHTING_DESCRIPTOR_BINDING_COUNT] = {};
 	u32 write_count = 0;
 
 	writes[write_count++] = (VkWriteDescriptorSet) {
@@ -373,6 +403,42 @@ void lighting_pass_update(
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.pBufferInfo = &light_buffer_infos[light_type_idx],
+		};
+	}
+
+	VkDescriptorBufferInfo gi_buffer_infos[] = {
+		{ .buffer = in_gi_probes_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+		{ .buffer = in_gi_cells_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+		{ .buffer = in_sh9_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+		{ .buffer = in_sg9_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+		{ .buffer = in_gi_octree_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
+	};
+	const u32 gi_buffer_bindings[] = { 11, 12, 15, 16, 17 };
+	for (u32 gi_buffer_idx = 0; gi_buffer_idx < 5; ++gi_buffer_idx)
+	{
+		writes[write_count++] = (VkWriteDescriptorSet) {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = lighting_pass.sets[frame_index],
+			.dstBinding = gi_buffer_bindings[gi_buffer_idx],
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &gi_buffer_infos[gi_buffer_idx],
+		};
+	}
+
+	VkDescriptorImageInfo gi_image_infos[] = {
+		{ .sampler = lighting_pass.linear_sampler, .imageView = in_gi_lighting_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ .sampler = lighting_pass.linear_sampler, .imageView = in_gi_depth_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	for (u32 gi_image_idx = 0; gi_image_idx < 2; ++gi_image_idx)
+	{
+		writes[write_count++] = (VkWriteDescriptorSet) {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = lighting_pass.sets[frame_index],
+			.dstBinding = 13 + gi_image_idx,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &gi_image_infos[gi_image_idx],
 		};
 	}
 

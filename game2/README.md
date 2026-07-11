@@ -37,6 +37,7 @@ both bind the same port.
 - Ctrl+R: reset — restore initial transforms, reset physics bodies, rewind
   animations
 - Ctrl+D: toggle debug camera
+- Ctrl+I: toggle the Dear ImGui debug/tooling window
 - Escape: quit
 
 ## Debug helpers
@@ -52,6 +53,13 @@ both bind the same port.
   profiler UI)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
   device-local/staging path even on Apple Silicon
+- `GAME2_TESSELLATION=1` — enable compute tessellation
+- `GAME2_TESSELLATION_MODE=<0..2>` — fixed, adaptive-per-mesh, or
+  adaptive-per-triangle tessellation
+- `GAME2_TESSELLATION_FACTOR=<1..31>` — fixed tessellation factor
+- `GAME2_GI_PROBES=1` — render the GI probe visualization
+- `GAME2_GI_RADIANCE_MODE=<0..2>` / `GAME2_GI_OCCLUSION_MODE=<0..1>` —
+  select probe radiance and visibility representations for headless tests
 
 ## Architecture notes (vs game/)
 
@@ -90,7 +98,15 @@ both bind the same port.
   physics (convex-hull bodies), JPH::Character controller, fog-controller
   data. Live-link registration all happens on the main thread through one
   composite `SceneUpdate` channel message per flatbuffer update.
-- GI + tessellation (Phase 3c) and ImGui + debug views (Phase 4) are not
-  ported yet; post-effect toggles are `GAME2_*` env vars until ImGui lands.
+- Phase 3c GI uses a sparse scene octree, four-probes-per-frame cubemap
+  capture, padded octahedral lighting/depth atlases, and optional SH9/SG9
+  projection. Compute tessellation supports fixed and both adaptive modes,
+  two rotating output/readback slots, virtual patches, Phong projection,
+  skinned inputs, and shared render views across geometry/shadows/GI/wires.
+- Dear ImGui uses the official GLFW + Vulkan backends with Vulkan 1.3 dynamic
+  rendering. Ctrl+I exposes live-import stats, CPU/GPU timings, render and
+  simulation controls, GI/tessellation controls, probe picking, render-target
+  viewers, and overlay status text. The `GAME2_*` toggles remain available for
+  automated/headless verification.
 
 See [TODO.md](TODO.md) for the full catalog of remaining porting work.
