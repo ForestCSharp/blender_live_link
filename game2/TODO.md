@@ -220,20 +220,99 @@ Vulkan-style GLSL (descriptor bindings instead of sokol-shdc annotations).
       compute-skinned inputs, and `MeshRenderView` routing for geometry,
       shadows, GI capture, and wire overlay.
 
-## Phase 4 — debug UI & tooling  ✅ (2026-07-11)
+## Phase 4 — debug UI & tooling  🚧 parity audit (2026-07-11)
 
-- [x] Dear ImGui — game/'s 1.92.3-WIP core plus matching official GLFW and
-      Vulkan backends, Volk, dynamic rendering, Ctrl+I, full callback
+The Vulkan/GLFW ImGui integration is functional, but the menus are not yet at
+1:1 feature parity with game/. Extra game2/ diagnostics may remain, but they do
+not replace the source controls and behavior catalogued below.
+
+- [x] Dear ImGui foundation — game/'s 1.92.3-WIP core plus matching official
+      GLFW and Vulkan backends, Volk, dynamic rendering, Ctrl+I, callback
       forwarding, and mouse/keyboard capture gating.
-- [x] Stats UI — live-link byte/generation/object/material/image/mesh/light/
-      armature/animation history plus current tessellation statistics.
-- [x] CPU/GPU profiler UI — freezeable CPU scope and Vulkan timestamp tables
-      backed by the Phase 0 timing history.
-- [x] Debug text overlay — ImGui foreground status for connection, debug
+- [x] Restore a real `WITH_DEBUG_UI=0` compile-out path, default-enabled and
+      selectable through the build environment.
+- [x] Replace project-owned `std::unordered_map` usage with
+      `ankerl::unordered_dense::map`; GI corner-to-probe lookup now matches
+      game/. Third-party containers inside cxxopts are out of scope.
+- [x] Complete the project-wide dense-map preference for scene objects,
+      material/image ID registries, and ImGui texture descriptor registration;
+      deterministic lowest-ID selection is explicit rather than iteration-based.
+- [x] Match game/'s DEBUG window hierarchy and default-open sections: Stats,
+      Animation, Rendering Features (Tessellation, Wireframe, Image Effects,
+      Antialiasing, Depth-of-Field, Shadows, Screen Space Shadows, Lighting,
+      Global Illumination), and the inline Render Texture Viewer.
+
+### Stats and animation parity
+
+- [x] Stats header: show separate window/render resolutions, restore the
+      render-resolution percentage slider and resize path, and restore the
+      immediate-vs-smoothed Frame/FPS/CPU/GPU timing summary including
+      pending/unavailable states.
+- [x] Port `draw_stats_ui` parity: selectable live-link import history and its
+      complete metrics, last-frame update/access counters, scene object/light
+      counts, and culling counts.
+- [x] Animation: restore distinct Play, Pause, and Rewind actions; Skinning
+      Debug View; and per-armature animation/clip selectors with the same
+      playback-time reset behavior.
+
+### Rendering-control parity
+
+- [x] Tessellation: add Max Patches, Max Vertices, and Max Indices capacity
+      controls; source-triangle count, maximum observed factor, readback
+      support, and readback-age diagnostics. Match game/'s shadow-cache
+      invalidation when settings change, with all controls participating in
+      the change/invalidation path.
+- [x] Wireframe: add Wire Softness and invalidate TAA history when shaded
+      wireframe is toggled.
+- [x] Antialiasing: restore TAA History Blend, Sharpen, Rejection, and TAA
+      Debug mode (Off/History Acceptance/Previous UV), disabled-state behavior
+      when TAA is off, and TAA-history invalidation for every relevant change.
+- [x] Depth-of-Field: restore Focus Distance, Focus Range, Max CoC Radius,
+      Foreground Scale, Background Scale, Show CoC Debug, disabled-state
+      behavior, and TAA-history invalidation when DOF is toggled.
+- [x] Shadows: restore Cascade Distance Scale, Centered Square Lookahead,
+      Centered Square Center (editable only while frozen), and the matching
+      shadow-cache invalidation behavior for cascade count/placement/center.
+- [x] Screen-space shadows: restore Contact Ray Length, Thickness, Jitter
+      Strength, Max Steps, Intensity, Filter Radius, Show Screen Space Shadow
+      Mask, and the inline aspect-correct mask preview.
+
+### GI and debug-view parity
+
+- [x] GI diagnostics: show octree depth/node/payload/non-fallback-probe counts,
+      atlas usage/capacity, bounds, min/max cell extents, and maximum radial
+      depth rather than only the current nodes/cells/probes line.
+- [x] Match GI control side effects: radiance mode, occlusion mode, sky capture,
+      SH9/SG9 visualization, and constant-white debug changes must request the
+      same probe recomputation; octree-depth changes must mark layout/update
+      state consistently.
+- [x] Restore Debug Constant White Probes and full probe-isolation UX: enabling
+      isolation also shows probes and releases mouse lock, disabling clears the
+      selected probe, and the panel provides Clear plus selected-probe status.
+      Disable/annotate Update GI Probes while an update is already active.
+- [x] Render Texture Viewer: restore shadow cascade metadata and distances,
+      Debug Cascade selection, Moments-vs-Depth selection, and the dedicated
+      cascade-debug render. Match the source G-buffer grouping/background and
+      size previews from actual image aspect ratios instead of a fixed 16:9.
+- [x] Imported-image debugger: restore the scene-backed Debug Image selector
+      and Fullscreen presentation mode.
+
+### Profiler and overlays
+
+- [x] Port the full CPU/GPU profiler UI with the source frame-count control,
+      freeze/history semantics, unaccounted-time
+      toggle, resettable zoom, synchronized horizontal scrolling, nested CPU
+      flame graph, GPU timeline/lanes, frame boundaries, hover tooltips,
+      resource/view names, dependency details, and pending/unavailable states.
+- [x] Debug text replacement — ImGui foreground status for connection, debug
       camera, and paused simulation.
-- [x] Per-pass controls/visualizations — shadows, GI/probes, tessellation,
-      SSAO/fog/DOF/TAA/FXAA/wires, G-buffer, shadow layers, GI atlases,
-      SSAO/contact masks, sky bake, and imported images.
+- [ ] Re-run the Phase 4 acceptance matrix after parity work: Ctrl+I and input
+      capture, resize/render scale, every control and its cache/history side
+      effect, debug-texture lifetime, import history, profiler freeze/zoom,
+      probe isolation, and the fullscreen imported-image viewer.
+      Empty-scene MoltenVK validation and native live-link imports of
+      `test_file.blend` and `anim_test.blend` pass; the complete interactive
+      six-scene matrix remains outstanding.
 
 ## Deliberately different from game/ (not TODO, by design)
 

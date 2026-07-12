@@ -463,6 +463,7 @@ namespace Tessellation
 		scene_ensure_indexes(state);
 		consume_readbacks(ctx, state);
 		reset_stats(state);
+		state.data_oriented.frame.tessellation_candidate_count += (i32) state.scene.indexes.mesh_object_ids.length();
 		VK_CHECK(vkResetDescriptorPool(ctx->device, pools[ctx->frame_index], 0));
 		if (!state.tessellation.enabled)
 		{
@@ -479,6 +480,7 @@ namespace Tessellation
 			auto found = state.scene.objects.find(object_id);
 			if (found == state.scene.objects.end()) { continue; }
 			prepare_mesh(ctx, state, found->second, camera, fov);
+			state.data_oriented.frame.tessellation_processed_count += 1;
 			auto& tessellated = found->second.mesh.tessellated_geometry;
 			if (tessellated.active)
 			{

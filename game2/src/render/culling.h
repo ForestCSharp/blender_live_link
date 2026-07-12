@@ -9,6 +9,9 @@
 struct CullResult
 {
 	StretchyBuffer<i32> object_ids;
+	i32 candidate_count = 0;
+	i32 non_renderable_cull_count = 0;
+	i32 visibility_cull_count = 0;
 	i32 frustum_cull_count = 0;
 };
 
@@ -21,17 +24,20 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 	Frustum frustum = frustum_create(in_view_proj);
 
 	scene_ensure_indexes(in_state);
+	out_cull_result.candidate_count = (i32) in_state.scene.indexes.mesh_object_ids.length();
 	for (i32 mesh_object_id : in_state.scene.indexes.mesh_object_ids)
 	{
 		auto found = in_state.scene.objects.find(mesh_object_id);
 		if (found == in_state.scene.objects.end())
 		{
+			out_cull_result.non_renderable_cull_count += 1;
 			continue;
 		}
 
 		Object& object = found->second;
 		if (!object.visibility || !object.has_mesh)
 		{
+			out_cull_result.visibility_cull_count += 1;
 			continue;
 		}
 
@@ -40,6 +46,7 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 		if (object.mesh.has_skinned_vertices)
 		{
 			out_cull_result.object_ids.add(mesh_object_id);
+			in_state.data_oriented.frame.cull_skinned_visible_count += 1;
 			continue;
 		}
 
@@ -59,6 +66,13 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 
 		out_cull_result.object_ids.add(mesh_object_id);
 	}
+
+	in_state.data_oriented.frame.cull_calls += 1;
+	in_state.data_oriented.frame.cull_candidate_count += out_cull_result.candidate_count;
+	in_state.data_oriented.frame.cull_visible_count += (i32) out_cull_result.object_ids.length();
+	in_state.data_oriented.frame.cull_non_renderable_count += out_cull_result.non_renderable_cull_count;
+	in_state.data_oriented.frame.cull_visibility_count += out_cull_result.visibility_cull_count;
+	in_state.data_oriented.frame.cull_frustum_count += out_cull_result.frustum_cull_count;
 
 	return out_cull_result;
 }

@@ -16,8 +16,10 @@ struct GeometryPassPushConstants
 {
 	i32 object_index;
 	i32 skin_matrix_offset;	// arena offset for skinned draws; ignored otherwise
+	i32 skinning_debug_view;
+	i32 _pad0;
 };
-static_assert(sizeof(GeometryPassPushConstants) == 8, "Push constants: object index + skin matrix arena offset");
+static_assert(sizeof(GeometryPassPushConstants) == 16, "Geometry push constants must match GLSL");
 
 struct GeometryPass
 {
@@ -185,7 +187,7 @@ static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* 
 void geometry_pass_init(VulkanContext* ctx)
 {
 	VkPushConstantRange push_constant_range = {
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		.offset = 0,
 		.size = sizeof(GeometryPassPushConstants),
 	};
@@ -220,7 +222,7 @@ void geometry_pass_bind(VulkanContext* ctx)
 }
 
 // Lazy GPU buffer creation happens here, on the main thread
-void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
+void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index, bool in_skinning_debug_view)
 {
 	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
@@ -241,12 +243,14 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 	GeometryPassPushConstants push_constants = {
 		.object_index = in_object_index,
 		.skin_matrix_offset = skinned ? in_mesh.skin_matrix_arena_offset : -1,
+		.skinning_debug_view = in_skinning_debug_view ? 1 : 0,
+		._pad0 = 0,
 	};
 
 	vkCmdPushConstants(
 		command_buffer,
 		geometry_pass.pipeline_layout,
-		VK_SHADER_STAGE_VERTEX_BIT,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0,
 		sizeof(push_constants),
 		&push_constants

@@ -585,6 +585,10 @@ void gpu_timestamps_end_scope(VulkanContext* ctx, i32 in_slot)
 void gpu_timestamps_harvest(VulkanContext* ctx)
 {
 	VulkanContext::GpuTimestampFrameState& frame_state = ctx->timestamp_frames[ctx->frame_index];
+	#if !defined(WITH_DEBUG_UI) || !WITH_DEBUG_UI
+	frame_state.submitted = false;
+	return;
+	#else
 	if (!ctx->timestamps_supported || !frame_state.submitted)
 	{
 		return;
@@ -611,11 +615,16 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 	gpu_timing_event_set_name(frame_event, "GPU Frame");
 	frame_event.depth = 0;
 	frame_event.parent_index = -1;
+	frame_event.lane_index = 0;
 	frame_event.type = GpuTimingEventType::Frame;
 	frame_event.timestamp_source = GpuTimingTimestampSource::CommandBuffer;
 	frame_event.timestamp_confidence = GpuTimingTimestampConfidence::Authoritative;
 	frame_event.start_offset_ms = 0.0;
 	frame_event.elapsed_ms = (f64)(frame_end - frame_start) * ticks_to_ms;
+	frame_event.submission_id = frame_state.cpu_frame_index;
+	frame_event.command_buffer_id = ctx->frame_index;
+	frame_event.command_order_index = 0;
+	snprintf(frame_event.writes, sizeof(frame_event.writes), "Swapchain image %u", ctx->swapchain_image_index);
 	frame_event.valid = true;
 
 	for (i32 scope_idx = 0; scope_idx < frame_state.scope_count; ++scope_idx)
@@ -627,12 +636,17 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 		gpu_timing_event_set_name(scope_event, frame_state.scope_names[scope_idx]);
 		scope_event.depth = 1;
 		scope_event.parent_index = 0;
+		scope_event.lane_index = 0;
 		scope_event.type = GpuTimingEventType::RenderPass;
 		scope_event.timestamp_source = GpuTimingTimestampSource::CommandBuffer;
 		// TOP/ALL_COMMANDS pairs can overlap neighboring GPU work — honest label
 		scope_event.timestamp_confidence = GpuTimingTimestampConfidence::Sampled;
 		scope_event.start_offset_ms = (f64)(scope_start - frame_start) * ticks_to_ms;
 		scope_event.elapsed_ms = (f64)(scope_end - scope_start) * ticks_to_ms;
+		scope_event.submission_id = frame_state.cpu_frame_index;
+		scope_event.command_buffer_id = ctx->frame_index;
+		scope_event.command_order_index = scope_idx + 1;
+		snprintf(scope_event.writes, sizeof(scope_event.writes), "%s attachments", frame_state.scope_names[scope_idx]);
 		scope_event.valid = true;
 	}
 
@@ -649,6 +663,7 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 		}
 		printf("\n");
 	}
+	#endif
 }
 
 // Records and submits a one-shot command buffer, waiting for completion.

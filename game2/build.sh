@@ -22,6 +22,8 @@ OS_ARG=$1
 # (used by automated verification runs)
 RUN_ARG=$2
 GAME_WARNING_FLAGS="-Wno-c99-designator"
+WITH_DEBUG_UI=${WITH_DEBUG_UI:-1}
+GAME_FEATURE_FLAGS="-D WITH_DEBUG_UI=$WITH_DEBUG_UI"
 
 ./compile_shaders.sh $OS_ARG
 
@@ -73,11 +75,13 @@ if [[ $OS_ARG = Mac ]]; then
 	clang src/main.cpp \
 		-g -O0 \
 		$GAME_WARNING_FLAGS \
+		$GAME_FEATURE_FLAGS \
 		-o bin/game \
 		-I src \
 		-I src/extern \
 		-I src/extern/glfw/include \
 		-I ../game/src/extern/imgui \
+		-I ../game/src/extern \
 		-I data \
 		-I data/shaders \
 		-I bin/shaders \
@@ -155,11 +159,13 @@ elif [[ $OS_ARG = Windows ]]; then
 	clang src/main.cpp \
 		-g -O0 \
 		$GAME_WARNING_FLAGS \
+		$GAME_FEATURE_FLAGS \
 		-o bin/game.exe \
 		-I src \
 		-I src/extern \
 		-I src/extern/glfw/include \
 		-I ../game/src/extern/imgui \
+		-I ../game/src/extern \
 		-I "$VULKAN_SDK/Include" \
 		-I data \
 		-I data/shaders \

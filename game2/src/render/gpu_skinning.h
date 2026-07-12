@@ -195,6 +195,7 @@ namespace GpuSkinning
 	inline void update(VulkanContext* ctx, State& in_state, const bool in_required)
 	{
 		scene_ensure_indexes(in_state);
+		in_state.data_oriented.frame.gpu_skinning_candidate_count += (i32) in_state.scene.indexes.skinned_mesh_object_ids.length();
 
 		if (!in_required)
 		{
@@ -230,6 +231,10 @@ namespace GpuSkinning
 
 			Mesh& mesh = found->second.mesh;
 			update_mesh(ctx, in_state, mesh);
+			if (mesh.skinned_vertex_cache_valid)
+			{
+				in_state.data_oriented.frame.gpu_skinning_updated_count += 1;
+			}
 			dispatched_any = dispatched_any || mesh.skinned_vertex_cache_valid;
 			dispatch_count += 1;
 		}

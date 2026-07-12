@@ -1,10 +1,10 @@
 #pragma once
 
-#include <map>
 #include <optional>
 #include <string>
 #include <thread>
 
+#include "ankerl/unordered_dense.h"
 #include "core/types.h"
 #include "network/channel.h"
 #include "network/socket_wrapper.h"
@@ -21,9 +21,9 @@ static constexpr i32 RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT = 3;
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY = 64;
 static constexpr i32 MAX_LIGHTS_PER_TYPE = 1024;
 
-static constexpr i32 MIN_RENDER_RESOLUTION_PERCENTAGE = 25;
+static constexpr i32 MIN_RENDER_RESOLUTION_PERCENTAGE = 5;
 static constexpr i32 MAX_RENDER_RESOLUTION_PERCENTAGE = 100;
-static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 100;
+static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 50;
 
 // Frame-order pass registry (game/'s lives in state.h too; game/'s full list
 // slots back in here as passes are ported in Phase 3)
@@ -80,6 +80,7 @@ enum class ERenderPass : i32
 {
 	ShadowDepth,
 	ShadowBlur,
+	ShadowCascadeDebug,
 	Geometry,
 	SSAO,
 	SSAO_Blur,
@@ -146,6 +147,8 @@ struct SceneUpdate
 		i32 light_count = 0;
 		i32 armature_count = 0;
 		i32 animation_count = 0;
+		i32 animation_matrix_count = 0;
+		i32 malformed_object_count = 0;
 		bool reset = false;
 	} stats;
 	StretchyBuffer<PendingImage> images;
@@ -173,24 +176,41 @@ struct State
 	struct DebugUiState
 	{
 		bool visible = true;
+		f64 stats_sample_elapsed = 0.0;
+		i32 stats_sample_count = 0;
+		f64 cpu_time_sample_sum_ms = 0.0;
+		i32 cpu_time_sample_count = 0;
+		f64 gpu_time_sample_sum_ms = 0.0;
+		i32 gpu_time_sample_count = 0;
+		f32 immediate_frame_time_ms = 0.0f;
+		f32 immediate_fps = 0.0f;
+		f32 immediate_cpu_time_ms = 0.0f;
+		bool immediate_cpu_time_valid = false;
+		f32 immediate_gpu_time_ms = 0.0f;
+		bool immediate_gpu_time_valid = false;
+		bool immediate_gpu_time_pending = false;
 		bool show_profiler = false;
 		bool freeze_profiler = false;
+		bool show_profiler_unaccounted = false;
+		f32 profiler_zoom = 1.0f;
+		f32 profiler_scroll_x = 0.0f;
+		i32 num_profiler_frames = 3;
 		bool show_texture_viewer = false;
 		f32 frame_time_ms = 0.0f;
 		f32 fps = 0.0f;
-		struct LiveLinkImportStats : SceneUpdate::ImportStats
-		{
-			u64 update_index = 0;
-		};
-		LiveLinkImportStats last_import;
-		StretchyBuffer<LiveLinkImportStats> import_history;
-		i32 selected_import = -1;
+		f32 cpu_time_ms = 0.0f;
+		bool cpu_time_valid = false;
+		f32 gpu_time_ms = 0.0f;
+		bool gpu_time_valid = false;
+		bool gpu_time_pending = false;
+		bool show_immediate_timings = false;
 	} debug_ui;
 
 	struct AnimationState
 	{
 		bool is_playing = true;
 		f32 playback_rate = 1.0f;
+		bool skinning_debug_view = false;
 	} animation;
 
 	struct WindowState
@@ -224,7 +244,7 @@ struct State
 
 	struct SceneState
 	{
-		std::map<i32, Object> objects;
+		ankerl::unordered_dense::map<i32, Object> objects;
 		std::optional<i32> camera_control_id;
 		std::optional<i32> primary_sun_id;
 		std::optional<i32> player_character_id;
@@ -271,7 +291,7 @@ struct State
 	// destroy-on-reset).
 	struct MaterialState
 	{
-		std::map<i32, i32> id_to_index;
+		ankerl::unordered_dense::map<i32, i32> id_to_index;
 		StretchyBuffer<Material> items;
 		GpuBuffer<Material> buffer;
 	} materials;
@@ -280,8 +300,10 @@ struct State
 	// (port of game/src/state/state.h:210-216 minus debug fields)
 	struct ImageState
 	{
-		std::map<i32, i32> id_to_index;
+		ankerl::unordered_dense::map<i32, i32> id_to_index;
 		StretchyBuffer<GpuImage> items;
+		bool enable_debug_fullscreen = false;
+		i32 debug_index = 0;
 	} images;
 
 	// Per-frame skin matrix arena: every skinned mesh's matrices are packed
@@ -387,6 +409,8 @@ struct State
 		EShadowCascadePlacementMode cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
 		HMM_Vec3 centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);
 		f32 centered_square_lookahead_distance = 50.0f;
+		i32 debug_cascade_index = 0;
+		i32 debug_view_mode = 0;
 		bool debug_show_cascade_selection = false;
 		f32 shadow_bias = 0.001f;
 
@@ -464,8 +488,73 @@ struct State
 		};
 	} debug_camera;
 
+	struct DataOrientedState
+	{
+		struct LiveLinkImportStats : SceneUpdate::ImportStats
+		{
+			u64 update_index = 0;
+		};
+
+		struct FrameAccessStats
+		{
+			i32 scene_object_count = 0;
+			i32 mesh_object_count = 0;
+			i32 light_object_count = 0;
+			i32 armature_object_count = 0;
+			i32 skinned_mesh_object_count = 0;
+			i32 live_link_updated_objects = 0;
+			i32 live_link_deleted_objects = 0;
+			i32 live_link_reset_count = 0;
+			i32 animation_armature_candidates = 0;
+			i32 animation_armatures_updated = 0;
+			i32 animation_skinned_mesh_candidates = 0;
+			i32 animation_skin_matrix_uploads = 0;
+			i32 lighting_candidate_count = 0;
+			i32 lighting_processed_count = 0;
+			i32 object_update_scan_count = 0;
+			i32 object_update_storage_updates = 0;
+			i32 object_update_mesh_dirty_count = 0;
+			i32 cull_calls = 0;
+			i32 cull_candidate_count = 0;
+			i32 cull_visible_count = 0;
+			i32 cull_non_renderable_count = 0;
+			i32 cull_visibility_count = 0;
+			i32 cull_frustum_count = 0;
+			i32 cull_skinned_visible_count = 0;
+			i32 draw_calls = 0;
+			i32 draw_mesh_count = 0;
+			i32 gpu_skinning_candidate_count = 0;
+			i32 gpu_skinning_updated_count = 0;
+			i32 tessellation_candidate_count = 0;
+			i32 tessellation_processed_count = 0;
+		};
+
+		u64 frame_index = 0;
+		LiveLinkImportStats last_import;
+		StretchyBuffer<LiveLinkImportStats> import_history;
+		i32 selected_import_history_index = -1;
+		FrameAccessStats frame;
+		FrameAccessStats previous_frame;
+	} data_oriented;
+
 	VulkanContext vk;
 } state;
+
+void data_oriented_begin_frame(State& in_state)
+{
+	in_state.data_oriented.previous_frame = in_state.data_oriented.frame;
+	in_state.data_oriented.frame = {};
+	++in_state.data_oriented.frame_index;
+}
+
+void scene_record_index_counts(State& in_state)
+{
+	in_state.data_oriented.frame.scene_object_count = (i32) in_state.scene.objects.size();
+	in_state.data_oriented.frame.mesh_object_count = (i32) in_state.scene.indexes.mesh_object_ids.length();
+	in_state.data_oriented.frame.light_object_count = (i32) in_state.scene.indexes.light_object_ids.length();
+	in_state.data_oriented.frame.armature_object_count = (i32) in_state.scene.indexes.armature_object_ids.length();
+	in_state.data_oriented.frame.skinned_mesh_object_count = (i32) in_state.scene.indexes.skinned_mesh_object_ids.length();
+}
 
 RenderPassEntry& get_render_pass_entry(ERenderPass in_pass)
 {
@@ -529,6 +618,7 @@ void scene_ensure_indexes(State& in_state)
 	{
 		scene_rebuild_indexes(in_state);
 	}
+	scene_record_index_counts(in_state);
 }
 
 // Grows all snapshot buffers (doubling) when the mesh count exceeds capacity
@@ -578,6 +668,7 @@ void build_render_object_snapshot(State& in_state)
 
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
+		in_state.data_oriented.frame.object_update_scan_count += 1;
 		object.render_object_index = -1;
 	}
 
@@ -593,6 +684,8 @@ void build_render_object_snapshot(State& in_state)
 		}
 
 		Object& object = found->second;
+		in_state.data_oriented.frame.object_update_storage_updates += 1;
+		if (object.has_mesh) in_state.data_oriented.frame.object_update_mesh_dirty_count += 1;
 		object.render_object_index = (i32) render_objects.items.length();
 		render_objects.items.add(object_make_render_data(object));
 	}
@@ -756,6 +849,7 @@ void pack_lights(State& in_state)
 	lighting.sun_lights.clear();
 
 	scene_ensure_indexes(in_state);
+	in_state.data_oriented.frame.lighting_candidate_count += (i32) in_state.scene.indexes.light_object_ids.length();
 	for (i32 light_object_id : in_state.scene.indexes.light_object_ids)
 	{
 		auto found = in_state.scene.objects.find(light_object_id);
@@ -769,6 +863,7 @@ void pack_lights(State& in_state)
 		{
 			continue;
 		}
+		in_state.data_oriented.frame.lighting_processed_count += 1;
 
 		const Transform& transform = object.current_transform;
 		const HMM_Vec4 location = HMM_V4(transform.location.X, transform.location.Y, transform.location.Z, 1.0f);

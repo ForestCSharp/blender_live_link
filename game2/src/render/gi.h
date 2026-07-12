@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <unordered_map>
 
+#include "ankerl/unordered_dense.h"
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
 #include "game_object/game_object.h"
@@ -15,8 +15,7 @@
 // GI probe scene (port of game/src/render/gi.h): a sparse octree over the
 // static scene geometry, probes at occupied-cell corners, radiance captured
 // a few probes per frame into an octahedral atlas (+ optional SH9/SG9).
-// Deviation from game/: std::unordered_map instead of ankerl, and the debug
-// probe visualization lives in gi_debug_pass.h.
+// The debug probe visualization lives separately in gi_debug_pass.h.
 
 static_assert(sizeof(GI_Cell) == 32, "GI_Cell must match shader storage layout.");
 static_assert(sizeof(GI_Probe) == 32, "GI_Probe must match shader storage layout.");
@@ -263,7 +262,7 @@ BoundingBox gi_scene_child_bounds(const BoundingBox& in_bounds, const i32 in_chi
 
 i32 gi_scene_get_or_create_probe(
 	GI_Scene& out_gi_scene,
-	std::unordered_map<u64, i32>& out_probe_indices_by_corner,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const GI_Coords in_max_depth_coords,
 	const f32 in_required_radial_depth)
 {
@@ -285,7 +284,7 @@ i32 gi_scene_get_or_create_probe(
 
 i32 gi_scene_add_node_payload(
 	GI_Scene& out_gi_scene,
-	std::unordered_map<u64, i32>& out_probe_indices_by_corner,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const i32 in_depth,
 	const GI_Coords in_coords)
 {
@@ -353,7 +352,7 @@ void gi_scene_init_empty_octree(GI_Scene& out_gi_scene)
 i32 gi_scene_build_sparse_octree_node(
 	GI_Scene& out_gi_scene,
 	const StretchyBuffer<BoundingBox>& in_geometry_bounds,
-	std::unordered_map<u64, i32>& out_probe_indices_by_corner,
+	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const BoundingBox& in_bounds,
 	const i32 in_depth,
 	const GI_Coords in_coords)
@@ -471,7 +470,7 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	gi_scene_reset_layout_buffers(out_gi_scene);
 	if (has_visible_geometry)
 	{
-		std::unordered_map<u64, i32> probe_indices_by_corner;
+		ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
 		gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
 	}
 	else

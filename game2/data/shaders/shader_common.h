@@ -149,6 +149,33 @@ mat4 get_skin_matrix(int in_base_offset, vec4 in_joint_indices, vec4 in_joint_we
 		 + in_joint_weights.z * skin_matrix_array[in_base_offset + int(in_joint_indices.z)]
 		 + in_joint_weights.w * skin_matrix_array[in_base_offset + int(in_joint_indices.w)];
 }
+
+vec3 get_skin_debug_palette_color(int bone_index)
+{
+	switch (bone_index & 7)
+	{
+		case 0: return vec3(0.95, 0.10, 0.12);
+		case 1: return vec3(0.10, 0.70, 0.95);
+		case 2: return vec3(0.20, 0.85, 0.20);
+		case 3: return vec3(1.00, 0.78, 0.10);
+		case 4: return vec3(0.70, 0.20, 0.95);
+		case 5: return vec3(1.00, 0.45, 0.10);
+		case 6: return vec3(0.10, 0.95, 0.70);
+		default: return vec3(0.95, 0.20, 0.65);
+	}
+}
+
+vec4 get_skin_debug_color(vec4 joint_indices, vec4 joint_weights)
+{
+	float total_weight = joint_weights.x + joint_weights.y + joint_weights.z + joint_weights.w;
+	if (total_weight <= 0.0) return vec4(0.08, 0.08, 0.08, 1.0);
+	vec3 color =
+		get_skin_debug_palette_color(int(joint_indices.x)) * joint_weights.x +
+		get_skin_debug_palette_color(int(joint_indices.y)) * joint_weights.y +
+		get_skin_debug_palette_color(int(joint_indices.z)) * joint_weights.z +
+		get_skin_debug_palette_color(int(joint_indices.w)) * joint_weights.w;
+	return vec4(color / total_weight, 1.0);
+}
 #endif
 
 #endif // SHADER_COMMON_H

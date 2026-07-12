@@ -37,10 +37,12 @@ using std::optional;
 // Command line argument parsing
 #include "cxxopts/cxxopts.hpp"
 
-#define IMGUI_IMPLEMENTATION
-#include "../../game/src/extern/imgui/misc/single_file/imgui_single_file.h"
-#include "extern/imgui/backends/imgui_impl_glfw.cpp"
-#include "extern/imgui/backends/imgui_impl_vulkan.cpp"
+#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
+	#define IMGUI_IMPLEMENTATION
+	#include "../../game/src/extern/imgui/misc/single_file/imgui_single_file.h"
+	#include "extern/imgui/backends/imgui_impl_glfw.cpp"
+	#include "extern/imgui/backends/imgui_impl_vulkan.cpp"
+#endif
 
 // Generated flatbuffer schema (from ../compiled_schemas/cpp)
 #include "blender_live_link_generated.h"
@@ -55,6 +57,7 @@ using std::optional;
 #include "render/geometry_pass.h"
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
+#include "render/shadow_cascade_debug_pass.h"
 #include "render/ssao_pass.h"
 #include "render/blur_pass.h"
 #include "render/screen_space_shadows_pass.h"
@@ -72,6 +75,10 @@ using std::optional;
 #include "render/tonemapping_pass.h"
 #include "render/sky_pass.h"
 #include "render/copy_to_swapchain_pass.h"
+
+void handle_resize(bool in_force);
+void rewind_skinned_animations();
+
 #include "render/imgui_layer.h"
 
 static GI_Scene gi_scene;
@@ -318,6 +325,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 			if (!object_location || !object_scale || !object_rotation)
 			{
 				printf("\tDropping malformed object UID: %i\n", unique_id);
+				scene_update.stats.malformed_object_count += 1;
 				continue;
 			}
 
@@ -538,6 +546,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 						animation.bone_count = flatbuffer_animation->bone_count();
 
 						const i32 matrix_count = MAX(0, animation.frame_count * animation.bone_count);
+						scene_update.stats.animation_matrix_count += matrix_count;
 						if (matrix_count > 0)
 						{
 							animation.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * matrix_count);
@@ -944,6 +953,11 @@ void reset_images()
 		vkDeviceWaitIdle(state.vk.device);
 		for (GpuImage& image : state.images.items)
 		{
+			ImGuiLayer::unregister_texture(image.view);
+			for (VkImageView layer_view : image.layer_views)
+			{
+				ImGuiLayer::unregister_texture(layer_view);
+			}
 			gpu_image_destroy(state.vk.allocator, state.vk.device, image);
 		}
 	}
@@ -1036,12 +1050,12 @@ void live_link_drain_channels()
 	while (optional<SceneUpdate> received_update = state.live_link.scene_updates.receive())
 	{
 		SceneUpdate& scene_update = *received_update;
-		State::DebugUiState::LiveLinkImportStats import_stats;
+		State::DataOrientedState::LiveLinkImportStats import_stats;
 		static_cast<SceneUpdate::ImportStats&>(import_stats) = scene_update.stats;
-		import_stats.update_index = state.debug_ui.last_import.update_index + 1;
-		state.debug_ui.last_import = import_stats;
-		state.debug_ui.import_history.add(import_stats);
-		state.debug_ui.selected_import = (i32) state.debug_ui.import_history.length() - 1;
+		import_stats.update_index = state.data_oriented.last_import.update_index + 1;
+		state.data_oriented.last_import = import_stats;
+		state.data_oriented.import_history.add(import_stats);
+		state.data_oriented.selected_import_history_index = (i32) state.data_oriented.import_history.length() - 1;
 
 		// Images (before materials — register_material resolves image ids)
 		for (const PendingImage& pending_image : scene_update.images)
@@ -1065,6 +1079,7 @@ void live_link_drain_channels()
 		// Updated objects
 		for (Object& updated_object : scene_update.objects)
 		{
+			state.data_oriented.frame.live_link_updated_objects += 1;
 			i32 updated_object_uid = updated_object.unique_id;
 
 			printf("Updating Object. UID: %i\n", updated_object_uid);
@@ -1118,6 +1133,7 @@ void live_link_drain_channels()
 		// Deleted objects
 		for (i32 deleted_object_uid : scene_update.deleted_object_uids)
 		{
+			state.data_oriented.frame.live_link_deleted_objects += 1;
 			if (state.scene.objects.contains(deleted_object_uid))
 			{
 				printf("Removing object. UID: %i\n", deleted_object_uid);
@@ -1148,6 +1164,7 @@ void live_link_drain_channels()
 		// Reset
 		if (scene_update.reset)
 		{
+			state.data_oriented.frame.live_link_reset_count += 1;
 			state.runtime.blender_data_loaded = false;
 
 			for (auto& [unique_id, object] : state.scene.objects)
@@ -1359,6 +1376,7 @@ void rewind_skinned_animations()
 void update_skinned_animations(f32 in_delta_time)
 {
 	scene_ensure_indexes(state);
+	state.data_oriented.frame.animation_armature_candidates += (i32) state.scene.indexes.armature_object_ids.length();
 
 	state.skin_matrices.items.clear();
 
@@ -1397,9 +1415,11 @@ void update_skinned_animations(f32 in_delta_time)
 		{
 			armature.current_frame = CLAMP((i32)(armature.playback_time * animation->frame_rate), 0, animation->frame_count - 1);
 		}
+		state.data_oriented.frame.animation_armatures_updated += 1;
 	}
 
 	// Phase B: compute + pack per-mesh skin matrices
+	state.data_oriented.frame.animation_skinned_mesh_candidates += (i32) state.scene.indexes.skinned_mesh_object_ids.length();
 	for (i32 skinned_object_id : state.scene.indexes.skinned_mesh_object_ids)
 	{
 		auto found = state.scene.objects.find(skinned_object_id);
@@ -1443,6 +1463,7 @@ void update_skinned_animations(f32 in_delta_time)
 		{
 			state.skin_matrices.items.add(mesh.skin_matrices[matrix_idx]);
 		}
+		state.data_oriented.frame.animation_skin_matrix_uploads += 1;
 	}
 
 	skin_matrix_arena_upload(state);
@@ -1458,6 +1479,7 @@ void refresh_active_fog_controller()
 	state.fog.active_fog_controller_id.reset();
 	state.fog.active = false;
 
+	i32 selected_uid = std::numeric_limits<i32>::max();
 	for (auto& [unique_id, object] : state.scene.objects)
 	{
 		if (!object.has_fog_controller || !object.fog_controller.enabled || !object.visibility)
@@ -1465,11 +1487,12 @@ void refresh_active_fog_controller()
 			continue;
 		}
 
-		// Deterministic tie-break: lowest unique_id wins (map iteration is
-		// ordered, so the first hit is the lowest)
-		state.fog.active_fog_controller_id = unique_id;
-		state.fog.active = true;
-		break;
+		if (unique_id < selected_uid)
+		{
+			selected_uid = unique_id;
+			state.fog.active_fog_controller_id = unique_id;
+			state.fog.active = true;
+		}
 	}
 
 	if (state.fog.active_fog_controller_id != previous_id)
@@ -1500,14 +1523,18 @@ void refresh_primary_sun_id()
 	}
 
 	scene_ensure_indexes(state);
+	i32 selected_uid = std::numeric_limits<i32>::max();
 	for (i32 light_object_id : state.scene.indexes.light_object_ids)
 	{
 		auto found = state.scene.objects.find(light_object_id);
 		if (found != state.scene.objects.end() && object_is_sun_light(found->second))
 		{
-			state.scene.primary_sun_id = light_object_id;
-			return;
+			selected_uid = MIN(selected_uid, light_object_id);
 		}
+	}
+	if (selected_uid != std::numeric_limits<i32>::max())
+	{
+		state.scene.primary_sun_id = selected_uid;
 	}
 }
 
@@ -1584,10 +1611,12 @@ void pick_isolated_gi_probe()
 
 void key_callback(GLFWwindow* in_window, i32 in_key, i32 in_scancode, i32 in_action, i32 in_mods)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized)
 	{
 		ImGui_ImplGlfw_KeyCallback(in_window, in_key, in_scancode, in_action, in_mods);
 	}
+	#endif
 	if (in_key < 0 || in_key > GLFW_KEY_LAST)
 	{
 		return;
@@ -1617,11 +1646,13 @@ void key_callback(GLFWwindow* in_window, i32 in_key, i32 in_scancode, i32 in_act
 
 void mouse_button_callback(GLFWwindow* in_window, i32 in_button, i32 in_action, i32 in_mods)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized)
 	{
 		ImGui_ImplGlfw_MouseButtonCallback(in_window, in_button, in_action, in_mods);
 		if (ImGui::GetIO().WantCaptureMouse) { return; }
 	}
+	#endif
 	// Lock Mouse on left click into game space
 	if (in_button == GLFW_MOUSE_BUTTON_LEFT && in_action == GLFW_PRESS)
 	{
@@ -1639,10 +1670,12 @@ void mouse_button_callback(GLFWwindow* in_window, i32 in_button, i32 in_action, 
 
 void cursor_position_callback(GLFWwindow* in_window, f64 in_x, f64 in_y)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized)
 	{
 		ImGui_ImplGlfw_CursorPosCallback(in_window, in_x, in_y);
 	}
+	#endif
 	static f64 last_x = 0.0;
 	static f64 last_y = 0.0;
 	static bool has_last_position = false;
@@ -1661,22 +1694,30 @@ void cursor_position_callback(GLFWwindow* in_window, f64 in_x, f64 in_y)
 
 void char_callback(GLFWwindow* in_window, u32 in_codepoint)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_CharCallback(in_window, in_codepoint); }
+	#endif
 }
 
 void scroll_callback(GLFWwindow* in_window, f64 in_x_offset, f64 in_y_offset)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_ScrollCallback(in_window, in_x_offset, in_y_offset); }
+	#endif
 }
 
 void cursor_enter_callback(GLFWwindow* in_window, i32 in_entered)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_CursorEnterCallback(in_window, in_entered); }
+	#endif
 }
 
 void window_focus_callback(GLFWwindow* in_window, i32 in_focused)
 {
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	if (ImGuiLayer::initialized) { ImGui_ImplGlfw_WindowFocusCallback(in_window, in_focused); }
+	#endif
 }
 
 void framebuffer_size_callback(GLFWwindow* in_window, i32 in_width, i32 in_height)
@@ -1788,6 +1829,85 @@ void update_camera_control(f32 in_delta_time)
 void frame(f32 in_delta_time)
 {
 	CPU_TIMING_FRAME("Frame");
+	data_oriented_begin_frame(state);
+
+	state.debug_ui.immediate_frame_time_ms = in_delta_time * 1000.0f;
+	state.debug_ui.immediate_fps = in_delta_time > 0.0f ? 1.0f / in_delta_time : 0.0f;
+
+	f64 immediate_cpu_time_ms = 0.0;
+	state.debug_ui.immediate_cpu_time_valid = cpu_timings_get_latest_frame_total_ms(immediate_cpu_time_ms);
+	if (state.debug_ui.immediate_cpu_time_valid)
+	{
+		state.debug_ui.immediate_cpu_time_ms = (f32) immediate_cpu_time_ms;
+		state.debug_ui.cpu_time_sample_sum_ms += immediate_cpu_time_ms;
+		state.debug_ui.cpu_time_sample_count += 1;
+		if (!state.debug_ui.cpu_time_valid)
+		{
+			state.debug_ui.cpu_time_ms = (f32) immediate_cpu_time_ms;
+			state.debug_ui.cpu_time_valid = true;
+		}
+	}
+
+	f64 immediate_gpu_time_ms = 0.0;
+	bool immediate_gpu_time_pending = false;
+	state.debug_ui.immediate_gpu_time_valid = gpu_timings_get_latest_completed_frame_total_ms(immediate_gpu_time_ms, immediate_gpu_time_pending);
+	state.debug_ui.immediate_gpu_time_pending = !state.debug_ui.immediate_gpu_time_valid && immediate_gpu_time_pending;
+	if (state.debug_ui.immediate_gpu_time_valid)
+	{
+		state.debug_ui.immediate_gpu_time_ms = (f32) immediate_gpu_time_ms;
+		state.debug_ui.gpu_time_sample_sum_ms += immediate_gpu_time_ms;
+		state.debug_ui.gpu_time_sample_count += 1;
+		if (!state.debug_ui.gpu_time_valid)
+		{
+			state.debug_ui.gpu_time_ms = (f32) immediate_gpu_time_ms;
+			state.debug_ui.gpu_time_valid = true;
+			state.debug_ui.gpu_time_pending = false;
+		}
+	}
+	else if (state.debug_ui.immediate_gpu_time_pending)
+	{
+		state.debug_ui.gpu_time_pending = !state.debug_ui.gpu_time_valid;
+	}
+	else
+	{
+		state.debug_ui.gpu_time_valid = false;
+		state.debug_ui.gpu_time_pending = false;
+	}
+
+	state.debug_ui.stats_sample_elapsed += in_delta_time;
+	state.debug_ui.stats_sample_count += 1;
+	if (state.debug_ui.fps == 0.0f && in_delta_time > 0.0f)
+	{
+		state.debug_ui.frame_time_ms = in_delta_time * 1000.0f;
+		state.debug_ui.fps = 1.0f / in_delta_time;
+	}
+	if (state.debug_ui.stats_sample_elapsed >= 0.25)
+	{
+		const f64 average_delta_time = state.debug_ui.stats_sample_elapsed / state.debug_ui.stats_sample_count;
+		state.debug_ui.frame_time_ms = (f32) (average_delta_time * 1000.0);
+		state.debug_ui.fps = (f32) (state.debug_ui.stats_sample_count / state.debug_ui.stats_sample_elapsed);
+		if (state.debug_ui.cpu_time_sample_count > 0)
+		{
+			state.debug_ui.cpu_time_ms = (f32) (state.debug_ui.cpu_time_sample_sum_ms / state.debug_ui.cpu_time_sample_count);
+			state.debug_ui.cpu_time_valid = true;
+		}
+		if (state.debug_ui.gpu_time_sample_count > 0)
+		{
+			state.debug_ui.gpu_time_ms = (f32) (state.debug_ui.gpu_time_sample_sum_ms / state.debug_ui.gpu_time_sample_count);
+			state.debug_ui.gpu_time_valid = true;
+			state.debug_ui.gpu_time_pending = false;
+		}
+		else if (!state.debug_ui.gpu_time_valid)
+		{
+			state.debug_ui.gpu_time_pending = state.debug_ui.immediate_gpu_time_pending;
+		}
+		state.debug_ui.stats_sample_elapsed = 0.0;
+		state.debug_ui.stats_sample_count = 0;
+		state.debug_ui.cpu_time_sample_sum_ms = 0.0;
+		state.debug_ui.cpu_time_sample_count = 0;
+		state.debug_ui.gpu_time_sample_sum_ms = 0.0;
+		state.debug_ui.gpu_time_sample_count = 0;
+	}
 	ImGuiLayer::begin_frame();
 
 	{
@@ -1798,8 +1918,13 @@ void frame(f32 in_delta_time)
 	{
 		CPU_TIMING_SCOPE("Camera + Controls");
 		DEFINE_TOGGLE_TWO_KEYS(state.debug_ui.visible, GLFW_KEY_I, GLFW_KEY_LEFT_CONTROL);
+		#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 		const bool ui_captures_keyboard = ImGui::GetIO().WantCaptureKeyboard;
 		const bool ui_captures_mouse = ImGui::GetIO().WantCaptureMouse;
+		#else
+		const bool ui_captures_keyboard = false;
+		const bool ui_captures_mouse = false;
+		#endif
 
 		// Space + Left Control toggle simulation (physics + animation playback)
 		if (!ui_captures_keyboard)
@@ -1864,7 +1989,9 @@ void frame(f32 in_delta_time)
 
 	if (!vulkan_context_begin_frame(&state.vk))
 	{
+		#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 		ImGui::EndFrame();
+		#endif
 		reset_mouse_delta();
 		return;
 	}
@@ -2078,9 +2205,11 @@ void frame(f32 in_delta_time)
 	}
 	frame_data_write_copy_input(
 		&state.vk,
-		fxaa_active
-			? fxaa_render_pass.get_color_output(0).view
-			: tonemapping_render_pass.get_color_output(0).view
+		state.images.enable_debug_fullscreen && state.images.items.length() > 0
+			? state.images.items[CLAMP(state.images.debug_index, 0, (i32) state.images.items.length() - 1)].view
+			: (fxaa_active
+				? fxaa_render_pass.get_color_output(0).view
+				: tonemapping_render_pass.get_color_output(0).view)
 	);
 	sky_pass_update(&state.vk);
 
@@ -2263,6 +2392,28 @@ void frame(f32 in_delta_time)
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
 
+	state.shadow.debug_cascade_index = CLAMP(
+		state.shadow.debug_cascade_index,
+		0,
+		MAX(0, ShadowDepthPass::get_active_cascade_count(state) - 1)
+	);
+	RenderPass& shadow_debug_pass = get_render_pass(ERenderPass::ShadowCascadeDebug);
+	shadow_debug_pass.execute(&state.vk, [&](i32)
+	{
+		ShadowCascadeDebugPass::render(
+			&state.vk,
+			shadow_moments_view,
+			frame_data.linear_sampler,
+			state.shadow.debug_cascade_index,
+			state.shadow.debug_view_mode
+		);
+	});
+	gpu_image_transition(
+		state.vk.command_buffers[state.vk.frame_index],
+		shadow_debug_pass.get_color_output(0),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+
 	// Geometry: scene meshes -> G-buffer at render resolution, camera-frustum
 	// culled on the CPU (game/ parity; skinned meshes bypass the frustum test)
 	geometry_render_pass.execute(&state.vk, [&](i32)
@@ -2284,7 +2435,9 @@ void frame(f32 in_delta_time)
 				Object& object = found->second;
 				if (object.render_object_index >= 0)
 				{
-					geometry_pass_draw_mesh(&state.vk, object.mesh, object.render_object_index);
+					geometry_pass_draw_mesh(&state.vk, object.mesh, object.render_object_index, state.animation.skinning_debug_view);
+					state.data_oriented.frame.draw_calls += 1;
+					state.data_oriented.frame.draw_mesh_count += 1;
 				}
 			}
 		}
@@ -2520,7 +2673,9 @@ int main(int argc, char** argv)
 
 	vulkan_context_init(&state.vk, window);
 	ImGuiLayer::init(&state.vk);
+	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	glfwSetMonitorCallback(ImGui_ImplGlfw_MonitorCallback);
+	#endif
 	frame_data_init(&state.vk);
 	geometry_pass_init(&state.vk);
 	ShadowDepthPass::init(&state.vk);
@@ -2675,6 +2830,20 @@ int main(int argc, char** argv)
 	};
 	get_render_pass_entry(ERenderPass::ShadowBlur).init_intermediate(make_shadow_blur_desc("Shadow Blur Horizontal"));
 	get_render_pass_entry(ERenderPass::ShadowBlur).init_final(make_shadow_blur_desc("Shadow Blur Vertical"));
+	get_render_pass_entry(ERenderPass::ShadowCascadeDebug).init_final((RenderPassDesc) {
+		.initial_width = ShadowDepthPass::ShadowMapResolution,
+		.initial_height = ShadowDepthPass::ShadowMapResolution,
+		.num_outputs = 1,
+		.outputs = {{
+			.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+			.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			.clear_value = {{{ 0.0f, 0.0f, 0.0f, 1.0f }}},
+		}},
+		.resize_with_window = false,
+		.debug_label = "Shadow Cascade Debug",
+	});
+	ShadowCascadeDebugPass::init(&state.vk);
 
 	// The blur's input sets are static: both source images are fixed-size and
 	// never recreated
@@ -2970,6 +3139,7 @@ int main(int argc, char** argv)
 	BlurPass::shutdown(&state.vk);
 	ssao_pass_shutdown(&state.vk);
 	ShadowBlurPass::shutdown(&state.vk);
+	ShadowCascadeDebugPass::shutdown(&state.vk);
 	ShadowDepthPass::shutdown(&state.vk);
 	geometry_pass_shutdown(&state.vk);
 	frame_data_shutdown(&state.vk);

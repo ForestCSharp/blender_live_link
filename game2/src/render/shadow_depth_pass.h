@@ -467,6 +467,8 @@ namespace ShadowDepthPass
 			}
 			vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 			vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+			in_state.data_oriented.frame.draw_calls += 1;
+			in_state.data_oriented.frame.draw_mesh_count += 1;
 		}
 	}
 

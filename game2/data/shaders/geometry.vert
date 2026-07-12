@@ -10,12 +10,16 @@ layout(push_constant) uniform PushConstants
 {
 	int object_index;
 	int skin_matrix_offset;	// unused in the static path
+	int skinning_debug_view;
+	int _pad0;
 } pc;
 
 layout(location = 0) out vec4 out_world_position;
 layout(location = 1) out vec4 out_world_normal;
 layout(location = 2) out vec2 out_texcoord;
 layout(location = 3) flat out int out_material_index;
+layout(location = 4) out vec4 out_skin_debug_color;
+layout(location = 5) flat out int out_is_skinned_mesh;
 
 void main()
 {
@@ -25,6 +29,8 @@ void main()
 	out_world_normal = obj.rotation_matrix * in_normal;
 	out_texcoord = in_texcoord;
 	out_material_index = obj.material_index;
+	out_skin_debug_color = vec4(0.0);
+	out_is_skinned_mesh = 0;
 
 	gl_Position = per_frame.view_projection * out_world_position;
 }

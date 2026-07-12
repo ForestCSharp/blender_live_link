@@ -8,6 +8,7 @@ No CMake — plain `build.sh`, mirroring `game/`.
 
 ```sh
 ./build.sh Mac      # compiles shaders + deps + game, then runs it
+WITH_DEBUG_UI=0 ./build.sh Mac -norun  # compile without ImGui/timing tooling
 ```
 
 Prerequisites:
@@ -49,8 +50,7 @@ both bind the same port.
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the copy pass upsamples to the window)
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
-  frames (timestamp queries feed the GpuTimings system for the future
-  profiler UI)
+  frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
   device-local/staging path even on Apple Silicon
 - `GAME2_TESSELLATION=1` — enable compute tessellation

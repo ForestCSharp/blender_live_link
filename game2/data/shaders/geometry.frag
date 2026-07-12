@@ -6,6 +6,16 @@ layout(location = 0) in vec4 in_world_position;
 layout(location = 1) in vec4 in_world_normal;
 layout(location = 2) in vec2 in_texcoord;
 layout(location = 3) flat in int in_material_index;
+layout(location = 4) in vec4 in_skin_debug_color;
+layout(location = 5) flat in int in_is_skinned_mesh;
+
+layout(push_constant) uniform PushConstants
+{
+	int object_index;
+	int skin_matrix_offset;
+	int skinning_debug_view;
+	int _pad0;
+} pc;
 
 // G-buffer (game/ layout):
 //  0: base color, or emission color when emission_strength > 0
@@ -19,6 +29,14 @@ layout(location = 3) out vec4 out_roughness_metallic_emissive;
 
 void main()
 {
+	if (pc.skinning_debug_view != 0 && in_is_skinned_mesh != 0)
+	{
+		out_color = in_skin_debug_color;
+		out_position = in_world_position;
+		out_normal = normalize(in_world_normal);
+		out_roughness_metallic_emissive = vec4(1.0, 0.0, 1.0, 0.0);
+		return;
+	}
 	if (in_material_index >= 0)
 	{
 		Material material = material_data_array[in_material_index];

@@ -278,7 +278,7 @@ struct LightingCapture
 	VkPipeline create_capture_geometry_pipeline(VulkanContext* ctx, const char* in_vert_path, bool in_skinned)
 	{
 		VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vert_path);
-		VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/geometry.frag.spv");
+		VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/geometry_capture.frag.spv");
 
 		VkPipelineShaderStageCreateInfo shader_stages[] = {
 			{
