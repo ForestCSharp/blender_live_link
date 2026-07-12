@@ -11,7 +11,6 @@
 #define G3D_octahedral_glsl
 
 #if !defined(__cplusplus) || !defined(__STDC__)
-@block octahedral_helpers
 #endif
 
 float signNotZero(float value)
@@ -115,7 +114,6 @@ vec2 padded_atlas_uv_from_normal(vec3 normal, int atlas_idx, int atlas_total_siz
 }
 
 #if !defined(__cplusplus) || !defined(__STDC__)
-@end // @block octahedral_helpers
 #endif
 
 #endif // G3D_octahedral_glsl

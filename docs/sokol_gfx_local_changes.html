@@ -202,7 +202,7 @@
     <h1>sokol_gfx.h Local Changes</h1>
     <p class="subtitle">
       Reference notes for the project-specific changes in
-      <a href="../game/src/extern/sokol/sokol_gfx.h">game/src/extern/sokol/sokol_gfx.h</a>.
+      <a href="../game_old/src/extern/sokol/sokol_gfx.h">game_old/src/extern/sokol/sokol_gfx.h</a>.
       Use this when replacing Sokol with a newer upstream version so the profiler and
       GPU tessellation readback support do not disappear during the vendor update.
     </p>
@@ -250,9 +250,9 @@
       <code>edada93 Update Sokol. (sg_views support)</code>. The Sokol header diff from that
       baseline to the current tree is roughly one thousand inserted lines:
     </p>
-    <pre><code>git diff --stat edada93..HEAD -- game/src/extern/sokol/sokol_gfx.h
+    <pre><code>git diff --stat edada93..HEAD -- game_old/src/extern/sokol/sokol_gfx.h
 
-game/src/extern/sokol/sokol_gfx.h | 1031 ++++++++++++++++++++++++++++++++++++-
+game_old/src/extern/sokol/sokol_gfx.h | 1031 ++++++++++++++++++++++++++++++++++++-
 1 file changed, 1027 insertions(+), 4 deletions(-)</code></pre>
     <table>
       <thead>
@@ -278,7 +278,7 @@ game/src/extern/sokol/sokol_gfx.h | 1031 ++++++++++++++++++++++++++++++++++++-
     </table>
     <p class="note">
       These hashes are repository-local breadcrumbs. During a future Sokol update, they are useful
-      with <code>git show &lt;hash&gt; -- game/src/extern/sokol/sokol_gfx.h</code>, but the code will
+      with <code>git show &lt;hash&gt; -- game_old/src/extern/sokol/sokol_gfx.h</code>, but the code will
       still need to be merged against whatever upstream Sokol changed around the same areas.
     </p>
   </section>
@@ -418,7 +418,7 @@ typedef struct sg_buffer_readback_desc {
     <p>
       The patch tracks the app's frame index separately from Sokol's internal frame counter. The game
       calls <code>sg_mtl_set_gpu_frame_timing_frame_index()</code> from
-      <a href="../game/src/render/sokol_helpers.h">game/src/render/sokol_helpers.h</a> at frame begin.
+      <a href="../game_old/src/render/sokol_helpers.h">game_old/src/render/sokol_helpers.h</a> at frame begin.
       When the first Metal pass creates a command buffer, the patch captures that frame index, assigns
       monotonically increasing command-buffer and submission ids, and reports lifecycle events.
     </p>
@@ -455,7 +455,7 @@ typedef struct sg_buffer_readback_desc {
     <h2>Buffer Readback Details</h2>
     <p>
       The readback API is intentionally small and currently exists for
-      <a href="../game/src/render/tessellation.h">game/src/render/tessellation.h</a>. GPU tessellation
+      <a href="../game_old/src/render/tessellation.h">game_old/src/render/tessellation.h</a>. GPU tessellation
       writes counters in a storage buffer. The CPU then reads those counters to know how many generated
       vertices and indices are valid.
     </p>
@@ -510,7 +510,7 @@ typedef struct sg_buffer_readback_desc {
       </thead>
       <tbody>
         <tr>
-          <td><a href="../game/src/render/sokol_helpers.h">game/src/render/sokol_helpers.h</a></td>
+          <td><a href="../game_old/src/render/sokol_helpers.h">game_old/src/render/sokol_helpers.h</a></td>
           <td>
             Initializes Metal GPU timing, registers callbacks, wraps GPU scopes, merges Metal pass
             events with CPU metadata, and emits CPU-only fallback markers when explicit Metal samples
@@ -518,26 +518,26 @@ typedef struct sg_buffer_readback_desc {
           </td>
         </tr>
         <tr>
-          <td><a href="../game/src/render/tessellation.h">game/src/render/tessellation.h</a></td>
+          <td><a href="../game_old/src/render/tessellation.h">game_old/src/render/tessellation.h</a></td>
           <td>
             Creates <code>sg_buffer_readback</code> objects, requests readback of tessellation counters,
             polls readiness, consumes counter data, and disables GPU-planned tessellation if readback fails.
           </td>
         </tr>
         <tr>
-          <td><a href="../game/src/game_object/mesh.h">game/src/game_object/mesh.h</a></td>
+          <td><a href="../game_old/src/game_object/mesh.h">game_old/src/game_object/mesh.h</a></td>
           <td>Stores <code>sg_buffer_readback</code> handles in tessellation GPU slots.</td>
         </tr>
         <tr>
-          <td><a href="../game/src/state/state.h">game/src/state/state.h</a></td>
+          <td><a href="../game_old/src/state/state.h">game_old/src/state/state.h</a></td>
           <td>Tracks readback support and readback age for renderer state/UI reporting.</td>
         </tr>
         <tr>
-          <td><a href="../game/src/main.cpp">game/src/main.cpp</a></td>
+          <td><a href="../game_old/src/main.cpp">game_old/src/main.cpp</a></td>
           <td>Displays tessellation readback support and profiler output in the debug UI.</td>
         </tr>
         <tr>
-          <td><a href="../game/src/extern/sokol/sokol_single_file.c">game/src/extern/sokol/sokol_single_file.c</a></td>
+          <td><a href="../game_old/src/extern/sokol/sokol_single_file.c">game_old/src/extern/sokol/sokol_single_file.c</a></td>
           <td>Includes <code>sokol_gfx.h</code> into the compiled Sokol static library.</td>
         </tr>
       </tbody>
@@ -562,7 +562,7 @@ typedef struct sg_buffer_readback_desc {
       </li>
       <li>
         Rebuild Sokol through the game build script. On macOS this regenerates
-        <code>game/bin/libsokol.a</code>; on Windows it regenerates <code>game/bin/sokol.lib</code>.
+        <code>game_old/bin/libsokol.a</code>; on Windows it regenerates <code>game_old/bin/sokol.lib</code>.
       </li>
       <li>
         Run the game and inspect the profiler UI. Metal should report GPU frame timing, lifecycle
@@ -578,12 +578,12 @@ typedef struct sg_buffer_readback_desc {
       </li>
     </ol>
     <pre><code># Useful review commands after merging a new Sokol version:
-git diff -- game/src/extern/sokol/sokol_gfx.h
-rg "sg_mtl_set_gpu_frame_timing_callback|sg_mtl_init_gpu_scope_timing|sg_make_buffer_readback" game/src
-./game/build.sh Mac
+git diff -- game_old/src/extern/sokol/sokol_gfx.h
+rg "sg_mtl_set_gpu_frame_timing_callback|sg_mtl_init_gpu_scope_timing|sg_make_buffer_readback" game_old/src
+./game_old/build.sh Mac
 
-# On Windows, the equivalent build should regenerate game/bin/sokol.lib:
-./game/build.sh Windows</code></pre>
+# On Windows, the equivalent build should regenerate game_old/bin/sokol.lib:
+./game_old/build.sh Windows</code></pre>
   </section>
 
   <section class="card">

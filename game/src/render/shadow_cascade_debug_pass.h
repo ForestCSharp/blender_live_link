@@ -1,74 +1,112 @@
 #pragma once
 
-#include "render/render_types.h"
+#include "render/frame_data.h"
 #include "render/render_pass.h"
-#include "render/shadow_depth_pass.h"
-
-#include "shadow_cascade_debug.compiled.h"
+#include "render/shader_module.h"
 
 namespace ShadowCascadeDebugPass
 {
-	optional<sg_shader> shader;
-
-	sg_pipeline_desc make_pipeline_desc()
+	struct PushConstants
 	{
-		if (!shader.has_value())
+		i32 cascade_index;
+		i32 view_mode;
+	};
+
+	inline VkDescriptorPool pool = VK_NULL_HANDLE;
+	inline VkDescriptorSet sets[MAX_FRAMES_IN_FLIGHT] = {};
+	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	inline VkPipeline pipeline = VK_NULL_HANDLE;
+
+	inline void init(VulkanContext* ctx)
+	{
+		VkDescriptorPoolSize pool_size = { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = MAX_FRAMES_IN_FLIGHT };
+		VkDescriptorPoolCreateInfo pool_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = MAX_FRAMES_IN_FLIGHT,
+			.poolSizeCount = 1,
+			.pPoolSizes = &pool_size,
+		};
+		VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_info, nullptr, &pool));
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 		{
-			shader = sg_make_shader(shadow_cascade_debug_shadow_cascade_debug_shader_desc(sg_query_backend()));
+			VkDescriptorSetAllocateInfo alloc_info = {
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+				.descriptorPool = pool,
+				.descriptorSetCount = 1,
+				.pSetLayouts = &frame_data.sampled_input_layout,
+			};
+			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &alloc_info, &sets[frame_idx]));
 		}
 
-		sg_pipeline_desc desc = {};
-		desc.shader = shader.value();
-		desc.depth.pixel_format = SG_PIXELFORMAT_NONE;
-		desc.color_count = 1;
-		desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
-		desc.cull_mode = SG_CULLMODE_NONE;
-		desc.label = "shadow-cascade-debug-pipeline";
-		return desc;
+		VkPushConstantRange push_range = {
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.size = sizeof(PushConstants),
+		};
+		VkPipelineLayoutCreateInfo layout_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &frame_data.sampled_input_layout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &push_range,
+		};
+		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_info, nullptr, &pipeline_layout));
+
+		VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, "bin/shaders/shadow_cascade_debug.vert.spv");
+		VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/shadow_cascade_debug.frag.spv");
+		VkPipelineShaderStageCreateInfo stages[] = {
+			{ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex_module, .pName = "main" },
+			{ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fragment_module, .pName = "main" },
+		};
+		VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+		VkPipelineDynamicStateCreateInfo dynamic = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dynamic_states };
+		VkPipelineVertexInputStateCreateInfo vertex_input = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+		VkPipelineInputAssemblyStateCreateInfo assembly = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+		VkPipelineViewportStateCreateInfo viewport = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
+		VkPipelineRasterizationStateCreateInfo raster = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
+		VkPipelineMultisampleStateCreateInfo msaa = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+		VkPipelineDepthStencilStateCreateInfo depth = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+		VkPipelineColorBlendAttachmentState blend_attachment = { .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT };
+		VkPipelineColorBlendStateCreateInfo blend = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend_attachment };
+		VkFormat output_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+		VkPipelineRenderingCreateInfo rendering = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &output_format };
+		VkGraphicsPipelineCreateInfo pipeline_info = {
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.pNext = &rendering,
+			.stageCount = 2,
+			.pStages = stages,
+			.pVertexInputState = &vertex_input,
+			.pInputAssemblyState = &assembly,
+			.pViewportState = &viewport,
+			.pRasterizationState = &raster,
+			.pMultisampleState = &msaa,
+			.pDepthStencilState = &depth,
+			.pColorBlendState = &blend,
+			.pDynamicState = &dynamic,
+			.layout = pipeline_layout,
+		};
+		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline));
+		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
+		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
 	}
 
-	RenderPassDesc make_render_pass_desc()
+	inline void render(VulkanContext* ctx, VkImageView moments_view, VkSampler sampler, i32 cascade_index, i32 view_mode)
 	{
-		RenderPassDesc desc = {};
-		desc.initial_width = ShadowDepthPass::ShadowMapResolution;
-		desc.initial_height = ShadowDepthPass::ShadowMapResolution;
-		desc.pipeline_desc = ShadowCascadeDebugPass::make_pipeline_desc();
-		desc.num_outputs = 1;
-		desc.outputs[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
-		desc.outputs[0].load_action = SG_LOADACTION_CLEAR;
-		desc.outputs[0].store_action = SG_STOREACTION_STORE;
-		desc.outputs[0].clear_value = {0.0f, 0.0f, 0.0f, 1.0f};
-		desc.resize_with_window = false;
-		desc.debug_label = "Shadow Cascade Debug";
-		return desc;
+		VkDescriptorImageInfo image_info = { .sampler = sampler, .imageView = moments_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[ctx->frame_index], .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &image_info };
+		vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+
+		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &sets[ctx->frame_index], 0, nullptr);
+		PushConstants push = { .cascade_index = cascade_index, .view_mode = view_mode };
+		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+		vkCmdDraw(command_buffer, 3, 1, 0, 0);
 	}
 
-	void render(
-		RenderPass& in_pass,
-		sg_view in_shadow_moments_view,
-		sg_sampler in_sampler,
-		i32 in_cascade_index,
-		i32 in_view_mode
-	)
+	inline void shutdown(VulkanContext* ctx)
 	{
-		in_pass.execute(
-			[&](const i32)
-			{
-				const shadow_cascade_debug_fs_params_t fs_params = {
-					.cascade_index = in_cascade_index,
-					.view_mode = in_view_mode,
-				};
-				sg_apply_uniforms(0, SG_RANGE(fs_params));
-
-				sg_bindings bindings = {
-					.views = {
-						[0] = in_shadow_moments_view,
-					},
-					.samplers[0] = in_sampler,
-				};
-				gpu_apply_bindings(&bindings);
-				sg_draw(0, 6, 1);
-			}
-		);
+		vkDestroyPipeline(ctx->device, pipeline, nullptr);
+		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
+		vkDestroyDescriptorPool(ctx->device, pool, nullptr);
 	}
 }

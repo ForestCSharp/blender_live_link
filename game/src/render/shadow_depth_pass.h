@@ -1,46 +1,54 @@
 #pragma once
 
-#include <cfloat>
-#include <optional>
-
-#include "shadow_depth.compiled.h"
-
-#include "render/culling.h"
+#include "core/types.h"
+#include "render/vulkan_context.h"
 #include "render/render_types.h"
-#include "render/render_pass.h"
-#include "state/state.h"
+#include "render/shader_module.h"
+#include "render/frame_data.h"
+#include "render/culling.h"
+#include "game_object/mesh.h"
 
-#if defined(SOKOL_D3D11) || defined(SOKOL_WGPU) || defined(SOKOL_METAL)
-    #define SHADOW_ORTHOGRAPHIC_FUNCTION HMM_Orthographic_RH_ZO
-#else
-    #define SHADOW_ORTHOGRAPHIC_FUNCTION HMM_Orthographic_RH_NO
-#endif
+#include <cfloat>
+#include <cmath>
+
+// Cascaded EVSM shadow maps (port of game/src/render/shadow_depth_pass.h,
+// Frustum placement mode only — CenteredSquares arrives in 3b).
+// Array pass: one 2048x2048 RGBA16F moments image with MAX_SHADOW_CASCADES
+// layers + throwaway D32; each slice renders one cascade. Exponential
+// doubling splits (100 * scale * 2^(i-1)), sphere-bounded frustum fit,
+// no texel snapping (game/ parity).
 
 namespace ShadowDepthPass
 {
+	constexpr i32 ShadowMapResolution = 2048;
+	constexpr f32 BaselineCascadeDistance = 100.0f;
+
+	inline bool has_valid_shadow_map = false;
+	inline HMM_Mat4 shadow_view_projections[MAX_SHADOW_CASCADES] = {};
+	inline f32 cascade_distances[MAX_SHADOW_CASCADES] = {};
+
+	struct PushConstants
+	{
+		HMM_Mat4 light_view_projection;
+		i32 object_index;
+		i32 skin_matrix_offset;
+	};
+	// 72 bytes of payload, padded to 80 by HMM_Mat4's 16-byte alignment —
+	// still under the 128-byte push constant minimum
+	static_assert(sizeof(PushConstants) == 80, "Must fit the 128-byte push constant minimum");
+
+	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	inline VkPipeline pipeline = VK_NULL_HANDLE;
+	inline VkPipeline skinned_pipeline = VK_NULL_HANDLE;
+	inline VkPipeline bound_pipeline = VK_NULL_HANDLE;
+
+	// Reverse-Z ortho: near/far swapped (game/ shadow_depth_pass.h:21-28)
 	inline HMM_Mat4 mat4_orthographic(f32 left, f32 right, f32 bottom, f32 top, f32 near_plane, f32 far_plane)
 	{
-	#if USE_INVERSE_DEPTH
-		return SHADOW_ORTHOGRAPHIC_FUNCTION(left, right, bottom, top, far_plane, near_plane);
-	#else
-		return SHADOW_ORTHOGRAPHIC_FUNCTION(left, right, bottom, top, near_plane, far_plane);
-	#endif
+		return HMM_Orthographic_RH_ZO(left, right, bottom, top, far_plane, near_plane);
 	}
 
-	optional<sg_shader> shader;
-	optional<sg_shader> skinned_shader;
-	optional<sg_pipeline> pipeline;
-	optional<sg_pipeline> skinned_pipeline;
-
-	const i32 num_pass_outputs = 1;
-	const i32 ShadowMapResolution = 2048;
-	const f32 BaselineCascadeDistance = 100.0f;
-	bool has_valid_shadow_map = false;
-	bool has_valid_shadow_blur = false;
-	HMM_Mat4 shadow_view_projections[MAX_SHADOW_CASCADES] = {};
-	f32 cascade_distances[MAX_SHADOW_CASCADES] = {};
-
-	i32 get_active_cascade_count(const State& in_state)
+	inline i32 get_active_cascade_count(const State& in_state)
 	{
 		if (in_state.shadow.num_cascades < 1)
 		{
@@ -53,7 +61,7 @@ namespace ShadowDepthPass
 		return in_state.shadow.num_cascades;
 	}
 
-	f32 get_cascade_distance(const State& in_state, i32 cascade_idx)
+	inline f32 get_cascade_distance(const State& in_state, i32 cascade_idx)
 	{
 		const f32 active_scale = in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares
 			? in_state.shadow.centered_square_cascade_distance_scale
@@ -64,16 +72,16 @@ namespace ShadowDepthPass
 			return BaselineCascadeDistance * scale;
 		}
 
-		const f32 exponent = (f32)cascade_idx - 1.0f;
+		const f32 exponent = (f32) cascade_idx - 1.0f;
 		return BaselineCascadeDistance * scale * powf(2.0f, exponent);
 	}
 
-	f32 get_largest_active_cascade_distance(const State& in_state)
+	inline f32 get_largest_active_cascade_distance(const State& in_state)
 	{
 		return get_cascade_distance(in_state, get_active_cascade_count(in_state) - 1);
 	}
 
-	void get_frustum_slice_corners(
+	inline void get_frustum_slice_corners(
 		const Camera& in_camera,
 		f32 in_near_distance,
 		f32 in_far_distance,
@@ -105,7 +113,7 @@ namespace ShadowDepthPass
 		out_corners[7] = far_center + right * far_half_width + up * far_half_height;
 	}
 
-	Object* get_valid_shadow_sun(State& in_state)
+	inline Object* get_valid_shadow_sun(State& in_state)
 	{
 		if (!in_state.scene.primary_sun_id.has_value())
 		{
@@ -113,13 +121,15 @@ namespace ShadowDepthPass
 		}
 
 		i32 primary_sun_id = in_state.scene.primary_sun_id.value();
-		if (!in_state.scene.objects.contains(primary_sun_id))
+		auto found = in_state.scene.objects.find(primary_sun_id);
+		if (found == in_state.scene.objects.end())
 		{
 			return nullptr;
 		}
 
-		Object& sun_object = in_state.scene.objects[primary_sun_id];
-		if (!sun_object.visibility || !sun_object.has_light || sun_object.light.type != LightType::Sun || !sun_object.light.sun.cast_shadows)
+		Object& sun_object = found->second;
+		if (!sun_object.visibility || !sun_object.has_light
+			|| sun_object.light.type != LightType::Sun || !sun_object.light.sun.cast_shadows)
 		{
 			return nullptr;
 		}
@@ -127,243 +137,219 @@ namespace ShadowDepthPass
 		return &sun_object;
 	}
 
-	sg_pipeline_desc make_pipeline_desc(sg_pixel_format depth_format)
+	inline VkPipeline create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
 	{
-		if (!shader.has_value())
-		{
-			shader = sg_make_shader(shadow_depth_shadow_depth_shader_desc(sg_query_backend()));
-		}
+		VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vertex_shader_path);
+		VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/shadow_depth.frag.spv");
 
-		sg_pipeline_desc desc = {};
-		desc.shader = shader.value();
-		desc.layout.buffers[0].stride = sizeof(Vertex);
-		desc.layout.attrs[ATTR_shadow_depth_shadow_depth_position].format = SG_VERTEXFORMAT_FLOAT4;
-		desc.layout.attrs[ATTR_shadow_depth_shadow_depth_normal].format = SG_VERTEXFORMAT_FLOAT4;
-		desc.layout.attrs[ATTR_shadow_depth_shadow_depth_texcoord].format = SG_VERTEXFORMAT_FLOAT2;
-		desc.depth.pixel_format = depth_format;
-		desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
-		desc.depth.write_enabled = true;
-		desc.color_count = num_pass_outputs;
-		desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
-		desc.index_type = SG_INDEXTYPE_UINT32;
-		desc.cull_mode = SG_CULLMODE_NONE;
-		desc.label = "shadow-depth-pipeline";
-		return desc;
-	}
-
-	sg_pipeline get_pipeline(sg_pixel_format depth_format)
-	{
-		if (!pipeline.has_value())
-		{
-			pipeline = sg_make_pipeline(make_pipeline_desc(depth_format));
-		}
-
-		return pipeline.value();
-	}
-
-	sg_pipeline get_skinned_pipeline(sg_pixel_format depth_format)
-	{
-		if (!skinned_shader.has_value())
-		{
-			skinned_shader = sg_make_shader(shadow_depth_skinned_shadow_depth_shader_desc(sg_query_backend()));
-		}
-
-		if (!skinned_pipeline.has_value())
-		{
-			sg_pipeline_desc desc = {};
-			desc.shader = skinned_shader.value();
-			desc.layout.buffers[0].stride = sizeof(Vertex);
-			desc.layout.buffers[1].stride = sizeof(SkinnedVertex);
-			desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT2;
-			desc.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[3].buffer_index = 1;
-			desc.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[4].buffer_index = 1;
-			desc.depth.pixel_format = depth_format;
-			desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
-			desc.depth.write_enabled = true;
-			desc.color_count = num_pass_outputs;
-			desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
-			desc.index_type = SG_INDEXTYPE_UINT32;
-			desc.cull_mode = SG_CULLMODE_NONE;
-			desc.label = "skinned-shadow-depth-pipeline";
-			skinned_pipeline = sg_make_pipeline(desc);
-		}
-
-		return skinned_pipeline.value();
-	}
-
-	RenderPassDesc make_render_pass_desc(sg_pixel_format depth_format)
-	{
-		RenderPassDesc desc = {};
-		desc.initial_width = ShadowMapResolution;
-		desc.initial_height = ShadowMapResolution;
-		desc.pipeline_desc = ShadowDepthPass::make_pipeline_desc(depth_format);
-		desc.num_outputs = num_pass_outputs;
-		desc.outputs[0].pixel_format = SG_PIXELFORMAT_RGBA16F;
-		desc.outputs[0].load_action = SG_LOADACTION_CLEAR;
-		desc.outputs[0].store_action = SG_STOREACTION_STORE;
-		desc.outputs[0].clear_value = {1.0f, 1.0f, 0.0f, 0.0f};
-		desc.depth_output.pixel_format = depth_format;
-		desc.depth_output.load_action = SG_LOADACTION_CLEAR;
-		desc.depth_output.store_action = SG_STOREACTION_STORE;
-		desc.depth_output.clear_value = Render::DEPTH_CLEAR_VALUE;
-		desc.resize_with_window = false;
-		desc.type = ERenderPassType::Array;
-		desc.pass_count = MAX_SHADOW_CASCADES;
-		desc.debug_label = "Shadow Depth";
-		desc.debug_label_formatter = render_pass_format_cascade_debug_label;
-		return desc;
-	}
-
-	void draw_shadow_meshes(State& in_state, const CullResult& cull_result, const shadow_depth_vs_params_t& vs_params)
-	{
-		CPU_TIMING_SCOPE("Shadow Draw Meshes");
-		in_state.data_oriented.frame.draw_calls += 1;
-		if (!in_state.render_objects.valid)
-		{
-			return;
-		}
-
-		sg_view render_object_data_view = get_render_object_snapshot_buffer(in_state).get_storage_view();
-
-		for (const i32 unique_id : cull_result.object_ids)
-		{
-			if (!in_state.scene.objects.contains(unique_id))
+		VkPipelineShaderStageCreateInfo shader_stages[] = {
 			{
-				continue;
-			}
-
-			Object& object = in_state.scene.objects[unique_id];
-
-			if (!object.has_mesh)
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage = VK_SHADER_STAGE_VERTEX_BIT,
+				.module = vertex_module,
+				.pName = "main",
+			},
 			{
-				continue;
-			}
-			if (object.render_object_index < 0)
-			{
-				continue;
-			}
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.module = fragment_module,
+				.pName = "main",
+			},
+		};
 
-			Mesh& mesh = object.mesh;
-			MeshRenderView render_view = mesh_get_render_view(mesh);
+		VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+		VkPipelineDynamicStateCreateInfo dynamic_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+			.dynamicStateCount = 2,
+			.pDynamicStates = dynamic_states,
+		};
 
-			sg_bindings bindings = {};
-			bindings.views[0] = render_object_data_view;
-			const bool uses_skinning = mesh_render_view_uses_skinning(mesh, render_view);
-			sg_apply_pipeline(uses_skinning
-				? get_skinned_pipeline(SG_PIXELFORMAT_DEPTH)
-				: get_pipeline(SG_PIXELFORMAT_DEPTH));
-			shadow_depth_vs_params_t draw_vs_params = vs_params;
-			draw_vs_params.object_index = object.render_object_index;
-			sg_apply_uniforms(0, SG_RANGE(draw_vs_params));
-			mesh_apply_render_bindings(bindings, mesh, render_view);
-			gpu_apply_bindings(&bindings);
-			sg_draw(0, render_view.index_count, 1);
-			in_state.data_oriented.frame.draw_mesh_count += 1;
-		}
+		VkVertexInputBindingDescription vertex_bindings[] = {
+			{ .binding = 0, .stride = sizeof(Vertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+			{ .binding = 1, .stride = sizeof(SkinnedVertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+		};
+		VkVertexInputAttributeDescription vertex_attributes[] = {
+			{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, position) },
+			{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, normal) },
+			{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, texcoord) },
+			{ .location = 3, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_indices) },
+			{ .location = 4, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_weights) },
+		};
+		VkPipelineVertexInputStateCreateInfo vertex_input = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+			.vertexBindingDescriptionCount = in_skinned ? 2u : 1u,
+			.pVertexBindingDescriptions = vertex_bindings,
+			.vertexAttributeDescriptionCount = in_skinned ? 5u : 3u,
+			.pVertexAttributeDescriptions = vertex_attributes,
+		};
+
+		VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		};
+		VkPipelineViewportStateCreateInfo viewport = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+			.viewportCount = 1,
+			.scissorCount = 1,
+		};
+		VkPipelineRasterizationStateCreateInfo rasterization = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+			.polygonMode = VK_POLYGON_MODE_FILL,
+			.cullMode = VK_CULL_MODE_NONE,
+			.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+			.lineWidth = 1.0f,
+		};
+		VkPipelineMultisampleStateCreateInfo multisampling = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+		};
+		VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable = VK_TRUE,
+			.depthWriteEnable = VK_TRUE,
+			.depthCompareOp = Render::DEPTH_COMPARE_OP,
+		};
+		VkPipelineColorBlendAttachmentState blend_attachment = {
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+							| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+		};
+		VkPipelineColorBlendStateCreateInfo color_blending = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+			.attachmentCount = 1,
+			.pAttachments = &blend_attachment,
+		};
+
+		VkFormat moments_format = Render::SHADOW_MOMENTS_FORMAT;
+		VkPipelineRenderingCreateInfo rendering_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+			.colorAttachmentCount = 1,
+			.pColorAttachmentFormats = &moments_format,
+			.depthAttachmentFormat = Render::SCENE_DEPTH_FORMAT,
+		};
+
+		VkGraphicsPipelineCreateInfo pipeline_create_info = {
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.pNext = &rendering_create_info,
+			.stageCount = 2,
+			.pStages = shader_stages,
+			.pVertexInputState = &vertex_input,
+			.pInputAssemblyState = &input_assembly,
+			.pViewportState = &viewport,
+			.pRasterizationState = &rasterization,
+			.pMultisampleState = &multisampling,
+			.pDepthStencilState = &depth_stencil,
+			.pColorBlendState = &color_blending,
+			.pDynamicState = &dynamic_state,
+			.layout = pipeline_layout,
+			.renderPass = VK_NULL_HANDLE,
+		};
+
+		VkPipeline out_pipeline = VK_NULL_HANDLE;
+		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+
+		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
+		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
+		return out_pipeline;
 	}
 
-	void render(State& in_state, i32 cascade_idx)
+	inline void init(VulkanContext* ctx)
 	{
-		char cascade_timing_label[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
-		render_pass_format_cascade_debug_label("Shadow Depth", cascade_idx, cascade_timing_label, sizeof(cascade_timing_label));
-		CPU_TIMING_SCOPE(cascade_timing_label);
+		VkPushConstantRange push_constant_range = {
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+			.offset = 0,
+			.size = sizeof(PushConstants),
+		};
+		VkPipelineLayoutCreateInfo layout_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &frame_data.per_frame_layout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &push_constant_range,
+		};
+		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &pipeline_layout));
 
-		if (cascade_idx == 0)
+		pipeline = create_pipeline(ctx, "bin/shaders/shadow_depth.vert.spv", /*in_skinned*/ false);
+		skinned_pipeline = create_pipeline(ctx, "bin/shaders/shadow_depth_skinned.vert.spv", /*in_skinned*/ true);
+	}
+
+	// Computes all cascade light view-projections on the CPU (port of game/
+	// shadow_depth_pass.h:296-408, both placement modes). Must run before the
+	// lighting fs_params upload each frame — the matrices feed both the shadow
+	// draw and the lighting shader's receiver reprojection. Returns true when
+	// the matrices changed and the shadow map should re-render this frame;
+	// under depth_freeze the previous matrices are kept (stale map stays
+	// consistent with them) unless force_recapture is set.
+	inline bool compute_cascade_matrices(State& in_state, const Camera& in_camera)
+	{
+		if (in_state.shadow.rendering_enable && in_state.shadow.depth_freeze
+			&& has_valid_shadow_map && !in_state.shadow.force_recapture)
 		{
-			has_valid_shadow_map = false;
-			for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
-			{
-				shadow_view_projections[i] = HMM_M4D(1.0f);
-				cascade_distances[i] = 0.0f;
-			}
+			return false;
 		}
 
-		if (cascade_idx >= get_active_cascade_count(in_state))
+		for (i32 i = 0; i < MAX_SHADOW_CASCADES; ++i)
 		{
-			return;
+			shadow_view_projections[i] = HMM_M4D(1.0f);
+			cascade_distances[i] = 0.0f;
+		}
+		has_valid_shadow_map = false;
+
+		if (!in_state.shadow.rendering_enable)
+		{
+			return false;
 		}
 
 		Object* sun_object = get_valid_shadow_sun(in_state);
 		if (!sun_object)
 		{
-			return;
+			return false;
 		}
 
 		Transform transform = sun_object->current_transform;
-		HMM_Vec3 sun_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0,0,-1), transform.rotation));
+		HMM_Vec3 sun_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0, 0, -1), transform.rotation));
 
-		Camera& active_camera = get_active_camera();
 		HMM_Vec3 light_up = HMM_V3(0.0f, 0.0f, 1.0f);
 		if (fabsf(HMM_DotV3(sun_dir, light_up)) > 0.99f)
 		{
 			light_up = HMM_V3(0.0f, 1.0f, 0.0f);
 		}
 
-		if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+		const f32 fov = HMM_AngleDeg(60.0f);
+		const f32 aspect_ratio = (f32) in_state.window.render_width / (f32) in_state.window.render_height;
+
+		const i32 cascade_count = get_active_cascade_count(in_state);
+		for (i32 cascade_idx = 0; cascade_idx < cascade_count; ++cascade_idx)
 		{
-			CPU_TIMING_SCOPE("Shadow Centered Setup");
-
-			const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
-			const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
-			const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
-			HMM_Vec3 light_pos = in_state.shadow.centered_square_center - sun_dir * (light_depth_range * 0.5f);
-			HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow.centered_square_center, light_up);
-			f32 near_plane = 0.01f;
-			f32 far_plane = light_depth_range;
-			HMM_Mat4 light_proj = mat4_orthographic(
-				-cascade_half_extent,
-				cascade_half_extent,
-				-cascade_half_extent,
-				cascade_half_extent,
-				near_plane,
-				far_plane
-			);
-			HMM_Mat4 light_view_proj = HMM_MulM4(light_proj, light_view);
-			shadow_view_projections[cascade_idx] = light_view_proj;
-			cascade_distances[cascade_idx] = cascade_half_extent;
-			has_valid_shadow_map = true;
-
-			shadow_depth_vs_params_t vs_params = {};
-			vs_params.view = light_view;
-			vs_params.projection = light_proj;
-
-			// Apply Vertex Uniforms
+			// Centered squares: axis-aligned ortho squares around a point
+			// ahead of the camera (game/ shadow_depth_pass.h:306-333)
+			if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 			{
-				CPU_TIMING_SCOPE("Shadow Uniforms");
-				sg_apply_uniforms(0, SG_RANGE(vs_params));
+				const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);
+				const f32 largest_half_extent = get_largest_active_cascade_distance(in_state);
+				const f32 light_depth_range = fmaxf(100.0f, largest_half_extent * 4.0f);
+				HMM_Vec3 light_pos = in_state.shadow.centered_square_center - sun_dir * (light_depth_range * 0.5f);
+				HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, in_state.shadow.centered_square_center, light_up);
+				HMM_Mat4 light_proj = mat4_orthographic(
+					-cascade_half_extent,
+					cascade_half_extent,
+					-cascade_half_extent,
+					cascade_half_extent,
+					0.01f,
+					light_depth_range
+				);
+
+				shadow_view_projections[cascade_idx] = HMM_MulM4(light_proj, light_view);
+				cascade_distances[cascade_idx] = cascade_half_extent;
+				has_valid_shadow_map = true;
+				continue;
 			}
 
-			// Cull objects
-			const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
-			CullResult cull_result;
-			{
-				CPU_TIMING_SCOPE("Shadow Culling");
-				cull_result = cull_objects(in_state, light_view_proj, cull_bounds_padding);
-			}
-
-			// Submit draw calls for objects after culling
-			draw_shadow_meshes(in_state, cull_result, vs_params);
-
-			return;
-		}
-
-		HMM_Mat4 light_view = HMM_M4D(1.0f);
-		HMM_Mat4 light_proj = HMM_M4D(1.0f);
-		HMM_Mat4 light_view_proj = HMM_M4D(1.0f);
-		{
-			CPU_TIMING_SCOPE("Shadow Frustum Setup");
-
+			// Frustum-slice fit
 			const f32 cascade_near_distance = cascade_idx == 0 ? 0.01f : get_cascade_distance(in_state, cascade_idx - 1);
 			const f32 cascade_far_distance = get_cascade_distance(in_state, cascade_idx);
-			const f32 fov = HMM_AngleDeg(60.0f);
-			const f32 aspect_ratio = (f32)in_state.window.render_width / (f32)in_state.window.render_height;
 
 			HMM_Vec3 frustum_corners[8];
-			get_frustum_slice_corners(active_camera, cascade_near_distance, cascade_far_distance, fov, aspect_ratio, frustum_corners);
+			get_frustum_slice_corners(in_camera, cascade_near_distance, cascade_far_distance, fov, aspect_ratio, frustum_corners);
 
 			HMM_Vec3 frustum_center = HMM_V3(0.0f, 0.0f, 0.0f);
 			for (i32 i = 0; i < 8; ++i)
@@ -379,14 +365,11 @@ namespace ShadowDepthPass
 
 			const f32 depth_margin = fmaxf(10.0f, bounding_radius * 0.25f);
 			HMM_Vec3 light_pos = frustum_center - sun_dir * (bounding_radius + depth_margin);
-			light_view = HMM_LookAt_RH(light_pos, frustum_center, light_up);
+			HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, frustum_center, light_up);
 
-			f32 min_x = FLT_MAX;
-			f32 max_x = -FLT_MAX;
-			f32 min_y = FLT_MAX;
-			f32 max_y = -FLT_MAX;
-			f32 min_z = FLT_MAX;
-			f32 max_z = -FLT_MAX;
+			f32 min_x = FLT_MAX, max_x = -FLT_MAX;
+			f32 min_y = FLT_MAX, max_y = -FLT_MAX;
+			f32 min_z = FLT_MAX, max_z = -FLT_MAX;
 			for (i32 i = 0; i < 8; ++i)
 			{
 				HMM_Vec4 light_space_corner = HMM_MulM4V4(light_view, HMM_V4V(frustum_corners[i], 1.0f));
@@ -400,32 +383,99 @@ namespace ShadowDepthPass
 
 			f32 near_plane = fmaxf(0.01f, -max_z - depth_margin);
 			f32 far_plane = fmaxf(near_plane + 1.0f, -min_z + depth_margin);
-			light_proj = mat4_orthographic(min_x, max_x, min_y, max_y, near_plane, far_plane);
-			light_view_proj = HMM_MulM4(light_proj, light_view);
-			shadow_view_projections[cascade_idx] = light_view_proj;
+			HMM_Mat4 light_proj = mat4_orthographic(min_x, max_x, min_y, max_y, near_plane, far_plane);
+
+			shadow_view_projections[cascade_idx] = HMM_MulM4(light_proj, light_view);
 			cascade_distances[cascade_idx] = cascade_far_distance;
 			has_valid_shadow_map = true;
 		}
 
-		shadow_depth_vs_params_t vs_params = {};
-		vs_params.view = light_view;
-		vs_params.projection = light_proj;
+		return has_valid_shadow_map;
+	}
 
-		// Apply Vertex Uniforms
+	// Draws shadow casters for one cascade using the matrix stored by
+	// compute_cascade_matrices. Runs inside the Array pass execute callback;
+	// pass_idx = cascade.
+	inline void render_cascade(VulkanContext* ctx, State& in_state, i32 in_cascade_idx)
+	{
+		if (!has_valid_shadow_map || in_cascade_idx >= get_active_cascade_count(in_state))
 		{
-			CPU_TIMING_SCOPE("Shadow Uniforms");
-			sg_apply_uniforms(0, SG_RANGE(vs_params));
+			return;
 		}
 
-		// Cull objects
-		const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
-		CullResult cull_result;
-		{
-			CPU_TIMING_SCOPE("Shadow Culling");
-			cull_result = cull_objects(in_state, light_view_proj, cull_bounds_padding);
-		}
+		const HMM_Mat4& light_view_proj = shadow_view_projections[in_cascade_idx];
 
-		// Submit draw calls for objects after culling
-		draw_shadow_meshes(in_state, cull_result, vs_params);
+		// Cull + draw casters
+		CullResult cull_result = cull_objects(in_state, light_view_proj,
+			in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
+
+		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		bound_pipeline = VK_NULL_HANDLE;
+
+		vkCmdBindDescriptorSets(
+			command_buffer,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			pipeline_layout,
+			0, 1, &frame_data.per_frame_sets[ctx->frame_index],
+			0, nullptr
+		);
+
+		for (i32 object_id : cull_result.object_ids)
+		{
+			auto found = in_state.scene.objects.find(object_id);
+			if (found == in_state.scene.objects.end())
+			{
+				continue;
+			}
+
+			Object& object = found->second;
+			if (object.render_object_index < 0)
+			{
+				continue;
+			}
+
+			Mesh& mesh = object.mesh;
+			MeshRenderView render_view = mesh_get_render_view(mesh);
+			const bool skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
+			if (skinned && mesh.skin_matrix_arena_offset < 0)
+			{
+				continue;
+			}
+
+			VkPipeline wanted_pipeline = skinned ? skinned_pipeline : pipeline;
+			if (bound_pipeline != wanted_pipeline)
+			{
+				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
+				bound_pipeline = wanted_pipeline;
+			}
+
+			PushConstants push_constants = {
+				.light_view_projection = light_view_proj,
+				.object_index = object.render_object_index,
+				.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
+			};
+			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
+
+			VkBuffer vertex_buffer = render_view.vertex_buffer;
+			VkDeviceSize vertex_offset = 0;
+			vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_offset);
+			if (skinned)
+			{
+				VkBuffer skinned_vertex_buffer = mesh.skinned_vertex_buffer.get_gpu_buffer();
+				VkDeviceSize skinned_offset = 0;
+				vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+			}
+			vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+			vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+			in_state.data_oriented.frame.draw_calls += 1;
+			in_state.data_oriented.frame.draw_mesh_count += 1;
+		}
+	}
+
+	inline void shutdown(VulkanContext* ctx)
+	{
+		vkDestroyPipeline(ctx->device, skinned_pipeline, nullptr);
+		vkDestroyPipeline(ctx->device, pipeline, nullptr);
+		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
 	}
 }

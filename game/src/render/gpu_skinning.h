@@ -1,149 +1,270 @@
 #pragma once
 
-#include <optional>
-
-#include "gpu_skinning.compiled.h"
-
+#include "core/types.h"
 #include "core/timings.h"
-#include "render/sokol_helpers.h"
+#include "render/vulkan_context.h"
+#include "render/shader_module.h"
 #include "state/state.h"
+
+// GPU skinning cache (port of game/'s gpu_skinning.h): a compute pass bakes
+// each skinned mesh's posed vertices into a per-mesh cache buffer so
+// tessellation and the wire overlay can consume skinned meshes as static
+// geometry. Only runs when a consumer needs it (game/ parity: tessellation
+// or shaded wireframe); the normal draw path keeps in-shader skinning.
+// Deviation from game/: skin matrices come from the shared per-frame arena
+// ring, so the push constants carry each mesh's arena offset.
 
 namespace GpuSkinning
 {
-	static constexpr u32 WORKGROUP_SIZE = 64;
-	static constexpr u32 MAX_COMPUTE_GROUPS_PER_DISPATCH = 65535;
+	constexpr u32 WORKGROUP_SIZE = 64;
+	constexpr u32 MAX_COMPUTE_GROUPS_PER_DISPATCH = 65535;
+	constexpr u32 MAX_SKINNED_DISPATCH_SETS_PER_FRAME = 256;
 
 	struct SkinningParams
 	{
 		i32 vertex_count = 0;
 		i32 base_vertex = 0;
-		i32 padding0 = 0;
-		i32 padding1 = 0;
+		i32 skin_matrix_offset = 0;
+		i32 _padding0 = 0;
 	};
+	static_assert(sizeof(SkinningParams) == 16, "Must match gpu_skinning.comp's push constant block");
 
-	static_assert(sizeof(SkinningParams) == 16, "SkinningParams must match gpu_skinning skinning_params shader layout.");
+	inline VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+	inline VkDescriptorPool pools[MAX_FRAMES_IN_FLIGHT] = {};	// reset each frame
+	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	inline VkPipeline pipeline = VK_NULL_HANDLE;
 
-	std::optional<sg_shader> skin_vertices_shader;
-	sg_pipeline skin_vertices_pipeline = {};
-	bool initialized = false;
-
-	void init()
+	inline void init(VulkanContext* ctx)
 	{
-		if (initialized)
+		// Set layout: b0 source vertices, b1 skinning weights, b2 skin matrix
+		// arena, b3 cache output — all compute SSBOs
 		{
-			return;
+			VkDescriptorSetLayoutBinding bindings[4] = {};
+			for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
+			{
+				bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
+					.binding = binding_idx,
+					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					.descriptorCount = 1,
+					.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				};
+			}
+			VkDescriptorSetLayoutCreateInfo layout_create_info = {
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+				.bindingCount = 4,
+				.pBindings = bindings,
+			};
+			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &set_layout));
 		}
 
-		skin_vertices_shader = sg_make_shader(gpu_skinning_skin_vertices_shader_desc(sg_query_backend()));
-		skin_vertices_pipeline = sg_make_pipeline((sg_pipeline_desc) {
-			.compute = true,
-			.shader = skin_vertices_shader.value(),
-			.label = "gpu-skinning-skin-vertices-pipeline",
-		});
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+		{
+			VkDescriptorPoolSize pool_size = {
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 4 * MAX_SKINNED_DISPATCH_SETS_PER_FRAME,
+			};
+			VkDescriptorPoolCreateInfo pool_create_info = {
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+				.maxSets = MAX_SKINNED_DISPATCH_SETS_PER_FRAME,
+				.poolSizeCount = 1,
+				.pPoolSizes = &pool_size,
+			};
+			VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_create_info, nullptr, &pools[frame_idx]));
+		}
 
-		initialized = true;
+		VkPushConstantRange push_constant_range = {
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof(SkinningParams),
+		};
+		VkPipelineLayoutCreateInfo layout_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &set_layout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &push_constant_range,
+		};
+		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &pipeline_layout));
+
+		VkShaderModule compute_module = create_shader_module_from_file(ctx->device, "bin/shaders/gpu_skinning.comp.spv");
+		VkComputePipelineCreateInfo pipeline_create_info = {
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = {
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+				.module = compute_module,
+				.pName = "main",
+			},
+			.layout = pipeline_layout,
+		};
+		VK_CHECK(vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+		vkDestroyShaderModule(ctx->device, compute_module, nullptr);
 	}
 
-	void ensure_cache(Mesh& mesh)
+	inline void ensure_cache(Mesh& in_mesh)
 	{
-		if (mesh.skinned_vertex_cache_capacity >= mesh.vertex_count &&
-			mesh.skinned_vertex_cache_buffer.is_gpu_buffer_valid())
+		if (in_mesh.skinned_vertex_cache_capacity >= in_mesh.vertex_count
+			&& in_mesh.skinned_vertex_cache_buffer.is_gpu_buffer_valid())
 		{
 			return;
 		}
 
-		mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
-		mesh.skinned_vertex_cache_capacity = MAX(mesh.vertex_count, 1u);
-		mesh.skinned_vertex_cache_buffer = GpuBuffer((GpuBufferDesc<Vertex>) {
+		in_mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
+		in_mesh.skinned_vertex_cache_capacity = MAX(in_mesh.vertex_count, 1u);
+		in_mesh.skinned_vertex_cache_buffer = GpuBuffer((GpuBufferDesc<Vertex>) {
 			.data = nullptr,
-			.size = sizeof(Vertex) * mesh.skinned_vertex_cache_capacity,
+			.size = sizeof(Vertex) * in_mesh.skinned_vertex_cache_capacity,
 			.usage = {
 				.vertex_buffer = true,
 				.storage_buffer = true,
 			},
 			.label = "Mesh::skinned_vertex_cache_buffer",
 		});
-		mesh.skinned_vertex_cache_buffer.get_storage_view();
 	}
 
-	void update_mesh(Mesh& mesh)
+	// Records the cache dispatch for one mesh into the frame's command buffer
+	inline void update_mesh(VulkanContext* ctx, State& in_state, Mesh& in_mesh)
 	{
-		mesh.skinned_vertex_cache_valid = false;
-		if (!mesh.has_skinned_vertices ||
-			mesh.vertex_count == 0 ||
-			mesh.skinned_vertices == nullptr ||
-			mesh.skin_matrices == nullptr ||
-			mesh.skin_matrix_count == 0)
+		in_mesh.skinned_vertex_cache_valid = false;
+		if (!in_mesh.has_skinned_vertices
+			|| in_mesh.vertex_count == 0
+			|| in_mesh.skinned_vertices == nullptr
+			|| in_mesh.skin_matrices == nullptr
+			|| in_mesh.skin_matrix_count == 0
+			|| in_mesh.skin_matrix_arena_offset < 0)
 		{
 			return;
 		}
 
-		ensure_cache(mesh);
+		ensure_cache(in_mesh);
 
-		const char* debug_label = "GPU Skin Vertices";
-		for (u32 base_vertex = 0; base_vertex < mesh.vertex_count; base_vertex += MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE)
+		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		VkDescriptorSetAllocateInfo allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = pools[ctx->frame_index],
+			.descriptorSetCount = 1,
+			.pSetLayouts = &set_layout,
+		};
+		VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &set));
+
+		VkDescriptorBufferInfo buffer_infos[] = {
+			{ .buffer = in_mesh.vertex_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
+			{ .buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
+			{ .buffer = get_skin_matrix_arena_buffer(in_state).get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
+			{ .buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
+		};
+		VkWriteDescriptorSet writes[4] = {};
+		for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
 		{
-			const u32 remaining_vertices = mesh.vertex_count - base_vertex;
+			writes[binding_idx] = (VkWriteDescriptorSet) {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = set,
+				.dstBinding = binding_idx,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &buffer_infos[binding_idx],
+			};
+		}
+		vkUpdateDescriptorSets(ctx->device, 4, writes, 0, nullptr);
+
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, nullptr);
+
+		for (u32 base_vertex = 0; base_vertex < in_mesh.vertex_count; base_vertex += MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE)
+		{
+			const u32 remaining_vertices = in_mesh.vertex_count - base_vertex;
 			const u32 dispatch_vertex_count = MIN(remaining_vertices, MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE);
 			const u32 group_count = (dispatch_vertex_count + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
+
 			SkinningParams params = {
-				.vertex_count = (i32) mesh.vertex_count,
+				.vertex_count = (i32) in_mesh.vertex_count,
 				.base_vertex = (i32) base_vertex,
+				.skin_matrix_offset = in_mesh.skin_matrix_arena_offset,
 			};
-
-			sg_bindings bindings = {
-				.views = {
-					[0] = mesh.vertex_buffer.get_storage_view(),
-					[1] = mesh.skinned_vertex_buffer.get_storage_view(),
-					[2] = mesh.skin_matrix_buffer.get_storage_view(),
-					[3] = mesh.skinned_vertex_cache_buffer.get_storage_view(),
-				},
-			};
-
-			gpu_execute_compute_pass(debug_label, skin_vertices_pipeline, [&]()
-			{
-				sg_apply_uniforms(0, SG_RANGE(params));
-				gpu_apply_bindings(&bindings);
-				sg_dispatch((i32) group_count, 1, 1);
-			});
+			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
+			vkCmdDispatch(command_buffer, group_count, 1, 1);
 		}
 
-		mesh.skinned_vertex_cache_valid = true;
+		in_mesh.skinned_vertex_cache_valid = true;
 	}
 
-	void update(State& state, const bool required)
+	// Records all cache dispatches + the barrier making the caches visible to
+	// vertex input/shaders. Call after begin_frame, before any pass executes.
+	inline void update(VulkanContext* ctx, State& in_state, const bool in_required)
 	{
-		scene_ensure_indexes(state);
-		state.data_oriented.frame.gpu_skinning_candidate_count += (i32)state.scene.indexes.skinned_mesh_object_ids.length();
+		scene_ensure_indexes(in_state);
+		in_state.data_oriented.frame.gpu_skinning_candidate_count += (i32) in_state.scene.indexes.skinned_mesh_object_ids.length();
 
-		if (!required)
+		if (!in_required)
 		{
-			for (const i32 unique_id : state.scene.indexes.skinned_mesh_object_ids)
+			for (const i32 unique_id : in_state.scene.indexes.skinned_mesh_object_ids)
 			{
-				if (!state.scene.objects.contains(unique_id))
+				auto found = in_state.scene.objects.find(unique_id);
+				if (found == in_state.scene.objects.end())
 				{
 					continue;
 				}
-
-				Object& object = state.scene.objects[unique_id];
-				assert(object.has_mesh && object.mesh.has_skinned_vertices);
-				object.mesh.skinned_vertex_cache_valid = false;
+				found->second.mesh.skinned_vertex_cache_valid = false;
 			}
 			return;
 		}
 
-		init();
-		for (const i32 unique_id : state.scene.indexes.skinned_mesh_object_ids)
+		CPU_TIMING_SCOPE("GPU Skinning Cache");
+
+		VK_CHECK(vkResetDescriptorPool(ctx->device, pools[ctx->frame_index], 0));
+
+		bool dispatched_any = false;
+		u32 dispatch_count = 0;
+		for (const i32 unique_id : in_state.scene.indexes.skinned_mesh_object_ids)
 		{
-			if (!state.scene.objects.contains(unique_id))
+			auto found = in_state.scene.objects.find(unique_id);
+			if (found == in_state.scene.objects.end())
 			{
 				continue;
 			}
+			if (dispatch_count >= MAX_SKINNED_DISPATCH_SETS_PER_FRAME)
+			{
+				break;
+			}
 
-			Object& object = state.scene.objects[unique_id];
-			assert(object.has_mesh && object.mesh.has_skinned_vertices);
-			update_mesh(object.mesh);
-			state.data_oriented.frame.gpu_skinning_updated_count += 1;
+			Mesh& mesh = found->second.mesh;
+			update_mesh(ctx, in_state, mesh);
+			if (mesh.skinned_vertex_cache_valid)
+			{
+				in_state.data_oriented.frame.gpu_skinning_updated_count += 1;
+			}
+			dispatched_any = dispatched_any || mesh.skinned_vertex_cache_valid;
+			dispatch_count += 1;
 		}
+
+		if (dispatched_any)
+		{
+			VkMemoryBarrier2 memory_barrier = {
+				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+			};
+			VkDependencyInfo dependency_info = {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.memoryBarrierCount = 1,
+				.pMemoryBarriers = &memory_barrier,
+			};
+			vkCmdPipelineBarrier2(ctx->command_buffers[ctx->frame_index], &dependency_info);
+		}
+	}
+
+	inline void shutdown(VulkanContext* ctx)
+	{
+		vkDestroyPipeline(ctx->device, pipeline, nullptr);
+		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+		{
+			vkDestroyDescriptorPool(ctx->device, pools[frame_idx], nullptr);
+		}
+		vkDestroyDescriptorSetLayout(ctx->device, set_layout, nullptr);
 	}
 }

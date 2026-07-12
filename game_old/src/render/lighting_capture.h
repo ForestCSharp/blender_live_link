@@ -1,0 +1,428 @@
+#pragma once
+
+#include "render/culling.h"
+#include "render/gpu_image.h"
+#include "render/render_pass.h"
+#include "render/geometry_pass.h"
+#include "render/geometry_mesh_draw.h"
+#include "render/lighting_pass.h"
+#include "render/shader_files.h"
+#include "state/state.h"
+
+#include "render/sky_pass.h"
+
+#include "ankerl/unordered_dense.h"
+using ankerl::unordered_dense::map;
+
+struct AtlasViewport
+{
+    int x, y, w, h;
+};
+
+AtlasViewport get_atlas_viewport(int atlas_size, int render_size, int idx)
+{
+    // Basic validation
+    assert(atlas_size > 0 && render_size > 0);
+    assert(atlas_size >= render_size);
+    assert(atlas_size % render_size == 0);
+
+    // Calculate how many tiles fit along one axis
+    const int slots_per_dim = atlas_size / render_size;
+    const int total_slots = slots_per_dim * slots_per_dim;
+
+    assert(idx >= 0 && idx < total_slots);
+
+    // Map the 1D index to 2D grid coordinates
+    const int grid_x = idx % slots_per_dim;
+    const int grid_y = idx / slots_per_dim;
+
+    // Return the pixel coordinates for the viewport
+    return {
+        grid_x * render_size, // x
+        grid_y * render_size, // y
+        render_size,          // width
+        render_size           // height
+    };
+}
+
+struct LightingCaptureDesc
+{
+	i32 cubemap_render_size = 256;
+
+	i32 octahedral_total_size = 1024;
+	i32 octahedral_entry_size = 16;
+};
+
+struct LightingCapture
+{
+public:
+	LightingCaptureDesc desc;
+
+	RenderPass geometry_pass;
+	RenderPass lighting_pass;
+	RenderPass radial_depth_pass;
+	RenderPass cube_to_oct_pass;
+	sg_pipeline radiance_projection_pipeline = {};
+
+	bool is_initialized = false;
+
+	static const sg_pixel_format color_format = SG_PIXELFORMAT_RGBA32F;
+	static const sg_pixel_format depth_format = SG_PIXELFORMAT_DEPTH;
+
+public:
+	void init(const LightingCaptureDesc& in_desc)
+	{
+		cleanup();
+		desc = in_desc;
+
+		// Render geometry pass for 6 cube faces (separate textures, ERenderPassType::Multi)
+		RenderPassDesc geometry_pass_desc = GeometryPass::make_render_pass_desc(depth_format);
+		geometry_pass_desc.initial_width = in_desc.cubemap_render_size;
+		geometry_pass_desc.initial_height = in_desc.cubemap_render_size;
+		geometry_pass_desc.type = ERenderPassType::Multi;
+		geometry_pass_desc.pass_count = NUM_CUBE_FACES;
+		geometry_pass_desc.debug_label_formatter = render_pass_format_face_debug_label;
+		geometry_pass.init(geometry_pass_desc);
+
+		// Render lighting into a cubemap (ERenderPassType::Cubemap)
+		RenderPassDesc cubemap_lighting_desc = LightingPass::make_render_pass_desc(color_format);
+		cubemap_lighting_desc.initial_width = in_desc.cubemap_render_size;
+		cubemap_lighting_desc.initial_height = in_desc.cubemap_render_size;
+		cubemap_lighting_desc.type = ERenderPassType::Cubemap;
+		cubemap_lighting_desc.debug_label_formatter = render_pass_format_face_debug_label;
+		lighting_pass.init(cubemap_lighting_desc);
+
+		// Render radial depth into a cubemap (ERenderPassType::Cubemap)
+		sg_pixel_format radial_depth_format = SG_PIXELFORMAT_RGBA32F;
+		RenderPassDesc radial_depth_pass_desc = {
+			.initial_width = in_desc.cubemap_render_size,
+			.initial_height = in_desc.cubemap_render_size,
+			.pipeline_desc = (sg_pipeline_desc) {
+				.shader = sg_make_shader(radial_depth_radial_depth_shader_desc(sg_query_backend())),
+				.depth = {
+					.pixel_format = SG_PIXELFORMAT_NONE,
+				},
+				.color_count = 1,
+				.colors[0] = {
+					.pixel_format = radial_depth_format,
+				},
+				.cull_mode = SG_CULLMODE_NONE,
+				.label = "radial-depth-pipeline",
+			},
+			.num_outputs = 1,
+			.outputs[0] = {
+				.pixel_format = radial_depth_format,
+				.load_action = SG_LOADACTION_CLEAR,
+				.store_action = SG_STOREACTION_STORE,
+				.clear_value = {1.0, 1.0, 1.0, 1.0},
+			},
+			.type = ERenderPassType::Cubemap,
+			.debug_label = "Radial Depth",
+			.debug_label_formatter = render_pass_format_face_debug_label,
+		};
+		radial_depth_pass.init(radial_depth_pass_desc);
+
+		// Convert lighting information into octahedral irradiance
+		RenderPassDesc cube_to_oct_pass_desc = {
+			.initial_width = in_desc.octahedral_total_size,
+			.initial_height = in_desc.octahedral_total_size,
+			.pipeline_desc = (sg_pipeline_desc) {
+				.shader = sg_make_shader(cubemap_to_octahedral_cubemap_to_octahedral_shader_desc(sg_query_backend())),
+				.depth = {
+					.pixel_format = SG_PIXELFORMAT_NONE,
+				},
+				.color_count = 2,
+				.colors[0] = {
+					.pixel_format = color_format,
+				},
+				.colors[1] = {
+					.pixel_format = radial_depth_format,
+				},
+				.cull_mode = SG_CULLMODE_NONE,
+				.label = "cubemap-to-octahedral-pipeline",
+			},
+			.num_outputs = 2,
+			.outputs[0] = {
+				.pixel_format = color_format,
+				.load_action = SG_LOADACTION_LOAD,
+				.store_action = SG_STOREACTION_STORE,
+			},
+			.outputs[1] = {
+				.pixel_format = radial_depth_format,
+				.load_action = SG_LOADACTION_LOAD,
+				.store_action = SG_STOREACTION_STORE,
+			},
+			.type = ERenderPassType::Single,
+		};
+		cube_to_oct_pass.init(cube_to_oct_pass_desc);
+
+		radiance_projection_pipeline = sg_make_pipeline((sg_pipeline_desc) {
+			.compute = true,
+			.shader = sg_make_shader(probe_radiance_projection_probe_radiance_projection_shader_desc(sg_query_backend())),
+			.label = "probe-radiance-projection-pipeline",
+		});
+
+		is_initialized = true;
+	}
+
+	void cleanup()
+	{
+		geometry_pass.cleanup();
+		lighting_pass.cleanup();
+		radial_depth_pass.cleanup();
+		cube_to_oct_pass.cleanup();
+
+		if (radiance_projection_pipeline.id != SG_INVALID_ID)
+		{
+			sg_destroy_pipeline(radiance_projection_pipeline);
+			radiance_projection_pipeline = {};
+		}
+
+		is_initialized = false;
+	}
+
+	void render(
+		State& in_state,
+		const HMM_Vec3 in_location,
+		const i32 in_atlas_idx,
+		const bool should_render_geometry,
+		const i32 in_probe_idx,
+		const f32 in_max_radial_depth,
+		const sg_view in_sh9_coefficients_view,
+		const sg_view in_sg9_lobes_view)
+	{
+		assert_msgf(is_initialized, "Cubemap should be initialized with a LightingCaptureDesc passed to its constructor");
+
+		// View + Projection matrix setup
+		const f32 fov = HMM_AngleDeg(90.0f);
+		const f32 aspect_ratio = 1.0f;
+		HMM_Mat4 projection_matrix = mat4_perspective(fov, aspect_ratio);
+		projection_matrix[1][1] *= -1.0f;
+
+
+		HMM_Mat4 view_matrices[NUM_CUBE_FACES];
+		HMM_Mat4 view_projection_matrices[NUM_CUBE_FACES];
+		for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
+		{
+			HMM_Vec3 forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
+			HMM_Vec3 up = Render::CUBE_FORWARD_AND_UP[face_idx][1];
+
+			HMM_Vec3 target = in_location + forward * 10;
+			view_matrices[face_idx] = HMM_LookAt_RH(in_location, target, up);
+			view_projection_matrices[face_idx] = HMM_MulM4(projection_matrix, view_matrices[face_idx]);
+		}
+
+		geometry_pass.execute(
+			[&](const RenderPassExecutionContext& context)
+	   		{
+				const i32 face_idx = context.image_idx;
+				HMM_Mat4& view_matrix = view_matrices[face_idx];
+				HMM_Mat4& view_projection_matrix = view_projection_matrices[face_idx];
+
+				geometry_vs_params_t vs_params = {};
+				vs_params.view = view_matrix;
+				vs_params.projection = projection_matrix;
+				geometry_fs_params_t geometry_fs_params = {
+					.skinning_debug_view = 0,
+				};
+
+				// Apply Vertex Uniforms
+				sg_apply_uniforms(0, SG_RANGE(vs_params));
+
+				// Cull objects
+				const f32 cull_bounds_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+				CullResult cull_result = cull_objects(in_state, view_projection_matrix, cull_bounds_padding);
+
+				if (should_render_geometry)
+				{
+					draw_visible_geometry_meshes(
+						in_state,
+						cull_result,
+						geometry_pass,
+						vs_params,
+						geometry_fs_params,
+						geometry_pass.get_depth_output().get_desc().pixel_format
+					);
+				}
+
+				if (in_state.gi.render_sky_to_probes)
+				{
+					SkyPass::render(view_projection_matrix, in_location, depth_format);
+				}
+			}
+		);
+
+		lighting_pass.execute(
+			[&](const RenderPassExecutionContext& context)
+	   		{
+				const i32 face_idx = context.slice_idx;
+				lighting_fs_params_t fs_params = in_state.lighting.fs_params;
+				fs_params.view_position = in_location;
+				fs_params.view_forward = Render::CUBE_FORWARD_AND_UP[face_idx][0];
+				fs_params.ssao_enable = false;
+				fs_params.direct_lighting_enable = true;
+				fs_params.gi_enable = false;
+				fs_params.shadow_map_enable = false;
+				fs_params.screen_space_shadows_enable = false;
+				sg_apply_uniforms(0, SG_RANGE(fs_params));
+
+				GpuImage& color_texture = geometry_pass.get_color_output(0, face_idx);
+				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
+				GpuImage& normal_texture = geometry_pass.get_color_output(2, face_idx);
+				GpuImage& roughness_metallic_texture = geometry_pass.get_color_output(3, face_idx);
+
+				sg_bindings bindings = {
+					.views = {
+						[0] = color_texture.get_texture_view(0),
+						[1] = position_texture.get_texture_view(0),
+						[2] = normal_texture.get_texture_view(0),
+						[3] = roughness_metallic_texture.get_texture_view(0),
+						[4] = in_state.gpu.default_image.get_texture_view(0),		//FCS TODO: Need SSAO
+						[5] = in_state.lighting.point_lights_buffer.get_storage_view(),
+						[6] = in_state.lighting.spot_lights_buffer.get_storage_view(),
+						[7] = in_state.lighting.sun_lights_buffer.get_storage_view(),
+						[8] = in_state.gpu.default_buffer.get_storage_view(),
+						[9] = in_state.gpu.default_buffer.get_storage_view(),
+						[10] = in_state.gpu.default_image.get_texture_view(0),
+						[11] = in_state.gpu.default_image.get_texture_view(0),
+						[12] = in_state.gpu.default_image_array.get_texture_array_view(),
+						[13] = in_state.gpu.default_buffer.get_storage_view(),
+						[14] = in_state.gpu.default_buffer.get_storage_view(),
+						[15] = in_state.gpu.default_buffer.get_storage_view(),
+						[16] = in_state.gpu.default_image.get_texture_view(0),
+					},
+					.samplers = {
+						[0] = in_state.gpu.linear_sampler,
+						[1] = in_state.gpu.nearest_sampler,
+					},
+				};
+				gpu_apply_bindings(&bindings);
+
+				sg_draw(0,6,1);
+			}
+		);
+
+		radial_depth_pass.execute(
+			[&](const RenderPassExecutionContext& context)
+	   		{
+				const i32 face_idx = context.slice_idx;
+				const HMM_Mat4& view_projection_matrix = view_projection_matrices[face_idx];
+
+				radial_depth_fs_params_t fs_params = {
+					.inverse_view_projection = HMM_InvGeneralM4(view_projection_matrix),
+					.capture_location = in_location,
+					.probe_occlusion_mode = static_cast<i32>(in_state.gi.probe_occlusion_mode),
+					.force_fully_visible = in_state.gi.debug_constant_white_probes ? 1 : 0,
+					.max_radial_depth = in_max_radial_depth,
+				};
+				sg_apply_uniforms(0, SG_RANGE(fs_params));
+
+				GpuImage& position_texture = geometry_pass.get_color_output(1, face_idx);
+				sg_bindings bindings = {
+					.views = {
+						[0] = position_texture.get_texture_view(0),
+					},
+					.samplers[0] = in_state.gpu.nearest_sampler,
+				};
+				gpu_apply_bindings(&bindings);
+
+				sg_draw(0,6,1);
+			}
+		);
+
+		cube_to_oct_pass.execute(
+			[&](const i32 _)
+	   		{
+				// Determine current atlas location to render into
+				{
+					AtlasViewport viewport = get_atlas_viewport(
+						desc.octahedral_total_size,
+						desc.octahedral_entry_size,
+						in_atlas_idx
+					);
+
+					sg_apply_viewport(
+						viewport.x,
+						viewport.y,
+						viewport.w,
+						viewport.h,
+						true
+					);
+				}
+
+				cubemap_to_octahedral_fs_params_t fs_params = {
+					.cubemap_render_size = desc.cubemap_render_size,
+					.atlas_entry_size = desc.octahedral_entry_size,
+					.compute_irradiance = in_state.gi.compute_irradiance,
+					.use_importance_sampling = true,
+				};
+				sg_apply_uniforms(0, SG_RANGE(fs_params));
+
+				GpuImage& lighting_cubemap_texture = in_state.gi.debug_constant_white_probes
+					? in_state.gpu.white_image_cube
+					: lighting_pass.get_color_output(0);
+				GpuImage& depth_cubemap_texture = radial_depth_pass.get_color_output(0);
+
+				sg_bindings bindings = {
+					.views = {
+						[0] = lighting_cubemap_texture.get_texture_view(0),
+						[1] = depth_cubemap_texture.get_texture_view(0),
+					},
+					.samplers = {
+						[0] = in_state.gpu.linear_sampler,
+						[1] = in_state.gpu.nearest_sampler,
+					},
+				};
+				gpu_apply_bindings(&bindings);
+
+				sg_draw(0,6,1);
+			}
+		);
+
+		const bool should_project_sh9 =
+			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SH9 ||
+			in_state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance;
+		const bool should_project_sg9 =
+			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SG9 ||
+			in_state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance;
+
+		auto project_probe_radiance = [&](const EProbeRadianceMode radiance_mode)
+		{
+			probe_radiance_projection_cs_params_t cs_params = {
+				.probe_index = in_probe_idx,
+				.radiance_mode = static_cast<i32>(radiance_mode),
+				.sample_count = 1024,
+			};
+
+			GpuImage& lighting_cubemap_texture = in_state.gi.debug_constant_white_probes
+				? in_state.gpu.white_image_cube
+				: lighting_pass.get_color_output(0);
+
+			const char* debug_label = "Probe Radiance Projection";
+			gpu_execute_compute_pass(debug_label, radiance_projection_pipeline, [&]()
+			{
+				sg_apply_uniforms(0, SG_RANGE(cs_params));
+				sg_bindings bindings = {
+					.views = {
+						[0] = in_sh9_coefficients_view,
+						[1] = in_sg9_lobes_view,
+						[2] = lighting_cubemap_texture.get_texture_view(0),
+					},
+					.samplers[0] = in_state.gpu.linear_sampler,
+				};
+				gpu_apply_bindings(&bindings);
+				sg_dispatch(1, 1, 1);
+			});
+		};
+
+		if (should_project_sh9)
+		{
+			project_probe_radiance(EProbeRadianceMode::SH9);
+		}
+
+		if (should_project_sg9)
+		{
+			project_probe_radiance(EProbeRadianceMode::SG9);
+		}
+	}
+};

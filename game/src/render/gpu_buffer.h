@@ -1,24 +1,50 @@
 #pragma once
 
 #include "core/types.h"
-#include "render/gpu_profiler_resources.h"
-#include "sokol/sokol_gfx.h"
+#include "render/vulkan_context.h"
 
 #include <cassert>
+#include <cstring>
 #include <optional>
 #include <string>
 
 using std::optional;
 
-// Helper primarily used to pass between live link and main threads. 
+// Buffer usage info (mirrors the shape of sokol's sg_buffer_usage in game/)
+struct GpuBufferUsage
+{
+	bool vertex_buffer = false;
+	bool index_buffer = false;
+	bool storage_buffer = false;
+	bool uniform_buffer = false;
+	bool stream_update = false;
+	bool prefer_device_local = false;
+	bool transfer_src = false;
+	bool readback = false;
+};
+
+// Static (non-stream) buffers default to device-local + staging upload on
+// discrete GPUs. Apple Silicon is UMA, so host-visible mapped is the default
+// there; GAME2_FORCE_DEVICE_LOCAL=1 exercises the staging path anyway.
+inline bool gpu_buffer_default_device_local()
+{
+	static const bool force_device_local = getenv("GAME2_FORCE_DEVICE_LOCAL") != nullptr;
+#if defined(__APPLE__)
+	return force_device_local;
+#else
+	return true;
+#endif
+}
+
+// Helper primarily used to pass between live link and main threads.
 // We want to wait until our data is back on the main thread to create GPU resources.
-template<typename T> 
+template<typename T>
 struct GpuBufferDesc
 {
 	/* Data to initialize the GpuBuffer with */
 	T* data;
-	
-	/* 
+
+	/*
 	 *	The size of the buffer to be created.
 	 *	For static buffers this represents the size of T* data used to initialize this buffer
 	 *	For dynamic buffers with no initial data: this represents the max possible size of the buffer
@@ -26,12 +52,11 @@ struct GpuBufferDesc
 	u64 size;
 
 	/* buffer usage info */
-	sg_buffer_usage usage;
-	
+	GpuBufferUsage usage;
+
 	/* Debug Label */
 	const char* label = nullptr;
 };
-
 
 template<typename T>
 struct GpuBuffer
@@ -60,118 +85,192 @@ public:
 
 	bool is_dynamic() const
 	{
-		return usage.dynamic_update || usage.stream_update;
+		return usage.stream_update;
 	}
 
-	sg_buffer get_gpu_buffer()
+	// Lazily creates the VkBuffer on first call. Buffers are host-visible and
+	// persistently mapped (Apple Silicon is UMA, so no staging copy needed).
+	VkBuffer get_gpu_buffer()
 	{
 		if (!gpu_buffer.has_value())
 		{
-			sg_buffer_desc buffer_desc = {
+			assert(g_vulkan_context != nullptr);
+
+			VkBufferUsageFlags usage_flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+			if (usage.vertex_buffer)	{ usage_flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; }
+			if (usage.index_buffer)		{ usage_flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT; }
+			if (usage.storage_buffer)	{ usage_flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; }
+			if (usage.uniform_buffer)	{ usage_flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
+			if (usage.transfer_src)		{ usage_flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT; }
+
+			VkBufferCreateInfo buffer_create_info = {
+				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 				.size = size,
-				.usage = usage,
-				.label = label ? label->c_str() : "",
+				.usage = usage_flags,
+				.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			};
 
-			// Non-dynamic buffers pass initial data only when they actually
-			// have CPU data. Immutable storage buffers may be created empty
-			// for compute shaders to write into.
-			if (!is_dynamic() && data != nullptr)
+			const bool wants_device_local = !usage.stream_update
+				&& (usage.prefer_device_local || gpu_buffer_default_device_local());
+
+			VmaAllocationCreateInfo allocation_create_info = {
+				.usage = VMA_MEMORY_USAGE_AUTO,
+			};
+			if (wants_device_local)
 			{
-				buffer_desc.data = {
-					.ptr = data,
-					.size = size,
-				};
+				allocation_create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+			}
+			else
+			{
+				allocation_create_info.flags = (usage.readback
+					? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+					: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
+					| VMA_ALLOCATION_CREATE_MAPPED_BIT;
 			}
 
-			gpu_buffer = sg_make_buffer(buffer_desc);
+			VkBuffer new_buffer = VK_NULL_HANDLE;
+			VmaAllocationInfo allocation_info = {};
+			VK_CHECK(vmaCreateBuffer(
+				g_vulkan_context->allocator,
+				&buffer_create_info,
+				&allocation_create_info,
+				&new_buffer,
+				&allocation,
+				&allocation_info
+			));
 
-			// Dynamic Buffer Update can happen now
-			if (is_dynamic() && data != nullptr && size > 0)
+			mapped_data = allocation_info.pMappedData;
+			gpu_buffer = new_buffer;
+
+			if (data != nullptr && size > 0)
 			{
-				// If Dynamic Buffer has data, send via sg_update_buffer now
-				const sg_range update_range = {
-					.ptr = data,
-					.size = size,
-				};
-
-				sg_update_buffer(
-					*gpu_buffer, 
-					update_range				
-				);
-			}	
+				if (!wants_device_local)
+				{
+					memcpy(mapped_data, data, size);
+				}
+				else
+				{
+					upload_to_device_local(new_buffer);
+				}
+			}
 		}
 
 		return *gpu_buffer;
 	}
 
-	void update_gpu_buffer(const sg_range& in_range)
+	void update_gpu_buffer(const T* in_data, u64 in_size)
 	{
 		assert(is_dynamic());
-		sg_update_buffer(get_gpu_buffer(), &in_range);
+		assert(in_size <= size);
+		get_gpu_buffer();
+		memcpy(mapped_data, in_data, in_size);
 	}
 
-	void destroy_gpu_buffer()
-	{	
-		if (storage_view.has_value())
-		{
-			sg_destroy_view(*storage_view);
-			storage_view.reset();
-		}
+	void read_gpu_buffer(T* out_data, u64 in_size)
+	{
+		assert(usage.readback);
+		assert(in_size <= size);
+		get_gpu_buffer();
+		VK_CHECK(vmaInvalidateAllocation(g_vulkan_context->allocator, allocation, 0, in_size));
+		memcpy(out_data, mapped_data, in_size);
+	}
 
+	// Destruction is deferred until no in-flight frame can reference the buffer
+	void destroy_gpu_buffer()
+	{
 		if (gpu_buffer.has_value())
 		{
-			sg_destroy_buffer(*gpu_buffer);
+			vulkan_context_deferred_destroy_buffer(g_vulkan_context, *gpu_buffer, allocation);
 			gpu_buffer.reset();
+			allocation = VK_NULL_HANDLE;
+			mapped_data = nullptr;
 		}
 	}
 
 	void set_label(const char* in_label)
 	{
-		label = std::string(in_label);
+		if (in_label)
+		{
+			label = std::string(in_label);
+		}
 	}
 
 	u64 length() const { return _length; }
 
-	sg_view get_storage_view()
-	{	
-		if (!storage_view.has_value())
+protected:
+	// Fills a device-local buffer: direct memcpy when the allocation happens
+	// to be host-visible (UMA), otherwise via a throwaway staging buffer +
+	// one-shot copy (safe to destroy immediately — the submit waits idle)
+	void upload_to_device_local(VkBuffer in_target_buffer)
+	{
+		VkMemoryPropertyFlags memory_properties = 0;
+		vmaGetAllocationMemoryProperties(g_vulkan_context->allocator, allocation, &memory_properties);
+
+		if (memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
 		{
-			storage_view = sg_make_view((sg_view_desc) {
-				.storage_buffer = {
-					.buffer = get_gpu_buffer(),
-				}
-			});
-			char view_label[GPU_PROFILER_MAX_RESOURCE_NAME_LENGTH] = {};
-			snprintf(
-				view_label,
-				sizeof(view_label),
-				"%s storage",
-				label.has_value() ? label->c_str() : "(unnamed buffer)"
-			);
-			gpu_profiler_register_view_name(storage_view.value(), view_label);
+			void* target_mapped = nullptr;
+			VK_CHECK(vmaMapMemory(g_vulkan_context->allocator, allocation, &target_mapped));
+			memcpy(target_mapped, data, size);
+			vmaUnmapMemory(g_vulkan_context->allocator, allocation);
+			return;
 		}
-		return storage_view.value();
+
+		VkBufferCreateInfo staging_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = size,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		};
+		VmaAllocationCreateInfo staging_allocation_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+				   | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		VkBuffer staging_buffer = VK_NULL_HANDLE;
+		VmaAllocation staging_allocation = VK_NULL_HANDLE;
+		VmaAllocationInfo staging_allocation_info = {};
+		VK_CHECK(vmaCreateBuffer(
+			g_vulkan_context->allocator,
+			&staging_create_info,
+			&staging_allocation_create_info,
+			&staging_buffer,
+			&staging_allocation,
+			&staging_allocation_info
+		));
+
+		memcpy(staging_allocation_info.pMappedData, data, size);
+
+		const u64 copy_size = size;
+		vulkan_context_immediate_submit(g_vulkan_context, [&](VkCommandBuffer in_command_buffer)
+		{
+			VkBufferCopy copy_region = {
+				.srcOffset = 0,
+				.dstOffset = 0,
+				.size = copy_size,
+			};
+			vkCmdCopyBuffer(in_command_buffer, staging_buffer, in_target_buffer, 1, &copy_region);
+		});
+
+		vmaDestroyBuffer(g_vulkan_context->allocator, staging_buffer, staging_allocation);
 	}
 
-protected:
 	/* Underlying Buffer Data */
-	T* data;
+	T* data = nullptr;
 
-	/* Data Size */ 
-	u64 size;
+	/* Data Size */
+	u64 size = 0;
 
 	/* The element count of the buffer */
-	u64 _length;
+	u64 _length = 0;
 
 	/* buffer usage info */
-	sg_buffer_usage usage;
+	GpuBufferUsage usage;
 
 	// Buffer used for gpu operations
-	optional<sg_buffer> gpu_buffer;
-
-	// Lazily-allocated storage view
-	optional<sg_view> storage_view;
+	optional<VkBuffer> gpu_buffer;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+	void* mapped_data = nullptr;
 
 	// Optional Label
 	optional<std::string> label;

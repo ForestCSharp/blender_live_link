@@ -11,6 +11,9 @@
 #include "imgui/imgui.h"
 #include "state/state.h"
 
+#define stm_diff(in_new_ticks, in_old_ticks) timings_ticks_diff((in_new_ticks), (in_old_ticks))
+#define stm_ms(in_ticks) timings_ticks_to_ms((in_ticks))
+
 static ImU32 cpu_profiler_color_for_depth(i32 in_depth)
 {
 	const ImU32 colors[] = {
@@ -1025,6 +1028,9 @@ static void draw_cpu_profiler_window()
 
 	ImGui::End();
 }
+
+#undef stm_ms
+#undef stm_diff
 
 #else
 

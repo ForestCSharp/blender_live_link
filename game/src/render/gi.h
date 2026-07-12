@@ -4,15 +4,18 @@
 #include <cassert>
 #include <cmath>
 
+#include "ankerl/unordered_dense.h"
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
 #include "game_object/game_object.h"
 #include "render/lighting_capture.h"
 
-#include "render/gi_debug_pass.h"
+#include "gi_helpers.h"
 
-#include "shaders/gi_helpers.h"
-#include "ankerl/unordered_dense.h"
+// GI probe scene (port of game/src/render/gi.h): a sparse octree over the
+// static scene geometry, probes at occupied-cell corners, radiance captured
+// a few probes per frame into an octahedral atlas (+ optional SH9/SG9).
+// The debug probe visualization lives separately in gi_debug_pass.h.
 
 static_assert(sizeof(GI_Cell) == 32, "GI_Cell must match shader storage layout.");
 static_assert(sizeof(GI_Probe) == 32, "GI_Probe must match shader storage layout.");
@@ -55,20 +58,16 @@ struct GI_Scene
 	f32 min_occupied_cell_extent = 0.0f;
 	f32 max_occupied_cell_extent = 0.0f;
 
-	// Debug Data
-	Mesh debug_sphere;
-	sg_pipeline gi_debug_pipeline;
-
 	// Static Parameters
-	static constexpr int min_octree_depth = 1;
-	static constexpr int max_octree_depth = 4;
+	static constexpr i32 min_octree_depth = 1;
+	static constexpr i32 max_octree_depth = 4;
 	static constexpr f32 fallback_scene_extent = 30.0f;
 	static constexpr f32 minimum_scene_extent = 1.0f;
-	static constexpr f32 radial_depth_cell_scale = GI_RADIAL_DEPTH_CELL_SCALE;
-	static constexpr int cubemap_capture_size = 256;
-	static constexpr int atlas_total_size = 2048;
-	static constexpr int atlas_entry_size = 16;
-	static constexpr int probes_to_update_per_frame = 4;
+	static constexpr f32 radial_depth_cell_scale = (f32) GI_RADIAL_DEPTH_CELL_SCALE;
+	static constexpr i32 cubemap_capture_size = 256;
+	static constexpr i32 atlas_total_size = 2048;
+	static constexpr i32 atlas_entry_size = 16;
+	static constexpr i32 probes_to_update_per_frame = 4;
 };
 
 #define GI_LOG_SCENE_INIT 0
@@ -127,7 +126,8 @@ bool gi_scene_collect_visible_mesh_bounds(
 
 		const BoundingBox object_bounds = object_get_bounding_box(object);
 		out_geometry_bounds.add(object_bounds);
-		bounding_box_expand(out_scene_bounds, object_bounds);
+		bounding_box_expand(out_scene_bounds, object_bounds.min);
+		bounding_box_expand(out_scene_bounds, object_bounds.max);
 	}
 
 	if (out_geometry_bounds.length() == 0)
@@ -142,11 +142,11 @@ bool gi_scene_collect_visible_mesh_bounds(
 
 HMM_Vec3 gi_scene_lattice_position(const BoundingBox& in_bounds, const i32 in_leaf_divisions, const GI_Coords in_coords)
 {
-	const f32 cell_extent = (in_bounds.max.X - in_bounds.min.X) / (f32)in_leaf_divisions;
+	const f32 cell_extent = (in_bounds.max.X - in_bounds.min.X) / (f32) in_leaf_divisions;
 	return in_bounds.min + HMM_V3(
-		(f32)in_coords.x * cell_extent,
-		(f32)in_coords.y * cell_extent,
-		(f32)in_coords.z * cell_extent
+		(f32) in_coords.x * cell_extent,
+		(f32) in_coords.y * cell_extent,
+		(f32) in_coords.z * cell_extent
 	);
 }
 
@@ -178,15 +178,15 @@ u64 gi_scene_probe_corner_key(const GI_Coords in_coords)
 {
 	assert(in_coords.x >= 0 && in_coords.y >= 0 && in_coords.z >= 0);
 	constexpr u64 coord_mask = (1ull << 21ull) - 1ull;
-	return (((u64)in_coords.x & coord_mask) << 42ull) |
-		(((u64)in_coords.y & coord_mask) << 21ull) |
-		((u64)in_coords.z & coord_mask);
+	return (((u64) in_coords.x & coord_mask) << 42ull) |
+		(((u64) in_coords.y & coord_mask) << 21ull) |
+		((u64) in_coords.z & coord_mask);
 }
 
 f32 gi_scene_cell_extent_from_depth(const GI_Scene& in_gi_scene, const i32 in_depth)
 {
 	const i32 divisions = 1 << in_depth;
-	return (in_gi_scene.scene_bounds.max.X - in_gi_scene.scene_bounds.min.X) / (f32)divisions;
+	return (in_gi_scene.scene_bounds.max.X - in_gi_scene.scene_bounds.min.X) / (f32) divisions;
 }
 
 f32 gi_scene_max_radial_depth_from_cell_extent(const f32 in_cell_extent)
@@ -216,7 +216,7 @@ void gi_scene_init_empty_cell_sentinel(GI_Scene& out_gi_scene)
 
 void gi_scene_add_fallback_probe(GI_Scene& out_gi_scene)
 {
-	out_gi_scene.non_fallback_probe_count = (i32)out_gi_scene.probes.length();
+	out_gi_scene.non_fallback_probe_count = (i32) out_gi_scene.probes.length();
 	out_gi_scene.fallback_probe_index = out_gi_scene.non_fallback_probe_count;
 
 	const f32 fallback_radial_depth = gi_scene_max_radial_depth_from_cell_extent(out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X);
@@ -243,29 +243,21 @@ bool gi_scene_bounds_intersect_any(const BoundingBox& in_bounds, const StretchyB
 	return false;
 }
 
-BoundingBox gi_scene_make_bounds(const HMM_Vec3 in_min, const HMM_Vec3 in_max)
-{
-	return (BoundingBox) {
-		.min = in_min,
-		.max = in_max,
-	};
-}
-
 BoundingBox gi_scene_child_bounds(const BoundingBox& in_bounds, const i32 in_child_x, const i32 in_child_y, const i32 in_child_z)
 {
 	const HMM_Vec3 center = (in_bounds.min + in_bounds.max) * 0.5f;
-	return gi_scene_make_bounds(
-		HMM_V3(
+	return (BoundingBox) {
+		.min = HMM_V3(
 			in_child_x == 0 ? in_bounds.min.X : center.X,
 			in_child_y == 0 ? in_bounds.min.Y : center.Y,
 			in_child_z == 0 ? in_bounds.min.Z : center.Z
 		),
-		HMM_V3(
+		.max = HMM_V3(
 			in_child_x == 0 ? center.X : in_bounds.max.X,
 			in_child_y == 0 ? center.Y : in_bounds.max.Y,
 			in_child_z == 0 ? center.Z : in_bounds.max.Z
-		)
-	);
+		),
+	};
 }
 
 i32 gi_scene_get_or_create_probe(
@@ -283,7 +275,7 @@ i32 gi_scene_get_or_create_probe(
 		return existing_probe->second;
 	}
 
-	const i32 probe_index = (i32)out_gi_scene.probes.length();
+	const i32 probe_index = (i32) out_gi_scene.probes.length();
 	const HMM_Vec3 probe_position = gi_scene_lattice_position(out_gi_scene.scene_bounds, out_gi_scene.leaf_divisions, in_max_depth_coords);
 	out_gi_scene.probes.add(gi_scene_make_probe(probe_position, in_required_radial_depth));
 	out_probe_indices_by_corner[probe_key] = probe_index;
@@ -330,7 +322,7 @@ i32 gi_scene_add_node_payload(
 		}
 	}
 
-	const i32 payload_index = (i32)out_gi_scene.cells.length();
+	const i32 payload_index = (i32) out_gi_scene.cells.length();
 	out_gi_scene.cells.add(cell);
 	out_gi_scene.payload_count += 1;
 	return payload_index;
@@ -368,7 +360,7 @@ i32 gi_scene_build_sparse_octree_node(
 	GI_OctreeNode node = gi_scene_make_octree_node(in_bounds);
 	node.payload_index = gi_scene_add_node_payload(out_gi_scene, out_probe_indices_by_corner, in_depth, in_coords);
 
-	const i32 node_index = (i32)out_gi_scene.octree_nodes.length();
+	const i32 node_index = (i32) out_gi_scene.octree_nodes.length();
 	out_gi_scene.octree_nodes.add(node);
 
 	if (in_depth >= out_gi_scene.octree_depth)
@@ -413,13 +405,13 @@ void gi_scene_init_radiance_buffers(GI_Scene& out_gi_scene)
 
 	for (HMM_Vec4& coefficient : out_gi_scene.sh9_coefficients)
 	{
-		coefficient = HMM_V4(0,0,0,0);
+		coefficient = HMM_V4(0, 0, 0, 0);
 	}
 
 	for (GI_SG9_Lobe& lobe : out_gi_scene.sg9_lobes)
 	{
-		lobe.params = HMM_V4(0,0,1,1);
-		lobe.amplitude = HMM_V4(0,0,0,0);
+		lobe.params = HMM_V4(0, 0, 1, 1);
+		lobe.amplitude = HMM_V4(0, 0, 0, 0);
 	}
 }
 
@@ -427,56 +419,41 @@ void gi_scene_recreate_gpu_buffers(GI_Scene& out_gi_scene)
 {
 	gi_scene_destroy_layout_gpu_resources(out_gi_scene);
 
-	out_gi_scene.octree_nodes_buffer = GpuBuffer<GI_OctreeNode>((GpuBufferDesc<GI_OctreeNode>){
+	out_gi_scene.octree_nodes_buffer = GpuBuffer((GpuBufferDesc<GI_OctreeNode>){
+		.data = out_gi_scene.octree_nodes.data(),
 		.size = sizeof(GI_OctreeNode) * out_gi_scene.octree_nodes.length(),
-		.usage = {
-			.storage_buffer = true,
-			.stream_update = true,
-		},
+		.usage = { .storage_buffer = true },
 		.label = "GI Octree Nodes Buffer",
 	});
-	out_gi_scene.octree_nodes_buffer.update_gpu_buffer((sg_range){
-		.ptr = out_gi_scene.octree_nodes.data(),
-		.size = sizeof(GI_OctreeNode) * out_gi_scene.octree_nodes.length(),
-	});
 
-	out_gi_scene.probes_buffer = GpuBuffer<GI_Probe>((GpuBufferDesc<GI_Probe>){
+	out_gi_scene.probes_buffer = GpuBuffer((GpuBufferDesc<GI_Probe>){
+		.data = out_gi_scene.probes.data(),
 		.size = sizeof(GI_Probe) * out_gi_scene.probes.length(),
 		.usage = {
 			.storage_buffer = true,
-			.stream_update = true,
+			.stream_update = true,	// atlas indices assigned as probes update
 		},
 		.label = "GI Probes Buffer",
 	});
 
-	out_gi_scene.cells_buffer = GpuBuffer<GI_Cell>((GpuBufferDesc<GI_Cell>){
+	out_gi_scene.cells_buffer = GpuBuffer((GpuBufferDesc<GI_Cell>){
+		.data = out_gi_scene.cells.data(),
 		.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
-		.usage = {
-			.storage_buffer = true,
-			.stream_update = true,
-		},
+		.usage = { .storage_buffer = true },
 		.label = "GI Cells Buffer",
 	});
-	out_gi_scene.cells_buffer.update_gpu_buffer((sg_range){
-		.ptr = out_gi_scene.cells.data(),
-		.size = sizeof(GI_Cell) * out_gi_scene.cells.length(),
-	});
 
-	out_gi_scene.sh9_coefficients_buffer = GpuBuffer<HMM_Vec4>((GpuBufferDesc<HMM_Vec4>){
+	out_gi_scene.sh9_coefficients_buffer = GpuBuffer((GpuBufferDesc<HMM_Vec4>){
 		.data = out_gi_scene.sh9_coefficients.data(),
 		.size = sizeof(HMM_Vec4) * out_gi_scene.sh9_coefficients.length(),
-		.usage = {
-			.storage_buffer = true,
-		},
+		.usage = { .storage_buffer = true },
 		.label = "GI SH9 Coefficients Buffer",
 	});
 
-	out_gi_scene.sg9_lobes_buffer = GpuBuffer<GI_SG9_Lobe>((GpuBufferDesc<GI_SG9_Lobe>){
+	out_gi_scene.sg9_lobes_buffer = GpuBuffer((GpuBufferDesc<GI_SG9_Lobe>){
 		.data = out_gi_scene.sg9_lobes.data(),
 		.size = sizeof(GI_SG9_Lobe) * out_gi_scene.sg9_lobes.length(),
-		.usage = {
-			.storage_buffer = true,
-		},
+		.usage = { .storage_buffer = true },
 		.label = "GI SG9 Lobes Buffer",
 	});
 }
@@ -488,13 +465,13 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(out_gi_scene.octree_depth);
 	StretchyBuffer<BoundingBox> geometry_bounds;
 	const bool has_visible_geometry = gi_scene_collect_visible_mesh_bounds(in_state, geometry_bounds, out_gi_scene.scene_bounds);
-	out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32)out_gi_scene.leaf_divisions;
+	out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32) out_gi_scene.leaf_divisions;
 
 	gi_scene_reset_layout_buffers(out_gi_scene);
 	if (has_visible_geometry)
 	{
 		ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
-		gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0,0,0});
+		gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
 	}
 	else
 	{
@@ -503,7 +480,7 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	gi_scene_add_fallback_probe(out_gi_scene);
 	gi_scene_init_radiance_buffers(out_gi_scene);
 
-	assert(out_gi_scene.probes.length() <= (size_t)gi_scene_atlas_capacity());
+	assert(out_gi_scene.probes.length() <= (size_t) gi_scene_atlas_capacity());
 	assert(out_gi_scene.probes.length() > 0);
 	assert(out_gi_scene.octree_nodes.length() > 0);
 	assert(out_gi_scene.cells.length() > 0);
@@ -517,7 +494,6 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 
 	if (GI_LOG_SCENE_INIT)
 	{
-		bounding_box_print(out_gi_scene.scene_bounds, "GI Scene Bounds");
 		printf(
 			"GI octree depth: %d nodes: %zu payloads: %d probes: %zu min/max cell extent: %f/%f max radial depth: %f\n",
 			out_gi_scene.octree_depth,
@@ -539,8 +515,7 @@ f32 gi_scene_debug_probe_radius(const GI_Scene& in_gi_scene)
 f32 gi_scene_debug_probe_radius_for_probe(const GI_Scene& in_gi_scene, const i32 in_probe_index)
 {
 	assert(in_gi_scene.probes.is_valid_index(in_probe_index));
-	const GI_Probe& probe = in_gi_scene.probes.data()[in_probe_index];
-	const f32 probe_cell_extent = probe.max_radial_depth / GI_Scene::radial_depth_cell_scale;
+	const f32 probe_cell_extent = in_gi_scene.probes[in_probe_index].max_radial_depth / GI_Scene::radial_depth_cell_scale;
 	return std::max(probe_cell_extent * 0.1f, gi_scene_debug_probe_radius(in_gi_scene));
 }
 
@@ -550,29 +525,30 @@ HMM_Vec3 gi_scene_probe_position_from_index(GI_Scene& in_gi_scene, const i32 in_
 	return in_gi_scene.probes[in_probe_index].position.XYZ;
 }
 
-void gi_scene_init(GI_Scene& out_gi_scene, State& in_state)
+void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 {
 	const LightingCaptureDesc lighting_capture_desc = {
-		// Cubemap Capture Setup
 		.cubemap_render_size = GI_Scene::cubemap_capture_size,
-		// Octahedral Atlas Setup
 		.octahedral_total_size = GI_Scene::atlas_total_size,
 		.octahedral_entry_size = GI_Scene::atlas_entry_size,
 	};
-	out_gi_scene.lighting_capture.init(lighting_capture_desc);
-
-	// Setup Debug Data. Radius is provided as a shader uniform so layout rebuilds do not recreate geometry.
-	out_gi_scene.debug_sphere = make_mesh(mesh_init_data_uv_sphere(1.0f,24,24));
-	out_gi_scene.gi_debug_pipeline = sg_make_pipeline(GIDebugPass::make_pipeline_desc(sglue_swapchain().depth_format));
+	out_gi_scene.lighting_capture.init(ctx, lighting_capture_desc);
 
 	gi_scene_rebuild_layout(out_gi_scene, in_state);
 }
 
-void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
+// Records this frame's probe captures into the command buffer (a few probes
+// per frame while is_updating). Call after begin_frame + descriptor updates,
+// before the main pass chain executes.
+void gi_scene_update(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 {
+	in_gi_scene.lighting_capture.begin_frame(ctx);
+
 	if (in_state.gi.layout_dirty)
 	{
-        printf("GI Scene Layout Dirty. Rebuilding...\n");
+		printf("GI Scene Layout Dirty. Rebuilding...\n");
+		// The old layout buffers may still be referenced by in-flight frames
+		vkDeviceWaitIdle(ctx->device);
 		gi_scene_rebuild_layout(in_gi_scene, in_state);
 	}
 
@@ -599,14 +575,15 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 		const HMM_Vec3 lighting_capture_position = probe_to_update.position.XYZ;
 		const bool should_render_geometry = in_gi_scene.probe_idx_to_update != in_gi_scene.fallback_probe_index;
 		in_gi_scene.lighting_capture.render(
-				in_state,
-				lighting_capture_position,
-				probe_to_update.atlas_idx,
-				should_render_geometry,
-				in_gi_scene.probe_idx_to_update,
-				probe_to_update.max_radial_depth,
-				in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
-				in_gi_scene.sg9_lobes_buffer.get_storage_view()
+			ctx,
+			in_state,
+			lighting_capture_position,
+			probe_to_update.atlas_idx,
+			should_render_geometry,
+			in_gi_scene.probe_idx_to_update,
+			probe_to_update.max_radial_depth,
+			in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer(),
+			in_gi_scene.sg9_lobes_buffer.get_gpu_buffer()
 		);
 
 		if (GI_LOG_SCENE_UPDATE)
@@ -621,7 +598,7 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 			);
 		}
 
-		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % in_gi_scene.probes.length();
+		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % (i32) in_gi_scene.probes.length();
 
 		if (in_gi_scene.probe_idx_to_update == 0)
 		{
@@ -633,63 +610,24 @@ void gi_scene_update(GI_Scene& in_gi_scene, State& in_state)
 	if (needs_gpu_update)
 	{
 		in_gi_scene.probes_buffer.update_gpu_buffer(
-			(sg_range){
-				.ptr = in_gi_scene.probes.data(),
-				.size = sizeof(GI_Probe) * in_gi_scene.probes.length(),
-			}
+			in_gi_scene.probes.data(),
+			sizeof(GI_Probe) * in_gi_scene.probes.length()
 		);
 	}
 }
 
-sg_view gi_scene_get_octahedral_lighting_view(GI_Scene& in_gi_scene)
+VkImageView gi_scene_get_octahedral_lighting_view(GI_Scene& in_gi_scene)
 {
-	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0).get_texture_view(0);
+	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0).view;
 }
 
-sg_view gi_scene_get_octahedral_depth_view(GI_Scene& in_gi_scene)
+VkImageView gi_scene_get_octahedral_depth_view(GI_Scene& in_gi_scene)
 {
-	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1).get_texture_view(0);
+	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1).view;
 }
 
-void gi_scene_render_debug(GI_Scene& in_gi_scene, const HMM_Mat4& in_view_matrix, const HMM_Mat4& in_projection_matrix)
+void gi_scene_cleanup(VulkanContext* ctx, GI_Scene& in_gi_scene)
 {
-	sg_apply_pipeline(in_gi_scene.gi_debug_pipeline);
-
-	gi_debug_vs_params_t vs_params = {
-		.view = in_view_matrix,
-		.projection = in_projection_matrix,
-		.debug_probe_start_index = 0,
-		.probe_debug_radius = gi_scene_debug_probe_radius(in_gi_scene),
-	};
-	// Apply Vertex Uniforms
-	sg_apply_uniforms(0, SG_RANGE(vs_params));
-
-	gi_debug_fs_params_t fs_params = {
-		.atlas_total_size = in_gi_scene.lighting_capture.desc.octahedral_total_size,
-		.atlas_entry_size = in_gi_scene.lighting_capture.desc.octahedral_entry_size,
-		.probe_vis_mode = static_cast<i32>(state.gi.probe_vis_mode),
-		.isolated_probe_index = state.gi.isolated_probe_index,
-	};
-	// Apply Fragment Uniforms
-	sg_apply_uniforms(1, SG_RANGE(fs_params));
-
-	sg_bindings bindings = {
-		.vertex_buffers[0] = in_gi_scene.debug_sphere.vertex_buffer.get_gpu_buffer(),
-		.index_buffer = in_gi_scene.debug_sphere.index_buffer.get_gpu_buffer(),
-		.views = {
-			[0] = gi_scene_get_octahedral_lighting_view(in_gi_scene),
-			[1] = gi_scene_get_octahedral_depth_view(in_gi_scene),
-			[2] = in_gi_scene.probes_buffer.get_storage_view(),
-			[3] = in_gi_scene.sh9_coefficients_buffer.get_storage_view(),
-			[4] = in_gi_scene.sg9_lobes_buffer.get_storage_view(),
-			[5] = in_gi_scene.probes_buffer.get_storage_view(),
-		},
-		.samplers = {
-			[0] = state.gpu.linear_sampler,
-			[1] = state.gpu.nearest_sampler,
-		},
-	};
-	gpu_apply_bindings(&bindings);
-
-	sg_draw(0, in_gi_scene.debug_sphere.index_count, in_gi_scene.non_fallback_probe_count);
+	gi_scene_destroy_layout_gpu_resources(in_gi_scene);
+	in_gi_scene.lighting_capture.cleanup(ctx);
 }

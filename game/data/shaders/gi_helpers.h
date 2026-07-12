@@ -1,22 +1,23 @@
-#pragma once
+#ifndef GI_HELPERS_H
+#define GI_HELPERS_H
+
+// Shared GI structs + octree traversal helpers (port of game/data/shaders/
+// gi_helpers.h, @block markers stripped). Structs are byte-identical between
+// C++ and GLSL std430.
 
 #include "shader_common.h"
-
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block gi_helpers
-#endif
 
 #define GI_MAX_OCTREE_SEARCH_DEPTH 32
 #define GI_RADIAL_DEPTH_CELL_SCALE 4.0
 
 struct GI_Coords
 {
-	int x,y,z;
+	int x, y, z;
 };
 
 struct GI_Cell
 {
-	int probe_indices[8];	
+	int probe_indices[8];
 };
 
 struct GI_Probe
@@ -37,7 +38,7 @@ struct GI_OctreeNode
 	int padding[2];
 };
 
-#if !defined(__cplusplus) || !defined(__STDC__)
+#if !defined(__cplusplus)
 
 bool gi_octree_is_valid_position(GI_OctreeNode node, vec3 position)
 {
@@ -53,8 +54,6 @@ int gi_octree_child_slot(GI_OctreeNode node, vec3 position)
 	return x + y * 2 + z * 4;
 }
 
-#endif //!defined(__cplusplus) || !defined(__STDC__)
+#endif // !defined(__cplusplus)
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-@end // @block gi_helpers
-#endif
+#endif // GI_HELPERS_H

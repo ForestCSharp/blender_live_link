@@ -2,28 +2,11 @@
 
 #include "render/gpu_buffer.h"
 #include "render/render_types.h"
-#include "shaders/tessellation_common.h"
+#include "tessellation_common.h"
 
-static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout.");
-static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch must match shader storage layout.");
-static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters must match shader storage layout.");
-
-struct MeshInitData
-{	
-	u32 num_indices = 0;
-	u32* indices = nullptr;
-
-	u32 num_vertices = 0;
-	Vertex* vertices = nullptr;
-	SkinnedVertex* skinned_vertices = nullptr;
-	u32 skin_matrix_count = 0;
-	i32 armature_id = -1;
-	HMM_Mat4 mesh_to_armature = HMM_M4D(1.0f);
-	HMM_Mat4 armature_to_mesh = HMM_M4D(1.0f);
-
-	u32 num_material_indices = 0;
-	i32* material_indices = nullptr;
-};
+static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout");
+static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch shader layout mismatch");
+static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters shader layout mismatch");
 
 struct TessellatedGeometry
 {
@@ -33,6 +16,7 @@ struct TessellatedGeometry
 	{
 		bool readback_requested = false;
 		bool has_counts = false;
+		u64 ready_frame_number = 0;
 		u32 patch_capacity = 0;
 		u32 vertex_capacity = 0;
 		u32 index_capacity = 0;
@@ -44,35 +28,42 @@ struct TessellatedGeometry
 		GpuBuffer<Vertex> vertex_buffer;
 		GpuBuffer<u32> index_buffer;
 		GpuBuffer<u32> wire_index_buffer;
-		sg_buffer_readback counters_readback = {};
+		GpuBuffer<TessellationCounters> counters_readback;
 	};
 
 	bool active = false;
 	bool overflowed = false;
 	bool gpu_planned = false;
-	bool readback_supported = false;
+	bool readback_supported = true;
 	u32 active_gpu_slot = GPU_SLOT_COUNT;
 	u32 next_gpu_slot = 0;
 	u32 readback_age = 0;
-
 	u32 patch_count = 0;
 	u32 vertex_count = 0;
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
-
 	GpuSlot gpu_slots[GPU_SLOT_COUNT];
 };
 
-struct MeshRenderView
+struct MeshInitData
 {
-	sg_buffer vertex_buffer = {};
-	sg_buffer index_buffer = {};
-	sg_buffer wire_index_buffer = {};
-	sg_view vertex_storage_view = {};
-	sg_view index_storage_view = {};
-	u32 index_count = 0;
-	u32 wire_index_count = 0;
-	bool is_tessellated = false;
+	u32 num_indices = 0;
+	u32* indices = nullptr;
+
+	u32 num_vertices = 0;
+	Vertex* vertices = nullptr;
+
+	// Material ids from the flatbuffer (raw ids on the live-link thread;
+	// resolved to indices at drain — see resolve_mesh_material_indices)
+	u32 num_material_indices = 0;
+	i32* material_indices = nullptr;
+
+	// Skinning (armature_id > 0 gates the whole block)
+	SkinnedVertex* skinned_vertices = nullptr;
+	u32 skin_matrix_count = 0;
+	i32 armature_id = -1;
+	HMM_Mat4 mesh_to_armature = HMM_M4D(1.0f);
+	HMM_Mat4 armature_to_mesh = HMM_M4D(1.0f);
 };
 
 MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
@@ -90,7 +81,7 @@ MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 
 	f32 deltaLatitude = PI / (f32) latitudes;
 	f32 deltaLongitude = 2.0f * PI / (f32) longitudes;
-	
+
 	u32 current_vertex_idx = 0;
 	for (i32 i = 0; i <= latitudes; ++i)
 	{
@@ -98,43 +89,29 @@ MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 		f32 xz = radius * cosf(latitudeAngle);				/* r * cos(phi) */
 		f32 y = radius * sinf(latitudeAngle);				/* r * sin(phi )*/
 
-		/*
-			* We add (latitudes + 1) vertices per longitude because of equator,
-			* the North pole and South pole are not counted here, as they overlap.
-			* The first and last vertices have same position and normal, but
-			* different tex coords.
-		*/
 		for (i32 j = 0; j <= longitudes; ++j)
 		{
 			f32 longitudeAngle = j * deltaLongitude;
 
 			Vertex& vertex = vertices[current_vertex_idx++];
 
-			HMM_Vec3 local_position = HMM_V3(0,0,0);		
-			local_position.X += xz * cosf(longitudeAngle);	
+			HMM_Vec3 local_position = HMM_V3(0,0,0);
+			local_position.X += xz * cosf(longitudeAngle);
 			local_position.Y += y;
-			local_position.Z += xz * sinf(longitudeAngle);		/* z = r * sin(phi) */
+			local_position.Z += xz * sinf(longitudeAngle);
 			vertex.position = HMM_V4V(local_position, 1.0);
 
-			HMM_Vec3 world_normal = local_position *  1.0f / radius;
+			HMM_Vec3 world_normal = local_position * 1.0f / radius;
 			vertex.normal = HMM_V4V(world_normal, 0.0f);
 		}
 	}
 
-	/*
-	*  Indices
-	*  k1--k1+1
-	*  |  / |
-	*  | /  |
-	*  k2--k2+1
-	*/
 	u32 current_index_index = 0;
-	for(int i = 0; i < latitudes; ++i)
+	for (int i = 0; i < latitudes; ++i)
 	{
 		u32 k1 = (i * (longitudes + 1));
 		u32 k2 = (k1 + longitudes + 1);
-		// 2 Triangles per latitude block excluding the first and last longitudes blocks
-		for(int j = 0; j < longitudes; ++j, ++k1, ++k2)
+		for (int j = 0; j < longitudes; ++j, ++k1, ++k2)
 		{
 			if (i != 0)
 			{
@@ -157,84 +134,123 @@ MeshInitData mesh_init_data_uv_sphere(f32 radius, i32 latitudes, i32 longitudes)
 		.indices = indices,
 		.num_vertices = num_vertices,
 		.vertices = vertices,
-
-		// Unused data
-		.skinned_vertices = nullptr,
-		.skin_matrix_count = 0,
-		.armature_id = -1,
-		.mesh_to_armature = HMM_M4D(1.0f),
-		.armature_to_mesh = HMM_M4D(1.0f),
-		.num_material_indices = 0,
-		.material_indices = nullptr,
 	};
 }
 
-struct Mesh 
+struct Mesh
 {
 	u32 index_count;
 	u32* indices;
-	GpuBuffer<u32> index_buffer; 
+	GpuBuffer<u32> index_buffer;
 
 	u32 wire_index_count;
 	u32* wire_indices;
 	GpuBuffer<u32> wire_index_buffer;
 
 	u32 vertex_count;
-	Vertex* vertices; 
+	Vertex* vertices;
 	GpuBuffer<Vertex> vertex_buffer;
 
+	// Raw material IDS until resolve_mesh_material_indices runs at drain;
+	// after that, indices into state.materials.items (-1 = none)
+	u32 material_indices_count;
+	i32* material_indices;
+
+	// Skinning. skin_matrices is the CPU array update_skinned_animations
+	// fills each frame and appends into the shared arena SSBO; there is no
+	// per-mesh GPU skin matrix buffer (deviation from game/ — the arena ring
+	// makes per-frame writes safe vs frames in flight). The Phase 3 GPU
+	// skinning compute pass reads the same arena.
 	bool has_skinned_vertices;
 	SkinnedVertex* skinned_vertices;
 	GpuBuffer<SkinnedVertex> skinned_vertex_buffer;
 	u32 skin_matrix_count;
 	HMM_Mat4* skin_matrices;
-	GpuBuffer<HMM_Mat4> skin_matrix_buffer;
-	bool skinned_vertex_cache_valid = false;
-	u32 skinned_vertex_cache_capacity = 0;
-	GpuBuffer<Vertex> skinned_vertex_cache_buffer;
+	i32 skin_matrix_arena_offset;	// -1 when not written this frame
 	i32 armature_id;
 	HMM_Mat4 mesh_to_armature;
 	HMM_Mat4 armature_to_mesh;
 
-	u32 material_indices_count;
-	i32* material_indices;
+	// GPU-skinned vertex cache (compute-baked; consumed by tessellation and
+	// the wire overlay via mesh_get_render_view — game/ parity)
+	GpuBuffer<Vertex> skinned_vertex_cache_buffer;
+	u32 skinned_vertex_cache_capacity = 0;
+	bool skinned_vertex_cache_valid = false;
+	TessellatedGeometry tessellated_geometry;
 
 	BoundingBox bounding_box;
-
-	TessellatedGeometry tessellated_geometry;
 };
 
-bool mesh_has_valid_skinned_vertex_cache(Mesh& in_mesh)
+// The buffers a renderer should draw this mesh with. Skinned meshes with a
+// valid compute cache expose it as plain static vertices (port of game/'s
+// MeshRenderView; tessellated geometry joins in the tessellation step).
+struct MeshRenderView
 {
-	return in_mesh.has_skinned_vertices &&
-		in_mesh.skinned_vertex_cache_valid &&
-		in_mesh.skinned_vertex_cache_buffer.is_gpu_buffer_valid();
+	VkBuffer vertex_buffer = VK_NULL_HANDLE;
+	VkBuffer index_buffer = VK_NULL_HANDLE;
+	VkBuffer wire_index_buffer = VK_NULL_HANDLE;
+	u32 index_count = 0;
+	u32 wire_index_count = 0;
+	bool uses_skinned_cache = false;
+	bool is_tessellated = false;
+};
+
+MeshRenderView mesh_get_render_view(Mesh& in_mesh)
+{
+	MeshRenderView out_view = {
+		.vertex_buffer = in_mesh.vertex_buffer.get_gpu_buffer(),
+		.index_buffer = in_mesh.index_buffer.get_gpu_buffer(),
+		.wire_index_buffer = in_mesh.wire_index_buffer.get_gpu_buffer(),
+		.index_count = in_mesh.index_count,
+		.wire_index_count = in_mesh.wire_index_count,
+	};
+
+	TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
+	if (tessellated.active && tessellated.index_count > 0
+		&& tessellated.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
+	{
+		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[tessellated.active_gpu_slot];
+		return (MeshRenderView) {
+			.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
+			.index_buffer = slot.index_buffer.get_gpu_buffer(),
+			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
+			.index_count = tessellated.index_count,
+			.wire_index_count = tessellated.wire_index_count,
+			.uses_skinned_cache = in_mesh.has_skinned_vertices,
+			.is_tessellated = true,
+		};
+	}
+
+	if (in_mesh.has_skinned_vertices && in_mesh.skinned_vertex_cache_valid)
+	{
+		out_view.vertex_buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer();
+		out_view.uses_skinned_cache = true;
+	}
+
+	return out_view;
 }
 
-bool mesh_has_deformed_vertex_source(Mesh& in_mesh)
+void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
 {
-	return !in_mesh.has_skinned_vertices || mesh_has_valid_skinned_vertex_cache(in_mesh);
+	for (TessellatedGeometry::GpuSlot& slot : in_mesh.tessellated_geometry.gpu_slots)
+	{
+		slot.counters_buffer.destroy_gpu_buffer();
+		slot.patch_buffer.destroy_gpu_buffer();
+		slot.vertex_buffer.destroy_gpu_buffer();
+		slot.index_buffer.destroy_gpu_buffer();
+		slot.wire_index_buffer.destroy_gpu_buffer();
+		slot.counters_readback.destroy_gpu_buffer();
+	}
+	in_mesh.tessellated_geometry = {};
 }
 
-GpuBuffer<Vertex>& mesh_get_deformed_vertex_buffer(Mesh& in_mesh)
-{
-	assert(mesh_has_deformed_vertex_source(in_mesh));
-	return in_mesh.has_skinned_vertices
-		? in_mesh.skinned_vertex_cache_buffer
-		: in_mesh.vertex_buffer;
-}
-
-sg_view mesh_get_deformed_vertex_storage_view(Mesh& in_mesh)
-{
-	return mesh_get_deformed_vertex_buffer(in_mesh).get_storage_view();
-}
-
-// Takes ownership of vertices and indices
+// Takes ownership of vertices and indices. Only constructs GpuBuffer
+// descriptors — actual GPU buffers are created lazily on the main thread.
 Mesh make_mesh(const MeshInitData& in_init_data)
 {
 	BoundingBox bounding_box = bounding_box_init();
 
-	for (i32 vtx_idx = 0; vtx_idx < in_init_data.num_vertices; ++vtx_idx)
+	for (u32 vtx_idx = 0; vtx_idx < in_init_data.num_vertices; ++vtx_idx)
 	{
 		Vertex v = in_init_data.vertices[vtx_idx];
 		HMM_Vec3 vtx_pos = v.position.XYZ;
@@ -243,6 +259,8 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 
 	u64 indices_size = sizeof(u32) * in_init_data.num_indices;
 	u64 vertices_size = sizeof(Vertex) * in_init_data.num_vertices;
+
+	// Wire indices: each triangle becomes 3 lines (for the wire overlay pass)
 	u32 source_triangle_count = in_init_data.num_indices / 3;
 	u32 source_wire_index_count = source_triangle_count * 6;
 	u32* source_wire_indices = (u32*) malloc(sizeof(u32) * source_wire_index_count);
@@ -260,7 +278,7 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 	}
 	u64 wire_indices_size = sizeof(u32) * source_wire_index_count;
 
-	Mesh out_mesh {
+	Mesh out_mesh = {
 		.index_count = in_init_data.num_indices,
 		.indices = in_init_data.indices,
 		.index_buffer = GpuBuffer((GpuBufferDesc<u32>){
@@ -292,134 +310,41 @@ Mesh make_mesh(const MeshInitData& in_init_data)
 				.storage_buffer = true,
 			},
 			.label = "Mesh::vertex_buffer",
-		}),	
+		}),
+		.material_indices_count = in_init_data.num_material_indices,
+		.material_indices = in_init_data.material_indices,
 		.has_skinned_vertices = false,
 		.skinned_vertices = in_init_data.skinned_vertices,
 		.skin_matrix_count = 0,
 		.skin_matrices = nullptr,
+		.skin_matrix_arena_offset = -1,
 		.armature_id = in_init_data.armature_id,
 		.mesh_to_armature = in_init_data.mesh_to_armature,
 		.armature_to_mesh = in_init_data.armature_to_mesh,
-		.material_indices_count = in_init_data.num_material_indices,
-		.material_indices = in_init_data.material_indices,
 		.bounding_box = bounding_box,
 	};
 
 	if (in_init_data.skinned_vertices != nullptr)
 	{
-		u64 skinned_vertices_size = sizeof(SkinnedVertex) * in_init_data.num_vertices;
-		out_mesh.skin_matrix_count = MAX(in_init_data.skin_matrix_count, 1);
-		out_mesh.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * out_mesh.skin_matrix_count);
-		for (u32 matrix_idx = 0; matrix_idx < out_mesh.skin_matrix_count; ++matrix_idx)
-		{
-			out_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
-		}
-
 		out_mesh.has_skinned_vertices = true;
+		out_mesh.skin_matrix_count = MAX(in_init_data.skin_matrix_count, 1);
+
 		out_mesh.skinned_vertex_buffer = GpuBuffer((GpuBufferDesc<SkinnedVertex>){
 			.data = in_init_data.skinned_vertices,
-			.size = skinned_vertices_size,
+			.size = sizeof(SkinnedVertex) * in_init_data.num_vertices,
 			.usage = {
 				.vertex_buffer = true,
 				.storage_buffer = true,
 			},
 			.label = "Mesh::skinned_vertex_buffer",
 		});
-		out_mesh.skin_matrix_buffer = GpuBuffer((GpuBufferDesc<HMM_Mat4>){
-			.data = nullptr,
-			.size = sizeof(HMM_Mat4) * out_mesh.skin_matrix_count,
-			.usage = {
-				.storage_buffer = true,
-				.stream_update = true,
-			},
-			.label = "Mesh::skin_matrix_buffer",
-		});
+
+		out_mesh.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * out_mesh.skin_matrix_count);
+		for (u32 matrix_idx = 0; matrix_idx < out_mesh.skin_matrix_count; ++matrix_idx)
+		{
+			out_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+		}
 	}
 
 	return out_mesh;
-}
-
-MeshRenderView mesh_get_render_view(Mesh& in_mesh)
-{
-	if (in_mesh.tessellated_geometry.active &&
-		in_mesh.tessellated_geometry.index_count > 0 &&
-		in_mesh.tessellated_geometry.gpu_planned &&
-		in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
-	{
-		TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
-		return (MeshRenderView) {
-			.vertex_buffer = slot.vertex_buffer.get_gpu_buffer(),
-			.index_buffer = slot.index_buffer.get_gpu_buffer(),
-			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
-			.index_count = in_mesh.tessellated_geometry.index_count,
-			.wire_index_count = in_mesh.tessellated_geometry.wire_index_count,
-			.is_tessellated = true,
-		};
-	}
-
-	return (MeshRenderView) {
-		.vertex_buffer = in_mesh.vertex_buffer.get_gpu_buffer(),
-		.index_buffer = in_mesh.index_buffer.get_gpu_buffer(),
-		.wire_index_buffer = in_mesh.wire_index_buffer.get_gpu_buffer(),
-		.index_count = in_mesh.index_count,
-		.wire_index_count = in_mesh.wire_index_count,
-		.is_tessellated = false,
-	};
-}
-
-void mesh_populate_render_storage_views(Mesh& in_mesh, MeshRenderView& in_render_view)
-{
-	if (in_mesh.tessellated_geometry.active &&
-		in_render_view.is_tessellated &&
-		in_mesh.tessellated_geometry.gpu_planned &&
-		in_mesh.tessellated_geometry.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
-	{
-		TessellatedGeometry::GpuSlot& slot = in_mesh.tessellated_geometry.gpu_slots[in_mesh.tessellated_geometry.active_gpu_slot];
-		in_render_view.vertex_storage_view = slot.vertex_buffer.get_storage_view();
-		in_render_view.index_storage_view = slot.index_buffer.get_storage_view();
-		return;
-	}
-
-	in_render_view.vertex_storage_view = in_mesh.vertex_buffer.get_storage_view();
-	if (mesh_has_valid_skinned_vertex_cache(in_mesh))
-	{
-		in_render_view.vertex_storage_view = in_mesh.skinned_vertex_cache_buffer.get_storage_view();
-	}
-	in_render_view.index_storage_view = in_mesh.index_buffer.get_storage_view();
-}
-
-bool mesh_render_view_uses_skinning(const Mesh& in_mesh, const MeshRenderView& in_render_view)
-{
-	return in_mesh.has_skinned_vertices && !in_render_view.is_tessellated;
-}
-
-void mesh_apply_render_bindings(sg_bindings& out_bindings, Mesh& in_mesh, const MeshRenderView& in_render_view)
-{
-	out_bindings.vertex_buffers[0] = in_render_view.vertex_buffer;
-	out_bindings.index_buffer = in_render_view.index_buffer;
-
-	if (mesh_render_view_uses_skinning(in_mesh, in_render_view))
-	{
-		out_bindings.vertex_buffers[1] = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
-		out_bindings.views[6] = in_mesh.skin_matrix_buffer.get_storage_view();
-	}
-}
-
-void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
-{
-	TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
-	for (u32 slot_index = 0; slot_index < TessellatedGeometry::GPU_SLOT_COUNT; ++slot_index)
-	{
-		TessellatedGeometry::GpuSlot& slot = tessellated.gpu_slots[slot_index];
-		slot.counters_buffer.destroy_gpu_buffer();
-		slot.patch_buffer.destroy_gpu_buffer();
-		slot.vertex_buffer.destroy_gpu_buffer();
-		slot.index_buffer.destroy_gpu_buffer();
-		slot.wire_index_buffer.destroy_gpu_buffer();
-		if (slot.counters_readback.impl)
-		{
-			sg_destroy_buffer_readback(slot.counters_readback);
-		}
-	}
-	tessellated = {};
 }

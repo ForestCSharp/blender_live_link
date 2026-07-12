@@ -2,8 +2,8 @@
 
 # Running ./build.sh builds native blender integration by default, then builds and runs game in parallel after schema generation
 # Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
-# Running ./build.sh game only rebuilds the game and runs it
-# Passing -game2 uses the Vulkan game (game2/) instead of game/ in any of the above modes
+# Running ./build.sh -g only rebuilds the default Vulkan game and runs it
+# Passing -game_old selects the legacy Sokol runtime (game_old/)
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 BASE_DIR="${SCRIPT_DIR##*/}"
@@ -22,7 +22,7 @@ echo OS is ${OS}
 
 BUILD_ONLY_GAME=false
 GAME_DIR=game
-GAME_BRANCH_LABEL=Game
+GAME_BRANCH_LABEL="Game (Vulkan)"
 BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
 NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
@@ -79,6 +79,7 @@ package_extension() {
 			-x!"$BASE_DIR/flatbuffers/*" \
 			-x!"$BASE_DIR/.git/*" \
 			-x!"$BASE_DIR/game/*" \
+			-x!"$BASE_DIR/game_old/*" \
 			-x!"$BASE_DIR/blend_files/*" \
 			-x!"$BASE_DIR/blend_src/*" \
 			-x!"$BASE_DIR/blend_patches/*" \
@@ -101,6 +102,7 @@ package_extension() {
 			-x "$BASE_DIR/flatbuffers/*" \
 			-x "$BASE_DIR/.git/*" \
 			-x "$BASE_DIR/game/*"\
+			-x "$BASE_DIR/game_old/*"\
 			-x "$BASE_DIR/blend_files/*" \
 			-x "$BASE_DIR/blend_src/*" \
 			-x "$BASE_DIR/blend_patches/*" \
@@ -584,9 +586,9 @@ while [[ $# -gt 0 ]]; do
     	BUILD_ONLY_GAME=true
     	shift # past argument
     	;;
-    -game2|--game2)
-    	GAME_DIR=game2
-    	GAME_BRANCH_LABEL=Game2
+    -game_old|--game-old|--game_old)
+		GAME_DIR=game_old
+		GAME_BRANCH_LABEL="Game Old (Sokol)"
     	shift # past argument
     	;;
     -python|--python)

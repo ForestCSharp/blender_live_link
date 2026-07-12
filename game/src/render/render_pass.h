@@ -1,151 +1,106 @@
 #pragma once
 
-#include <algorithm>
 #include <cassert>
-#include <cstddef>
-#include <cstdio>
 #include <functional>
 #include <optional>
-#include <utility>
 
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
 #include "core/timings.h"
-#include "sokol/sokol_gfx.h"
-#include "sokol/sokol_app.h"
-#include "sokol/sokol_glue.h"
-#include "render/sokol_helpers.h"
+#include "render/vulkan_context.h"
 
 using std::optional;
 
-using RenderPassDebugLabelFormatter = const char* (*)(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size);
+// Port of game/src/render/render_pass.h onto Vulkan dynamic rendering.
+//
+// The framework owns pass targets (allocation + resize), image layout
+// transitions for its own outputs, render begin/end, the uniform
+// negative-height (Y-flip) viewport, and timing scopes. Pass files own
+// pipelines and record draws in the execute callback.
+//
+// Cross-pass wiring is imperative, like game/: a pass reads another pass's
+// output by fetching get_color_output(...) and transitioning it to
+// SHADER_READ_ONLY_OPTIMAL *before* calling execute (barriers are illegal
+// inside dynamic rendering). There is no dependency graph — passes run in
+// ERenderPass enum order.
 
-static const char* render_pass_format_index_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
-{
-	snprintf(out_label, out_label_size, "%s: Pass %d", base_label ? base_label : "(unnamed)", pass_idx);
-	return out_label;
-}
-
-static const char* render_pass_format_face_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
-{
-	snprintf(out_label, out_label_size, "%s: Face %d", base_label ? base_label : "(unnamed)", pass_idx);
-	return out_label;
-}
-
-static const char* render_pass_format_cascade_debug_label(const char* base_label, i32 pass_idx, char* out_label, size_t out_label_size)
-{
-	snprintf(out_label, out_label_size, "%s: Cascade %d", base_label ? base_label : "(unnamed)", pass_idx);
-	return out_label;
-}
-
-static void render_pass_format_attachment_writes(const sg_attachments& in_attachments, bool in_swapchain, char* out_writes, size_t in_writes_size)
-{
-	if (!out_writes || in_writes_size == 0)
-	{
-		return;
-	}
-
-	out_writes[0] = '\0';
-	if (in_swapchain)
-	{
-		snprintf(out_writes, in_writes_size, "%s", "Swapchain");
-		return;
-	}
-
-	for (i32 color_index = 0; color_index < SG_MAX_COLOR_ATTACHMENTS; ++color_index)
-	{
-		const sg_view view = in_attachments.colors[color_index];
-		if (view.id == SG_INVALID_ID)
-		{
-			continue;
-		}
-
-		const char* view_name = gpu_profiler_lookup_view_name(view);
-		char fallback_name[64] = {};
-		if (!view_name)
-		{
-			snprintf(fallback_name, sizeof(fallback_name), "color attachment:%u", view.id);
-			view_name = fallback_name;
-		}
-		gpu_profiler_append_dependency_name(out_writes, in_writes_size, view_name);
-	}
-
-	if (in_attachments.depth_stencil.id != SG_INVALID_ID)
-	{
-		const char* view_name = gpu_profiler_lookup_view_name(in_attachments.depth_stencil);
-		char fallback_name[64] = {};
-		if (!view_name)
-		{
-			snprintf(fallback_name, sizeof(fallback_name), "depth attachment:%u", in_attachments.depth_stencil.id);
-			view_name = fallback_name;
-		}
-		gpu_profiler_append_dependency_name(out_writes, in_writes_size, view_name);
-	}
-}
-
-struct RenderPassOutputDesc {
-	sg_pixel_format pixel_format	= SG_PIXELFORMAT_NONE;
-	sg_load_action load_action		= SG_LOADACTION_DONTCARE;
-	sg_store_action store_action	= SG_STOREACTION_STORE;
-	sg_color clear_value			= {0.0f, 0.0f, 0.0f, 0.0f };
-};
-
+// Single/Swapchain (Phase 1), Array (Phase 3a shadows), Multi/Cubemap
+// (Phase 3c GI captures)
 enum class ERenderPassType
 {
 	Single,
-	Multi,
-	Array,
-	Cubemap,
+	Multi,		// pass_count independent 2D target sets
+	Array,		// one layered image; one slice per pass
+	Cubemap,	// one cube image; one face per pass, sampled as CUBE
 	Swapchain,
 };
 
-struct RenderPassDesc {
+static constexpr i32 NUM_CUBE_FACES = 6;
+
+static constexpr i32 RENDER_PASS_MAX_COLOR_OUTPUTS = 4;
+
+struct RenderPassOutputDesc
+{
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	VkAttachmentStoreOp store_op = VK_ATTACHMENT_STORE_OP_STORE;
+	VkClearValue clear_value = {};
+};
+
+struct RenderPassDesc
+{
 	i32 initial_width = -1;
 	i32 initial_height = -1;
 	i32 pass_count = 1;
 
-	optional<sg_pipeline_desc> pipeline_desc;
-	int num_outputs = 0;
-	RenderPassOutputDesc outputs[SG_MAX_COLOR_ATTACHMENTS];
-	RenderPassOutputDesc depth_output;
+	i32 num_outputs = 0;
+	RenderPassOutputDesc outputs[RENDER_PASS_MAX_COLOR_OUTPUTS];
+	RenderPassOutputDesc depth_output;	// format == UNDEFINED means no depth
 
 	f32 width_scale = 1.0f;
 	f32 height_scale = 1.0f;
 	bool resize_with_window = true;
 	ERenderPassType type = ERenderPassType::Single;
 	const char* debug_label = nullptr;
-	RenderPassDebugLabelFormatter debug_label_formatter = nullptr;
 };
 
-struct RenderPassOutput {
-	RenderPassOutput() = default;
-	RenderPassOutput(const RenderPassOutput&) = delete;
-	RenderPassOutput& operator=(const RenderPassOutput&) = delete;
-	RenderPassOutput(RenderPassOutput&&) noexcept = default;
-	RenderPassOutput& operator=(RenderPassOutput&&) noexcept = default;
-
-	/*
-			single 2D image for Single
-			multiple 2D images for Multi
-			single 2D array image for Array
-			single Cubemap image for Cubemap
-	*/
-	StretchyBuffer<GpuImage> images;
-
-	void cleanup()
-	{
-		for (GpuImage& image : images)
-		{
-			image.cleanup();
-		}
-		images.reset();
-	}
-};
-
-struct RenderPassTopology
+struct RenderPass
 {
-	const RenderPassDesc& desc;
+	RenderPassDesc desc = {};
+
+	// Single/Array/Cubemap: one image per color output (Array/Cubemap are
+	// layered with per-layer attachment views). Multi: one image per output
+	// per pass instance, flat-indexed [image_idx * num_outputs + output_idx].
+	// depth_outputs mirrors the image-set count.
+	StretchyBuffer<GpuImage> color_outputs;
+	StretchyBuffer<GpuImage> depth_outputs;
+
+	i32 current_width = -1;
+	i32 current_height = -1;
+
+	// Renders only the first N slices of an Array pass this frame
+	// (game/'s set_pass_count_override; -1 = all)
 	i32 pass_count_override = -1;
+
+	void validate_desc()
+	{
+		const bool has_any_output = desc.num_outputs > 0 || desc.depth_output.format != VK_FORMAT_UNDEFINED;
+		assert(has_any_output || desc.type == ERenderPassType::Swapchain);
+		assert(desc.num_outputs <= RENDER_PASS_MAX_COLOR_OUTPUTS);
+		assert(desc.type != ERenderPassType::Array || desc.pass_count >= 1);
+		assert(desc.type != ERenderPassType::Multi || desc.pass_count >= 1);
+	}
+
+	bool has_depth() const
+	{
+		return desc.depth_output.format != VK_FORMAT_UNDEFINED;
+	}
+
+	// Independent target sets (Multi renders each instance into its own images)
+	i32 get_image_set_count() const
+	{
+		return desc.type == ERenderPassType::Multi ? desc.pass_count : 1;
+	}
 
 	i32 get_natural_pass_count() const
 	{
@@ -156,122 +111,92 @@ struct RenderPassTopology
 			case ERenderPassType::Array:		return desc.pass_count;
 			case ERenderPassType::Cubemap:		return NUM_CUBE_FACES;
 			case ERenderPassType::Swapchain:	return 1;
-			default:
-				printf("invalid render pass type: %i\n", desc.type);
-				assert(false);
-				return 1;
 		}
+		assert(false);
+		return 1;
 	}
 
 	i32 get_pass_count() const
 	{
 		const i32 natural_pass_count = get_natural_pass_count();
-		if (pass_count_override > 0)
+		if (pass_count_override >= 0)
 		{
-			return std::min(pass_count_override, natural_pass_count);
+			return MIN(pass_count_override, natural_pass_count);
 		}
 		return natural_pass_count;
 	}
 
-	i32 get_attachment_image_count() const
+	void set_pass_count_override(i32 in_count)
 	{
-		switch (desc.type)
+		pass_count_override = in_count;
+	}
+
+	void release_targets()
+	{
+		for (GpuImage& image : color_outputs)
 		{
-			case ERenderPassType::Single:		return 1;
-			case ERenderPassType::Multi:		return desc.pass_count;
-			case ERenderPassType::Array:		return 1;
-			case ERenderPassType::Cubemap:		return 1;
-			case ERenderPassType::Swapchain:	return 1;
-			default:
-				printf("invalid render pass type: %i\n", desc.type);
-				assert(false);
-				return 1;
+			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, image);
+		}
+		color_outputs.reset();
+
+		for (GpuImage& image : depth_outputs)
+		{
+			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, image);
+		}
+		depth_outputs.reset();
+	}
+
+	void allocate_outputs()
+	{
+		if (desc.type == ERenderPassType::Swapchain)
+		{
+			return;
+		}
+
+		const bool is_cubemap = desc.type == ERenderPassType::Cubemap;
+		const u32 array_layers = desc.type == ERenderPassType::Array ? (u32) desc.pass_count
+								: is_cubemap ? (u32) NUM_CUBE_FACES
+								: 1u;
+		const i32 image_set_count = get_image_set_count();
+
+		for (i32 image_idx = 0; image_idx < image_set_count; ++image_idx)
+		{
+			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			{
+				color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.outputs[output_idx].format,
+					.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+						   | VK_IMAGE_USAGE_SAMPLED_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+					.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+				}));
+			}
+
+			if (has_depth())
+			{
+				depth_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.depth_output.format,
+					.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+				}));
+			}
 		}
 	}
-
-	sg_image_type get_image_type() const
-	{
-		switch (desc.type)
-		{
-			case ERenderPassType::Single:
-			case ERenderPassType::Multi:
-				return SG_IMAGETYPE_2D;
-			case ERenderPassType::Array:
-				return SG_IMAGETYPE_ARRAY;
-			case ERenderPassType::Cubemap:
-				return SG_IMAGETYPE_CUBE;
-			default:
-				assert(false);
-				return SG_IMAGETYPE_2D;
-		}
-	}
-
-	i32 get_slice_count() const
-	{
-		const sg_image_type image_type = get_image_type();
-		if (image_type == SG_IMAGETYPE_CUBE)
-		{
-			return NUM_CUBE_FACES;
-		}
-		if (image_type == SG_IMAGETYPE_ARRAY)
-		{
-			return desc.pass_count;
-		}
-		return 1;
-	}
-
-	i32 get_image_index_for_pass(i32 pass_idx) const
-	{
-		return desc.type == ERenderPassType::Multi ? pass_idx : 0;
-	}
-
-	i32 get_slice_index_for_pass(i32 pass_idx) const
-	{
-		return (desc.type == ERenderPassType::Array || desc.type == ERenderPassType::Cubemap) ? pass_idx : 0;
-	}
-};
-
-struct RenderPassExecutionContext
-{
-	i32 pass_idx = 0;
-	i32 image_idx = 0;
-	i32 slice_idx = 0;
-};
-
-struct RenderPass {
-public: // Variables
-	sg_pipeline pipeline = {};
-
-	StretchyBuffer<RenderPassOutput> color_outputs;
-
-	optional<RenderPassOutput> depth_output;
-
-	StretchyBuffer<sg_attachments> attachments;
-
-	RenderPassDesc desc = {};
-
-	i32 current_width = -1;
-	i32 current_height = -1;
-	i32 pass_count_override = -1;
-
-public: // Functions
-	RenderPass() = default;
-	RenderPass(const RenderPass&) = delete;
-	RenderPass& operator=(const RenderPass&) = delete;
-	RenderPass(RenderPass&&) noexcept = default;
-	RenderPass& operator=(RenderPass&&) noexcept = default;
 
 	void init(const RenderPassDesc& in_desc)
-	{	
+	{
 		cleanup();
-
 		desc = in_desc;
 		validate_desc();
-		if (desc.pipeline_desc)
-		{
-			const sg_pipeline_desc& pipeline_desc = desc.pipeline_desc.value();
-			pipeline = sg_make_pipeline(pipeline_desc);
-		}
 
 		if (desc.initial_width > 0 && desc.initial_height > 0)
 		{
@@ -279,422 +204,198 @@ public: // Functions
 		}
 	}
 
-	void cleanup()
+	GpuImage& get_color_output(i32 in_output_idx = 0, i32 in_image_idx = 0)
 	{
-		release_targets();
-		if (pipeline.id != SG_INVALID_ID)
-		{
-			sg_destroy_pipeline(pipeline);
-			pipeline = {};
-		}
-		desc = {};
-		current_width = -1;
-		current_height = -1;
-		pass_count_override = -1;
+		const i32 flat_idx = in_image_idx * desc.num_outputs + in_output_idx;
+		assert(color_outputs.is_valid_index(flat_idx));
+		return color_outputs[flat_idx];
 	}
 
-	RenderPassTopology get_topology() const
+	GpuImage& get_depth_output(i32 in_image_idx = 0)
 	{
-		return RenderPassTopology {
-			.desc = desc,
-			.pass_count_override = pass_count_override,
-		};
+		assert(depth_outputs.is_valid_index(in_image_idx));
+		return depth_outputs[in_image_idx];
 	}
 
-	// number of times the execute lambda is invoked on execute
-	const i32 get_pass_count() const
-	{	
-		return get_topology().get_pass_count();
-	}
-
-	// number of images we create per-color-attachment
-	i32 get_attachment_image_count() const
-	{
-		return get_topology().get_attachment_image_count();
-	}
-
-	sg_image_type determine_image_type() const
-	{
-		return get_topology().get_image_type();
-	}
-
-	i32 get_num_color_outputs() const
-	{
-		return color_outputs.length();
-	}
-
-	void set_pass_count_override(i32 in_pass_count_override)
-	{
-		pass_count_override = in_pass_count_override;
-	}
-
-	const char* get_debug_label_for_pass(i32 pass_idx, char* out_label, size_t out_label_size) const
-	{
-		const char* base_label = desc.debug_label;
-		base_label = base_label ? base_label : "(unnamed)";
-
-		RenderPassDebugLabelFormatter formatter = desc.debug_label_formatter;
-		if (!formatter)
-		{
-			if (get_pass_count() <= 1)
-			{
-				return base_label;
-			}
-
-			formatter = desc.type == ERenderPassType::Cubemap
-				? render_pass_format_face_debug_label
-				: render_pass_format_index_debug_label;
-		}
-
-		const char* formatted_label = formatter(base_label, pass_idx, out_label, out_label_size);
-		return formatted_label ? formatted_label : base_label;
-	}
-
-	GpuImage& get_color_output(i32 color_output_idx, i32 pass_idx = 0)
-	{
-		assert(color_outputs.is_valid_index(color_output_idx));
-		assert(color_outputs[color_output_idx].images.is_valid_index(pass_idx));
-		return color_outputs[color_output_idx].images[pass_idx];
-	}
-
-	GpuImage& get_depth_output(i32 pass_idx = 0)
-	{
-		assert(depth_output.has_value());
-		assert(depth_output.value().images.is_valid_index(pass_idx));
-		return depth_output.value().images[pass_idx];
-	}
-
-	void validate_desc() const
-	{
-		assert_msgf(
-			desc.num_outputs > 0 || desc.depth_output.pixel_format != SG_PIXELFORMAT_NONE || desc.type == ERenderPassType::Swapchain,
-			"RenderPass::init(): render pass must have a color output, depth output, or be a swapchain pass"
-		);
-		assert_msgf(desc.pass_count > 0, "RenderPass::init(): pass_count must be greater than zero");
-		assert_msgf(desc.num_outputs >= 0 && desc.num_outputs <= SG_MAX_COLOR_ATTACHMENTS, "RenderPass::init(): invalid color output count");
-		assert_msgf(desc.width_scale > 0.0f && desc.height_scale > 0.0f, "RenderPass::init(): render pass scales must be positive");
-
-		for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
-		{
-			assert_msgf(
-				desc.outputs[output_idx].pixel_format != SG_PIXELFORMAT_NONE,
-				"RenderPass::init(): color outputs must declare a pixel format"
-			);
-		}
-
-		if (desc.pipeline_desc)
-		{
-			const sg_pipeline_desc& pipeline_desc = desc.pipeline_desc.value();
-			if (desc.type != ERenderPassType::Swapchain)
-			{
-				assert_msgf(
-					pipeline_desc.color_count == desc.num_outputs,
-					"RenderPass::init(): pipeline_desc.color_count must match num_outputs"
-				);
-				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
-				{
-					assert_msgf(
-						pipeline_desc.colors[output_idx].pixel_format == desc.outputs[output_idx].pixel_format,
-						"RenderPass::init(): pipeline color pixel formats must match output pixel formats"
-					);
-				}
-			}
-
-			if (pipeline_desc.depth.pixel_format != SG_PIXELFORMAT_NONE)
-			{
-				assert_msgf(
-					pipeline_desc.depth.pixel_format == desc.depth_output.pixel_format,
-					"RenderPass::init(): pipeline_desc.depth.pixel_format must match depth_output.pixel_format"
-				);
-			}
-		}
-	}
-
-	void release_targets()
-	{
-		for (RenderPassOutput& color_output : color_outputs)
-		{
-			color_output.cleanup();
-		}
-		color_outputs.reset();
-
-		if (depth_output.has_value())
-		{
-			depth_output.value().cleanup();
-			depth_output.reset();
-		}
-
-		attachments.reset();
-	}
-
-	void allocate_outputs()
-	{
-		const RenderPassTopology topology = get_topology();
-		const sg_image_type image_type = topology.get_image_type();
-		const i32 num_slices = topology.get_slice_count();
-		const i32 attachment_image_count = topology.get_attachment_image_count();
-
-		for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
-		{
-			const RenderPassOutputDesc& output_desc = desc.outputs[output_idx];
-			RenderPassOutput& new_color_output = color_outputs.emplace();
-
-			GpuImageDesc image_desc = {
-				.type = image_type,
-				.usage = {
-					.color_attachment = true,
-				},
-				.width = current_width,
-				.height = current_height,
-				.num_slices = num_slices,
-				.pixel_format = output_desc.pixel_format,
-				.label = "color_image",
-			};
-
-			for (i32 image_idx = 0; image_idx < attachment_image_count; ++image_idx)
-			{
-				new_color_output.images.emplace(image_desc);
-			}
-		}
-
-		if (desc.depth_output.pixel_format != SG_PIXELFORMAT_NONE)
-		{
-			RenderPassOutput& new_depth_output = depth_output.emplace();
-			GpuImageDesc depth_image_desc = {
-				.type = image_type,
-				.usage = {
-					.depth_stencil_attachment = true,
-				},
-				.width = current_width,
-				.height = current_height,
-				.num_slices = num_slices,
-				.pixel_format = desc.depth_output.pixel_format,
-				.label = "depth-image"
-			};
-
-			for (i32 image_idx = 0; image_idx < attachment_image_count; ++image_idx)
-			{
-				new_depth_output.images.emplace(depth_image_desc);
-			}
-		}
-
-	}
-
-	void build_attachments()
-	{
-		const RenderPassTopology topology = get_topology();
-		const i32 pass_count = topology.get_pass_count();
-		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
-		{
-			attachments.emplace();
-		}
-
-		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
-		{
-			const i32 image_idx = topology.get_image_index_for_pass(pass_idx);
-			const i32 slice_idx = topology.get_slice_index_for_pass(pass_idx);
-			for (int output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
-			{
-				attachments[pass_idx].colors[output_idx] = get_color_output(output_idx, image_idx).get_attachment_view(slice_idx);
-			}
-
-			if (depth_output.has_value())
-			{
-				attachments[pass_idx].depth_stencil = get_depth_output(image_idx).get_attachment_view(slice_idx);
-			}
-		}
-	}
-
-	void handle_resize(i32 in_new_width, i32 in_new_height)
+	// Recreates targets at the new size. Destruction is immediate (the
+	// deletion queue handles buffers only) — callers must have idled the
+	// device (main.cpp's handle_resize does).
+	void handle_resize(i32 in_width, i32 in_height)
 	{
 		if (!desc.resize_with_window)
 		{
-			if (current_width > 0 && current_height > 0)
+			// Fixed-size passes allocate once at initial_* and never resize
+			if (current_width > 0)
 			{
 				return;
 			}
-
-			assert(desc.initial_width > 0 && desc.initial_height > 0);
-			in_new_width = desc.initial_width;
-			in_new_height = desc.initial_height;
+			in_width = desc.initial_width;
+			in_height = desc.initial_height;
 		}
 
-		current_width = std::max(1, (i32)((f32)in_new_width * desc.width_scale + 0.5f));
-		current_height = std::max(1, (i32)((f32)in_new_height * desc.height_scale + 0.5f));
+		const i32 new_width = MAX(1, (i32)(in_width * desc.width_scale + 0.5f));
+		const i32 new_height = MAX(1, (i32)(in_height * desc.height_scale + 0.5f));
+		if (new_width == current_width && new_height == current_height)
+		{
+			return;
+		}
 
-		// Create render target if we aren't rendering directly to swapchain
+		current_width = new_width;
+		current_height = new_height;
+
 		if (desc.type != ERenderPassType::Swapchain)
 		{
 			release_targets();
 			allocate_outputs();
-			build_attachments();
 		}
 	}
 
-	RenderPassExecutionContext make_execution_context(i32 in_pass_idx) const
+	// Transitions outputs, begins dynamic rendering with the declared
+	// attachments, sets the Y-flipped viewport + scissor, runs the callback,
+	// ends rendering. The callback binds its own pipeline/sets and draws.
+	// Array passes loop once per slice (callback receives the slice index).
+	void execute(VulkanContext* ctx, const std::function<void(i32)>& in_callback)
 	{
-		const RenderPassTopology topology = get_topology();
-		return RenderPassExecutionContext {
-			.pass_idx = in_pass_idx,
-			.image_idx = topology.get_image_index_for_pass(in_pass_idx),
-			.slice_idx = topology.get_slice_index_for_pass(in_pass_idx),
-		};
-	}
+		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
-	const char* get_debug_label_for_context(const RenderPassExecutionContext& in_context, char* out_label, size_t out_label_size) const
-	{
-		return get_debug_label_for_pass(
-			in_context.pass_idx,
-			out_label,
-			out_label_size
-		);
-	}
+		CPU_TIMING_SCOPE(desc.debug_label ? desc.debug_label : "RenderPass");
+		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
 
-	void apply_pass_actions(sg_pass& in_pass) const
-	{
-		for (int i = 0; i < desc.num_outputs; ++i)
+		const bool is_swapchain = desc.type == ERenderPassType::Swapchain;
+		const bool is_multi = desc.type == ERenderPassType::Multi;
+		const bool is_sliced = desc.type == ERenderPassType::Array || desc.type == ERenderPassType::Cubemap;
+
+		// Own outputs -> attachment layouts (before BeginRendering; the
+		// swapchain image was already transitioned by begin_frame).
+		// Transitions span all layers and image sets.
+		if (!is_swapchain)
 		{
-			const RenderPassOutputDesc& output_desc = desc.outputs[i];
-
-			in_pass.action.colors[i] = {
-				.load_action = output_desc.load_action,
-				.store_action = output_desc.store_action,
-				.clear_value = output_desc.clear_value,
-			};
-		}
-
-		if (depth_output.has_value())
-		{
-			const RenderPassOutputDesc& output_desc = desc.depth_output;
-
-			in_pass.action.depth = {
-				.load_action = output_desc.load_action,
-				.store_action = output_desc.store_action,
-				.clear_value = output_desc.clear_value.r,
-			};
-		}
-	}
-
-	void execute_pass(
-		const RenderPassExecutionContext& in_context,
-		sg_pass& in_pass,
-		bool in_render_to_swapchain,
-		std::function<void(const RenderPassExecutionContext& context)> in_callback
-	)
-	{
-		char pass_debug_label_buffer[CPU_TIMINGS_MAX_NAME_LENGTH] = {};
-		const char* pass_debug_label = get_debug_label_for_context(
-			in_context,
-			pass_debug_label_buffer,
-			sizeof(pass_debug_label_buffer)
-		);
-
-		in_pass.label = pass_debug_label;
-
-		sg_begin_pass(in_pass);
-
-		{
-			CPU_TIMING_SCOPE(pass_debug_label);
-			char writes[GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH] = {};
-			render_pass_format_attachment_writes(in_pass.attachments, in_render_to_swapchain, writes, sizeof(writes));
-			gpu_frame_timings_set_next_scope_writes(writes);
-			GpuDebugScope debug_scope(pass_debug_label);
-
-			if (pipeline.id != SG_INVALID_ID)
+			for (i32 flat_idx = 0; flat_idx < (i32) color_outputs.length(); ++flat_idx)
 			{
-				sg_apply_pipeline(pipeline);
+				const i32 output_idx = desc.num_outputs > 0 ? flat_idx % desc.num_outputs : 0;
+				const bool discard = desc.outputs[output_idx].load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
+				gpu_image_transition(command_buffer, color_outputs[flat_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, discard);
 			}
-
-			in_callback(in_context);
-		}
-
-		{
-			CPU_TIMING_BACKEND_SCOPE("sg_end_pass", pass_debug_label);
-			sg_end_pass();
-		}
-	}
-
-	void execute_one(i32 in_pass_idx, std::function<void(const RenderPassExecutionContext& context)> in_callback)
-	{
-		assert(current_width > 0 && current_height > 0);
-
-		const bool render_to_swapchain = desc.type == ERenderPassType::Swapchain;
-		const i32 pass_count = get_pass_count();
-		assert(in_pass_idx >= 0 && in_pass_idx < pass_count);
-
-		const RenderPassExecutionContext context = make_execution_context(in_pass_idx);
-		sg_pass pass = {
-			.attachments = !render_to_swapchain ? attachments[in_pass_idx] : (sg_attachments){},
-			.swapchain = render_to_swapchain ? sglue_swapchain() : (sg_swapchain){},
-		};
-		apply_pass_actions(pass);
-		execute_pass(context, pass, render_to_swapchain, in_callback);
-	}
-
-	void execute_one(i32 in_pass_idx, std::function<void(const i32 pass_idx)> in_callback)
-	{
-		execute_one(
-			in_pass_idx,
-			[&](const RenderPassExecutionContext& context)
+			for (GpuImage& depth_image : depth_outputs)
 			{
-				in_callback(context.pass_idx);
+				const bool discard = desc.depth_output.load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
+				gpu_image_transition(command_buffer, depth_image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, discard);
 			}
-		);
-	}
+		}
 
-	void execute(std::function<void(const RenderPassExecutionContext& context)> in_callback)
-	{
+		const VkExtent2D render_extent = is_swapchain
+			? ctx->swapchain_extent
+			: (VkExtent2D) { (u32) current_width, (u32) current_height };
+
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
-			execute_one(pass_idx, in_callback);
-		}
-	}
+			VkRenderingAttachmentInfo color_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
+			u32 color_attachment_count = 0;
 
-	// pass_idx arg on in_callback is used for layered render passes
-	void execute(std::function<void(const i32 pass_idx)> in_callback)
-	{
-		execute(
-			[&](const RenderPassExecutionContext& context)
+			if (is_swapchain)
 			{
-				in_callback(context.pass_idx);
+				// Swapchain passes render straight to the acquired image. Ops
+				// come from outputs[0] when declared, else overwrite defaults.
+				const RenderPassOutputDesc& output_desc = desc.outputs[0];
+				color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
+					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.loadOp = desc.num_outputs > 0 ? output_desc.load_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.storeOp = desc.num_outputs > 0 ? output_desc.store_op : VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = output_desc.clear_value,
+				};
 			}
-		);
+			else
+			{
+				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+				{
+					GpuImage& output_image = get_color_output(output_idx, is_multi ? pass_idx : 0);
+					color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+						.imageView = is_sliced ? output_image.layer_views[pass_idx] : output_image.view,
+						.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.loadOp = desc.outputs[output_idx].load_op,
+						.storeOp = desc.outputs[output_idx].store_op,
+						.clearValue = desc.outputs[output_idx].clear_value,
+					};
+				}
+			}
+
+			VkRenderingAttachmentInfo depth_attachment = {};
+			if (has_depth() && !is_swapchain)
+			{
+				GpuImage& depth_image = get_depth_output(is_multi ? pass_idx : 0);
+				depth_attachment = (VkRenderingAttachmentInfo) {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = is_sliced ? depth_image.layer_views[pass_idx] : depth_image.view,
+					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.loadOp = desc.depth_output.load_op,
+					.storeOp = desc.depth_output.store_op,
+					.clearValue = desc.depth_output.clear_value,
+				};
+			}
+
+			VkRenderingInfo rendering_info = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = {
+					.offset = { 0, 0 },
+					.extent = render_extent,
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = color_attachment_count,
+				.pColorAttachments = color_attachment_count > 0 ? color_attachments : nullptr,
+				.pDepthAttachment = (has_depth() && !is_swapchain) ? &depth_attachment : nullptr,
+			};
+
+			vkCmdBeginRendering(command_buffer, &rendering_info);
+
+			// Uniform Y-flip convention across all passes
+			VkViewport flipped_viewport = {
+				.x = 0.0f,
+				.y = (f32) render_extent.height,
+				.width = (f32) render_extent.width,
+				.height = -(f32) render_extent.height,
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f,
+			};
+			vkCmdSetViewport(command_buffer, 0, 1, &flipped_viewport);
+
+			VkRect2D scissor = {
+				.offset = { 0, 0 },
+				.extent = render_extent,
+			};
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+			in_callback(pass_idx);
+
+			vkCmdEndRendering(command_buffer);
+		}
+
+		gpu_timestamps_end_scope(ctx, gpu_timing_slot);
 	}
 
+	void cleanup()
+	{
+		release_targets();
+		current_width = -1;
+		current_height = -1;
+	}
 };
 
+// Entry with an optional intermediate pass (separable blurs etc. — game/ parity)
 struct RenderPassEntry
 {
 	RenderPass final;
 	optional<RenderPass> intermediate;
 
-	RenderPassEntry() = default;
-	RenderPassEntry(const RenderPassEntry&) = delete;
-	RenderPassEntry& operator=(const RenderPassEntry&) = delete;
-	RenderPassEntry(RenderPassEntry&&) noexcept = default;
-	RenderPassEntry& operator=(RenderPassEntry&&) noexcept = default;
-
-	RenderPass& final_pass()
-	{
-		return final;
-	}
-
-	const RenderPass& final_pass() const
-	{
-		return final;
-	}
+	RenderPass& final_pass() { return final; }
 
 	RenderPass& intermediate_pass()
 	{
 		assert(intermediate.has_value());
-		return intermediate.value();
-	}
-
-	const RenderPass& intermediate_pass() const
-	{
-		assert(intermediate.has_value());
-		return intermediate.value();
+		return *intermediate;
 	}
 
 	RenderPass& ensure_intermediate_pass()
@@ -703,38 +404,26 @@ struct RenderPassEntry
 		{
 			intermediate.emplace();
 		}
-		return intermediate.value();
+		return *intermediate;
 	}
 
-	bool has_intermediate_pass() const
-	{
-		return intermediate.has_value();
-	}
+	void init_final(const RenderPassDesc& in_desc) { final.init(in_desc); }
+	void init_intermediate(const RenderPassDesc& in_desc) { ensure_intermediate_pass().init(in_desc); }
 
-	void init_final(const RenderPassDesc& in_desc)
-	{
-		final.init(in_desc);
-	}
-
-	void init_intermediate(const RenderPassDesc& in_desc)
-	{
-		ensure_intermediate_pass().init(in_desc);
-	}
-
-	void handle_resize(i32 in_new_width, i32 in_new_height)
+	void handle_resize(i32 in_width, i32 in_height)
 	{
 		if (intermediate.has_value())
 		{
-			intermediate.value().handle_resize(in_new_width, in_new_height);
+			intermediate->handle_resize(in_width, in_height);
 		}
-		final.handle_resize(in_new_width, in_new_height);
+		final.handle_resize(in_width, in_height);
 	}
 
 	void cleanup()
 	{
 		if (intermediate.has_value())
 		{
-			intermediate.value().cleanup();
+			intermediate->cleanup();
 			intermediate.reset();
 		}
 		final.cleanup();

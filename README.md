@@ -59,8 +59,9 @@ For a deeper protocol and runtime ownership contract, see
 - `blend_patches/`: patches and native source files used to integrate Live Link
   into a locally built Blender.
 - `blend_src/`: local Blender source/build workspace used by the native path.
-- `game/`: C++ runtime, shaders, data, third-party engine libraries, and the game
-  build script.
+- `game/`: golden-path Vulkan/GLFW C++ runtime, shaders, data, third-party
+  engine libraries, and the game build script.
+- `game_old/`: legacy Sokol-based runtime retained for comparison and fallback.
 - `blend_files/`: sample Blender files for development and testing.
 - `docs/`: protocol notes and rendering/engine explanations.
 - `test_live_link_parity.sh`: native-vs-Python export parity test runner.
@@ -145,6 +146,15 @@ On Windows the script expects `blender.exe` to be available on `PATH`.
 
 Either form rebuilds and runs only the C++ game. This assumes generated schemas
 and required dependencies are already present from a previous full build.
+
+The Vulkan/GLFW runtime in `game/` is the default. To build and run the legacy
+Sokol runtime instead:
+
+```sh
+./build.sh -g -game_old
+```
+
+`-game_old` also applies to full native or Python serialization builds.
 
 ### Choose A Blend File
 

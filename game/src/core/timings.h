@@ -10,11 +10,30 @@ static constexpr i32 GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH = 256;
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <mutex>
 
 #include "core/stretchy_buffer.h"
-#include "sokol/sokol_time.h"
+
+// game_old/ uses sokol_time (stm_*); game keeps the same tick-based interface on
+// std::chrono. Ticks are nanoseconds.
+inline u64 timings_now_ticks()
+{
+	return (u64) std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()
+	).count();
+}
+
+inline f64 timings_ticks_to_ms(u64 in_ticks)
+{
+	return (f64) in_ticks / 1000000.0;
+}
+
+inline u64 timings_ticks_diff(u64 in_new_ticks, u64 in_old_ticks)
+{
+	return (in_new_ticks > in_old_ticks) ? (in_new_ticks - in_old_ticks) : 0;
+}
 
 static constexpr i32 CPU_TIMINGS_MAX_DISPLAY_FRAMES = 5;
 static constexpr i32 CPU_TIMINGS_MAX_HISTORY_FRAMES = CPU_TIMINGS_MAX_DISPLAY_FRAMES + 1;
@@ -91,7 +110,7 @@ i32 cpu_timings_begin_scope(const char* in_name)
 	cpu_timing_event_set_name(event, in_name);
 	event.depth = (i32)timings.active_scope_stack.length();
 	event.parent_index = parent_index;
-	event.start_ticks = stm_now();
+	event.start_ticks = timings_now_ticks();
 	event.is_open = true;
 
 	timings.current_frame.add(event);
@@ -107,7 +126,7 @@ void cpu_timings_close_scope(CpuTimingEvent& event, u64 in_end_ticks)
 	}
 
 	event.end_ticks = in_end_ticks;
-	event.elapsed_ms = stm_ms(stm_diff(event.end_ticks, event.start_ticks));
+	event.elapsed_ms = timings_ticks_to_ms(timings_ticks_diff(event.end_ticks, event.start_ticks));
 	event.is_open = false;
 }
 
@@ -129,7 +148,7 @@ void cpu_timings_record_event(const char* in_name, u64 in_start_ticks, u64 in_en
 	event.parent_index = parent_index;
 	event.start_ticks = in_start_ticks;
 	event.end_ticks = in_end_ticks;
-	event.elapsed_ms = stm_ms(stm_diff(event.end_ticks, event.start_ticks));
+	event.elapsed_ms = timings_ticks_to_ms(timings_ticks_diff(event.end_ticks, event.start_ticks));
 	event.is_open = false;
 
 	timings.current_frame.add(event);
@@ -148,7 +167,7 @@ void cpu_timings_end_scope(i32 in_event_index)
 		return;
 	}
 
-	const u64 end_ticks = stm_now();
+	const u64 end_ticks = timings_now_ticks();
 
 	while (timings.active_scope_stack.length() > 0)
 	{

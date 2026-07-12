@@ -1,4 +1,5 @@
-#pragma once
+#ifndef GAME2_TESSELLATION_COMMON_H
+#define GAME2_TESSELLATION_COMMON_H
 
 #include "shader_common.h"
 
@@ -21,7 +22,6 @@
 #endif
 
 #if TESS_SHADER
-@block tessellation_types
 
 /**
  * TessellationVertex mirrors the runtime vertex layout used by tessellation compute shaders.
@@ -306,10 +306,11 @@ vec3 phong_project(vec3 p, vec3 source_position, vec3 source_normal)
 	return p - dot(p - source_position, n) * n;
 }
 
-@end // @block tessellation_types
 #endif
 
 #undef TESS_INIT
 #undef TESS_F32
 #undef TESS_U32
 #undef TESS_SHADER
+
+#endif // GAME2_TESSELLATION_COMMON_H

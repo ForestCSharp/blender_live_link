@@ -1,44 +1,95 @@
-#pragma once
+#ifndef SHADER_COMMON_H
+#define SHADER_COMMON_H
 
-// Whether or not to enable inverse depth
-#define USE_INVERSE_DEPTH 1 
-#define MAX_DEPTH (USE_INVERSE_DEPTH != 0 ? 0.0 : 1.0)
-#define MIN_DEPTH (USE_INVERSE_DEPTH == 0 ? 1.0 : 0.0)
+// Shared between C++ and GLSL (compiled by glslc with -I data/shaders).
+// The C++ branch supplies GLSL-style typedefs; the GLSL branch declares the
+// descriptor set 0 resource blocks.
+//
+// LAYOUT RULES: no vec3 members, ever (std140/430 vs C++ packing); scalars
+// are allowed as long as each struct's total size is a 16-byte multiple that
+// matches on both sides. C++ static_asserts live in src/render/frame_data.h.
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-#define TYPE_DEF(c_type, glsl_type) @ctype glsl_type c_type 
-#else
-#define TYPE_DEF(c_type, glsl_type) typedef c_type glsl_type;
+#if defined(__cplusplus)
+	typedef HMM_Vec2 vec2;
+	typedef HMM_Vec4 vec4;
+	typedef HMM_Mat4 mat4;
 #endif
 
-TYPE_DEF(HMM_Vec2,vec2)
-TYPE_DEF(HMM_Vec3,vec3)
-TYPE_DEF(HMM_Vec4,vec4)
-TYPE_DEF(HMM_Mat4,mat4)
+#define MAX_MATERIALS 1024
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-#define HMM_V2 vec2
-#define HMM_V3 vec3
-#define HMM_V4 vec4
-#endif
+// Capped by MoltenVK's non-update-after-bind limits
+// (maxPerStageDescriptorSampledImages = 256, maxPerStageResources = 287).
+// Raising this beyond ~250 requires UPDATE_AFTER_BIND on the texture array
+// binding + pool, which unlocks the much larger UpdateAfterBind limits.
+#define MAX_BINDLESS_IMAGES 128
 
-#if !defined(M_PI)
-#define M_PI 3.1415926535897932384626433832795
-#endif
+// Per-frame data: camera + primary sun. std140 (all members 16-byte aligned).
+// sun_direction.xyz is the direction the light TRAVELS (game/ convention:
+// (0,0,-1) rotated by the sun object's rotation); shaders negate it to get
+// the surface-to-light vector.
+struct PerFrameData
+{
+	mat4 view;
+	mat4 projection;
+	mat4 view_projection;
+	mat4 inv_view_projection;	// sky ray reconstruction (TAA/fog reuse later)
+	vec4 camera_position;	// w unused
+	vec4 camera_forward;	// w unused
+	vec4 sun_direction;		// xyz = light travel direction; w unused
+	vec4 sun_color;			// rgb = light.color * sun.power; w unused
+};
 
-// Commenting out. sokol_shdc seems to handle padding for us now
-//#define TOKEN_PASTE(x, y) x##y
-//#define COMBINE(a,b) TOKEN_PASTE(a,b)
-//#define _PADDING1 float COMBINE(padding_line_, __LINE__)
-//#define _PADDING2 vec2 COMBINE(padding_line_, __LINE__)
-//#define _PADDING3 vec3 COMBINE(padding_line_, __LINE__)
-//#define _PADDING4 vec4 COMBINE(padding_line_, __LINE__)
-//#define PADDING(count) _PADDING ## count
+// Per-object data. std430, 144-byte stride — matches game/'s
+// geometry_ObjectData_t exactly (mat4 + mat4 + int + 12 bytes pad).
+struct ObjectData
+{
+	mat4 model_matrix;
+	mat4 rotation_matrix;
+	int material_index;		// index into material_data_array, -1 = none
+	int _pad0;
+	int _pad1;
+	int _pad2;
+};
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block material
-#endif
+// Light data for the lighting pass SSBOs. Byte-identical to game/'s
+// lighting_*Light_t layouts; trailing vec3s become vec4 (std430 vec3 has
+// vec4 alignment, so the layout is unchanged — .xyz used, .w padding).
+// Named *Data to avoid colliding with the C++ gameplay Light structs.
 
+struct PointLightData	// 48 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	float _pad0;
+	float _pad1;
+	float _pad2;
+};
+
+struct SpotLightData	// 64 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	float spot_angle_radians;
+	float edge_blend;
+	float _pad0;
+	vec4 direction;		// xyz = light travel direction
+};
+
+struct SunLightData		// 64 bytes
+{
+	vec4 location;
+	vec4 color;
+	float power;
+	int cast_shadows;
+	float _pad0;
+	float _pad1;
+	vec4 direction;		// xyz = light travel direction
+};
+
+// Material. std430, 64-byte stride — field order matches game/'s
+// geometry_Material_t exactly (don't "fix" the image-index ordering).
 struct Material
 {
 	vec4 base_color;
@@ -50,54 +101,53 @@ struct Material
 	int emission_color_image_index;
 	int metallic_image_index;
 	int roughness_image_index;
+	int _pad0;
 };
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-@end // @block material
-#endif
-
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block object_data
-
-struct ObjectData
+#if !defined(__cplusplus)
+layout(set = 0, binding = 0, std140) uniform PerFrameBlock
 {
-	mat4 model_matrix;
-	mat4 rotation_matrix;
-	int material_index;
+	PerFrameData per_frame;
 };
 
-layout(binding=0) readonly buffer ObjectDataBuffer {
+// Named object_data_array (game/ parity) — "object_data" is a reserved
+// address-space keyword in Metal, which breaks MoltenVK's SPIRV->MSL pass
+layout(set = 0, binding = 1, std430) readonly buffer ObjectDataBlock
+{
 	ObjectData object_data_array[];
 };
 
-@end // @block object_data
-#endif
-
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block skinning_data
-
-struct SkinMatrix
+layout(set = 0, binding = 2, std430) readonly buffer MaterialDataBlock
 {
-	mat4 value;
+	Material material_data_array[];
 };
 
-layout(binding=6) readonly buffer SkinMatricesBuffer {
-	SkinMatrix skin_matrix_array[];
+// Per-frame skin matrix arena; each skinned draw indexes at its own offset
+// (push constant)
+layout(set = 0, binding = 3, std430) readonly buffer SkinMatrixBlock
+{
+	mat4 skin_matrix_array[];
 };
 
-mat4 get_skin_matrix(vec4 joint_indices, vec4 joint_weights)
+// Bindless scene textures: Material image indices index this array directly.
+// PARTIALLY_BOUND descriptor binding — only sample when image_index >= 0.
+layout(set = 0, binding = 4) uniform texture2D scene_textures[MAX_BINDLESS_IMAGES];
+layout(set = 0, binding = 5) uniform sampler scene_sampler;
+
+// Weighted 4-bone skin matrix (port of game/'s get_skin_matrix,
+// shader_common.h:88-101); identity when total weight is ~zero
+mat4 get_skin_matrix(int in_base_offset, vec4 in_joint_indices, vec4 in_joint_weights)
 {
-	float total_weight = joint_weights.x + joint_weights.y + joint_weights.z + joint_weights.w;
-	if (total_weight <= 0.0)
+	float total_weight = in_joint_weights.x + in_joint_weights.y + in_joint_weights.z + in_joint_weights.w;
+	if (total_weight <= 0.00001)
 	{
 		return mat4(1.0);
 	}
 
-	return
-		skin_matrix_array[int(joint_indices.x)].value * joint_weights.x +
-		skin_matrix_array[int(joint_indices.y)].value * joint_weights.y +
-		skin_matrix_array[int(joint_indices.z)].value * joint_weights.z +
-		skin_matrix_array[int(joint_indices.w)].value * joint_weights.w;
+	return in_joint_weights.x * skin_matrix_array[in_base_offset + int(in_joint_indices.x)]
+		 + in_joint_weights.y * skin_matrix_array[in_base_offset + int(in_joint_indices.y)]
+		 + in_joint_weights.z * skin_matrix_array[in_base_offset + int(in_joint_indices.z)]
+		 + in_joint_weights.w * skin_matrix_array[in_base_offset + int(in_joint_indices.w)];
 }
 
 vec3 get_skin_debug_palette_color(int bone_index)
@@ -118,129 +168,14 @@ vec3 get_skin_debug_palette_color(int bone_index)
 vec4 get_skin_debug_color(vec4 joint_indices, vec4 joint_weights)
 {
 	float total_weight = joint_weights.x + joint_weights.y + joint_weights.z + joint_weights.w;
-	if (total_weight <= 0.0)
-	{
-		return vec4(0.08, 0.08, 0.08, 1.0);
-	}
-
+	if (total_weight <= 0.0) return vec4(0.08, 0.08, 0.08, 1.0);
 	vec3 color =
 		get_skin_debug_palette_color(int(joint_indices.x)) * joint_weights.x +
 		get_skin_debug_palette_color(int(joint_indices.y)) * joint_weights.y +
 		get_skin_debug_palette_color(int(joint_indices.z)) * joint_weights.z +
 		get_skin_debug_palette_color(int(joint_indices.w)) * joint_weights.w;
-
 	return vec4(color / total_weight, 1.0);
 }
-
-@end // @block skinning_data
 #endif
 
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block dither_noise 
-
-/* Gradient noise from Jorge Jimenez's presentation: */
-/* http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare */
-float gradient_noise(in vec2 uv)
-{
-	return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
-}
-
-vec4 dither_noise()
-{
-	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
-}
-
-@end // @block dither_noise
-#endif //!defined(__cplusplus) || !defined(__STDC__)
-
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block probe_radiance
-
-struct ProbeRadianceCoefficient
-{
-	vec4 value;
-};
-
-struct ProbeSGLobe
-{
-	vec4 params;
-	vec4 amplitude;
-};
-
-const float SG9_SHARPNESS = 1.0;
-const float SG9_MIN_SHARPNESS = 1.0;
-const float SG9_MAX_SHARPNESS = 32.0;
-const float SG9_DIFFUSE_SHARPNESS_SCALE = 0.5;
-
-float sh9_basis(int index, vec3 dir)
-{
-	float x = dir.x;
-	float y = dir.y;
-	float z = dir.z;
-
-	switch (index)
-	{
-		case 0: return 0.282095;
-		case 1: return 0.488603 * y;
-		case 2: return 0.488603 * z;
-		case 3: return 0.488603 * x;
-		case 4: return 1.092548 * x * y;
-		case 5: return 1.092548 * y * z;
-		case 6: return 0.315392 * (3.0 * z * z - 1.0);
-		case 7: return 1.092548 * x * z;
-		case 8: return 0.546274 * (x * x - y * y);
-		default: return 0.0;
-	}
-}
-
-float sh9_diffuse_convolution_factor(int index)
-{
-	if (index == 0) { return M_PI; }
-	if (index <= 3) { return (2.0 * M_PI) / 3.0; }
-	return M_PI / 4.0;
-}
-
-vec3 sg9_initial_axis(int index)
-{
-	switch (index)
-	{
-		case 0: return vec3(1.0, 0.0, 0.0);
-		case 1: return vec3(-1.0, 0.0, 0.0);
-		case 2: return vec3(0.0, 1.0, 0.0);
-		case 3: return vec3(0.0, -1.0, 0.0);
-		case 4: return vec3(0.0, 0.0, 1.0);
-		case 5: return vec3(0.0, 0.0, -1.0);
-		case 6: return normalize(vec3(1.0, 1.0, 1.0));
-		case 7: return normalize(vec3(-1.0, 1.0, -1.0));
-		case 8: return normalize(vec3(1.0, -1.0, -1.0));
-		default: return vec3(0.0, 0.0, 1.0);
-	}
-}
-
-float sg_lobe_response(vec3 axis, float sharpness, vec3 dir)
-{
-	return exp(sharpness * (dot(axis, dir) - 1.0));
-}
-
-float sg_lobe_diffuse_response(vec3 axis, float sharpness, vec3 dir)
-{
-	return sg_lobe_response(axis, sharpness * SG9_DIFFUSE_SHARPNESS_SCALE, dir);
-}
-
-@end // @block probe_radiance
-#endif //!defined(__cplusplus) || !defined(__STDC__)
-
-#if !defined(__cplusplus) || !defined(__STDC__)
-@block remap 
-float remap(float value, float old_min, float old_max, float new_min, float new_max)
-{
-  return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min);
-}
-
-float remap_clamped(float value, float old_min, float old_max, float new_min, float new_max)
-{
-	float clamped_value = clamp(value, old_min, old_max);
-	return remap(clamped_value, old_min, old_max, new_min, new_max);
-}
-@end 
-#endif //!defined(__cplusplus) || !defined(__STDC__)
+#endif // SHADER_COMMON_H

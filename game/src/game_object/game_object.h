@@ -5,8 +5,8 @@
 
 #include "handmade_math/HandmadeMath.h"
 
-// Generated Shader File
-#include "geometry.compiled.h"
+// ObjectData (shared with shaders)
+#include "shader_common.h"
 
 // Physics System so we can add/remove bodies
 #include "physics/physics_system.h"
@@ -18,6 +18,9 @@
 #include "camera.h"
 
 #include "game_object/mesh.h"
+
+// Stripped-down port of game/'s game_object.h: no Jolt rigid bodies,
+// characters, armatures, or fog controllers yet.
 
 enum class LightType : u8
 {
@@ -42,10 +45,10 @@ struct SunLight {
 	bool cast_shadows;
 };
 
-struct Light 
+struct Light
 {
 	LightType type;
-	HMM_Vec3 color;	
+	HMM_Vec3 color;
 	union
 	{
 		PointLight	point;
@@ -59,7 +62,7 @@ struct RigidBody
 	bool is_dynamic;
 	float mass;
 
-	// Jolt Body ID
+	// Jolt Body
 	JPH::Body* jolt_body = nullptr;
 };
 
@@ -93,7 +96,7 @@ struct AnimationClip
 	f32 duration_seconds = 0.0f;
 	i32 frame_count = 0;
 	i32 bone_count = 0;
-	HMM_Mat4* skin_matrices = nullptr;
+	HMM_Mat4* skin_matrices = nullptr;	// frame-major [frame_count * bone_count]
 };
 
 struct Armature
@@ -108,7 +111,7 @@ struct Armature
 	i32 current_frame = 0;
 };
 
-struct Object 
+struct Object
 {
 	i32 unique_id;
 	char* name = nullptr;
@@ -116,10 +119,9 @@ struct Object
 
 	Transform initial_transform;
 	Transform current_transform;
-	i32 render_object_index = -1;
 
-	GpuBuffer<geometry_ObjectData_t> storage_buffer; 
-	bool storage_buffer_needs_update = false;
+	// Index into the render-object snapshot SSBO, rebuilt each frame
+	i32 render_object_index = -1;
 
 	// Mesh Data, stored inline
 	bool has_mesh = false;
@@ -129,13 +131,13 @@ struct Object
 	bool has_light = false;
 	Light light;
 
-	// Rigid Body Data, stored inline
-	bool has_rigid_body = false;
-	RigidBody rigid_body;
-
 	// Armature Data, stored inline
 	bool has_armature = false;
 	Armature armature;
+
+	// Rigid Body Data, stored inline
+	bool has_rigid_body = false;
+	RigidBody rigid_body;
 
 	// Character Data, stored inline
 	bool has_character = false;
@@ -145,17 +147,11 @@ struct Object
 	bool has_camera_control = false;
 	CameraControl camera_control;
 
-	// Fog Controller Data, stored inline
+	// Fog Controller Data, stored inline (data only — the fog render pass
+	// is Phase 3)
 	bool has_fog_controller = false;
 	FogController fog_controller;
 };
-
-BoundingBox object_get_bounding_box(const Object& in_object)
-{
-	//FCS TODO: Eventually support other object bounding boxes (rigid_body, etc.)
-	assert(in_object.has_mesh);
-	return bounding_box_transform(in_object.mesh.bounding_box, in_object.current_transform);	
-}
 
 bool object_has_dynamic_jolt_body(const Object& in_object)
 {
@@ -167,11 +163,27 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 	return object_has_dynamic_jolt_body(in_object) || in_object.has_character;
 }
 
+// Static visible meshes feed the GI probe layout (dynamic actors move too
+// often to bake — game/ parity)
 bool object_contributes_to_gi_scene(const Object& in_object)
 {
 	return in_object.visibility && in_object.has_mesh && !object_has_dynamic_jolt_actor(in_object);
 }
 
+void object_add_character(Object& in_object, const CharacterSettings& in_settings)
+{
+	in_object.has_character = true;
+	in_object.character = character_create(jolt_state, in_settings);
+}
+
+void object_remove_character(Object& in_object)
+{
+	character_destroy(in_object.character);
+	in_object.has_character = false;
+}
+
+// Builds a convex hull from the mesh vertices, scaled by the object's scale
+// (port of game/src/game_object/game_object.h:175-249)
 void object_add_jolt_body(Object& in_object)
 {
 	if (!in_object.has_mesh)
@@ -188,30 +200,25 @@ void object_add_jolt_body(Object& in_object)
 
 	if (in_object.rigid_body.jolt_body != nullptr)
 	{
-
 		printf("jolt_add_body error: in_object's rigid_body already has a jolt_body\n");
 		return;
 	}
 
-	// Get our body interface from the physics_system
 	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
 	//FCS TODO: Support various shape types from blender...
 
-	Mesh& mesh = in_object.mesh;	
+	Mesh& mesh = in_object.mesh;
 
 	JPH::Array<JPH::Vec3> convex_hull_points;
-	for (i32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+	for (u32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
 	{
 		Vertex& mesh_vertex = mesh.vertices[vertex_index];
 		HMM_Vec4 position = mesh_vertex.position;
 		convex_hull_points.emplace_back(JPH::Vec3(position.X, position.Y, position.Z));
 	}
 
-	// Create the settings object for a convex hull
-    JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
-
-	// Create the shape
+	JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
 	JPH::ShapeSettings::ShapeResult shape_result = shape_settings.Create();
 
 	const Transform& current_transform = in_object.current_transform;
@@ -222,28 +229,25 @@ void object_add_jolt_body(Object& in_object)
 	JPH::Vec3 object_location(current_transform.location.X, current_transform.location.Y, current_transform.location.Z);
 	JPH::Quat object_rotation(current_transform.rotation.X, current_transform.rotation.Y, current_transform.rotation.Z, current_transform.rotation.W);
 
-	// Create the settings for the body itself. Note that here you can also set other properties like the restitution / friction.
 	JPH::BodyCreationSettings body_creation_settings(
-		scaled_shape_result.Get(), 
+		scaled_shape_result.Get(),
 		object_location,
-		object_rotation, 
-		in_object.rigid_body.is_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static, 
+		object_rotation,
+		in_object.rigid_body.is_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
 		in_object.rigid_body.is_dynamic ? Layers::MOVING : Layers::NON_MOVING
 	);
 
-	// Set Rigid Body Mass 
+	// Set Rigid Body Mass
 	JPH::MassProperties msp;
-	msp.ScaleToMass(in_object.rigid_body.mass); 
-
+	msp.ScaleToMass(in_object.rigid_body.mass);
 	body_creation_settings.mMassPropertiesOverride = msp;
 	body_creation_settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
 
 	// Note that if we run out of bodies this can return nullptr
-	in_object.rigid_body.jolt_body = body_interface.CreateBody(body_creation_settings); 
+	in_object.rigid_body.jolt_body = body_interface.CreateBody(body_creation_settings);
 
-	// Actually add the body to the simulation
 	body_interface.AddBody(
-		in_object.rigid_body.jolt_body->GetID(), 
+		in_object.rigid_body.jolt_body->GetID(),
 		in_object.rigid_body.is_dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate
 	);
 }
@@ -258,7 +262,6 @@ void object_remove_jolt_body(Object& in_object)
 
 	if (in_object.rigid_body.jolt_body == nullptr)
 	{
-
 		printf("jolt_remove_body error: in_object's rigid_body doesn't have a jolt_body\n");
 		return;
 	}
@@ -269,29 +272,55 @@ void object_remove_jolt_body(Object& in_object)
 	in_object.rigid_body.jolt_body = nullptr;
 }
 
+// Recreates the body from current_transform (Ctrl+R restores the transform
+// first, so this rebuilds the body at the initial pose)
 void object_reset_jolt_body(Object& in_object)
 {
 	object_remove_jolt_body(in_object);
 	object_add_jolt_body(in_object);
 }
 
-void object_add_character(Object& in_object, const CharacterSettings& in_settings)
+// Physics -> object transform writeback (location + rotation only)
+void object_copy_physics_transform(Object& in_object, JPH::BodyInterface& in_body_interface)
 {
-	in_object.character = character_create(jolt_state, in_settings);
-	in_object.has_character = true;
+	if (in_object.has_rigid_body && in_object.rigid_body.jolt_body)
+	{
+		const JPH::BodyID body_id = in_object.rigid_body.jolt_body->GetID();
+		JPH::RVec3 body_position;
+		JPH::Quat body_rotation;
+		in_body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
+
+		Transform& transform = in_object.current_transform;
+		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+	}
+	else if (in_object.has_character && in_object.character.jph_character)
+	{
+		JPH::RVec3 body_position;
+		JPH::Quat body_rotation;
+		in_object.character.jph_character->GetPositionAndRotation(body_position, body_rotation);
+
+		Transform& transform = in_object.current_transform;
+		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
+		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
+	}
 }
 
-void object_remove_character(Object& in_object)
+bool object_is_sun_light(const Object& in_object)
 {
-	character_destroy(in_object.character);
-	in_object.has_character = false;
-	in_object.character = {};
+	return in_object.has_light && in_object.light.type == LightType::Sun;
+}
+
+BoundingBox object_get_bounding_box(const Object& in_object)
+{
+	assert(in_object.has_mesh);
+	return bounding_box_transform(in_object.mesh.bounding_box, in_object.current_transform);
 }
 
 void object_add_camera_control(Object& in_object, const CameraControlSettings& in_settings)
 {
-	in_object.camera_control = camera_control_create(in_settings);
 	in_object.has_camera_control = true;
+	in_object.camera_control = camera_control_create(in_settings);
 }
 
 void object_remove_camera_control(Object& in_object)
@@ -300,7 +329,7 @@ void object_remove_camera_control(Object& in_object)
 	in_object.camera_control = {};
 }
 
-geometry_ObjectData_t object_make_render_data(const Object& in_object)
+HMM_Mat4 object_get_model_matrix(const Object& in_object)
 {
 	const Transform& current_transform = in_object.current_transform;
 	HMM_Vec4 location = current_transform.location;
@@ -311,36 +340,41 @@ geometry_ObjectData_t object_make_render_data(const Object& in_object)
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
 
-	// Just set to first material index for now
-	int material_index 	= (in_object.has_mesh && in_object.mesh.material_indices_count > 0)
-						? in_object.mesh.material_indices[0] 
-						: -1;
+	return HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));
+}
 
-	return (geometry_ObjectData_t) {
+// Builds this object's row of the render-object snapshot SSBO
+// (port of game/src/game_object/game_object.h:303-324)
+ObjectData object_make_render_data(const Object& in_object)
+{
+	const Transform& current_transform = in_object.current_transform;
+	HMM_Vec4 location = current_transform.location;
+	HMM_Quat rotation = current_transform.rotation;
+	HMM_Vec3 scale = current_transform.scale;
+
+	HMM_Mat4 scale_matrix = HMM_Scale(HMM_V3(scale.X, scale.Y, scale.Z));
+	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
+	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
+
+	// Just set to first material index for now (game/ parity — per-face
+	// materials are not supported)
+	int material_index = (in_object.has_mesh && in_object.mesh.material_indices_count > 0)
+		? in_object.mesh.material_indices[0]
+		: -1;
+
+	return (ObjectData) {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
 		.rotation_matrix = rotation_matrix,
 		.material_index = material_index,
 	};
 }
 
-void object_update_storage_buffer(Object& in_object)
-{
-	geometry_ObjectData_t object_data = object_make_render_data(in_object);
-
-	in_object.storage_buffer.update_gpu_buffer(
-		(sg_range){
-			.ptr = &object_data,
-			.size = sizeof(geometry_ObjectData_t),
-		}
-	);
-}
-
 // Partially creates an object, but doesn't set up optional data (mesh, light, etc.)
 Object object_create(
-	i32 unique_id,	
+	i32 unique_id,
 	char* name,
 	bool visibility,
-	HMM_Vec4 location, 
+	HMM_Vec4 location,
 	HMM_Quat rotation,
 	HMM_Vec3 scale
 )
@@ -357,19 +391,6 @@ Object object_create(
 		.visibility = visibility,
 		.initial_transform = transform,
 		.current_transform = transform,
-		.render_object_index = -1,
-
-		// Create our dynamic storage buffer and mark it for update later on the game thread
-		.storage_buffer = GpuBuffer((GpuBufferDesc<geometry_ObjectData_t>){
-			.data = nullptr,
-			.size = sizeof(geometry_ObjectData_t),
-			.usage = {
-				.storage_buffer = true,
-				.stream_update = true,
-			},
-			.label = "Object::storage_buffer",
-		}),
-		.storage_buffer_needs_update = true,
 
 		// No mesh yet
 		.has_mesh = false,
@@ -378,19 +399,13 @@ Object object_create(
 		// No light yet
 		.has_light = false,
 		.light = {},
-
-		// No rigid body yet
-		.has_rigid_body = false,
-		.rigid_body = {},
-
-		// No armature yet
-		.has_armature = false,
-		.armature = {},
 	};
 
 	return out_object;
 }
 
+// Frees armature bones/clips (heap name strings + matrix arrays)
+// (port of game/src/game_object/game_object.h:394-416)
 void object_cleanup_armature(Object& in_object)
 {
 	if (!in_object.has_armature)
@@ -415,17 +430,15 @@ void object_cleanup_armature(Object& in_object)
 	in_object.has_armature = false;
 }
 
-// Cleans up data on object
-void object_cleanup_gpu_resources(Object& in_object)
+// Cleans up data on object. GPU buffer destruction is deferred through the
+// deletion queue, so this is safe to call while frames are in flight.
+void object_cleanup(Object& in_object)
 {
-	in_object.storage_buffer.destroy_gpu_buffer();
 	free(in_object.name);
 	in_object.name = nullptr;
 
 	if (in_object.has_mesh)
 	{
-		mesh_cleanup_tessellated_geometry(in_object.mesh);
-
 		free(in_object.mesh.indices);
 		in_object.mesh.index_buffer.destroy_gpu_buffer();
 
@@ -442,22 +455,17 @@ void object_cleanup_gpu_resources(Object& in_object)
 		{
 			free(in_object.mesh.skinned_vertices);
 			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
-			free(in_object.mesh.skin_matrices);
-			in_object.mesh.skin_matrix_buffer.destroy_gpu_buffer();
 			in_object.mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
+			free(in_object.mesh.skin_matrices);
 		}
 
 		free(in_object.mesh.material_indices);
+		mesh_cleanup_tessellated_geometry(in_object.mesh);
 	}
 
 	object_cleanup_armature(in_object);
-}
 
-void object_cleanup(Object& in_object)
-{
-	object_cleanup_gpu_resources(in_object);
-
-	if (in_object.has_rigid_body)
+	if (in_object.has_rigid_body && in_object.rigid_body.jolt_body != nullptr)
 	{
 		object_remove_jolt_body(in_object);
 	}
@@ -470,32 +478,5 @@ void object_cleanup(Object& in_object)
 	if (in_object.has_camera_control)
 	{
 		object_remove_camera_control(in_object);
-	}
-}
-
-void object_copy_physics_transform(Object& in_object, JPH::BodyInterface& in_body_interface)
-{
-	if (in_object.has_rigid_body && in_object.rigid_body.jolt_body)
-	{
-		const JPH::BodyID body_id = in_object.rigid_body.jolt_body->GetID();
-		JPH::RVec3 body_position;
-		JPH::Quat body_rotation;
-		in_body_interface.GetPositionAndRotation(body_id, body_position, body_rotation);
-
-		// Update Transform location and rotation and mark storage buffer for update
-		Transform& transform = in_object.current_transform;
-		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
-	}
-	else if (in_object.has_character && in_object.character.jph_character)
-	{
-		JPH::RVec3 body_position;
-		JPH::Quat body_rotation;
-		in_object.character.jph_character->GetPositionAndRotation(body_position, body_rotation);
-
-		// Update Transform location and rotation and mark storage buffer for update
-		Transform& transform = in_object.current_transform;
-		transform.location = HMM_V4(body_position.GetX(), body_position.GetY(), body_position.GetZ(), 1.0);
-		transform.rotation = HMM_Q(body_rotation.GetX(), body_rotation.GetY(), body_rotation.GetZ(), body_rotation.GetW());
 	}
 }

@@ -1,188 +1,280 @@
 #pragma once
 
-#include <optional>
-
-#include "geometry.compiled.h"
-
+#include "core/types.h"
+#include "render/vulkan_context.h"
 #include "render/render_types.h"
-#include "render/render_pass.h"
+#include "render/shader_module.h"
+#include "render/frame_data.h"
+#include "game_object/mesh.h"
 
-namespace GeometryPass
+// Deferred geometry pass: writes the 4-attachment G-buffer (see
+// geometry.frag for the layout). Same descriptor set 0 (layout A) and push
+// constants as the old forward pass; materials/bindless textures are baked
+// into the G-buffer here and consumed by the lighting pass.
+
+struct GeometryPassPushConstants
 {
-	// this is lazily created the first time we request the GeometryPass desc
-	optional<sg_shader> shader;		
-	optional<sg_shader> skinned_shader;
-	map<sg_pixel_format, sg_pipeline> skinned_pipelines;
-	optional<sg_shader> wireframe_shader;
-	optional<sg_pipeline> wireframe_pipeline;
+	i32 object_index;
+	i32 skin_matrix_offset;	// arena offset for skinned draws; ignored otherwise
+	i32 skinning_debug_view;
+	i32 _pad0;
+};
+static_assert(sizeof(GeometryPassPushConstants) == 16, "Geometry push constants must match GLSL");
 
-	const i32 num_pass_outputs = 4;
+struct GeometryPass
+{
+	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkPipeline skinned_pipeline = VK_NULL_HANDLE;
 
-	sg_pipeline_desc make_pipeline_desc(sg_pixel_format depth_format)
-	{
-		if (!shader.has_value())
+	// Bind-on-change tracker, reset each pass begin
+	VkPipeline bound_pipeline = VK_NULL_HANDLE;
+};
+
+static GeometryPass geometry_pass;
+
+// Builds one geometry pipeline variant (static or skinned vertex input)
+static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
+{
+	VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vertex_shader_path);
+	VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/geometry.frag.spv");
+
+	VkPipelineShaderStageCreateInfo shader_stages[] = {
 		{
-			shader = sg_make_shader(geometry_geometry_shader_desc(sg_query_backend()));
-		}
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = vertex_module,
+			.pName = "main",
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = fragment_module,
+			.pName = "main",
+		},
+	};
 
-		return (sg_pipeline_desc) {
-			.shader = shader.value(),
-			.layout = {
-				.buffers[0].stride = sizeof(Vertex),
-				.attrs = {
-					[ATTR_geometry_geometry_position].format = SG_VERTEXFORMAT_FLOAT4,
-					[ATTR_geometry_geometry_normal].format   = SG_VERTEXFORMAT_FLOAT4,
-					[ATTR_geometry_geometry_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
-				}
-			},
-			.depth = {
-				.pixel_format = depth_format,
-				.compare = Render::DEPTH_COMPARE_FUNC, // Inverse Depth
-				.write_enabled = true,
-			},
-			.color_count = num_pass_outputs,
-			.colors[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // Color
-			},
-			.colors[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Position
-			},
-			.colors[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Normal
-			},
-			.colors[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // (Roughness, Metallic, Emissive, <Unused>)
-			},
-			.index_type = SG_INDEXTYPE_UINT32,
-			.cull_mode = SG_CULLMODE_NONE,
-			.label = "geometry-pipeline"
+	VkDynamicState dynamic_states[] = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR,
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamic_state = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = sizeof(dynamic_states) / sizeof(dynamic_states[0]),
+		.pDynamicStates = dynamic_states,
+	};
+
+	VkVertexInputBindingDescription vertex_bindings[] = {
+		{
+			.binding = 0,
+			.stride = sizeof(Vertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
+		{
+			.binding = 1,
+			.stride = sizeof(SkinnedVertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
+	};
+
+	VkVertexInputAttributeDescription vertex_attributes[] = {
+		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, position) },
+		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, normal) },
+		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, texcoord) },
+		{ .location = 3, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_indices) },
+		{ .location = 4, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_weights) },
+	};
+
+	VkPipelineVertexInputStateCreateInfo vertex_input = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = in_skinned ? 2u : 1u,
+		.pVertexBindingDescriptions = vertex_bindings,
+		.vertexAttributeDescriptionCount = in_skinned ? 5u : 3u,
+		.pVertexAttributeDescriptions = vertex_attributes,
+	};
+
+	VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.primitiveRestartEnable = VK_FALSE,
+	};
+
+	VkPipelineViewportStateCreateInfo viewport = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		.viewportCount = 1,
+		.scissorCount = 1,
+	};
+
+	// CULL_NONE: game/ parity (geometry_pass.h uses SG_CULLMODE_NONE)
+	VkPipelineRasterizationStateCreateInfo rasterization = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL,
+		.cullMode = VK_CULL_MODE_NONE,
+		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.lineWidth = 1.0f,
+	};
+
+	VkPipelineMultisampleStateCreateInfo multisampling = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+	};
+
+	VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_TRUE,
+		.depthWriteEnable = VK_TRUE,
+		.depthCompareOp = Render::DEPTH_COMPARE_OP,
+	};
+
+	VkPipelineColorBlendAttachmentState color_blend_attachments[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 attachment_idx = 0; attachment_idx < Render::GBUFFER_OUTPUT_COUNT; ++attachment_idx)
+	{
+		color_blend_attachments[attachment_idx] = (VkPipelineColorBlendAttachmentState) {
+			.blendEnable = VK_FALSE,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
+							| VK_COLOR_COMPONENT_G_BIT
+							| VK_COLOR_COMPONENT_B_BIT
+							| VK_COLOR_COMPONENT_A_BIT,
 		};
 	}
 
-	RenderPassDesc make_render_pass_desc(sg_pixel_format depth_format)
+	VkPipelineColorBlendStateCreateInfo color_blending = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		.attachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pAttachments = color_blend_attachments,
+	};
+
+	VkFormat color_formats[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 format_idx = 0; format_idx < Render::GBUFFER_OUTPUT_COUNT; ++format_idx)
 	{
-		return (RenderPassDesc) {
-			.pipeline_desc = GeometryPass::make_pipeline_desc(depth_format),
-			.num_outputs = num_pass_outputs,
-			.outputs[0] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // Color
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 1.0},
-			},
-			.outputs[1] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Position
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},
-			.outputs[2] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // World Normal
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},
-			.outputs[3] = {
-				.pixel_format = SG_PIXELFORMAT_RGBA32F, // (Roughness, Metallic, Emissive, <Unused>)
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = {0.0, 0.0, 0.0, 0.0},
-			},	
-			.depth_output = {
-				.pixel_format = depth_format,
-				.load_action = SG_LOADACTION_CLEAR,
-				.store_action = SG_STOREACTION_STORE,
-				.clear_value = Render::DEPTH_CLEAR_VALUE,
-			},
-			.debug_label = "Geometry",
-		};
+		color_formats[format_idx] = Render::GBUFFER_FORMAT;
 	}
 
-	sg_pipeline get_skinned_pipeline(sg_pixel_format depth_format)
+	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pColorAttachmentFormats = color_formats,
+		.depthAttachmentFormat = Render::SCENE_DEPTH_FORMAT,
+	};
+
+	VkGraphicsPipelineCreateInfo pipeline_create_info = {
+		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+		.pNext = &pipeline_rendering_create_info,
+		.stageCount = 2,
+		.pStages = shader_stages,
+		.pVertexInputState = &vertex_input,
+		.pInputAssemblyState = &input_assembly,
+		.pViewportState = &viewport,
+		.pRasterizationState = &rasterization,
+		.pMultisampleState = &multisampling,
+		.pDepthStencilState = &depth_stencil,
+		.pColorBlendState = &color_blending,
+		.pDynamicState = &dynamic_state,
+		.layout = geometry_pass.pipeline_layout,
+		.renderPass = VK_NULL_HANDLE,
+	};
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+
+	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
+	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
+
+	return pipeline;
+}
+
+void geometry_pass_init(VulkanContext* ctx)
+{
+	VkPushConstantRange push_constant_range = {
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset = 0,
+		.size = sizeof(GeometryPassPushConstants),
+	};
+
+	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &frame_data.per_frame_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &push_constant_range,
+	};
+
+	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &geometry_pass.pipeline_layout));
+
+	geometry_pass.pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry.vert.spv", /*in_skinned*/ false);
+	geometry_pass.skinned_pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry_skinned.vert.spv", /*in_skinned*/ true);
+}
+
+void geometry_pass_bind(VulkanContext* ctx)
+{
+	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+
+	geometry_pass.bound_pipeline = VK_NULL_HANDLE;
+
+	vkCmdBindDescriptorSets(
+		command_buffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		geometry_pass.pipeline_layout,
+		0, 1, &frame_data.per_frame_sets[ctx->frame_index],
+		0, nullptr
+	);
+}
+
+// Lazy GPU buffer creation happens here, on the main thread
+void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index, bool in_skinning_debug_view)
+{
+	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+
+	MeshRenderView render_view = mesh_get_render_view(in_mesh);
+	const bool skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
+	if (skinned && in_mesh.skin_matrix_arena_offset < 0)
 	{
-		if (!skinned_shader.has_value())
-		{
-			skinned_shader = sg_make_shader(geometry_skinned_geometry_shader_desc(sg_query_backend()));
-		}
-
-		if (skinned_pipelines.find(depth_format) != skinned_pipelines.end())
-		{
-			return skinned_pipelines[depth_format];
-		}
-
-		{
-			sg_pipeline_desc desc = {};
-			desc.shader = skinned_shader.value();
-			desc.layout.buffers[0].stride = sizeof(Vertex);
-			desc.layout.buffers[1].stride = sizeof(SkinnedVertex);
-			desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT2;
-			desc.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[3].buffer_index = 1;
-			desc.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT4;
-			desc.layout.attrs[4].buffer_index = 1;
-			desc.depth.pixel_format = depth_format;
-			desc.depth.compare = Render::DEPTH_COMPARE_FUNC;
-			desc.depth.write_enabled = true;
-			desc.color_count = num_pass_outputs;
-			desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA32F;
-			desc.colors[1].pixel_format = SG_PIXELFORMAT_RGBA32F;
-			desc.colors[2].pixel_format = SG_PIXELFORMAT_RGBA32F;
-			desc.colors[3].pixel_format = SG_PIXELFORMAT_RGBA32F;
-			desc.index_type = SG_INDEXTYPE_UINT32;
-			desc.cull_mode = SG_CULLMODE_NONE;
-			desc.label = "skinned-geometry-pipeline";
-			skinned_pipelines[depth_format] = sg_make_pipeline(desc);
-		}
-
-		return skinned_pipelines[depth_format];
+		return;
 	}
 
-	sg_pipeline get_wireframe_pipeline(sg_pixel_format depth_format)
+	VkPipeline wanted_pipeline = skinned ? geometry_pass.skinned_pipeline : geometry_pass.pipeline;
+	if (geometry_pass.bound_pipeline != wanted_pipeline)
 	{
-		if (!wireframe_shader.has_value())
-		{
-			wireframe_shader = sg_make_shader(geometry_wireframe_shader_desc(sg_query_backend()));
-		}
-
-		if (!wireframe_pipeline.has_value())
-		{
-			wireframe_pipeline = sg_make_pipeline((sg_pipeline_desc) {
-				.shader = wireframe_shader.value(),
-				.layout = {
-					.buffers[0].stride = sizeof(Vertex),
-					.attrs = {
-						[ATTR_geometry_wireframe_position].format = SG_VERTEXFORMAT_FLOAT4,
-						[ATTR_geometry_wireframe_normal].format   = SG_VERTEXFORMAT_FLOAT4,
-						[ATTR_geometry_wireframe_texcoord].format = SG_VERTEXFORMAT_FLOAT2,
-					}
-				},
-				.primitive_type = SG_PRIMITIVETYPE_LINES,
-				.depth = {
-					.pixel_format = depth_format,
-					.compare = Render::DEPTH_COMPARE_FUNC,
-					.write_enabled = false,
-				},
-				.color_count = num_pass_outputs,
-				.colors[0] = {
-					.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				},
-				.colors[1] = {
-					.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				},
-				.colors[2] = {
-					.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				},
-				.colors[3] = {
-					.pixel_format = SG_PIXELFORMAT_RGBA32F,
-				},
-				.index_type = SG_INDEXTYPE_UINT32,
-				.cull_mode = SG_CULLMODE_NONE,
-				.label = "geometry-wireframe-pipeline",
-			});
-		}
-
-		return wireframe_pipeline.value();
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
+		geometry_pass.bound_pipeline = wanted_pipeline;
 	}
+
+	GeometryPassPushConstants push_constants = {
+		.object_index = in_object_index,
+		.skin_matrix_offset = skinned ? in_mesh.skin_matrix_arena_offset : -1,
+		.skinning_debug_view = in_skinning_debug_view ? 1 : 0,
+		._pad0 = 0,
+	};
+
+	vkCmdPushConstants(
+		command_buffer,
+		geometry_pass.pipeline_layout,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		0,
+		sizeof(push_constants),
+		&push_constants
+	);
+
+	VkBuffer vertex_buffer = render_view.vertex_buffer;
+	VkDeviceSize vertex_buffer_offset = 0;
+	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_buffer_offset);
+
+	if (skinned)
+	{
+		VkBuffer skinned_vertex_buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
+		VkDeviceSize skinned_offset = 0;
+		vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+	}
+
+	vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+	vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+}
+
+void geometry_pass_shutdown(VulkanContext* ctx)
+{
+	vkDestroyPipeline(ctx->device, geometry_pass.skinned_pipeline, nullptr);
+	vkDestroyPipeline(ctx->device, geometry_pass.pipeline, nullptr);
+	vkDestroyPipelineLayout(ctx->device, geometry_pass.pipeline_layout, nullptr);
 }

@@ -2,8 +2,8 @@
 
 #include "core/types.h"
 #include "handmade_math/HandmadeMath.h"
-#include "shaders/shader_common.h"
 
+// Identical 48-byte layout to game/'s Vertex so flatbuffer parse code copies untouched
 struct Vertex
 {
 	HMM_Vec4 position;
@@ -11,59 +11,47 @@ struct Vertex
 	HMM_Vec2 texcoord;
 	f32 _padding[2];
 };
+static_assert(sizeof(Vertex) == 48, "Vertex must stay 48 bytes (matches game/ + shader vertex input layout)");
 
+// Per-vertex skinning data (second vertex buffer for skinned draws)
 struct SkinnedVertex
 {
 	HMM_Vec4 joint_indices;
 	HMM_Vec4 joint_weights;
 };
+static_assert(sizeof(SkinnedVertex) == 32, "SkinnedVertex must match the skinned vertex input layout");
 
-static constexpr i32 NUM_CUBE_FACES = 6;
-
-#if defined(SOKOL_D3D11) || defined(SOKOL_WGPU) || defined(SOKOL_METAL)
-    /* These backends use [0, 1] depth range */
-    #define PERSPECTIVE_FUNCTION HMM_Perspective_RH_ZO
-#elif defined(SOKOL_GLCORE33) || defined(SOKOL_GLES2) || defined(SOKOL_GLES3) || defined(SOKOL_VULKAN)
-    /* These backends use [-1, 1] depth range */
-    #define PERSPECTIVE_FUNCTION HMM_Perspective_RH_NO
-#else
-    /* Fallback to the generic version or NO if unknown */
-    #define PERSPECTIVE_FUNCTION HMM_Perspective_RH_NO
-#endif
+// Vulkan uses [0, 1] clip-space depth. Reverse-Z (game/ USE_INVERSE_DEPTH
+// parity): far/near swapped in the projection, GREATER compare, clear 0.
+// Better depth precision and required by the ported pass-chain math
+// (sky draws at z=0, shadow receiver depth = 1 - ndc.z, ...).
+#define PERSPECTIVE_FUNCTION HMM_Perspective_RH_ZO
 
 HMM_Mat4 mat4_perspective(f32 in_fov, f32 in_aspect_ratio)
-{	
+{
 	const f32 projection_near = 0.01f;
 	const f32 projection_far = 10000.0f;
-
-#if USE_INVERSE_DEPTH
 	return PERSPECTIVE_FUNCTION(in_fov, in_aspect_ratio, projection_far, projection_near);
-#else
-	return PERSPECTIVE_FUNCTION(in_fov, in_aspect_ratio, projection_near, projection_far);
-#endif
 }
 
 namespace Render
 {
-#if USE_INVERSE_DEPTH
-	constexpr sg_compare_func DEPTH_COMPARE_FUNC = SG_COMPAREFUNC_GREATER_EQUAL;
-	constexpr sg_color DEPTH_CLEAR_VALUE = {0.0, 0.0, 0.0, 0.0};
-#else
-	constexpr sg_compare_func DEPTH_COMPARE_FUNC = SG_COMPAREFUNC_LESS_EQUAL;
-	constexpr sg_color DEPTH_CLEAR_VALUE = {1.0, 1.0, 1.0, 1.0};
-#endif
+	constexpr VkCompareOp DEPTH_COMPARE_OP = VK_COMPARE_OP_GREATER_OR_EQUAL;
+	constexpr f32 DEPTH_CLEAR_VALUE = 0.0f;
 
-#if defined(SOKOL_METAL) || defined(SOKOL_D3D11) || defined(SOKOL_WGPU)
-	HMM_Vec3 CUBE_FORWARD_AND_UP[NUM_CUBE_FACES][2] = {
-		{ {  1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } }, // +X (Right)  
-		{ { -1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } }, // -X (Left)   
-		{ {  0.0f,  1.0f,  0.0f }, {  0.0f,  0.0f,  1.0f } }, // +Y (Back)   
-		{ {  0.0f, -1.0f,  0.0f }, {  0.0f,  0.0f, -1.0f } }, // -Y (Front)
-		{ {  0.0f,  0.0f,  1.0f }, {  0.0f, -1.0f,  0.0f } }, // +Z (Top)    
-		{ {  0.0f,  0.0f, -1.0f }, {  0.0f, -1.0f,  0.0f } }, // -Z (Bottom) 
-	};
-#else // GL
-	#error generate proper cube face forward and up vectors for GL backend
-#endif
+	// Internal scene target: HDR-capable for future lighting; the copy pass
+	// samples linear values and the sRGB swapchain view encodes on write
+	constexpr VkFormat SCENE_COLOR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+	constexpr VkFormat SCENE_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+
+	// G-buffer attachments (game/ parity: 4x RGBA32F)
+	constexpr VkFormat GBUFFER_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
+	constexpr i32 GBUFFER_OUTPUT_COUNT = 4;
+
+	// EVSM4 moments (warped depths + second moments)
+	constexpr VkFormat SHADOW_MOMENTS_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+	// Single-channel occlusion (game/ picks R8 when renderable + filterable —
+	// always true on MoltenVK/Metal)
+	constexpr VkFormat SSAO_FORMAT = VK_FORMAT_R8_UNORM;
 }
-

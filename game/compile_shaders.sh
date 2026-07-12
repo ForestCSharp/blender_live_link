@@ -1,36 +1,17 @@
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-BASE_DIR="${SCRIPT_DIR##*/}"
+#!/usr/bin/env bash
 
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
 
-pushd $SCRIPT_DIR/data/shaders/
+mkdir -p bin/shaders
 
-OS_ARG=$1
-echo $OS_ARG
-
-if [[ $OS_ARG = Windows ]]; then
-	SOKOL_SHDC="$SCRIPT_DIR/tools/sokol-tools/bin/win32/sokol-shdc.exe"
-	SOKOL_SLANG=hlsl5
-elif [[ $OS_ARG = Mac ]]; then
-	SOKOL_SHDC="$SCRIPT_DIR/tools/sokol-tools/bin/osx_arm64/sokol-shdc"
-	SOKOL_SLANG=metal_macos
-elif [[ $OS_ARG = Linux ]]; then
-	echo "Compiling Shaders for Linux: [TODO]"
-else
-	echo "Invalid OS Passed to game/compile_shaders.sh"
-fi
-
-for file in *.glsl; do
-	preprocessed=$SCRIPT_DIR/bin/shaders/${file%.glsl}.preprocessed.glsl
-	output="$SCRIPT_DIR/bin/shaders/${file%.glsl}.compiled.h" 
-
-	echo "compiling $file to $output"
-
-	# preprocess file
-	clang -E -P -x c "$file" -o $preprocessed
-	
-	# run sokol_shdc on preprocessed file
-	$SOKOL_SHDC -i $preprocessed -o $output --slang $SOKOL_SLANG --module ${file%.glsl}
+# Compile GLSL -> SPIR-V with glslc (from the Vulkan SDK).
+# forward.vert -> bin/shaders/forward.vert.spv
+for ext in vert frag comp; do
+	find data/shaders -name "*.$ext" | while read f; do
+		file_name=$(basename $f)
+		compiled_file="bin/shaders/$file_name.spv"
+		echo "compiling $f to $compiled_file"
+		glslc -I data/shaders --target-env=vulkan1.3 -DSHADOWS_ENABLED "$f" -o "$compiled_file"
+	done
 done
-
-popd
