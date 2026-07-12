@@ -251,9 +251,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 
 		VkApplicationInfo app_info = {
 			.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-			.pApplicationName = "Blender Game 2",
+			.pApplicationName = "Blender Game",
 			.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
-			.pEngineName = "Blender Game 2",
+			.pEngineName = "Blender Game",
 			.engineVersion = VK_MAKE_VERSION(1, 0, 0),
 			.apiVersion = VK_API_VERSION_1_3,
 		};

@@ -2652,7 +2652,7 @@ int main(int argc, char** argv)
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	GLFWwindow* window = glfwCreateWindow(state.window.width, state.window.height, "Blender Game 2", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow(state.window.width, state.window.height, "Blender Game", nullptr, nullptr);
 	if (!window)
 	{
 		printf("Failed to create GLFW window\n");
