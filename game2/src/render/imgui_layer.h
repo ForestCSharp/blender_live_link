@@ -127,36 +127,6 @@ namespace ImGuiLayer
 		ImGui::Image(texture(sampler, override_view != VK_NULL_HANDLE ? override_view : image.view), image_size(image, max_size));
 	}
 
-	inline void draw_texture_viewer(State& state, GI_Scene& gi_scene)
-	{
-		if (!state.debug_ui.show_texture_viewer) { return; }
-		ImGui::Begin("Render Texture Viewer", &state.debug_ui.show_texture_viewer);
-		RenderPass& geometry = get_render_pass(ERenderPass::Geometry);
-		for (i32 output = 0; output < Render::GBUFFER_OUTPUT_COUNT; ++output)
-		{
-			char label[32]; snprintf(label, sizeof(label), "G-buffer %d", output);
-			draw_texture(frame_data.linear_sampler, label, geometry.get_color_output(output));
-		}
-		draw_texture(frame_data.linear_sampler, "GI Lighting Atlas", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0));
-		draw_texture(frame_data.linear_sampler, "GI Depth Atlas", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1));
-		draw_texture(frame_data.linear_sampler, "Baked Sky", sky_pass.bake_render_pass.get_color_output(0));
-		draw_texture(frame_data.linear_sampler, "SSAO", get_render_pass(ERenderPass::SSAO_Blur).get_color_output(0));
-		draw_texture(frame_data.linear_sampler, "Contact Shadows", get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0));
-		GpuImage& shadow_image = get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
-		for (i32 cascade = 0; cascade < state.shadow.num_cascades && cascade < (i32) shadow_image.layer_views.length(); ++cascade)
-		{
-			char label[32]; snprintf(label, sizeof(label), "Shadow Cascade %d", cascade);
-			draw_texture(frame_data.linear_sampler, label, shadow_image, 240.0f, shadow_image.layer_views[cascade]);
-		}
-		if (state.images.items.length() > 0)
-		{
-			state.images.debug_index = CLAMP(state.images.debug_index, 0, (i32) state.images.items.length() - 1);
-			ImGui::SliderInt("Imported Image", &state.images.debug_index, 0, (i32) state.images.items.length() - 1);
-			draw_texture(frame_data.linear_sampler, "Imported Image", state.images.items[state.images.debug_index]);
-		}
-		ImGui::End();
-	}
-
 	inline void draw_controls(State& state, GI_Scene& gi_scene)
 	{
 		if (!state.debug_ui.visible) { return; }
@@ -384,10 +354,9 @@ namespace ImGuiLayer
 			ImGui::SliderInt("Image Index", &state.images.debug_index, 0, (i32) state.images.items.length() - 1, "%d", ImGuiSliderFlags_ClampOnInput);
 			draw_texture(frame_data.linear_sampler, "Imported Image", state.images.items[state.images.debug_index], 256.0f);
 		}
-		ImGui::Separator(); ImGui::Checkbox("Vulkan Texture Viewer", &state.debug_ui.show_texture_viewer);
 		ImGui::End();
+
 		draw_cpu_profiler_window();
-		draw_texture_viewer(state, gi_scene);
 
 		ImDrawList* foreground = ImGui::GetForegroundDrawList();
 		ImVec2 pos(15.0f, 15.0f);
@@ -399,6 +368,38 @@ namespace ImGuiLayer
 	inline void render(VulkanContext* ctx)
 	{
 		ImGui::Render();
+
+		// ImGui style colors are authored in display-space sRGB. Convert the
+		// packed vertex tint to linear before the Vulkan backend uploads it so
+		// the swapchain's sRGB attachment encoding produces the intended color.
+		// Texture RGB remains untouched (image vertices normally use a white
+		// tint), and alpha stays linear for correct attachment blending.
+		ImDrawData* draw_data = ImGui::GetDrawData();
+		for (ImDrawList* draw_list : draw_data->CmdLists)
+		{
+			for (ImDrawVert& vertex : draw_list->VtxBuffer)
+			{
+				const auto linearize_channel = [](u32 in_channel) -> u32
+				{
+					const f32 srgb = (f32) in_channel / 255.0f;
+					const f32 linear = srgb <= 0.04045f
+						? srgb / 12.92f
+						: powf((srgb + 0.055f) / 1.055f, 2.4f);
+					return (u32) (linear * 255.0f + 0.5f);
+				};
+
+				const u32 color = vertex.col;
+				const u32 red = linearize_channel((color >> IM_COL32_R_SHIFT) & 0xFFu);
+				const u32 green = linearize_channel((color >> IM_COL32_G_SHIFT) & 0xFFu);
+				const u32 blue = linearize_channel((color >> IM_COL32_B_SHIFT) & 0xFFu);
+				const u32 alpha = (color >> IM_COL32_A_SHIFT) & 0xFFu;
+				vertex.col = (red << IM_COL32_R_SHIFT)
+					| (green << IM_COL32_G_SHIFT)
+					| (blue << IM_COL32_B_SHIFT)
+					| (alpha << IM_COL32_A_SHIFT);
+			}
+		}
+
 		VkRenderingAttachmentInfo color_attachment = {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 			.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
@@ -415,7 +416,7 @@ namespace ImGuiLayer
 		};
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 		vkCmdBeginRendering(command_buffer, &rendering_info);
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+		ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
 		vkCmdEndRendering(command_buffer);
 	}
 
