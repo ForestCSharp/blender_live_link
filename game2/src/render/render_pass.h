@@ -169,7 +169,8 @@ struct RenderPass
 					.format = desc.outputs[output_idx].format,
 					.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
 						   | VK_IMAGE_USAGE_SAMPLED_BIT
-						   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+						   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 					.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
 					.array_layers = array_layers,
 					.cubemap = is_cubemap,

@@ -2721,6 +2721,10 @@ int main(int argc, char** argv)
 	{
 		state.shadow.debug_show_cascade_selection = true;
 	}
+	if (getenv("GAME2_HIDE_UI"))
+	{
+		state.debug_ui.visible = false;
+	}
 	if (const char* ssao_env = getenv("GAME2_SSAO"))
 	{
 		state.ssao.enable = strtol(ssao_env, nullptr, 10) != 0;

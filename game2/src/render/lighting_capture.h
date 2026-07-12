@@ -771,6 +771,26 @@ struct LightingCapture
 			vkUpdateDescriptorSets(ctx->device, 2, writes, 0, nullptr);
 		}
 
+		// Zero the octahedral atlas once so we never read garbage data
+		vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
+		{
+			const VkClearColorValue clear_value = {{ 0.0f, 0.0f, 0.0f, 0.0f }};
+			const VkImageSubresourceRange clear_range = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = VK_REMAINING_ARRAY_LAYERS,
+			};
+			for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+			{
+				GpuImage& atlas_image = cube_to_oct_pass.get_color_output(output_idx);
+				gpu_image_transition(in_command_buffer, atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+				vkCmdClearColorImage(in_command_buffer, atlas_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &clear_range);
+				gpu_image_transition(in_command_buffer, atlas_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			}
+		});
+
 		is_initialized = true;
 	}
 
