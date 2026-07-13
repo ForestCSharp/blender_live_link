@@ -25,7 +25,11 @@ GAME_DIR=game
 GAME_BRANCH_LABEL="Game (Vulkan)"
 BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
-NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
+if [[ $OS = Linux ]]; then
+	NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_linux_lite/bin/blender"
+else
+	NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
+fi
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 EXTENSION_ZIP_PATH="$SCRIPT_DIR/blend_src/$BASE_DIR.zip"
 PARALLEL_STATUS_DIR=""
@@ -246,10 +250,9 @@ with_native_blender_profile() {
 }
 
 install_and_launch_native_blender() {
-	if [[ $OS != Mac ]]; then
-		echo "Warning: native Blender launch is currently implemented only for Mac."
-		echo "Warning: skipping local Blender extension install/launch on $OS."
-		return
+	if [[ $OS != Mac && $OS != Linux ]]; then
+		echo "Error: native Blender launch is unsupported on $OS."
+		return 1
 	fi
 
 	if [[ ! -x "$NATIVE_BLENDER_BINARY" ]]; then
@@ -259,6 +262,10 @@ install_and_launch_native_blender() {
 	fi
 
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
+
+	if [[ $OS = Linux ]]; then
+		pkill -x blender 2> /dev/null || true
+	fi
 
 	echo "Installing extension into local Blender profile at $NATIVE_BLENDER_USER_DIR"
 	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "${install_args[@]}" || return
@@ -698,8 +705,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS != Mac ]]; then
-	echo "Error: native Blender compilation is currently implemented only for macOS."
+if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS != Mac && $OS != Linux ]]; then
+	echo "Error: native Blender compilation is currently implemented only for macOS and Linux."
 	echo "Use ./build.sh -python on $OS, or ./build.sh -g to build only the game."
 	exit 1
 fi

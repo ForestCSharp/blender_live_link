@@ -68,14 +68,15 @@ For a deeper protocol and runtime ownership contract, see
 
 ## Platform Notes
 
-- macOS is the primary native Blender build path.
+- macOS and Linux support native Blender builds with the lightweight Blender
+  configuration.
 - Windows is supported by the main build script for the game and Python
   extension path. Use `./build.sh -python` from a shell environment capable of
   running `bash` scripts, such as Git Bash.
 - Linux builds the Vulkan game with the vendored GLFW X11 backend. Wayland-only
   environments need XWayland available.
-- Linux native Blender compilation is not implemented. Use `./build.sh -python`
-  with `blender` on `PATH`, or `./build.sh -g` for the game alone.
+- Linux native Blender builds use Blender's precompiled `linux_x64` libraries
+  and include both Wayland and X11 window-system support.
 - The Blender extension requires Blender `4.2.0` or newer.
 - The native Blender source build defaults to Blender `5.1.2`.
 
@@ -90,6 +91,16 @@ Common requirements:
 - `glslc` and Vulkan development headers
 - X11 development headers on Linux
 - Blender installed in the default system location when using `./build.sh -python`
+
+Native Blender builds on Linux require:
+
+- An x86-64 host
+- `git`, Git LFS, `cmake`, `make`, `ninja`, `python3`, `patch`, and `pkg-config`
+- Wayland, X11, XKB, EGL/OpenGL, and Vulkan development headers
+
+The first Linux native build downloads Blender's matching precompiled library
+bundle into `blend_src/blender/lib/linux_x64`. Later builds reuse that bundle
+and Ninja's output under `blend_src/build_linux_lite`.
 
 Native Blender builds on macOS also require Blender build tooling used by
 `build_blend_src.sh`, including:
@@ -113,7 +124,7 @@ Run commands from the repository root.
 ./build.sh
 ```
 
-On macOS, this builds FlatBuffers schemas, builds or updates the local native
+On macOS and Linux, this builds FlatBuffers schemas, builds or updates the local native
 Blender integration, packages and installs the Blender extension into the local
 Blender profile, and launches Blender with `blend_files/test_file.blend`. After
 FlatBuffers schemas are generated, the Blender-side build/install/launch branch
@@ -219,6 +230,12 @@ The default is the pinned Blender source version `5.1.2`. The script refuses to
 silently replace an existing `blend_src/blender` checkout with a different
 version; move that directory aside first if you intentionally want to rebuild
 against another Blender release.
+
+Linux checks out the exact Blender Git tag and uses Blender's official
+precompiled-library update tool. The application itself is built with Blender's
+`lite` Ninja profile, with Wayland and X11 enabled. Features disabled by that
+profile, such as Cycles, USD, OpenVDB, and most media/simulation integrations,
+are intentionally unavailable in the native development build.
 
 ## More Documentation
 

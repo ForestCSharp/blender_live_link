@@ -2,7 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
+case "$(uname -s)" in
+	Linux*) NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_linux_lite/bin/blender" ;;
+	Darwin*) NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender" ;;
+	*)
+		echo "Error: native Blender parity testing is supported only on macOS and Linux."
+		exit 1
+		;;
+esac
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 PARITY_LOG_DIR="$SCRIPT_DIR/blend_src/parity_logs"
 

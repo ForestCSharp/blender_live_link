@@ -49,9 +49,12 @@ targets=(
 	"$BLEND_SRC_DIR/build_darwin"
 	"$BLEND_SRC_DIR/build_macos"
 	"$BLEND_SRC_DIR/build_macos_lite"
+	"$BLEND_SRC_DIR/build_linux"
+	"$BLEND_SRC_DIR/build_linux_lite"
 	"$BLEND_SRC_DIR/tools"
 	"$BLENDER_SRC_DIR/lib/macos_arm64"
 	"$BLENDER_SRC_DIR/lib/macos_x64"
+	"$BLENDER_SRC_DIR/lib/linux_x64"
 )
 
 for target in "${targets[@]}"; do
