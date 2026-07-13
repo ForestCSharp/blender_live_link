@@ -97,7 +97,7 @@ namespace GpuSkinning
 			},
 			.layout = pipeline_layout,
 		};
-		VK_CHECK(vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+		VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 		vkDestroyShaderModule(ctx->device, compute_module, nullptr);
 	}
 
@@ -167,7 +167,7 @@ namespace GpuSkinning
 				.pBufferInfo = &buffer_infos[binding_idx],
 			};
 		}
-		vkUpdateDescriptorSets(ctx->device, 4, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 4, writes);
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, nullptr);
@@ -184,7 +184,7 @@ namespace GpuSkinning
 				.skin_matrix_offset = in_mesh.skin_matrix_arena_offset,
 			};
 			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vkCmdDispatch(command_buffer, group_count, 1, 1);
+			vulkan_cmd_dispatch(ctx, group_count, 1, 1);
 		}
 
 		in_mesh.skinned_vertex_cache_valid = true;

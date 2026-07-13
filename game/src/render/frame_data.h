@@ -53,6 +53,7 @@ void frame_data_init(VulkanContext* ctx)
 			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 		};
 		VK_CHECK(vkCreateSampler(ctx->device, &sampler_create_info, nullptr, &frame_data.linear_sampler));
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_SAMPLER, (u64)frame_data.linear_sampler, "Shared Linear Sampler");
 	}
 
 	// Layout A (scene passes):
@@ -160,6 +161,7 @@ void frame_data_init(VulkanContext* ctx)
 			.pPoolSizes = pool_sizes,
 		};
 		VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_create_info, nullptr, &frame_data.pool));
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_DESCRIPTOR_POOL, (u64)frame_data.pool, "Frame Data Descriptor Pool");
 	}
 
 	// Allocate the per-frame sets
@@ -173,9 +175,15 @@ void frame_data_init(VulkanContext* ctx)
 				.pSetLayouts = &frame_data.per_frame_layout,
 			};
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &frame_data.per_frame_sets[frame_idx]));
+			char frame_set_name[64];
+			snprintf(frame_set_name, sizeof(frame_set_name), "Frame %u Scene Descriptor Set", frame_idx);
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_DESCRIPTOR_SET, (u64)frame_data.per_frame_sets[frame_idx], frame_set_name);
 
 			allocate_info.pSetLayouts = &frame_data.sampled_input_layout;
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &frame_data.copy_input_sets[frame_idx]));
+			char copy_set_name[64];
+			snprintf(copy_set_name, sizeof(copy_set_name), "Frame %u Copy Input Set", frame_idx);
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_DESCRIPTOR_SET, (u64)frame_data.copy_input_sets[frame_idx], copy_set_name);
 		}
 	}
 
@@ -297,7 +305,7 @@ void frame_data_update(
 		};
 	}
 
-	vkUpdateDescriptorSets(ctx->device, write_count, writes, 0, nullptr);
+	vulkan_update_descriptor_sets(ctx, write_count, writes);
 }
 
 // Points this frame's sampled-input set at an image view (used by the
@@ -319,7 +327,7 @@ void frame_data_write_copy_input(VulkanContext* ctx, VkImageView in_view)
 		.pImageInfo = &image_info,
 	};
 
-	vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+	vulkan_update_descriptor_sets(ctx, 1, &write);
 }
 
 void frame_data_shutdown(VulkanContext* ctx)

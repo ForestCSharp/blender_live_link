@@ -54,6 +54,7 @@ using std::optional;
 #include "render/gpu_buffer.h"
 #include "game_object/game_object.h"
 #include "state/state.h"
+#include "core/benchmark.h"
 #include "render/geometry_pass.h"
 #include "render/shadow_depth_pass.h"
 #include "render/shadow_blur_pass.h"
@@ -950,7 +951,7 @@ void reset_images()
 {
 	if (state.images.items.length() > 0)
 	{
-		vkDeviceWaitIdle(state.vk.device);
+		VK_CHECK(vulkan_device_wait_idle(&state.vk));
 		for (GpuImage& image : state.images.items)
 		{
 			ImGuiLayer::unregister_texture(image.view);
@@ -1225,7 +1226,7 @@ void handle_resize(bool in_force = false)
 	// Pass targets are destroyed immediately (the deletion queue handles
 	// buffers only) — idle covers render-scale changes; the window-resize
 	// path already idled inside recreate_swapchain
-	vkDeviceWaitIdle(state.vk.device);
+	VK_CHECK(vulkan_device_wait_idle(&state.vk));
 	ImGuiLayer::clear_textures();
 
 	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
@@ -2626,11 +2627,15 @@ int main(int argc, char** argv)
 	// Unbuffered stdout so logs survive crashes and external kills
 	setvbuf(stdout, nullptr, _IONBF, 0);
 
-	cxxopts::Options options("Game2", "Game that uses blender as its tooling (Vulkan)");
+	cxxopts::Options options("Game", "Game that uses Blender as its tooling (Vulkan)");
 
 	options.add_options()
 		("f,file", "File name", cxxopts::value<std::string>())
 		("p,port", "Live link TCP port", cxxopts::value<std::string>()->default_value("65432"))
+		("no-live-link", "Do not start the live-link server", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
+		("warmup-frames", "Benchmark warmup frame count", cxxopts::value<u64>()->default_value("300"))
+		("benchmark-frames", "Measured frame count; providing this enables benchmark mode", cxxopts::value<u64>())
+		("benchmark-output", "Benchmark JSON output path", cxxopts::value<std::string>()->default_value("benchmark.json"))
 	;
 
 	// First positional arg can be file to load
@@ -2644,6 +2649,17 @@ int main(int argc, char** argv)
 		state.runtime.init_file = args["f"].as<std::string>();
 	}
 	state.live_link.port = args["port"].as<std::string>();
+	const bool no_live_link = args["no-live-link"].as<bool>();
+	BenchmarkState benchmark;
+	if (args.count("benchmark-frames") > 0)
+	{
+		benchmark.configure(
+			args["warmup-frames"].as<u64>(),
+			args["benchmark-frames"].as<u64>(),
+			args["benchmark-output"].as<std::string>()
+		);
+		state.debug_ui.visible = false;
+	}
 
 	if (!glfwInit())
 	{
@@ -3066,10 +3082,15 @@ int main(int argc, char** argv)
 		}
 	}
 
-	// Start Live Link Server (Blender connects to 127.0.0.1:<port>)
-	state.live_link.thread = std::thread(live_link_thread_function);
+	// Start Live Link Server (Blender connects to 127.0.0.1:<port>). Offline
+	// benchmark runs use a captured --file update and skip the socket thread.
+	if (!no_live_link)
+	{
+		state.live_link.thread = std::thread(live_link_thread_function);
+	}
 
 	f64 last_frame_time = glfwGetTime();
+	benchmark.begin(&state.vk);
 
 	while (!glfwWindowShouldClose(window))
 	{
@@ -3086,16 +3107,27 @@ int main(int argc, char** argv)
 			glfwSetWindowSize(window, 1280, 720);
 		}
 
+		const f64 frame_start_time = glfwGetTime();
 		frame(delta_time);
+		const f64 frame_end_time = glfwGetTime();
+		benchmark.after_frame((frame_end_time - frame_start_time) * 1000.0, &state.vk);
+		if (benchmark.should_exit())
+		{
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
 	}
+	benchmark_finalize(benchmark, &state.vk);
 
 	// Tell live_link_thread we're done running and wait for it to complete.
 	// Note: like game/, the thread blocks in accept() until Blender's first
 	// connection, so quitting before any connection waits on that accept.
 	state.runtime.game_running = false;
-	state.live_link.thread.join();
+	if (!no_live_link)
+	{
+		state.live_link.thread.join();
+	}
 
-	vkDeviceWaitIdle(state.vk.device);
+	VK_CHECK(vulkan_device_wait_idle(&state.vk));
 	ImGuiLayer::shutdown();
 	GIDebugPass::shutdown(&state.vk);
 	gi_scene_cleanup(&state.vk, gi_scene);

@@ -128,7 +128,7 @@ namespace BlurPass
 			.layout = pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -152,7 +152,7 @@ namespace BlurPass
 			.blur_size = in_blur_size,
 		};
 		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	// Horizontal into the intermediate target, vertical into the final one.

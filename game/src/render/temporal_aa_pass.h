@@ -243,7 +243,7 @@ namespace TemporalAAPass
 				.layout = pipeline_layout,
 				.renderPass = VK_NULL_HANDLE,
 			};
-			VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+			VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 
 			vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 			vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -306,7 +306,7 @@ namespace TemporalAAPass
 				.pImageInfo = &image_infos[image_idx],
 			};
 		}
-		vkUpdateDescriptorSets(ctx->device, 4, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 4, writes);
 	}
 
 	inline void draw(VulkanContext* ctx)
@@ -320,7 +320,7 @@ namespace TemporalAAPass
 			0, 1, &sets[ctx->frame_index],
 			0, nullptr
 		);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	inline void shutdown(VulkanContext* ctx)

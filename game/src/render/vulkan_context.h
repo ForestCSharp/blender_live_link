@@ -1,9 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "core/types.h"
@@ -39,6 +45,31 @@ struct PendingBufferDelete
 	u64 frame_number;
 };
 
+struct VulkanMetrics
+{
+	u64 descriptor_update_calls = 0;
+	u64 descriptor_writes = 0;
+	u64 descriptors_written = 0;
+	u64 draw_calls = 0;
+	u64 dispatch_calls = 0;
+	u64 immediate_submit_count = 0;
+	u64 queue_wait_idle_count = 0;
+	u64 device_wait_idle_count = 0;
+	u64 upload_bytes = 0;
+	u64 pipeline_count = 0;
+	f64 pipeline_creation_ms = 0.0;
+};
+
+struct VulkanMemoryStats
+{
+	u64 allocation_count = 0;
+	u64 allocation_bytes = 0;
+	u64 block_count = 0;
+	u64 block_bytes = 0;
+	u64 budget_bytes = 0;
+	u64 usage_bytes = 0;
+};
+
 struct VulkanContext
 {
 	GLFWwindow* window = nullptr;
@@ -53,6 +84,9 @@ struct VulkanContext
 	VkDevice device = VK_NULL_HANDLE;
 	VkQueue graphics_queue = VK_NULL_HANDLE;
 	VmaAllocator allocator = VK_NULL_HANDLE;
+	VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
+	VkPhysicalDeviceProperties physical_device_properties = {};
+	u64 shader_build_hash = 0;
 
 	VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 	VkExtent2D swapchain_extent = {};
@@ -91,11 +125,193 @@ struct VulkanContext
 	} timestamp_frames[MAX_FRAMES_IN_FLIGHT];
 
 	StretchyBuffer<PendingBufferDelete> deletion_queue;
+	VulkanMetrics metrics;
 };
 
 // Set by vulkan_context_init; used by GpuBuffer's lazy creation (the way
 // sokol's global context backs sg_make_buffer in game/)
 static VulkanContext* g_vulkan_context = nullptr;
+
+inline u64 vulkan_hash_bytes(u64 in_hash, const void* in_data, size_t in_size)
+{
+	const u8* bytes = (const u8*)in_data;
+	for (size_t byte_index = 0; byte_index < in_size; ++byte_index)
+	{
+		in_hash ^= bytes[byte_index];
+		in_hash *= 1099511628211ull;
+	}
+	return in_hash;
+}
+
+u64 vulkan_shader_build_hash()
+{
+	u64 hash = 1469598103934665603ull;
+	std::vector<std::filesystem::path> shader_paths;
+	std::error_code error;
+	for (const auto& entry : std::filesystem::directory_iterator("bin/shaders", error))
+	{
+		if (!error && entry.is_regular_file() && entry.path().extension() == ".spv")
+		{
+			shader_paths.push_back(entry.path());
+		}
+	}
+	std::sort(shader_paths.begin(), shader_paths.end());
+	for (const std::filesystem::path& path : shader_paths)
+	{
+		const std::string path_text = path.filename().string();
+		hash = vulkan_hash_bytes(hash, path_text.data(), path_text.size());
+		std::ifstream file(path, std::ios::binary);
+		char buffer[16384];
+		while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0)
+		{
+			hash = vulkan_hash_bytes(hash, buffer, (size_t)file.gcount());
+		}
+	}
+	return hash;
+}
+
+void vulkan_set_object_name(VulkanContext* ctx, VkObjectType in_type, u64 in_handle, const char* in_name)
+{
+	if (!ctx || !vkSetDebugUtilsObjectNameEXT || in_handle == 0 || !in_name || in_name[0] == '\0')
+	{
+		return;
+	}
+	VkDebugUtilsObjectNameInfoEXT name_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+		.objectType = in_type,
+		.objectHandle = in_handle,
+		.pObjectName = in_name,
+	};
+	vkSetDebugUtilsObjectNameEXT(ctx->device, &name_info);
+}
+
+void vulkan_begin_debug_label(VulkanContext* ctx, const char* in_name)
+{
+	if (!ctx || !vkCmdBeginDebugUtilsLabelEXT || !in_name) return;
+	VkDebugUtilsLabelEXT label = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+		.pLabelName = in_name,
+		.color = { 0.25f, 0.55f, 0.9f, 1.0f },
+	};
+	vkCmdBeginDebugUtilsLabelEXT(ctx->command_buffers[ctx->frame_index], &label);
+}
+
+void vulkan_end_debug_label(VulkanContext* ctx)
+{
+	if (ctx && vkCmdEndDebugUtilsLabelEXT)
+	{
+		vkCmdEndDebugUtilsLabelEXT(ctx->command_buffers[ctx->frame_index]);
+	}
+}
+
+void vulkan_update_descriptor_sets(
+	VulkanContext* ctx,
+	u32 in_write_count,
+	const VkWriteDescriptorSet* in_writes,
+	u32 in_copy_count = 0,
+	const VkCopyDescriptorSet* in_copies = nullptr)
+{
+	ctx->metrics.descriptor_update_calls += 1;
+	ctx->metrics.descriptor_writes += in_write_count;
+	for (u32 write_index = 0; write_index < in_write_count; ++write_index)
+	{
+		ctx->metrics.descriptors_written += in_writes[write_index].descriptorCount;
+	}
+	vkUpdateDescriptorSets(ctx->device, in_write_count, in_writes, in_copy_count, in_copies);
+}
+
+VkResult vulkan_create_graphics_pipelines(
+	VulkanContext* ctx,
+	u32 in_count,
+	const VkGraphicsPipelineCreateInfo* in_infos,
+	VkPipeline* out_pipelines)
+{
+	const auto start = std::chrono::steady_clock::now();
+	VkResult result = vkCreateGraphicsPipelines(ctx->device, ctx->pipeline_cache, in_count, in_infos, nullptr, out_pipelines);
+	const auto end = std::chrono::steady_clock::now();
+	ctx->metrics.pipeline_creation_ms += std::chrono::duration<f64, std::milli>(end - start).count();
+	ctx->metrics.pipeline_count += in_count;
+	for (u32 index = 0; result == VK_SUCCESS && index < in_count; ++index)
+	{
+		char name[64];
+		snprintf(name, sizeof(name), "Graphics Pipeline %llu", (unsigned long long)(ctx->metrics.pipeline_count - in_count + index));
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_PIPELINE, (u64)out_pipelines[index], name);
+	}
+	return result;
+}
+
+VkResult vulkan_create_compute_pipelines(
+	VulkanContext* ctx,
+	u32 in_count,
+	const VkComputePipelineCreateInfo* in_infos,
+	VkPipeline* out_pipelines)
+{
+	const auto start = std::chrono::steady_clock::now();
+	VkResult result = vkCreateComputePipelines(ctx->device, ctx->pipeline_cache, in_count, in_infos, nullptr, out_pipelines);
+	const auto end = std::chrono::steady_clock::now();
+	ctx->metrics.pipeline_creation_ms += std::chrono::duration<f64, std::milli>(end - start).count();
+	ctx->metrics.pipeline_count += in_count;
+	for (u32 index = 0; result == VK_SUCCESS && index < in_count; ++index)
+	{
+		char name[64];
+		snprintf(name, sizeof(name), "Compute Pipeline %llu", (unsigned long long)(ctx->metrics.pipeline_count - in_count + index));
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_PIPELINE, (u64)out_pipelines[index], name);
+	}
+	return result;
+}
+
+void vulkan_cmd_draw(VulkanContext* ctx, u32 vertex_count, u32 instance_count, u32 first_vertex, u32 first_instance)
+{
+	ctx->metrics.draw_calls += 1;
+	vkCmdDraw(ctx->command_buffers[ctx->frame_index], vertex_count, instance_count, first_vertex, first_instance);
+}
+
+void vulkan_cmd_draw_indexed(VulkanContext* ctx, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance)
+{
+	ctx->metrics.draw_calls += 1;
+	vkCmdDrawIndexed(ctx->command_buffers[ctx->frame_index], index_count, instance_count, first_index, vertex_offset, first_instance);
+}
+
+void vulkan_cmd_dispatch(VulkanContext* ctx, u32 x, u32 y, u32 z)
+{
+	ctx->metrics.dispatch_calls += 1;
+	vkCmdDispatch(ctx->command_buffers[ctx->frame_index], x, y, z);
+}
+
+VkResult vulkan_device_wait_idle(VulkanContext* ctx)
+{
+	ctx->metrics.device_wait_idle_count += 1;
+	return vkDeviceWaitIdle(ctx->device);
+}
+
+VkResult vulkan_queue_wait_idle(VulkanContext* ctx)
+{
+	ctx->metrics.queue_wait_idle_count += 1;
+	return vkQueueWaitIdle(ctx->graphics_queue);
+}
+
+VulkanMemoryStats vulkan_context_get_memory_stats(VulkanContext* ctx)
+{
+	VulkanMemoryStats result = {};
+	if (!ctx || !ctx->allocator) return result;
+	VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
+	vmaGetHeapBudgets(ctx->allocator, budgets);
+	VkPhysicalDeviceMemoryProperties memory_properties = {};
+	vkGetPhysicalDeviceMemoryProperties(ctx->physical_device, &memory_properties);
+	for (u32 heap_index = 0; heap_index < memory_properties.memoryHeapCount; ++heap_index)
+	{
+		result.allocation_count += budgets[heap_index].statistics.allocationCount;
+		result.allocation_bytes += budgets[heap_index].statistics.allocationBytes;
+		result.block_count += budgets[heap_index].statistics.blockCount;
+		result.block_bytes += budgets[heap_index].statistics.blockBytes;
+		if (memory_properties.memoryHeaps[heap_index].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+		{
+			result.budget_bytes += budgets[heap_index].budget;
+			result.usage_bytes += budgets[heap_index].usage;
+		}
+	}
+	return result;
+}
 
 VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT in_severity,
@@ -105,6 +321,102 @@ VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
 {
 	printf("[vulkan] %s\n", in_callback_data->pMessage);
 	return VK_FALSE;
+}
+
+struct PipelineCacheFileHeader
+{
+	u32 magic = 0x47435043; // GCPC
+	u32 version = 1;
+	u32 vendor_id = 0;
+	u32 device_id = 0;
+	u32 driver_version = 0;
+	u8 pipeline_cache_uuid[VK_UUID_SIZE] = {};
+	u64 shader_build_hash = 0;
+	u64 payload_size = 0;
+};
+
+const char* vulkan_pipeline_cache_path()
+{
+	const char* override_path = getenv("GAME_PIPELINE_CACHE");
+	if (!override_path) override_path = getenv("GAME2_PIPELINE_CACHE");
+	return override_path ? override_path : "bin/pipeline_cache.bin";
+}
+
+void vulkan_context_create_pipeline_cache(VulkanContext* ctx)
+{
+	ctx->shader_build_hash = vulkan_shader_build_hash();
+	std::vector<u8> initial_data;
+	std::ifstream input(vulkan_pipeline_cache_path(), std::ios::binary);
+	if (input)
+	{
+		PipelineCacheFileHeader header = {};
+		input.read((char*)&header, sizeof(header));
+		const bool compatible = input.good()
+			&& header.magic == PipelineCacheFileHeader{}.magic
+			&& header.version == PipelineCacheFileHeader{}.version
+			&& header.vendor_id == ctx->physical_device_properties.vendorID
+			&& header.device_id == ctx->physical_device_properties.deviceID
+			&& header.driver_version == ctx->physical_device_properties.driverVersion
+			&& header.shader_build_hash == ctx->shader_build_hash
+			&& memcmp(header.pipeline_cache_uuid, ctx->physical_device_properties.pipelineCacheUUID, VK_UUID_SIZE) == 0
+			&& header.payload_size <= 128ull * 1024ull * 1024ull;
+		if (compatible)
+		{
+			initial_data.resize((size_t)header.payload_size);
+			input.read((char*)initial_data.data(), (std::streamsize)initial_data.size());
+			if (!input) initial_data.clear();
+		}
+	}
+
+	VkPipelineCacheCreateInfo create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+		.initialDataSize = initial_data.size(),
+		.pInitialData = initial_data.empty() ? nullptr : initial_data.data(),
+	};
+	VkResult create_result = vkCreatePipelineCache(ctx->device, &create_info, nullptr, &ctx->pipeline_cache);
+	if (create_result != VK_SUCCESS && !initial_data.empty())
+	{
+		printf("Pipeline cache rejected cached data; rebuilding it\n");
+		create_info.initialDataSize = 0;
+		create_info.pInitialData = nullptr;
+		VK_CHECK(vkCreatePipelineCache(ctx->device, &create_info, nullptr, &ctx->pipeline_cache));
+	}
+	else
+	{
+		VK_CHECK(create_result);
+	}
+	vulkan_set_object_name(ctx, VK_OBJECT_TYPE_PIPELINE_CACHE, (u64)ctx->pipeline_cache, "Persistent Pipeline Cache");
+	printf("Pipeline cache: %s (%zu cached bytes)\n", vulkan_pipeline_cache_path(), initial_data.size());
+}
+
+void vulkan_context_save_pipeline_cache(VulkanContext* ctx)
+{
+	if (!ctx->pipeline_cache) return;
+	size_t payload_size = 0;
+	if (vkGetPipelineCacheData(ctx->device, ctx->pipeline_cache, &payload_size, nullptr) != VK_SUCCESS || payload_size == 0)
+	{
+		return;
+	}
+	std::vector<u8> payload(payload_size);
+	if (vkGetPipelineCacheData(ctx->device, ctx->pipeline_cache, &payload_size, payload.data()) != VK_SUCCESS)
+	{
+		return;
+	}
+	payload.resize(payload_size);
+	PipelineCacheFileHeader header = {
+		.vendor_id = ctx->physical_device_properties.vendorID,
+		.device_id = ctx->physical_device_properties.deviceID,
+		.driver_version = ctx->physical_device_properties.driverVersion,
+		.shader_build_hash = ctx->shader_build_hash,
+		.payload_size = payload.size(),
+	};
+	memcpy(header.pipeline_cache_uuid, ctx->physical_device_properties.pipelineCacheUUID, VK_UUID_SIZE);
+	std::ofstream output(vulkan_pipeline_cache_path(), std::ios::binary | std::ios::trunc);
+	if (output)
+	{
+		output.write((const char*)&header, sizeof(header));
+		output.write((const char*)payload.data(), (std::streamsize)payload.size());
+	}
 }
 
 void vulkan_context_create_swapchain(VulkanContext* ctx)
@@ -165,6 +477,9 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 	ctx->swapchain_image_views.resize(swapchain_image_count);
 	for (u32 image_idx = 0; image_idx < swapchain_image_count; ++image_idx)
 	{
+		char image_name[64];
+		snprintf(image_name, sizeof(image_name), "Swapchain Image %u", image_idx);
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_IMAGE, (u64)ctx->swapchain_images[image_idx], image_name);
 		VkImageViewCreateInfo image_view_create_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.image = ctx->swapchain_images[image_idx],
@@ -179,6 +494,9 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 			},
 		};
 		VK_CHECK(vkCreateImageView(ctx->device, &image_view_create_info, nullptr, &ctx->swapchain_image_views[image_idx]));
+		char view_name[64];
+		snprintf(view_name, sizeof(view_name), "Swapchain Image %u View", image_idx);
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_IMAGE_VIEW, (u64)ctx->swapchain_image_views[image_idx], view_name);
 	}
 
 	// Render-finished semaphores are indexed by swapchain image
@@ -219,7 +537,7 @@ void vulkan_context_recreate_swapchain(VulkanContext* ctx)
 		glfwGetFramebufferSize(ctx->window, &framebuffer_width, &framebuffer_height);
 	}
 
-	vkDeviceWaitIdle(ctx->device);
+	VK_CHECK(vulkan_device_wait_idle(ctx));
 
 	vulkan_context_destroy_swapchain_resources(ctx);
 	vulkan_context_create_swapchain(ctx);
@@ -258,9 +576,11 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.apiVersion = VK_API_VERSION_1_3,
 		};
 
-		// Enable validation only if the layer is actually installed
+		// Develop/Debug request validation by default; Release opts in through
+		// GAME_ENABLE_VALIDATION=1.
 		const char* validation_layers[] = { "VK_LAYER_KHRONOS_validation" };
 		u32 enabled_layer_count = 0;
+		#if GAME_ENABLE_VALIDATION
 		{
 			u32 available_layer_count = 0;
 			vkEnumerateInstanceLayerProperties(&available_layer_count, nullptr);
@@ -279,6 +599,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 				printf("VK_LAYER_KHRONOS_validation not found; running without validation\n");
 			}
 		}
+		#endif
 
 		// GLFW knows the platform surface extensions (VK_KHR_surface + VK_EXT_metal_surface on Mac)
 		u32 glfw_extension_count = 0;
@@ -390,6 +711,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			if (found_format && found_graphics_queue)
 			{
 				ctx->physical_device = candidate;
+				ctx->physical_device_properties = properties;
 				ctx->surface_format = chosen_format;
 				ctx->present_mode = chosen_present_mode;
 				ctx->graphics_queue_family_index = graphics_queue_family_index;
@@ -450,7 +772,10 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		VK_CHECK(vkCreateDevice(ctx->physical_device, &device_create_info, nullptr, &ctx->device));
 		volkLoadDevice(ctx->device);
 		vkGetDeviceQueue(ctx->device, ctx->graphics_queue_family_index, 0, &ctx->graphics_queue);
+		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_QUEUE, (u64)ctx->graphics_queue, "Graphics Queue");
 	}
+
+	vulkan_context_create_pipeline_cache(ctx);
 
 	// VMA allocator (volk-compatible: it fetches everything from these two entry points)
 	{
@@ -491,6 +816,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 
 		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 		{
+			char command_name[64];
+			snprintf(command_name, sizeof(command_name), "Frame %u Primary Command Buffer", frame_idx);
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_COMMAND_BUFFER, (u64)ctx->command_buffers[frame_idx], command_name);
 			const VkSemaphoreCreateInfo semaphore_create_info = {
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 			};
@@ -501,6 +829,12 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 				.flags = VK_FENCE_CREATE_SIGNALED_BIT,
 			};
 			VK_CHECK(vkCreateFence(ctx->device, &fence_create_info, nullptr, &ctx->frame_fences[frame_idx]));
+			char fence_name[64];
+			snprintf(fence_name, sizeof(fence_name), "Frame %u Fence", frame_idx);
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_FENCE, (u64)ctx->frame_fences[frame_idx], fence_name);
+			char semaphore_name[64];
+			snprintf(semaphore_name, sizeof(semaphore_name), "Frame %u Image Available", frame_idx);
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_SEMAPHORE, (u64)ctx->image_available_semaphores[frame_idx], semaphore_name);
 		}
 	}
 
@@ -528,6 +862,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 					.queryCount = GPU_TIMESTAMP_QUERY_COUNT,
 				};
 				VK_CHECK(vkCreateQueryPool(ctx->device, &query_pool_create_info, nullptr, &ctx->timestamp_pools[frame_idx]));
+				char query_name[64];
+				snprintf(query_name, sizeof(query_name), "Frame %u GPU Timestamp Pool", frame_idx);
+				vulkan_set_object_name(ctx, VK_OBJECT_TYPE_QUERY_POOL, (u64)ctx->timestamp_pools[frame_idx], query_name);
 			}
 			gpu_timings_set_available(true);
 		}
@@ -670,6 +1007,7 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 // Main-thread only; used for staging uploads.
 void vulkan_context_immediate_submit(VulkanContext* ctx, const std::function<void(VkCommandBuffer)>& in_record)
 {
+	ctx->metrics.immediate_submit_count += 1;
 	VkCommandBufferAllocateInfo allocate_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 		.commandPool = ctx->command_pool,
@@ -693,7 +1031,7 @@ void vulkan_context_immediate_submit(VulkanContext* ctx, const std::function<voi
 		.pCommandBuffers = &command_buffer,
 	};
 	VK_CHECK(vkQueueSubmit(ctx->graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
-	VK_CHECK(vkQueueWaitIdle(ctx->graphics_queue));
+	VK_CHECK(vulkan_queue_wait_idle(ctx));
 
 	vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &command_buffer);
 }
@@ -717,6 +1055,7 @@ GpuImage gpu_image_create_from_data(
 		.format = in_format,
 		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+		.label = "Uploaded Scene Image",
 	});
 
 	VkBufferCreateInfo staging_create_info = {
@@ -743,6 +1082,9 @@ GpuImage gpu_image_create_from_data(
 		&staging_allocation_info
 	));
 	memcpy(staging_allocation_info.pMappedData, in_pixels, in_byte_count);
+	ctx->metrics.upload_bytes += in_byte_count;
+	vmaSetAllocationName(ctx->allocator, staging_allocation, "Image Upload Staging");
+	vulkan_set_object_name(ctx, VK_OBJECT_TYPE_BUFFER, (u64)staging_buffer, "Image Upload Staging");
 
 	vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
 	{
@@ -993,7 +1335,7 @@ void vulkan_context_end_frame(VulkanContext* ctx)
 // Used for automated visual verification (set GAME2_SCREENSHOT=<path>).
 void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 {
-	vkDeviceWaitIdle(ctx->device);
+	VK_CHECK(vulkan_device_wait_idle(ctx));
 
 	VkImage source_image = ctx->swapchain_images[ctx->swapchain_image_index];
 	const u32 width = ctx->swapchain_extent.width;
@@ -1093,7 +1435,7 @@ void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 		.pCommandBuffers = &command_buffer,
 	};
 	VK_CHECK(vkQueueSubmit(ctx->graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
-	vkQueueWaitIdle(ctx->graphics_queue);
+	VK_CHECK(vulkan_queue_wait_idle(ctx));
 	vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &command_buffer);
 
 	// Write PPM (swapchain is BGRA)
@@ -1121,7 +1463,8 @@ void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 
 void vulkan_context_shutdown(VulkanContext* ctx)
 {
-	vkDeviceWaitIdle(ctx->device);
+	vulkan_device_wait_idle(ctx);
+	vulkan_context_save_pipeline_cache(ctx);
 
 	vulkan_context_flush_deletion_queue(ctx, true);
 
@@ -1149,6 +1492,7 @@ void vulkan_context_shutdown(VulkanContext* ctx)
 
 	vulkan_context_destroy_swapchain_resources(ctx);
 	vkDestroySwapchainKHR(ctx->device, ctx->swapchain, nullptr);
+	vkDestroyPipelineCache(ctx->device, ctx->pipeline_cache, nullptr);
 
 	vmaDestroyAllocator(ctx->allocator);
 	vkDestroyDevice(ctx->device, nullptr);

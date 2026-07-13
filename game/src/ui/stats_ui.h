@@ -234,9 +234,42 @@ static void draw_stats_ui(State& state)
 			stats_ui_cell_i32("Frustum", previous.cull_frustum_count);
 			ImGui::EndTable();
 		}
-		#if !WITH_VERBOSE_CULL_RESULTS
-		ImGui::TextDisabled("#define WITH_VERBOSE_CULL_RESULTS 1 for detailed culling breakdowns");
-		#endif
+	}
+
+	if (ImGui::CollapsingHeader("Vulkan / VMA", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		const VulkanMemoryStats memory = vulkan_context_get_memory_stats(&state.vk);
+		const VulkanMetrics& metrics = state.vk.metrics;
+		if (ImGui::BeginTable("##VulkanMemoryStats", 4, stats_table_flags))
+		{
+			stats_ui_table_columns();
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Allocations", memory.allocation_count);
+			stats_ui_cell_u64("Allocation Bytes", memory.allocation_bytes);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Memory Blocks", memory.block_count);
+			stats_ui_cell_u64("Block Bytes", memory.block_bytes);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Device Usage", memory.usage_bytes);
+			stats_ui_cell_u64("Device Budget", memory.budget_bytes);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Draw Calls", metrics.draw_calls);
+			stats_ui_cell_u64("Dispatch Calls", metrics.dispatch_calls);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Descriptor Updates", metrics.descriptor_update_calls);
+			stats_ui_cell_u64("Descriptors Written", metrics.descriptors_written);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Uploaded Bytes", metrics.upload_bytes);
+			stats_ui_cell_u64("Immediate Submits", metrics.immediate_submit_count);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Queue Idle Waits", metrics.queue_wait_idle_count);
+			stats_ui_cell_u64("Device Idle Waits", metrics.device_wait_idle_count);
+			ImGui::EndTable();
+		}
+		ImGui::TextDisabled("Pipelines: %llu created in %.3f ms | cache hash: %016llx",
+			(unsigned long long)metrics.pipeline_count,
+			metrics.pipeline_creation_ms,
+			(unsigned long long)state.vk.shader_build_hash);
 	}
 }
 

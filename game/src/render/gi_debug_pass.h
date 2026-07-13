@@ -104,7 +104,7 @@ namespace GIDebugPass
 			.pDepthStencilState = &depth, .pColorBlendState = &blending,
 			.pDynamicState = &dynamic, .layout = pipeline_layout,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_info, &pipeline));
 		vkDestroyShaderModule(ctx->device, vs, nullptr); vkDestroyShaderModule(ctx->device, fs, nullptr);
 
 		MeshInitData sphere_init = mesh_init_data_uv_sphere(1.0f, 12, 16);
@@ -136,7 +136,7 @@ namespace GIDebugPass
 				.pImageInfo = image ? &images[idx - 1] : nullptr,
 				.pBufferInfo = image ? nullptr : &buffers[buffer_idx] };
 		}
-		vkUpdateDescriptorSets(ctx->device, 6, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 6, writes);
 		PushConstants params = { .view_projection = view_projection, .debug_probe_start_index = 0,
 			.probe_debug_radius = gi_scene_debug_probe_radius(gi_scene), .atlas_total_size = GI_Scene::atlas_total_size,
 			.atlas_entry_size = GI_Scene::atlas_entry_size, .probe_vis_mode = (i32) state.gi.probe_vis_mode,
@@ -148,7 +148,7 @@ namespace GIDebugPass
 		VkBuffer vertex = sphere_mesh.vertex_buffer.get_gpu_buffer(); VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex, &offset);
 		vkCmdBindIndexBuffer(command_buffer, sphere_mesh.index_buffer.get_gpu_buffer(), 0, VK_INDEX_TYPE_UINT32);
-		vkCmdDrawIndexed(command_buffer, sphere_mesh.index_count, gi_scene.non_fallback_probe_count, 0, 0, 0);
+		vulkan_cmd_draw_indexed(ctx, sphere_mesh.index_count, gi_scene.non_fallback_probe_count, 0, 0, 0);
 	}
 
 	inline void shutdown(VulkanContext* ctx)

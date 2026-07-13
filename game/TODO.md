@@ -4,6 +4,31 @@ Implementation record for bringing `game/` (Vulkan + Volk + VMA + GLFW) to
 parity with `game_old/` (sokol Metal). Items reference the `game_old/` source to port
 from. The completed phases are retained as architectural and validation history.
 
+## Vulkan-native hardening — checkpoint 1 ✅ (2026-07-12)
+
+- [x] Added Debug, default Develop, and Release configurations with optimized
+      C++/GLSL, configuration-specific GLFW/VMA/Jolt caches, source freshness,
+      and configuration-controlled validation.
+- [x] Added deterministic offline benchmark controls (`--no-live-link`,
+      `--warmup-frames`, `--benchmark-frames`, `--benchmark-output`) and JSON
+      reporting for wall/CPU/GPU/pass timings, draws/dispatches, descriptor
+      writes, uploads, idle waits, pipeline creation, and VMA memory usage.
+- [x] Added Vulkan pass labels and object names for frame/swapchain resources,
+      render targets, buffers, core descriptor resources, and pipelines. Added
+      Vulkan/VMA counters to the Stats UI.
+- [x] Added a persistent pipeline cache guarded by device/driver UUID and the
+      compiled shader hash. Empty-scene MoltenVK verification loaded 518659
+      cached bytes on the second run and reduced measured pipeline creation
+      from 2059.3 ms to 5.5 ms.
+- [x] Compile gates passed for Debug, Develop, Release, and
+      `WITH_DEBUG_UI=0`; offline benchmark runtime passed on Apple M2 Max /
+      MoltenVK 1.4.1. Existing unused-vertex-attribute best-practice warnings
+      remain for a later renderer cleanup checkpoint.
+
+The remaining Vulkan-native hardening checkpoints (capability negotiation,
+upload/lifetime scheduling, resource-aware synchronization, and compact
+G-buffer evaluation) are intentionally deferred until explicitly resumed.
+
 ## Phase 0 — small gaps in already-ported systems  ✅ (2026-07-08)
 
 - [x] `--file` init file loading: read the file and feed it through

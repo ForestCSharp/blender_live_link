@@ -7,9 +7,15 @@ No CMake — plain `build.sh`, mirroring `game_old/`.
 ## Building & running
 
 ```sh
-./build.sh Mac      # compiles shaders + deps + game, then runs it
-WITH_DEBUG_UI=0 ./build.sh Mac -norun  # compile without ImGui/timing tooling
+./build.sh Mac                                  # Develop: -O2 -g + validation
+GAME_BUILD_CONFIG=Debug ./build.sh Mac -norun   # -O0 -g + validation
+GAME_BUILD_CONFIG=Release ./build.sh Mac -norun # -O3, validation off
+WITH_DEBUG_UI=0 ./build.sh Mac -norun            # compile without ImGui/timings
 ```
+
+`GAME_ENABLE_VALIDATION=0|1` overrides the configuration default. GLFW, VMA,
+Jolt, and shader caches are configuration-aware and rebuild when their sources
+change.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -18,9 +24,23 @@ Prerequisites:
   repo root `./build.sh` once first
 - Run the binary from this directory (`bin/shaders/*.spv` paths are relative)
 
-`bin/libglfw.a`, `bin/libvma.a`, and `bin/libjolt.a` are cached; delete them
-to force a rebuild. (Keep the `JPH_*` define set empty and identical between
-the Jolt lib compile and the main build — mismatched defines break the ABI.)
+Dependency objects and libraries are cached under `bin/build/<OS>/<config>`.
+Keep the `JPH_*` define set empty and identical between the Jolt library and
+main build — mismatched defines break the ABI.
+
+Offline benchmark runs consume the same captured FlatBuffer update accepted by
+`--file`, skip the socket thread, and exit automatically:
+
+```sh
+./bin/game --file scene_update.bin --no-live-link \
+  --warmup-frames 300 --benchmark-frames 1000 \
+  --benchmark-output benchmark.json
+```
+
+The JSON contains median/p95 wall, CPU, GPU, and per-pass timings plus command,
+descriptor, upload, idle-wait, pipeline-creation, and VMA memory metrics. The
+pipeline cache defaults to `bin/pipeline_cache.bin`; override it with
+`GAME_PIPELINE_CACHE` (`GAME2_PIPELINE_CACHE` remains a compatibility alias).
 
 ## Live link
 

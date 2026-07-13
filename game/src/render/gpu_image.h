@@ -14,6 +14,7 @@ struct GpuImageDesc
 	VkImageAspectFlags aspect;
 	u32 array_layers = 1;	// > 1 = 2D array (per-layer attachment views + array sampled view)
 	bool cubemap = false;	// requires array_layers == 6; sampled view is CUBE
+	const char* label = nullptr;
 };
 
 struct GpuImage
@@ -188,6 +189,20 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		&result.allocation,
 		nullptr
 	));
+	if (in_desc.label)
+	{
+		vmaSetAllocationName(in_allocator, result.allocation, in_desc.label);
+		if (vkSetDebugUtilsObjectNameEXT)
+		{
+			VkDebugUtilsObjectNameInfoEXT name_info = {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+				.objectType = VK_OBJECT_TYPE_IMAGE,
+				.objectHandle = (u64)result.image,
+				.pObjectName = in_desc.label,
+			};
+			vkSetDebugUtilsObjectNameEXT(in_device, &name_info);
+		}
+	}
 
 	VkImageViewCreateInfo image_view_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -206,6 +221,18 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 	};
 
 	VK_CHECK(vkCreateImageView(in_device, &image_view_create_info, nullptr, &result.view));
+	if (in_desc.label && vkSetDebugUtilsObjectNameEXT)
+	{
+		char view_label[192];
+		snprintf(view_label, sizeof(view_label), "%s View", in_desc.label);
+		VkDebugUtilsObjectNameInfoEXT name_info = {
+			.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+			.objectType = VK_OBJECT_TYPE_IMAGE_VIEW,
+			.objectHandle = (u64)result.view,
+			.pObjectName = view_label,
+		};
+		vkSetDebugUtilsObjectNameEXT(in_device, &name_info);
+	}
 
 	// Per-layer 2D views for slice rendering
 	if (array_layers > 1)
@@ -227,6 +254,18 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 			};
 			VkImageView layer_view = VK_NULL_HANDLE;
 			VK_CHECK(vkCreateImageView(in_device, &layer_view_create_info, nullptr, &layer_view));
+			if (in_desc.label && vkSetDebugUtilsObjectNameEXT)
+			{
+				char layer_label[192];
+				snprintf(layer_label, sizeof(layer_label), "%s Layer %u View", in_desc.label, layer_idx);
+				VkDebugUtilsObjectNameInfoEXT name_info = {
+					.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+					.objectType = VK_OBJECT_TYPE_IMAGE_VIEW,
+					.objectHandle = (u64)layer_view,
+					.pObjectName = layer_label,
+				};
+				vkSetDebugUtilsObjectNameEXT(in_device, &name_info);
+			}
 			result.layer_views.add(layer_view);
 		}
 	}

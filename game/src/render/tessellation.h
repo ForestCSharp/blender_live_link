@@ -123,7 +123,7 @@ namespace Tessellation
 			},
 			.layout = out.pipeline_layout,
 		};
-		VK_CHECK(vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &out.pipeline));
+		VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_info, &out.pipeline));
 		vkDestroyShaderModule(ctx->device, module, nullptr);
 	}
 
@@ -178,7 +178,7 @@ namespace Tessellation
 				.pBufferInfo = &infos[idx],
 			};
 		}
-		vkUpdateDescriptorSets(ctx->device, buffer_count, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, buffer_count, writes);
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_state.pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -385,7 +385,7 @@ namespace Tessellation
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 
 		{ VkBuffer buffers[] = { slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, clear_counters, buffers, 1); vkCmdDispatch(command_buffer, 1, 1, 1); }
+			bind_set(ctx, clear_counters, buffers, 1); vulkan_cmd_dispatch(ctx, 1, 1, 1); }
 		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 		if (state.tessellation.mode == ETessellationMode::AdaptiveAngularPerMesh)
@@ -396,7 +396,7 @@ namespace Tessellation
 				VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
 				bind_set(ctx, measure_mesh_factor, buffers, 3);
 				vkCmdPushConstants(command_buffer, measure_mesh_factor.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-				vkCmdDispatch(command_buffer, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
+				vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
 			}
 			compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 		}
@@ -407,7 +407,7 @@ namespace Tessellation
 			VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
 			bind_set(ctx, plan_patches, buffers, 4);
 			vkCmdPushConstants(command_buffer, plan_patches.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vkCmdDispatch(command_buffer, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
+			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
 		}
 		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
@@ -417,11 +417,11 @@ namespace Tessellation
 			VkBuffer vertex_buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.vertex_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
 			bind_set(ctx, emit_vertices, vertex_buffers, 5);
 			vkCmdPushConstants(command_buffer, emit_vertices.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vkCmdDispatch(command_buffer, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
 			VkBuffer index_buffers[] = { slot.patch_buffer.get_gpu_buffer(), slot.index_buffer.get_gpu_buffer(), slot.wire_index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
 			bind_set(ctx, emit_indices, index_buffers, 4);
 			vkCmdPushConstants(command_buffer, emit_indices.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vkCmdDispatch(command_buffer, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
 		}
 		compute_barrier(ctx,
 			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT

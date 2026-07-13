@@ -274,7 +274,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 			.layout = lighting_pass.pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &lighting_pass.pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &lighting_pass.pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -442,7 +442,7 @@ void lighting_pass_update(
 		};
 	}
 
-	vkUpdateDescriptorSets(ctx->device, write_count, writes, 0, nullptr);
+	vulkan_update_descriptor_sets(ctx, write_count, writes);
 }
 
 // Bind + fullscreen draw (inside the framework's execute callback)
@@ -458,7 +458,7 @@ void lighting_pass_draw(VulkanContext* ctx)
 		0, 1, &lighting_pass.sets[ctx->frame_index],
 		0, nullptr
 	);
-	vkCmdDraw(command_buffer, 3, 1, 0, 0);
+	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
 
 void lighting_pass_shutdown(VulkanContext* ctx)

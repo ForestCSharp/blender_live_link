@@ -163,6 +163,9 @@ struct RenderPass
 		{
 			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 			{
+				char output_label[192];
+				snprintf(output_label, sizeof(output_label), "%s Color %i Set %i",
+					desc.debug_label ? desc.debug_label : "RenderPass", output_idx, image_idx);
 				color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
 					.width = (u32) current_width,
 					.height = (u32) current_height,
@@ -174,11 +177,15 @@ struct RenderPass
 					.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
 					.array_layers = array_layers,
 					.cubemap = is_cubemap,
+					.label = output_label,
 				}));
 			}
 
 			if (has_depth())
 			{
+				char depth_label[192];
+				snprintf(depth_label, sizeof(depth_label), "%s Depth Set %i",
+					desc.debug_label ? desc.debug_label : "RenderPass", image_idx);
 				depth_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
 					.width = (u32) current_width,
 					.height = (u32) current_height,
@@ -187,6 +194,7 @@ struct RenderPass
 					.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
 					.array_layers = array_layers,
 					.cubemap = is_cubemap,
+					.label = depth_label,
 				}));
 			}
 		}
@@ -260,6 +268,7 @@ struct RenderPass
 
 		CPU_TIMING_SCOPE(desc.debug_label ? desc.debug_label : "RenderPass");
 		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
+		vulkan_begin_debug_label(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
 
 		const bool is_swapchain = desc.type == ERenderPassType::Swapchain;
 		const bool is_multi = desc.type == ERenderPassType::Multi;
@@ -374,6 +383,7 @@ struct RenderPass
 		}
 
 		gpu_timestamps_end_scope(ctx, gpu_timing_slot);
+		vulkan_end_debug_label(ctx);
 	}
 
 	void cleanup()

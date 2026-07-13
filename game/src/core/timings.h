@@ -363,6 +363,21 @@ bool cpu_timings_get_latest_frame_total_ms(f64& out_ms)
 	return false;
 }
 
+bool cpu_timings_get_latest_frame(i64& out_frame_index, f64& out_ms)
+{
+	CpuTimings& timings = cpu_timings_get();
+	for (const CpuTimingEvent& event : timings.previous_frame)
+	{
+		if (event.parent_index == -1 && event.elapsed_ms > 0.0)
+		{
+			out_frame_index = timings.previous_frame_index;
+			out_ms = event.elapsed_ms;
+			return true;
+		}
+	}
+	return false;
+}
+
 enum class GpuTimingEventType : i32
 {
 	Unknown,
@@ -765,6 +780,43 @@ bool gpu_timings_get_latest_completed_frame_total_ms(f64& out_ms, bool& out_pend
 	return false;
 }
 
+bool gpu_timings_get_latest_completed_frame(i64& out_frame_index, f64& out_ms)
+{
+	if (!gpu_timings_are_available()) return false;
+	GpuTimings& timings = gpu_timings_get();
+	std::lock_guard<std::mutex> lock(timings.mutex);
+	out_frame_index = -1;
+	for (const GpuTimingFrame& gpu_frame : timings.history_frames)
+	{
+		if (!gpu_frame.valid || gpu_frame.frame_index <= out_frame_index) continue;
+		for (const GpuTimingEvent& event : gpu_frame.events)
+		{
+			if (event.valid && event.type == GpuTimingEventType::Frame && event.elapsed_ms > 0.0)
+			{
+				out_frame_index = gpu_frame.frame_index;
+				out_ms = event.elapsed_ms;
+				break;
+			}
+		}
+	}
+	return out_frame_index >= 0;
+}
+
+bool gpu_timings_copy_history_frame(i64 in_frame_index, GpuTimingFrame& out_frame)
+{
+	GpuTimings& timings = gpu_timings_get();
+	std::lock_guard<std::mutex> lock(timings.mutex);
+	if (GpuTimingFrame* frame = gpu_timings_find_history_frame_locked(timings, in_frame_index))
+	{
+		out_frame = *frame;
+		return true;
+	}
+	out_frame.events.reset();
+	out_frame.frame_index = -1;
+	out_frame.valid = false;
+	return false;
+}
+
 struct CpuTimingScope
 {
 	explicit CpuTimingScope(const char* in_name)
@@ -856,6 +908,7 @@ i64 cpu_timings_get_display_frame_index(bool, i32 = 0) { return -1; }
 i32 cpu_timings_get_display_frame_age(bool, i32 = 0) { return 0; }
 bool cpu_timings_get_display_frame_total_ms(bool, f64&) { return false; }
 bool cpu_timings_get_latest_frame_total_ms(f64&) { return false; }
+bool cpu_timings_get_latest_frame(i64&, f64&) { return false; }
 void gpu_timings_set_available(bool, const char* = nullptr) {}
 bool gpu_timings_are_available() { return false; }
 void gpu_timings_copy_unavailable_reason(char*, size_t) {}
@@ -866,6 +919,8 @@ void gpu_timings_record_completed_frame(i64, f64) {}
 bool gpu_timings_copy_display_frame(bool, i32, GpuTimingFrame&) { return false; }
 bool gpu_timings_get_display_frame_total_ms(bool, f64&, bool& out_pending) { out_pending = false; return false; }
 bool gpu_timings_get_latest_completed_frame_total_ms(f64&, bool& out_pending) { out_pending = false; return false; }
+bool gpu_timings_get_latest_completed_frame(i64&, f64&) { return false; }
+bool gpu_timings_copy_history_frame(i64, GpuTimingFrame&) { return false; }
 
 #define CPU_TIMING_SCOPE(name)
 #define CPU_TIMING_BACKEND_SCOPE(api_name, pass_name)

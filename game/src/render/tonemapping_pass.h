@@ -132,7 +132,7 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		.layout = tonemapping_pass.pipeline_layout,
 		.renderPass = VK_NULL_HANDLE,
 	};
-	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &tonemapping_pass.pipeline));
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &tonemapping_pass.pipeline));
 
 	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -154,7 +154,7 @@ void tonemapping_pass_update(VulkanContext* ctx, VkImageView in_scene_color_view
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		.pImageInfo = &image_info,
 	};
-	vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+	vulkan_update_descriptor_sets(ctx, 1, &write);
 }
 
 void tonemapping_pass_draw(VulkanContext* ctx, f32 in_exposure_bias)
@@ -175,7 +175,7 @@ void tonemapping_pass_draw(VulkanContext* ctx, f32 in_exposure_bias)
 		VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, sizeof(f32), &in_exposure_bias
 	);
-	vkCmdDraw(command_buffer, 3, 1, 0, 0);
+	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
 
 void tonemapping_pass_shutdown(VulkanContext* ctx)

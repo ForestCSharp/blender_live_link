@@ -268,7 +268,7 @@ struct LightingCapture
 			.renderPass = VK_NULL_HANDLE,
 		};
 		VkPipeline out_pipeline = VK_NULL_HANDLE;
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -389,7 +389,7 @@ struct LightingCapture
 			.renderPass = VK_NULL_HANDLE,
 		};
 		VkPipeline out_pipeline = VK_NULL_HANDLE;
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -703,7 +703,7 @@ struct LightingCapture
 				},
 				.layout = projection_pipeline_layout,
 			};
-			VK_CHECK(vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &projection_pipeline));
+			VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_create_info, &projection_pipeline));
 			vkDestroyShaderModule(ctx->device, compute_module, nullptr);
 		}
 
@@ -739,7 +739,7 @@ struct LightingCapture
 				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				.pImageInfo = &sky_info,
 			};
-			vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, 1, &write);
 		}
 
 		// cube_to_oct inputs: the capture cubemaps never resize
@@ -768,7 +768,7 @@ struct LightingCapture
 					.pImageInfo = &image_infos[write_idx],
 				};
 			}
-			vkUpdateDescriptorSets(ctx->device, 2, writes, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, 2, writes);
 		}
 
 		// Zero the octahedral atlas once so we never read garbage data
@@ -897,7 +897,7 @@ struct LightingCapture
 						vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 					}
 					vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-					vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+					vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 				}
 			}
 
@@ -916,7 +916,7 @@ struct LightingCapture
 					.capture_position = HMM_V4V(in_location, 1.0f),
 				};
 				vkCmdPushConstants(command_buffer, capture_sky_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky_push), &sky_push);
-				vkCmdDraw(command_buffer, 3, 1, 0, 0);
+				vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 			}
 		});
 
@@ -1037,7 +1037,7 @@ struct LightingCapture
 					.pBufferInfo = &light_infos[0],
 				};
 			}
-			vkUpdateDescriptorSets(ctx->device, write_count, writes, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, write_count, writes);
 
 			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, capture_lighting_pipeline);
 			vkCmdBindDescriptorSets(
@@ -1047,7 +1047,7 @@ struct LightingCapture
 				0, 1, &slot_set,
 				0, nullptr
 			);
-			vkCmdDraw(command_buffer, 3, 1, 0, 0);
+			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, lighting_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -1071,7 +1071,7 @@ struct LightingCapture
 				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				.pImageInfo = &position_info,
 			};
-			vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, 1, &write);
 
 			RadialDepthPushConstants push_constants = {
 				.inverse_view_projection = HMM_InvGeneralM4(view_projection_matrices[face_idx]),
@@ -1090,7 +1090,7 @@ struct LightingCapture
 				0, nullptr
 			);
 			vkCmdPushConstants(command_buffer, radial_depth_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
-			vkCmdDraw(command_buffer, 3, 1, 0, 0);
+			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, radial_depth_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -1135,7 +1135,7 @@ struct LightingCapture
 				0, nullptr
 			);
 			vkCmdPushConstants(command_buffer, cube_to_oct_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
-			vkCmdDraw(command_buffer, 3, 1, 0, 0);
+			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, cube_to_oct_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		gpu_image_transition(command_buffer, cube_to_oct_pass.get_color_output(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1183,7 +1183,7 @@ struct LightingCapture
 				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				.pImageInfo = &cube_info,
 			};
-			vkUpdateDescriptorSets(ctx->device, 3, writes, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, 3, writes);
 
 			ProbeProjectionPushConstants push_constants = {
 				.probe_index = in_probe_idx,
@@ -1193,7 +1193,7 @@ struct LightingCapture
 			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, projection_pipeline);
 			vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, projection_pipeline_layout, 0, 1, &slot_set, 0, nullptr);
 			vkCmdPushConstants(command_buffer, projection_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants), &push_constants);
-			vkCmdDispatch(command_buffer, 1, 1, 1);
+			vulkan_cmd_dispatch(ctx, 1, 1, 1);
 		};
 
 		bool dispatched_projection = false;

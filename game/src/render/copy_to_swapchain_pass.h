@@ -131,7 +131,7 @@ void copy_to_swapchain_pass_init(VulkanContext* ctx)
 		.renderPass = VK_NULL_HANDLE,
 	};
 
-	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &copy_to_swapchain_pass.pipeline));
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &copy_to_swapchain_pass.pipeline));
 
 	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -154,7 +154,7 @@ void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 		0, nullptr
 	);
 
-	vkCmdDraw(command_buffer, 3, 1, 0, 0);
+	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
 
 void copy_to_swapchain_pass_shutdown(VulkanContext* ctx)

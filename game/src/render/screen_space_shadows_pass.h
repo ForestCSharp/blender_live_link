@@ -170,7 +170,7 @@ namespace ScreenSpaceShadowsPass
 			.renderPass = VK_NULL_HANDLE,
 		};
 		VkPipeline out_pipeline = VK_NULL_HANDLE;
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -342,7 +342,7 @@ namespace ScreenSpaceShadowsPass
 				.pImageInfo = &image_infos[2 + image_idx],
 			};
 		}
-		vkUpdateDescriptorSets(ctx->device, 7, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 7, writes);
 	}
 
 	inline void draw_fullscreen(VulkanContext* ctx, VkPipeline in_pipeline, VkPipelineLayout in_layout, VkDescriptorSet in_set)
@@ -350,7 +350,7 @@ namespace ScreenSpaceShadowsPass
 		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_layout, 0, 1, &in_set, 0, nullptr);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	// Trace into the intermediate target, filter into the final one. Leaves

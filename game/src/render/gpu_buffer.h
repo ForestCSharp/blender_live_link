@@ -141,6 +141,11 @@ public:
 
 			mapped_data = allocation_info.pMappedData;
 			gpu_buffer = new_buffer;
+			if (label.has_value())
+			{
+				vmaSetAllocationName(g_vulkan_context->allocator, allocation, label->c_str());
+				vulkan_set_object_name(g_vulkan_context, VK_OBJECT_TYPE_BUFFER, (u64)new_buffer, label->c_str());
+			}
 
 			if (data != nullptr && size > 0)
 			{
@@ -238,8 +243,11 @@ protected:
 			&staging_allocation,
 			&staging_allocation_info
 		));
+		vmaSetAllocationName(g_vulkan_context->allocator, staging_allocation, "Static Buffer Upload Staging");
+		vulkan_set_object_name(g_vulkan_context, VK_OBJECT_TYPE_BUFFER, (u64)staging_buffer, "Static Buffer Upload Staging");
 
 		memcpy(staging_allocation_info.pMappedData, data, size);
+		g_vulkan_context->metrics.upload_bytes += size;
 
 		const u64 copy_size = size;
 		vulkan_context_immediate_submit(g_vulkan_context, [&](VkCommandBuffer in_command_buffer)

@@ -23,11 +23,41 @@ OS_ARG=$1
 RUN_ARG=$2
 GAME_WARNING_FLAGS="-Wno-c99-designator"
 WITH_DEBUG_UI=${WITH_DEBUG_UI:-1}
-GAME_FEATURE_FLAGS="-D WITH_DEBUG_UI=$WITH_DEBUG_UI"
+GAME_BUILD_CONFIG=${GAME_BUILD_CONFIG:-Develop}
+
+case "$GAME_BUILD_CONFIG" in
+	Debug)
+		GAME_OPT_FLAGS="-O0 -g"
+		SHADER_OPT_FLAGS="-O0 -g"
+		DEFAULT_VALIDATION=1
+		;;
+	Develop)
+		GAME_OPT_FLAGS="-O2 -g"
+		SHADER_OPT_FLAGS="-O -g"
+		DEFAULT_VALIDATION=1
+		;;
+	Release)
+		GAME_OPT_FLAGS="-O3 -DNDEBUG"
+		SHADER_OPT_FLAGS="-O"
+		DEFAULT_VALIDATION=0
+		;;
+	*)
+		echo "Invalid GAME_BUILD_CONFIG '$GAME_BUILD_CONFIG' (expected Debug, Develop, or Release)"
+		exit 1
+		;;
+esac
+
+GAME_ENABLE_VALIDATION=${GAME_ENABLE_VALIDATION:-$DEFAULT_VALIDATION}
+GAME_FEATURE_FLAGS="-D WITH_DEBUG_UI=$WITH_DEBUG_UI -D GAME_ENABLE_VALIDATION=$GAME_ENABLE_VALIDATION -D GAME_BUILD_CONFIG_NAME=\"$GAME_BUILD_CONFIG\""
+BUILD_CACHE_DIR="bin/build/$OS_ARG/$GAME_BUILD_CONFIG"
+mkdir -p "$BUILD_CACHE_DIR"
+
+export GAME_BUILD_CONFIG
+export SHADER_OPT_FLAGS
 
 ./compile_shaders.sh $OS_ARG
 
-echo OS in game/build.sh is $OS_ARG
+echo "Building game for $OS_ARG ($GAME_BUILD_CONFIG, validation=$GAME_ENABLE_VALIDATION, debug_ui=$WITH_DEBUG_UI)"
 
 if [[ $OS_ARG = Mac ]]; then
 	rm -rf bin/game
@@ -35,45 +65,58 @@ if [[ $OS_ARG = Mac ]]; then
 	# Compile GLFW as a static library, but only if it doesn't exist.
 	# GLFW 3.4 can't be unity-built (the Cocoa and null backends share
 	# static helper names), so each source file gets its own object.
-	if [ ! -f ./bin/libglfw.a ]; then
-		echo "libglfw.a not found, building"
-		mkdir -p bin/glfw_obj
+	GLFW_LIBRARY="$BUILD_CACHE_DIR/libglfw.a"
+	GLFW_OBJECT_DIR="$BUILD_CACHE_DIR/glfw_obj"
+	GLFW_SOURCES="cocoa_init.m cocoa_joystick.m cocoa_monitor.m cocoa_time.c cocoa_window.m nsgl_context.m posix_module.c posix_thread.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
+	GLFW_REBUILD=0
+	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	for f in $GLFW_SOURCES; do
+		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	done
+	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ $GLFW_REBUILD -eq 1 ]; then
+		echo "Building GLFW ($GAME_BUILD_CONFIG)"
+		rm -rf "$GLFW_OBJECT_DIR"
+		mkdir -p "$GLFW_OBJECT_DIR"
 		GLFW_SOURCES="cocoa_init.m cocoa_joystick.m cocoa_monitor.m cocoa_time.c cocoa_window.m nsgl_context.m posix_module.c posix_thread.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
 		for f in $GLFW_SOURCES; do
 			clang -c src/extern/glfw/src/$f \
-					-g -O0 \
+					$GAME_OPT_FLAGS \
 					-ObjC \
 					-D _GLFW_COCOA \
 					-I src/extern/glfw/include \
-					-o bin/glfw_obj/${f%.*}.o
+					-o "$GLFW_OBJECT_DIR/${f%.*}.o"
 		done
-		ar rcs bin/libglfw.a bin/glfw_obj/*.o
+		ar rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o
 	fi
 
 	# Compile VMA as a static library, but only if it doesn't exist
-	if [ ! -f ./bin/libvma.a ]; then
-		echo "libvma.a not found, building"
+	VMA_LIBRARY="$BUILD_CACHE_DIR/libvma.a"
+	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+		echo "Building VMA ($GAME_BUILD_CONFIG)"
 		clang -c src/extern/vma/vma_single_file.cpp \
-				-g -O0 \
+				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
-				-o bin/libvma.a
+				-o "$VMA_LIBRARY"
 	fi
 
 	# Compile Jolt as a static library, but only if it doesn't exist.
 	# IMPORTANT: keep the JPH_* define set EMPTY and identical between this
 	# compile and the main build below — mismatched defines break Jolt's ABI.
-	if [ ! -f ./bin/libjolt.a ]; then
-		echo "libjolt.a not found, building"
+	JOLT_LIBRARY="$BUILD_CACHE_DIR/libjolt.a"
+	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+		echo "Building Jolt ($GAME_BUILD_CONFIG)"
 		clang -c src/extern/Jolt/jolt_single_file.cpp \
+				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-I src/extern \
-				-o bin/libjolt.a
+				-o "$JOLT_LIBRARY"
 	fi
 
 	# Main Mac Build
 	clang src/main.cpp \
-		-g -O0 \
+		$GAME_OPT_FLAGS \
 		$GAME_WARNING_FLAGS \
 		$GAME_FEATURE_FLAGS \
 		-o bin/game \
@@ -88,11 +131,10 @@ if [[ $OS_ARG = Mac ]]; then
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
 		--std=c++20 \
-		-L./bin \
 		-lc++ \
-		-lglfw \
-		-lvma \
-		-ljolt \
+		"$GLFW_LIBRARY" \
+		"$VMA_LIBRARY" \
+		"$JOLT_LIBRARY" \
 		-framework Cocoa \
 		-framework IOKit \
 		-framework QuartzCore
@@ -119,45 +161,58 @@ elif [[ $OS_ARG = Windows ]]; then
 	AR_BIN=$(command -v llvm-ar || command -v ar)
 
 	# Compile GLFW as a static library, but only if it doesn't exist
-	if [ ! -f ./bin/glfw.lib ]; then
-		echo "glfw.lib not found, building"
-		mkdir -p bin/glfw_obj
+	GLFW_LIBRARY="$BUILD_CACHE_DIR/glfw.lib"
+	GLFW_OBJECT_DIR="$BUILD_CACHE_DIR/glfw_obj"
+	GLFW_SOURCES="win32_init.c win32_joystick.c win32_module.c win32_monitor.c win32_thread.c win32_time.c win32_window.c wgl_context.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
+	GLFW_REBUILD=0
+	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	for f in $GLFW_SOURCES; do
+		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	done
+	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ $GLFW_REBUILD -eq 1 ]; then
+		echo "Building GLFW ($GAME_BUILD_CONFIG)"
+		rm -rf "$GLFW_OBJECT_DIR"
+		mkdir -p "$GLFW_OBJECT_DIR"
 		GLFW_SOURCES="win32_init.c win32_joystick.c win32_module.c win32_monitor.c win32_thread.c win32_time.c win32_window.c wgl_context.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
 		for f in $GLFW_SOURCES; do
 			clang -c src/extern/glfw/src/$f \
-					-g -O0 \
+					$GAME_OPT_FLAGS \
 					-D _GLFW_WIN32 \
 					-I src/extern/glfw/include \
-					-o bin/glfw_obj/${f%.*}.o
+					-o "$GLFW_OBJECT_DIR/${f%.*}.o"
 		done
-		"$AR_BIN" rcs bin/glfw.lib bin/glfw_obj/*.o
+		"$AR_BIN" rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o
 	fi
 
 	# Compile VMA as a static library, but only if it doesn't exist
-	if [ ! -f ./bin/vma.lib ]; then
-		echo "vma.lib not found, building"
+	VMA_LIBRARY="$BUILD_CACHE_DIR/vma.lib"
+	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+		echo "Building VMA ($GAME_BUILD_CONFIG)"
 		clang -c src/extern/vma/vma_single_file.cpp \
-				-g -O0 \
+				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
 				-I "$VULKAN_SDK/Include" \
-				-o bin/vma.lib
+				-o "$VMA_LIBRARY"
 	fi
 
 	# Compile Jolt as a static library, but only if it doesn't exist
 	# (NOTE: correct src/extern/Jolt path — game_old/'s Windows branch still
 	# points at a stale location. Keep JPH_* defines empty on both compiles.)
-	if [ ! -f ./bin/jolt.lib ]; then
-		echo "jolt.lib not found, building"
+	JOLT_LIBRARY="$BUILD_CACHE_DIR/jolt.lib"
+	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+		echo "Building Jolt ($GAME_BUILD_CONFIG)"
 		clang -c src/extern/Jolt/jolt_single_file.cpp \
+				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-I src/extern \
-				-o bin/jolt.lib
+				-o "$JOLT_LIBRARY"
 	fi
 
 	# Main Windows Build
 	clang src/main.cpp \
-		-g -O0 \
+		$GAME_OPT_FLAGS \
 		$GAME_WARNING_FLAGS \
 		$GAME_FEATURE_FLAGS \
 		-o bin/game.exe \
@@ -174,10 +229,9 @@ elif [[ $OS_ARG = Windows ]]; then
 		-I ../compiled_schemas/cpp \
 		-D _CRT_SECURE_NO_WARNINGS \
 		--std=c++20 \
-		-L./bin \
-		-lglfw \
-		-lvma \
-		-ljolt \
+		"$GLFW_LIBRARY" \
+		"$VMA_LIBRARY" \
+		"$JOLT_LIBRARY" \
 		-lUser32 \
 		-lgdi32 \
 		-lshell32

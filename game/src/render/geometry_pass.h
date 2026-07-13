@@ -176,7 +176,7 @@ static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* 
 	};
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 
 	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -269,7 +269,7 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 
 	vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-	vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+	vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 }
 
 void geometry_pass_shutdown(VulkanContext* ctx)

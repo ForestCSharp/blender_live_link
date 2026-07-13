@@ -150,7 +150,7 @@ namespace FXAAPass
 			.layout = pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -172,7 +172,7 @@ namespace FXAAPass
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.pImageInfo = &image_info,
 		};
-		vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 1, &write);
 	}
 
 	inline void draw(VulkanContext* ctx, HMM_Vec2 in_screen_size)
@@ -194,7 +194,7 @@ namespace FXAAPass
 			.relative_threshold = 0.125f,
 		};
 		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	inline void shutdown(VulkanContext* ctx)

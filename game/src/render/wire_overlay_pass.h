@@ -298,7 +298,7 @@ namespace WireOverlayPass
 				.renderPass = VK_NULL_HANDLE,
 			};
 			VkPipeline out_pipeline = VK_NULL_HANDLE;
-			VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+			VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
 
 			vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 			vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -378,7 +378,7 @@ namespace WireOverlayPass
 				.pImageInfo = &image_infos[1],
 			},
 		};
-		vkUpdateDescriptorSets(ctx->device, 3, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 3, writes);
 	}
 
 	// Runs inside the WireOverlay pass execute callback: base copy, then the
@@ -397,7 +397,7 @@ namespace WireOverlayPass
 			0, 1, &copy_input_sets[frame_index],
 			0, nullptr
 		);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 
 		if (!in_state.render_objects.valid)
 		{
@@ -481,7 +481,7 @@ namespace WireOverlayPass
 					.pBufferInfo = &buffer_infos[1],
 				},
 			};
-			vkUpdateDescriptorSets(ctx->device, 2, writes, 0, nullptr);
+			vulkan_update_descriptor_sets(ctx, 2, writes);
 
 			vkCmdBindDescriptorSets(
 				command_buffer,
@@ -496,7 +496,7 @@ namespace WireOverlayPass
 				VK_SHADER_STAGE_VERTEX_BIT,
 				0, sizeof(i32), &object.render_object_index
 			);
-			vkCmdDraw(command_buffer, render_view.index_count, 1, 0, 0);
+			vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, 0);
 			drawn_mesh_count += 1;
 		}
 	}

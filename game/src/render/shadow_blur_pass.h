@@ -155,7 +155,7 @@ namespace ShadowBlurPass
 			.layout = pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -196,7 +196,7 @@ namespace ShadowBlurPass
 				.pImageInfo = &image_infos[1],
 			},
 		};
-		vkUpdateDescriptorSets(ctx->device, 2, writes, 0, nullptr);
+		vulkan_update_descriptor_sets(ctx, 2, writes);
 	}
 
 	inline void draw_blur_slice(VulkanContext* ctx, VkDescriptorSet in_input_set, HMM_Vec2 in_direction, i32 in_cascade_idx)
@@ -218,7 +218,7 @@ namespace ShadowBlurPass
 			.array_layer = in_cascade_idx,
 		};
 		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	// Horizontal into the intermediate target, vertical into the final one.

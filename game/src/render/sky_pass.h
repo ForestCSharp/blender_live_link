@@ -180,7 +180,7 @@ void sky_pass_init(VulkanContext* ctx)
 			.layout = sky_pass.bake_pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &sky_pass.bake_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &sky_pass.bake_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -252,7 +252,7 @@ void sky_pass_init(VulkanContext* ctx)
 			.layout = sky_pass.composite_pipeline_layout,
 			.renderPass = VK_NULL_HANDLE,
 		};
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &sky_pass.composite_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &sky_pass.composite_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -275,7 +275,7 @@ void sky_pass_update(VulkanContext* ctx)
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		.pImageInfo = &image_info,
 	};
-	vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
+	vulkan_update_descriptor_sets(ctx, 1, &write);
 }
 
 // Re-bakes the octahedral sky when the sun direction changed (records into
@@ -301,7 +301,7 @@ void sky_pass_bake_if_needed(VulkanContext* ctx, HMM_Vec3 in_sun_direction)
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, sizeof(HMM_Vec4), &sun_dir
 		);
-		vkCmdDraw(command_buffer, 3, 1, 0, 0);
+		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	});
 
 	// Geometry pass (sky composite) samples it this same frame
@@ -340,7 +340,7 @@ void sky_pass_draw_composite(VulkanContext* ctx)
 		0, nullptr
 	);
 
-	vkCmdDraw(command_buffer, 3, 1, 0, 0);
+	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
 
 void sky_pass_shutdown(VulkanContext* ctx)

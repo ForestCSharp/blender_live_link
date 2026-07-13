@@ -245,7 +245,7 @@ namespace ShadowDepthPass
 		};
 
 		VkPipeline out_pipeline = VK_NULL_HANDLE;
-		VK_CHECK(vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &out_pipeline));
+		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
 
 		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
@@ -466,7 +466,7 @@ namespace ShadowDepthPass
 				vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 			}
 			vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-			vkCmdDrawIndexed(command_buffer, render_view.index_count, 1, 0, 0, 0);
+			vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 			in_state.data_oriented.frame.draw_calls += 1;
 			in_state.data_oriented.frame.draw_mesh_count += 1;
 		}
