@@ -68,8 +68,9 @@ For a deeper protocol and runtime ownership contract, see
 
 ## Platform Notes
 
-- macOS and Linux support native Blender builds with the lightweight Blender
-  configuration.
+- Apple Silicon macOS and x86-64 Linux support native Blender builds with the
+  lightweight Blender configuration. Intel Macs can use the Python extension
+  path with `./build.sh -python`.
 - Windows is supported by the main build script for the game and Python
   extension path. Use `./build.sh -python` from a shell environment capable of
   running `bash` scripts, such as Git Bash.
@@ -77,6 +78,8 @@ For a deeper protocol and runtime ownership contract, see
   environments need XWayland available.
 - Linux native Blender builds use Blender's precompiled `linux_x64` libraries
   and include both Wayland and X11 window-system support.
+- Apple Silicon native Blender builds use Blender's precompiled `macos_arm64`
+  libraries. Blender 5.1 does not publish a corresponding macOS x64 bundle.
 - The Blender extension requires Blender `4.2.0` or newer.
 - The native Blender source build defaults to Blender `5.1.2`.
 
@@ -98,21 +101,23 @@ Native Blender builds on Linux require:
 - `git`, Git LFS, `cmake`, `make`, `ninja`, `python3`, `patch`, and `pkg-config`
 - Wayland, X11, XKB, EGL/OpenGL, and Vulkan development headers
 
-The first Linux native build downloads Blender's matching precompiled library
-bundle into `blend_src/blender/lib/linux_x64`. Later builds reuse that bundle
-and Ninja's output under `blend_src/build_linux_lite`.
+The first Linux native build downloads the required Blender source LFS assets
+(excluding the test corpus) and Blender's matching precompiled library bundle
+into `blend_src/blender/lib/linux_x64`. Later builds reuse that bundle and
+Ninja's output under `blend_src/build_linux_lite`.
 
 Native Blender builds on macOS also require Blender build tooling used by
 `build_blend_src.sh`, including:
 
+- An Apple Silicon host
 - Xcode command line tools / `xcodebuild`
-- `cmake`, `make`, `ninja`
-- `python3`
-- `autoconf`, `automake`, `bison`, `dos2unix`, `flex`, `glibtoolize`,
-  `pkg-config`, `tclsh`, and `yasm`
+- `git`, Git LFS, `cmake`, `make`, `ninja`, `python3`, and `patch`
 
-`build_blend_src.sh` will use a private CMake 3.x install when the host CMake is
-missing or too new for Blender's dependency build.
+The first Apple Silicon native build downloads the required Blender source LFS
+assets (excluding the test corpus) and Blender's matching precompiled library
+bundle into `blend_src/blender/lib/macos_arm64`. It does not run Blender's
+dependency build, avoiding a dependency workspace that can exceed 20 GB. Later
+builds reuse that bundle and Ninja's output under `blend_src/build_macos_lite`.
 
 ## Build And Run
 
@@ -226,16 +231,25 @@ exporter path.
 ./build_blend_src.sh --latest
 ```
 
-The default is the pinned Blender source version `5.1.2`. The script refuses to
-silently replace an existing `blend_src/blender` checkout with a different
-version; move that directory aside first if you intentionally want to rebuild
-against another Blender release.
+The default is the pinned Blender source version `5.1.2`. macOS and Linux both
+use a shallow checkout of the exact release tag and Blender's official
+precompiled-library update tool. The script refuses to silently replace an
+existing `blend_src/blender` checkout with a different version.
 
-Linux checks out the exact Blender Git tag and uses Blender's official
-precompiled-library update tool. The application itself is built with Blender's
-`lite` Ninja profile, with Wayland and X11 enabled. Features disabled by that
-profile, such as Cycles, USD, OpenVDB, and most media/simulation integrations,
-are intentionally unavailable in the native development build.
+Older versions of this project created macOS source from a release archive. To
+replace that generated source and its build/dependency state with the Git-based
+fast bootstrap, preview and run the explicit one-time reset:
+
+```sh
+./clean_blend_src.sh --dry-run --reset-source
+./clean_blend_src.sh --reset-source
+./build.sh -native
+```
+
+The application is built with Blender's `lite` Ninja profile; Linux additionally
+enables Wayland and X11. Features disabled by that profile, such as Cycles, USD,
+OpenVDB, and most media/simulation integrations, are intentionally unavailable
+in the native development build.
 
 ## More Documentation
 

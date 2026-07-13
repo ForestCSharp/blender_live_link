@@ -278,29 +278,59 @@ install_and_launch_native_blender() {
 prepare_flatbuffers_and_schemas() {
 	# build flatbuffers, passing in OS as first arg
 	cd "$SCRIPT_DIR" || return
-	rm -rf compiled_schemas || return
-	mkdir -p compiled_schemas/cpp || return
-	./flatbuffers/build.sh "$OS" || return
-
-	if [[ $OS = Windows ]]; then
-	  FLATC_BINARY=flatbuffers/build/Debug/flatc.exe
-	else
-	  FLATC_BINARY=flatbuffers/build/flatc
+	local previous_schema_dir
+	local previous_schema_header
+	local had_previous_schema=false
+	previous_schema_dir=$(mktemp -d "${TMPDIR:-/tmp}/blender_live_link_schema.XXXXXX") || return
+	previous_schema_header="$previous_schema_dir/blender_live_link_generated.h"
+	if [[ -f compiled_schemas/cpp/blender_live_link_generated.h ]]; then
+		cp -p compiled_schemas/cpp/blender_live_link_generated.h "$previous_schema_header" || {
+			rm -rf "$previous_schema_dir"
+			return 1
+		}
+		had_previous_schema=true
 	fi
 
-	# compile schema for cpp
-	touch compiled_schemas/__init__.py || return
-	echo FLATC IS $FLATC_BINARY
-	$FLATC_BINARY -o compiled_schemas/cpp --cpp blender_live_link.fbs || return
+	local generation_status=0
+	(
+		rm -rf compiled_schemas || exit
+		mkdir -p compiled_schemas/cpp || exit
+		./flatbuffers/build.sh "$OS" || exit
 
-	mkdir -p compiled_schemas/python || return
-	touch compiled_schemas/python/__init__.py || return
-	$FLATC_BINARY -o compiled_schemas/python --python blender_live_link.fbs || return
+		if [[ $OS = Windows ]]; then
+			FLATC_BINARY=flatbuffers/build/Debug/flatc.exe
+		else
+			FLATC_BINARY=flatbuffers/build/flatc
+		fi
 
-	# copy flatbuffers python package
-	cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || return
-	rm -rf compiled_schemas/python/flatbuffers/reflection || return
-	rewrite_python_schema_imports || return
+		# compile schema for cpp
+		touch compiled_schemas/__init__.py || exit
+		echo FLATC IS $FLATC_BINARY
+		$FLATC_BINARY -o compiled_schemas/cpp --cpp blender_live_link.fbs || exit
+
+		mkdir -p compiled_schemas/python || exit
+		touch compiled_schemas/python/__init__.py || exit
+		$FLATC_BINARY -o compiled_schemas/python --python blender_live_link.fbs || exit
+
+		# copy flatbuffers python package
+		cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || exit
+		rm -rf compiled_schemas/python/flatbuffers/reflection || exit
+		rewrite_python_schema_imports || exit
+	) || generation_status=$?
+
+	if [[ $generation_status -ne 0 ]]; then
+		rm -rf "$previous_schema_dir"
+		return "$generation_status"
+	fi
+
+	if [[ "$had_previous_schema" == true ]] && cmp -s "$previous_schema_header" compiled_schemas/cpp/blender_live_link_generated.h; then
+		cp -p "$previous_schema_header" compiled_schemas/cpp/blender_live_link_generated.h || {
+			rm -rf "$previous_schema_dir"
+			return 1
+		}
+		echo "Generated C++ schema is unchanged; preserved its timestamp."
+	fi
+	rm -rf "$previous_schema_dir"
 }
 
 rewrite_python_schema_imports() {
@@ -708,6 +738,12 @@ done
 if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS != Mac && $OS != Linux ]]; then
 	echo "Error: native Blender compilation is currently implemented only for macOS and Linux."
 	echo "Use ./build.sh -python on $OS, or ./build.sh -g to build only the game."
+	exit 1
+fi
+
+if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS = Mac && $(uname -m) != arm64 ]]; then
+	echo "Error: native Blender builds on macOS require Apple Silicon (arm64)."
+	echo "Blender 5.1 does not provide precompiled macOS x64 libraries; use ./build.sh -python on Intel Macs."
 	exit 1
 fi
 

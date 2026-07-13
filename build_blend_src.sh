@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 BLEND_SRC_DIR="$SCRIPT_DIR/blend_src"
 BLENDER_SRC_DIR="$BLEND_SRC_DIR/blender"
-DOWNLOAD_DIR="$BLEND_SRC_DIR/downloads"
 TOOLS_DIR="$BLEND_SRC_DIR/tools"
 HOST_KERNEL=$(uname -s)
 case "$HOST_KERNEL" in
@@ -27,9 +26,7 @@ BLENDER_LIVE_LINK_FLATBUFFERS_HEADER="$SCRIPT_DIR/flatbuffers/include/flatbuffer
 SOURCE_INDEX_URL="${BLENDER_SOURCE_INDEX_URL:-https://download.blender.org/source/}"
 BLENDER_GIT_URL="${BLENDER_GIT_URL:-https://projects.blender.org/blender/blender.git}"
 DEFAULT_BLENDER_SOURCE_VERSION=5.1.2
-BOOTSTRAP_CMAKE_VERSION="${BLENDER_BOOTSTRAP_CMAKE_VERSION:-3.31.6}"
-FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
-RUBBERBAND_CPP_ARGS="-include cstddef"
+FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DCMAKE_INSTALL_PREFIX=$BLENDER_LITE_BUILD_DIR/bin -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
 BLENDER_PATCHES_CHANGED=false
 BLENDER_SOURCE_MODE=version
 BLENDER_SOURCE_VERSION_EXPLICIT=false
@@ -201,11 +198,6 @@ archive_to_version() {
 	printf "%s" "$archive_name" | sed -E 's/^blender-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz$/\1/'
 }
 
-source_archive_url() {
-	local archive_name=$1
-	printf "%s/%s" "${SOURCE_INDEX_URL%/}" "$archive_name"
-}
-
 resolve_requested_blender_source() {
 	case "$BLENDER_SOURCE_MODE" in
 		version)
@@ -268,88 +260,30 @@ ensure_existing_source_matches_requested_version() {
 	fi
 }
 
-ensure_blender_source() {
-	if is_valid_blender_source; then
-		ensure_existing_source_matches_requested_version
-		echo "Blender source already present at $BLENDER_SRC_DIR"
-		return
-	fi
+is_nested_blender_git_checkout() {
+	local git_root
+	local source_root
 
-	if [[ -e "$BLENDER_SRC_DIR" ]]; then
-		if [[ -d "$BLENDER_SRC_DIR" && -z "$(find "$BLENDER_SRC_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-			rmdir "$BLENDER_SRC_DIR"
-		else
-			echo "Error: $BLENDER_SRC_DIR exists but does not look like Blender source"
-			echo "Expected CMakeLists.txt and source/creator. Move it aside before retrying."
-			exit 1
-		fi
-	fi
+	git_root=$(git -C "$BLENDER_SRC_DIR" rev-parse --show-toplevel 2> /dev/null) || return 1
+	git_root=$(cd "$git_root" && pwd -P) || return 1
+	source_root=$(cd "$BLENDER_SRC_DIR" && pwd -P) || return 1
 
-	mkdir -p "$DOWNLOAD_DIR"
-
-	local archive_url
-	local archive_path
-	local partial_archive_path
-	archive_url=$(source_archive_url "$REQUESTED_BLENDER_ARCHIVE")
-	archive_path="$DOWNLOAD_DIR/$REQUESTED_BLENDER_ARCHIVE"
-	partial_archive_path="$archive_path.partial"
-
-	if [[ -f "$archive_path" ]]; then
-		echo "Using existing Blender source archive $archive_path"
-	else
-		require_command curl
-		echo "Downloading $archive_url"
-		rm -f "$partial_archive_path"
-		curl -fL "$archive_url" -o "$partial_archive_path"
-		mv "$partial_archive_path" "$archive_path"
-	fi
-
-	require_command tar
-	local extract_dir
-	extract_dir=$(mktemp -d "$BLEND_SRC_DIR/extract.XXXXXX")
-	cleanup() {
-		rm -rf "$extract_dir"
-		rm -f "$partial_archive_path"
-	}
-	trap cleanup EXIT
-
-	echo "Extracting $REQUESTED_BLENDER_ARCHIVE"
-	tar -xf "$archive_path" -C "$extract_dir"
-
-	local extracted_root
-	extracted_root=$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)
-	if [[ -z "$extracted_root" ]]; then
-		echo "Error: archive did not contain a source directory"
-		exit 1
-	fi
-
-	if [[ ! -f "$extracted_root/CMakeLists.txt" || ! -d "$extracted_root/source/creator" ]]; then
-		echo "Error: extracted archive does not look like Blender source"
-		exit 1
-	fi
-
-	mv "$extracted_root" "$BLENDER_SRC_DIR"
-	ensure_existing_source_matches_requested_version
-	cleanup
-	trap - EXIT
-	echo "Blender source ready at $BLENDER_SRC_DIR"
+	[[ "$git_root" == "$source_root" && -f "$BLENDER_SRC_DIR/.gitmodules" ]]
 }
 
-ensure_linux_blender_source() {
+ensure_git_blender_source() {
 	ensure_git_lfs_on_path
 
 	if is_valid_blender_source; then
 		ensure_existing_source_matches_requested_version
-		if ! git -C "$BLENDER_SRC_DIR" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-			echo "Error: Linux native builds require an official Blender Git checkout at $BLENDER_SRC_DIR"
-			echo "Move the existing archive-based source aside, then retry."
+		if ! is_nested_blender_git_checkout; then
+			echo "Error: native builds require an official Blender Git checkout at $BLENDER_SRC_DIR"
+			echo "The existing source is archive-based or belongs to a parent Git repository."
+			echo "Run ./clean_blend_src.sh --reset-source, then retry."
 			exit 1
 		fi
-		if [[ ! -f "$BLENDER_SRC_DIR/.gitmodules" ]]; then
-			echo "Error: Blender checkout is missing .gitmodules; precompiled Linux libraries cannot be selected."
-			exit 1
-		fi
-		ensure_linux_blender_tag_checkout
+		ensure_blender_tag_checkout
+		ensure_blender_source_lfs
 		echo "Blender Git source already present at $BLENDER_SRC_DIR"
 		return
 	fi
@@ -363,10 +297,10 @@ ensure_linux_blender_source() {
 	mkdir -p "$BLEND_SRC_DIR"
 	local clone_dir
 	clone_dir=$(mktemp -d "$BLEND_SRC_DIR/blender.clone.XXXXXX")
-	cleanup_linux_clone() {
+	cleanup_blender_clone() {
 		rm -rf "$clone_dir"
 	}
-	trap cleanup_linux_clone EXIT
+	trap cleanup_blender_clone EXIT
 
 	echo "Cloning Blender v$REQUESTED_BLENDER_SOURCE_VERSION from $BLENDER_GIT_URL"
 	GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "v$REQUESTED_BLENDER_SOURCE_VERSION" "$BLENDER_GIT_URL" "$clone_dir"
@@ -378,11 +312,12 @@ ensure_linux_blender_source() {
 	mv "$clone_dir" "$BLENDER_SRC_DIR"
 	trap - EXIT
 	ensure_existing_source_matches_requested_version
-	ensure_linux_blender_tag_checkout
+	ensure_blender_tag_checkout
+	ensure_blender_source_lfs
 	echo "Blender Git source ready at $BLENDER_SRC_DIR"
 }
 
-ensure_linux_blender_tag_checkout() {
+ensure_blender_tag_checkout() {
 	local requested_tag="v$REQUESTED_BLENDER_SOURCE_VERSION"
 	local head_commit
 	local tag_commit
@@ -399,6 +334,33 @@ ensure_linux_blender_tag_checkout() {
 		echo "Move $BLENDER_SRC_DIR aside, then retry to create an exact release checkout."
 		exit 1
 	fi
+}
+
+ensure_blender_source_lfs() {
+	local startup_blend="$BLENDER_SRC_DIR/release/datafiles/startup.blend"
+	local git_dir
+	local lfs_sentinel
+	local startup_size=0
+
+	git_dir=$(git -C "$BLENDER_SRC_DIR" rev-parse --absolute-git-dir)
+	lfs_sentinel="$git_dir/blender_live_link_source_lfs_no_tests_ready"
+
+	if [[ -f "$startup_blend" ]]; then
+		startup_size=$(wc -c < "$startup_blend")
+	fi
+	if [[ -f "$lfs_sentinel" && "$startup_size" -ge 1024 ]]; then
+		echo "Required Blender source LFS assets are already present."
+		return
+	fi
+
+	echo "Downloading required Blender source LFS assets (excluding the test corpus)"
+	git -C "$BLENDER_SRC_DIR" lfs pull --exclude="tests/**"
+
+	if [[ ! -f "$startup_blend" ]] || [[ $(wc -c < "$startup_blend") -lt 1024 ]]; then
+		echo "Error: Blender source LFS update completed but startup.blend is still incomplete."
+		exit 1
+	fi
+	printf '%s\n' "v$REQUESTED_BLENDER_SOURCE_VERSION" > "$lfs_sentinel"
 }
 
 supported_blender_patch_versions() {
@@ -556,64 +518,14 @@ ensure_native_schema_inputs() {
 }
 
 require_mac_build_tools() {
-	ensure_compatible_cmake
 	require_command cmake
 	require_command make
 	require_command ninja
 	require_command python3
 	require_command xcodebuild
-	require_command autoconf
-	require_command automake
-	require_command bison
-	require_command dos2unix
-	require_command flex
-	require_command glibtoolize
-	require_command pkg-config
-	require_command tclsh
-	require_command yasm
-}
-
-cmake_major_version() {
-	local cmake_bin=$1
-	"$cmake_bin" --version | awk 'NR == 1 { split($3, version, "."); print version[1]; exit }'
-}
-
-ensure_compatible_cmake() {
-	require_command python3
-
-	if command -v cmake > /dev/null 2>&1; then
-		local host_cmake
-		local host_cmake_major
-		host_cmake=$(command -v cmake)
-		host_cmake_major=$(cmake_major_version "$host_cmake")
-
-		if [[ "$host_cmake_major" =~ ^[0-9]+$ && "$host_cmake_major" -lt 4 ]]; then
-			echo "Using CMake $("$host_cmake" --version | awk 'NR == 1 { print $3; exit }') at $host_cmake"
-			return
-		fi
-	fi
-
-	local cmake_venv="$TOOLS_DIR/cmake-$BOOTSTRAP_CMAKE_VERSION-venv"
-	local cmake_bin="$cmake_venv/bin/cmake"
-
-	if [[ ! -x "$cmake_bin" ]]; then
-		echo "Host CMake is missing or too new for Blender's dependency build."
-		echo "Installing private CMake $BOOTSTRAP_CMAKE_VERSION into $cmake_venv"
-		python3 -m venv "$cmake_venv"
-		"$cmake_venv/bin/python" -m pip install --upgrade pip
-		"$cmake_venv/bin/python" -m pip install "cmake==$BOOTSTRAP_CMAKE_VERSION"
-	fi
-
-	local bootstrapped_cmake_major
-	bootstrapped_cmake_major=$(cmake_major_version "$cmake_bin")
-	if [[ ! "$bootstrapped_cmake_major" =~ ^[0-9]+$ || "$bootstrapped_cmake_major" -ge 4 ]]; then
-		echo "Error: private CMake at $cmake_bin is not a compatible CMake 3.x build"
-		exit 1
-	fi
-
-	export PATH="$cmake_venv/bin:$PATH"
-	hash -r 2> /dev/null || true
-	echo "Using private CMake $("$cmake_bin" --version | awk 'NR == 1 { print $3; exit }') at $cmake_bin"
+	require_command git
+	require_command patch
+	ensure_git_lfs_on_path
 }
 
 has_blender_dependencies() {
@@ -621,98 +533,57 @@ has_blender_dependencies() {
 	[[ -d "$deps_dir/python" && -d "$deps_dir/tbb" ]]
 }
 
-ensure_mac_libdir_marker() {
-	local deps_dir=$1
-	local marker="$deps_dir/.git"
-
-	if [[ -e "$marker" ]]; then
-		return
-	fi
-
-	echo "Creating Blender precompiled-library marker at $marker"
-	echo "Generated by build_blend_src.sh after make deps; this is not a Git checkout." > "$marker"
-}
-
-ensure_mac_python_site_packages() {
-	echo "Ensuring Blender dependency Python has build-time site packages"
-	echo "This avoids python-zstandard failing on missing 'packaging' during make deps."
-	ensure_nprocs
-	make -C "$BLENDER_SRC_DIR" deps DEPS_TARGET=external_python_site_packages
-}
-
-apply_rubberband_size_t_workaround() {
-	local arch=$1
-	local deps_build_dir="$BLEND_SRC_DIR/build_darwin/deps_$arch"
-	local rubberband_build_dir="$deps_build_dir/build/rubberband/src/external_rubberband-build"
-	local meson_bin="$deps_build_dir/Release/python/bin/meson"
-
-	if [[ ! -d "$rubberband_build_dir" || ! -x "$meson_bin" ]]; then
-		echo "Rubber Band workaround not applicable yet; Meson build directory was not found."
-		return 1
-	fi
-
-	echo "Applying Rubber Band Meson C++ args workaround: $RUBBERBAND_CPP_ARGS"
-	echo "This fixes Xcode/libc++ builds where Rubber Band 4.0.0 uses size_t without including <cstddef>."
-	"$meson_bin" configure "$rubberband_build_dir" "-Dcpp_args=$RUBBERBAND_CPP_ARGS"
-}
-
-make_deps_with_mac_workarounds() {
-	local arch=$1
-
-	if make -C "$BLENDER_SRC_DIR" deps; then
-		return
-	fi
-
-	echo "Blender dependency build failed; checking known macOS dependency workarounds."
-	if apply_rubberband_size_t_workaround "$arch"; then
-		echo "Retrying Blender dependency build after Rubber Band workaround."
-		make -C "$BLENDER_SRC_DIR" deps
-		return
-	fi
-
-	echo "No known workaround applied for the dependency failure."
-	return 1
-}
-
-ensure_mac_blender_dependencies() {
-	local arch=$1
-	local deps_dir="$BLENDER_SRC_DIR/lib/macos_$arch"
+ensure_precompiled_blender_dependencies() {
+	local library_name=$1
+	local platform_label=$2
+	local deps_dir="$BLENDER_SRC_DIR/lib/$library_name"
 
 	if has_blender_dependencies "$deps_dir"; then
-		ensure_mac_libdir_marker "$deps_dir"
-		echo "Blender macOS dependencies already present at $deps_dir"
+		echo "Blender $platform_label precompiled libraries already present at $deps_dir"
 		return
 	fi
 
-	echo "Building Blender macOS dependencies into $deps_dir"
-	echo "Skipping 'make update' because blend_src/blender comes from an official source tarball, not a Git checkout."
-	ensure_mac_python_site_packages
-	ensure_nprocs
-	make_deps_with_mac_workarounds "$arch"
+	echo "Downloading Blender precompiled $platform_label libraries"
+	echo "The Blender source checkout is not updated; only its matching library submodule is configured."
+	(
+		cd "$BLENDER_SRC_DIR"
+		python3 build_files/utils/make_update.py --no-blender
+	)
 
 	if ! has_blender_dependencies "$deps_dir"; then
-		echo "Error: Blender dependency build completed but expected sentinels were not found at $deps_dir"
+		echo "Error: Blender library update completed but expected libraries were not found at $deps_dir"
 		echo "Expected at least python/ and tbb/."
 		exit 1
 	fi
+}
 
-	ensure_mac_libdir_marker "$deps_dir"
+mac_blender_build_complete() {
+	local resource_version="${REQUESTED_BLENDER_SOURCE_VERSION%.*}"
+	local resource_scripts="$BLENDER_LITE_BUILD_DIR/bin/Blender.app/Contents/Resources/$resource_version/scripts"
+	[[ -x "$BLENDER_BINARY" && -d "$resource_scripts" ]]
 }
 
 build_mac_blender() {
 	local arch
 	arch=$(detect_blender_arch)
+	if [[ "$arch" != arm64 ]]; then
+		echo "Error: native Blender builds on macOS require Apple Silicon (arm64)."
+		echo "Blender 5.1 does not provide precompiled macOS x64 libraries; use ./build.sh -python on Intel Macs."
+		exit 1
+	fi
 
 	require_mac_build_tools
-	ensure_mac_blender_dependencies "$arch"
+	ensure_precompiled_blender_dependencies macos_arm64 "macOS ARM64"
 
 	if [[ "$BLENDER_PATCHES_CHANGED" == "true" ]]; then
 		echo "Blender patches changed; running the app build so native changes are compiled."
 	elif [[ -x "$BLENDER_BINARY" && "$BLENDER_LIVE_LINK_SCHEMA_HEADER" -nt "$BLENDER_BINARY" ]]; then
 		echo "Generated Live Link C++ schema is newer than Blender; rebuilding native Blender."
-	elif [[ -x "$BLENDER_BINARY" ]]; then
+	elif mac_blender_build_complete; then
 		echo "Blender already built at $BLENDER_BINARY"
 		return
+	elif [[ -x "$BLENDER_BINARY" ]]; then
+		echo "Blender binary exists but its local application resources are incomplete; finishing the build."
 	fi
 
 	local make_targets=(lite ninja)
@@ -732,6 +603,10 @@ build_mac_blender() {
 		echo "Error: Blender build completed but binary was not found at $BLENDER_BINARY"
 		exit 1
 	fi
+	if ! mac_blender_build_complete; then
+		echo "Error: Blender build completed but local application resources were not installed."
+		exit 1
+	fi
 
 	echo "Blender built at $BLENDER_BINARY"
 }
@@ -747,28 +622,6 @@ require_linux_build_tools() {
 	ensure_git_lfs_on_path
 }
 
-ensure_linux_blender_dependencies() {
-	local deps_dir="$BLENDER_SRC_DIR/lib/linux_x64"
-
-	if has_blender_dependencies "$deps_dir"; then
-		echo "Blender Linux precompiled libraries already present at $deps_dir"
-		return
-	fi
-
-	echo "Downloading Blender precompiled Linux x64 libraries"
-	echo "The Blender source checkout is not updated; only its matching library submodule is configured."
-	(
-		cd "$BLENDER_SRC_DIR"
-		python3 build_files/utils/make_update.py --no-blender
-	)
-
-	if ! has_blender_dependencies "$deps_dir"; then
-		echo "Error: Blender library update completed but expected libraries were not found at $deps_dir"
-		echo "Expected at least python/ and tbb/."
-		exit 1
-	fi
-}
-
 build_linux_blender() {
 	if [[ $(uname -m) != x86_64 ]]; then
 		echo "Error: the native Linux build currently supports x86_64 only."
@@ -776,7 +629,7 @@ build_linux_blender() {
 	fi
 
 	require_linux_build_tools
-	ensure_linux_blender_dependencies
+	ensure_precompiled_blender_dependencies linux_x64 "Linux x64"
 
 	if [[ "$BLENDER_PATCHES_CHANGED" == "true" ]]; then
 		echo "Blender patches changed; running the app build so native changes are compiled."
@@ -812,11 +665,26 @@ build_linux_blender() {
 parse_args "$@"
 resolve_requested_blender_source
 CURRENT_OS=$(detect_os)
-if [[ $CURRENT_OS = Linux ]]; then
-	ensure_linux_blender_source
-else
-	ensure_blender_source
-fi
+case "$CURRENT_OS" in
+	Mac)
+		if [[ $(detect_blender_arch) != arm64 ]]; then
+			echo "Error: native Blender builds on macOS require Apple Silicon (arm64)."
+			echo "Blender 5.1 does not provide precompiled macOS x64 libraries; use ./build.sh -python on Intel Macs."
+			exit 1
+		fi
+		;;
+	Linux)
+		if [[ $(uname -m) != x86_64 ]]; then
+			echo "Error: the native Linux build currently supports x86_64 only."
+			exit 1
+		fi
+		;;
+	*)
+		echo "Error: native Blender compilation is supported only on macOS ARM64 and Linux x64."
+		exit 1
+		;;
+esac
+ensure_git_blender_source
 ensure_native_schema_inputs
 apply_blender_patches
 remove_retired_bmesh_dependency_patch
