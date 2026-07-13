@@ -136,7 +136,7 @@ class LiveLinkConnection():
         except Exception as e:
             return False
 
-    def connect(self):
+    def connect(self, log_failure=True):
         try:
             # Close old socket
             self.close_socket()
@@ -150,7 +150,8 @@ class LiveLinkConnection():
             self.my_socket.connect((HOST, PORT))
             return True
         except Exception as e:
-            print("Failed to Connect to Running Game")
+            if log_failure:
+                print("Failed to Connect to Running Game")
             return False
 
     def send(self, data):
@@ -160,13 +161,17 @@ class LiveLinkConnection():
             is_connected = self.connect()
 
         if not is_connected:
-            return
+            return False
 
         try:
             self.my_socket.sendall(data)
+            return True
         except Exception as e:
             print(traceback.format_exc())
             print("Error: LiveLinkConnection::send")
+            self.close_socket()
+            self.create_socket()
+            return False
 
     def matrix_to_column_major_array(self, matrix):
         matrix_4x4 = matrix.to_4x4()
@@ -1161,7 +1166,7 @@ class LiveLinkConnection():
         return output
 
     def send_object_list(self, updated_objects, deleted_object_uids, update_reason="object_list"):
-        self.send(self.make_update(updated_objects, deleted_object_uids, update_reason=update_reason))
+        return self.send(self.make_update(updated_objects, deleted_object_uids, update_reason=update_reason))
 
     def save_to_file(self, in_objects, in_filename, update_reason="save_to_file"):
         update = self.make_update(in_objects, [], update_reason=update_reason)
@@ -1169,7 +1174,7 @@ class LiveLinkConnection():
             f.write(update)
 
     def send_reset(self, update_reason="manual_reset"):
-        self.send(self.make_update([], [], True, update_reason=update_reason))
+        return self.send(self.make_update([], [], True, update_reason=update_reason))
 
 live_link_connection = []
 
@@ -1189,6 +1194,81 @@ def clear_batched_depsgraph_updates(update_reason="unknown"):
         )
         batched_updates.clear()
         batched_deleted.clear()
+
+def send_full_scene_update(update_reason="full_update"):
+    clear_batched_depsgraph_updates(update_reason=f"{update_reason}_before_send")
+    print(
+        "\nLive Link Full Update Requested: "
+        f"reason={update_reason} "
+        f"scene_objects={len(bpy.context.scene.objects)}"
+    )
+
+    depsgraph_update_post_callback.enabled = False
+    sent = False
+    try:
+        sent = live_link_connection.send_object_list(
+            updated_objects=list(bpy.context.scene.objects),
+            deleted_object_uids=[],
+            update_reason=update_reason,
+        )
+    finally:
+        clear_batched_depsgraph_updates(update_reason=f"{update_reason}_after_send")
+        depsgraph_update_post_callback.enabled = True
+
+    if sent:
+        automatic_initial_full_update_timer.pending = False
+    return sent
+
+AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS = 1.0
+
+def automatic_initial_full_update_timer():
+    if not automatic_initial_full_update_timer.pending:
+        return None
+
+    if not live_link_connection.is_connected():
+        if not live_link_connection.connect(log_failure=False):
+            if automatic_initial_full_update_timer.status != "waiting":
+                print("\nLive Link Automatic Initial Update: waiting for game on 127.0.0.1:65432")
+                automatic_initial_full_update_timer.status = "waiting"
+            return AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS
+
+        print("\nLive Link Automatic Initial Update: connected to game")
+        automatic_initial_full_update_timer.status = "connected"
+
+    if send_full_scene_update(update_reason="automatic_initial_full_update"):
+        automatic_initial_full_update_timer.pending = False
+        automatic_initial_full_update_timer.status = "sent"
+        print("Live Link Automatic Initial Update: full scene sent")
+        return None
+
+    if automatic_initial_full_update_timer.status != "retrying":
+        print("Live Link Automatic Initial Update: send failed; retrying")
+        automatic_initial_full_update_timer.status = "retrying"
+    return AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS
+
+automatic_initial_full_update_timer.pending = False
+automatic_initial_full_update_timer.status = "idle"
+
+def schedule_automatic_initial_full_update(update_reason="startup"):
+    if (automatic_initial_full_update_timer.pending
+        and bpy.app.timers.is_registered(automatic_initial_full_update_timer)):
+        return
+
+    automatic_initial_full_update_timer.pending = True
+    automatic_initial_full_update_timer.status = "scheduled"
+
+    if bpy.app.timers.is_registered(automatic_initial_full_update_timer):
+        bpy.app.timers.unregister(automatic_initial_full_update_timer)
+
+    print(f"\nLive Link Automatic Initial Update Scheduled: reason={update_reason}")
+    bpy.app.timers.register(automatic_initial_full_update_timer, first_interval=0.25)
+
+@persistent
+def automatic_initial_full_update_load_post(_):
+    depsgraph_update_post_callback.previous_objects = set(
+        obj.session_uid for obj in bpy.context.scene.objects
+    )
+    schedule_automatic_initial_full_update(update_reason="blend_file_loaded")
 
 # Actually sends batched updates
 def send_updates_timer(): 
@@ -1286,24 +1366,7 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        clear_batched_depsgraph_updates(update_reason="manual_full_update_before_send")
-        print(
-            "\nLive Link Manual Send Requested: "
-            f"reason=manual_full_update "
-            f"scene_objects={len(bpy.context.scene.objects)} "
-            f"queued_depsgraph_updates={len(batched_updates)} "
-            f"queued_deleted={len(batched_deleted)}"
-        )
-        depsgraph_update_post_callback.enabled = False
-        try:
-            live_link_connection.send_object_list(
-                updated_objects = list(bpy.context.scene.objects),
-                deleted_object_uids = [],
-                update_reason = "manual_full_update",
-            )
-        finally:
-            clear_batched_depsgraph_updates(update_reason="manual_full_update_after_send")
-            depsgraph_update_post_callback.enabled = True
+        send_full_scene_update(update_reason="manual_full_update")
         return {'FINISHED'}
 # End OpLiveLinkSendFullUpdate 
 
@@ -1705,7 +1768,10 @@ def register():
         bpy.utils.register_class(cls)
 
     # Register depsgraph update post callback
-    bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
+    if depsgraph_update_post_callback not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_post_callback)
+    if automatic_initial_full_update_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(automatic_initial_full_update_load_post)
 
     # add to searchable menu
     bpy.types.VIEW3D_MT_object.append(menu_func)
@@ -1719,7 +1785,18 @@ def register():
         update=live_link_python_export_fallback_update,
     )
 
+    # Enabled add-ons normally register before the startup file is loaded and
+    # are scheduled by load_post. This also covers enabling the add-on after a
+    # file has already been opened.
+    if getattr(bpy.data, "filepath", ""):
+        schedule_automatic_initial_full_update(update_reason="addon_registered_with_open_file")
+
 def unregister():
+    automatic_initial_full_update_timer.pending = False
+    automatic_initial_full_update_timer.status = "idle"
+    if bpy.app.timers.is_registered(automatic_initial_full_update_timer):
+        bpy.app.timers.unregister(automatic_initial_full_update_timer)
+
     # clean up live link connection
     global live_link_connection
     del live_link_connection
@@ -1729,7 +1806,10 @@ def unregister():
         bpy.utils.unregister_class(cls)
 
     # Remove depsgraph update post callback
-    bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_post_callback)
+    if depsgraph_update_post_callback in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_post_callback)
+    if automatic_initial_full_update_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(automatic_initial_full_update_load_post)
 
     # remove from searchable menu
     bpy.types.VIEW3D_MT_object.remove(menu_func)
