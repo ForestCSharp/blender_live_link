@@ -191,7 +191,6 @@ struct MeshRenderView
 	VkBuffer wire_index_buffer = VK_NULL_HANDLE;
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
-	bool uses_skinned_cache = false;
 	bool is_tessellated = false;
 };
 
@@ -216,18 +215,32 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
 			.index_count = tessellated.index_count,
 			.wire_index_count = tessellated.wire_index_count,
-			.uses_skinned_cache = in_mesh.has_skinned_vertices,
 			.is_tessellated = true,
 		};
 	}
 
-	if (in_mesh.has_skinned_vertices && in_mesh.skinned_vertex_cache_valid)
+	return out_view;
+}
+
+// Selects already-deformed vertices for consumers that cannot run the normal
+// skinned vertex shader (currently tessellation inputs and the wire overlay).
+// Ordinary raster passes must keep the base vertex buffer returned by
+// mesh_get_render_view so they do not skin compute-baked vertices twice.
+bool mesh_use_deformed_vertex_source(Mesh& in_mesh, MeshRenderView& in_out_render_view)
+{
+	if (!in_mesh.has_skinned_vertices || in_out_render_view.is_tessellated)
 	{
-		out_view.vertex_buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer();
-		out_view.uses_skinned_cache = true;
+		return true;
 	}
 
-	return out_view;
+	if (!in_mesh.skinned_vertex_cache_valid
+		|| !in_mesh.skinned_vertex_cache_buffer.is_gpu_buffer_valid())
+	{
+		return false;
+	}
+
+	in_out_render_view.vertex_buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer();
+	return true;
 }
 
 void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)

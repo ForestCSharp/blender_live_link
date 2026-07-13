@@ -440,8 +440,10 @@ namespace WireOverlayPass
 			{
 				continue;
 			}
-			// Skinned wires draw from the compute-baked vertex cache
-			if (mesh.has_skinned_vertices && !mesh.skinned_vertex_cache_valid)
+			// Non-tessellated skinned wires draw from the compute-baked vertex
+			// cache. Tessellated views are already deformed and remain drawable
+			// even when no current cache is available.
+			if (!mesh_use_deformed_vertex_source(mesh, render_view))
 			{
 				continue;
 			}
