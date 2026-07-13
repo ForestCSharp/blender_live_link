@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
@@ -20,8 +21,8 @@ fi
 # Compile GLSL -> SPIR-V with glslc (from the Vulkan SDK).
 # forward.vert -> bin/shaders/forward.vert.spv
 for ext in vert frag comp; do
-	find data/shaders -name "*.$ext" | while read f; do
-		file_name=$(basename $f)
+	while read -r f; do
+		file_name=$(basename "$f")
 		compiled_file="bin/shaders/$file_name.spv"
 		NEEDS_REBUILD=$REBUILD_ALL
 		if [ ! -f "$compiled_file" ] || [ "$f" -nt "$compiled_file" ]; then NEEDS_REBUILD=1; fi
@@ -32,7 +33,7 @@ for ext in vert frag comp; do
 			echo "compiling $f to $compiled_file ($GAME_BUILD_CONFIG)"
 			glslc $SHADER_OPT_FLAGS -I data/shaders --target-env=vulkan1.3 -DSHADOWS_ENABLED "$f" -o "$compiled_file"
 		fi
-	done
+	done < <(find data/shaders -name "*.$ext")
 done
 
 echo "$GAME_BUILD_CONFIG $SHADER_OPT_FLAGS" > "$CONFIG_STAMP"

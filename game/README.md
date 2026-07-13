@@ -8,6 +8,7 @@ No CMake — plain `build.sh`, mirroring `game_old/`.
 
 ```sh
 ./build.sh Mac                                  # Develop: -O2 -g + validation
+./build.sh Linux                                # Develop Linux/X11 build
 GAME_BUILD_CONFIG=Debug ./build.sh Mac -norun   # -O0 -g + validation
 GAME_BUILD_CONFIG=Release ./build.sh Mac -norun # -O3, validation off
 WITH_DEBUG_UI=0 ./build.sh Mac -norun            # compile without ImGui/timings
@@ -20,6 +21,7 @@ change.
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
   MoltenVK ICD at `/usr/local/share/vulkan/icd.d/MoltenVK_icd.json`)
+- Linux: Clang, `ar`, X11 development headers, and a Vulkan loader/driver
 - `../compiled_schemas/cpp/blender_live_link_generated.h` generated — run the
   repo root `./build.sh` once first
 - Run the binary from this directory (`bin/shaders/*.spv` paths are relative)

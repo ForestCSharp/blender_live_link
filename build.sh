@@ -27,7 +27,7 @@ BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
 NATIVE_BLENDER_BINARY="$SCRIPT_DIR/blend_src/build_macos_lite/bin/Blender.app/Contents/MacOS/Blender"
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
-EXTENSION_ZIP_PATH="$SCRIPT_DIR.zip"
+EXTENSION_ZIP_PATH="$SCRIPT_DIR/blend_src/$BASE_DIR.zip"
 PARALLEL_STATUS_DIR=""
 PARALLEL_LOG_DIR=""
 PARALLEL_BRANCH_NAMES=()
@@ -36,6 +36,8 @@ PARALLEL_BRANCH_STATUS_FILES=()
 PARALLEL_BRANCH_STATUSES=()
 PARALLEL_BRANCH_LOG_FILES=()
 PARALLEL_BRANCH_RENDERED_LINES=()
+INSTALLED_BLENDER_KIND=""
+INSTALLED_BLENDER_COMMAND=()
 
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 
@@ -71,13 +73,21 @@ resolve_blend_file_arg() {
 
 package_extension() {
 	log_build "Blender branch: packaging extension"
+	mkdir -p "$(dirname "$EXTENSION_ZIP_PATH")" || return
 	cd "$SCRIPT_DIR/.." || return
 	rm -f "$EXTENSION_ZIP_PATH" || return
 
 	if [[ $OS = Windows ]]; then
+		if ! command -v 7z > /dev/null 2>&1; then
+			echo "Error: required packaging command '7z' was not found on PATH."
+			return 1
+		fi
 		7z a -tzip "$EXTENSION_ZIP_PATH" $BASE_DIR -w $BASE_DIR/ -r \
 			-x!"$BASE_DIR/flatbuffers/*" \
 			-x!"$BASE_DIR/.git/*" \
+			-x!"$BASE_DIR/.agents/*" \
+			-x!"$BASE_DIR/.codex/*" \
+			-x!"$BASE_DIR/tools/*" \
 			-x!"$BASE_DIR/game/*" \
 			-x!"$BASE_DIR/game_old/*" \
 			-x!"$BASE_DIR/blend_files/*" \
@@ -97,10 +107,13 @@ package_extension() {
 			-x!"$BASE_DIR/blender_live_link.fbs" \
 			-x!"$BASE_DIR/.DS_Store" \
 			-x!"*/.DS_Store" || return
-	else
+	elif command -v zip > /dev/null 2>&1; then
 		zip -r "$EXTENSION_ZIP_PATH" $BASE_DIR \
 			-x "$BASE_DIR/flatbuffers/*" \
 			-x "$BASE_DIR/.git/*" \
+			-x "$BASE_DIR/.agents/*" \
+			-x "$BASE_DIR/.codex/*" \
+			-x "$BASE_DIR/tools/*" \
 			-x "$BASE_DIR/game/*"\
 			-x "$BASE_DIR/game_old/*"\
 			-x "$BASE_DIR/blend_files/*" \
@@ -120,10 +133,64 @@ package_extension() {
 			-x "$BASE_DIR/blender_live_link.fbs" \
 			-x "$BASE_DIR/.DS_Store" \
 			-x "*/.DS_Store" || return
+	elif command -v bsdtar > /dev/null 2>&1; then
+		bsdtar -a -cf "$EXTENSION_ZIP_PATH" \
+			--exclude "$BASE_DIR/flatbuffers/*" \
+			--exclude "$BASE_DIR/.git/*" \
+			--exclude "$BASE_DIR/.agents/*" \
+			--exclude "$BASE_DIR/.codex/*" \
+			--exclude "$BASE_DIR/tools/*" \
+			--exclude "$BASE_DIR/game/*" \
+			--exclude "$BASE_DIR/game_old/*" \
+			--exclude "$BASE_DIR/blend_files/*" \
+			--exclude "$BASE_DIR/blend_src/*" \
+			--exclude "$BASE_DIR/blend_patches/*" \
+			--exclude "$BASE_DIR/compiled_schemas/cpp/*" \
+			--exclude "$BASE_DIR/docs/*" \
+			--exclude "$BASE_DIR/__pycache__/*" \
+			--exclude "$BASE_DIR/*.pyc" \
+			--exclude "$BASE_DIR/build.sh" \
+			--exclude "$BASE_DIR/build_blend_src.sh" \
+			--exclude "$BASE_DIR/clean_blend_src.sh" \
+			--exclude "$BASE_DIR/test_live_link_parity.sh" \
+			--exclude "$BASE_DIR/README.md" \
+			--exclude "$BASE_DIR/TODO.txt" \
+			--exclude "$BASE_DIR/.gitignore" \
+			--exclude "$BASE_DIR/blender_live_link.fbs" \
+			--exclude "$BASE_DIR/.DS_Store" \
+			--exclude "*/.DS_Store" \
+			"$BASE_DIR" || return
+	else
+		echo "Error: extension packaging requires either 'zip' or 'bsdtar' on $OS."
+		return 1
 	fi
 
 	cd "$SCRIPT_DIR" || return
 	log_build "Blender branch: packaged extension at $EXTENSION_ZIP_PATH"
+}
+
+resolve_installed_blender() {
+	INSTALLED_BLENDER_KIND=""
+	INSTALLED_BLENDER_COMMAND=()
+
+	if [[ -n "${BLENDER_LIVE_LINK_BLENDER_BINARY:-}" ]]; then
+		if [[ ! -x "$BLENDER_LIVE_LINK_BLENDER_BINARY" ]]; then
+			echo "Error: BLENDER_LIVE_LINK_BLENDER_BINARY is not executable: $BLENDER_LIVE_LINK_BLENDER_BINARY"
+			return 1
+		fi
+		INSTALLED_BLENDER_KIND=binary
+		INSTALLED_BLENDER_COMMAND=("$BLENDER_LIVE_LINK_BLENDER_BINARY")
+	elif command -v blender > /dev/null 2>&1; then
+		INSTALLED_BLENDER_KIND=binary
+		INSTALLED_BLENDER_COMMAND=("$(command -v blender)")
+	elif [[ $OS = Linux ]] && command -v flatpak > /dev/null 2>&1 && flatpak info org.blender.Blender > /dev/null 2>&1; then
+		INSTALLED_BLENDER_KIND=flatpak
+		INSTALLED_BLENDER_COMMAND=(flatpak run org.blender.Blender)
+	else
+		echo "Error: Blender was not found."
+		echo "Install 'blender' on PATH, install Flatpak org.blender.Blender, or set BLENDER_LIVE_LINK_BLENDER_BINARY."
+		return 1
+	fi
 }
 
 install_and_launch_installed_blender() {
@@ -151,6 +218,22 @@ install_and_launch_installed_blender() {
 		# open blender without waiting for completion
 		log_build "Blender branch: launching /Applications/Blender.app"
 		open  /Applications/Blender.app --args $run_args || return
+	elif [[ $OS = Linux ]]; then
+		resolve_installed_blender || return
+
+		log_build "Blender branch: installing extension into installed Blender"
+		if [[ $INSTALLED_BLENDER_KIND = binary ]]; then
+			pkill -x blender 2> /dev/null || true
+		elif [[ $INSTALLED_BLENDER_KIND = flatpak ]]; then
+			flatpak kill org.blender.Blender 2> /dev/null || true
+		fi
+		"${INSTALLED_BLENDER_COMMAND[@]}" "${install_args[@]}" || return
+		sleep 0.5
+		log_build "Blender branch: launching installed Blender"
+		nohup "${INSTALLED_BLENDER_COMMAND[@]}" "$run_args" > /dev/null 2>&1 &
+	else
+		echo "Error: installed Blender launch is unsupported on $OS."
+		return 1
 	fi
 }
 
@@ -615,6 +698,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS != Mac ]]; then
+	echo "Error: native Blender compilation is currently implemented only for macOS."
+	echo "Use ./build.sh -python on $OS, or ./build.sh -g to build only the game."
+	exit 1
+fi
+
 if [[ "$BUILD_ONLY_GAME" = "true" ]]; then
 	if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
 		echo "Skipping game build/run because BLENDER_LIVE_LINK_SKIP_GAME=1"
@@ -622,7 +711,7 @@ if [[ "$BUILD_ONLY_GAME" = "true" ]]; then
 	fi
 
 	run_game_build_and_launch
-	exit 0
+	exit $?
 fi
 
 echo "FULL BUILD ($BLENDER_BUILD_MODE)"

@@ -72,7 +72,10 @@ For a deeper protocol and runtime ownership contract, see
 - Windows is supported by the main build script for the game and Python
   extension path. Use `./build.sh -python` from a shell environment capable of
   running `bash` scripts, such as Git Bash.
-- Linux game build support is currently marked TODO in `game/build.sh`.
+- Linux builds the Vulkan game with the vendored GLFW X11 backend. Wayland-only
+  environments need XWayland available.
+- Linux native Blender compilation is not implemented. Use `./build.sh -python`
+  with `blender` on `PATH`, or `./build.sh -g` for the game alone.
 - The Blender extension requires Blender `4.2.0` or newer.
 - The native Blender source build defaults to Blender `5.1.2`.
 
@@ -83,7 +86,9 @@ Common requirements:
 - `bash`
 - `clang`
 - `cmake`
-- `zip` on macOS/Linux, or `7z` on Windows
+- `zip` or `bsdtar` on macOS/Linux, or `7z` on Windows
+- `glslc` and Vulkan development headers
+- X11 development headers on Linux
 - Blender installed in the default system location when using `./build.sh -python`
 
 Native Blender builds on macOS also require Blender build tooling used by
@@ -136,6 +141,9 @@ On macOS the script expects Blender at:
 ```
 
 On Windows the script expects `blender.exe` to be available on `PATH`.
+On Linux the script accepts `blender` on `PATH`, the Flatpak application
+`org.blender.Blender`, or an executable selected with
+`BLENDER_LIVE_LINK_BLENDER_BINARY=/path/to/blender`.
 
 ### Game Only
 

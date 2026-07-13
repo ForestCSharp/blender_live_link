@@ -55,7 +55,7 @@ mkdir -p "$BUILD_CACHE_DIR"
 export GAME_BUILD_CONFIG
 export SHADER_OPT_FLAGS
 
-./compile_shaders.sh $OS_ARG
+./compile_shaders.sh "$OS_ARG" || exit 1
 
 echo "Building game for $OS_ARG ($GAME_BUILD_CONFIG, validation=$GAME_ENABLE_VALIDATION, debug_ui=$WITH_DEBUG_UI)"
 
@@ -246,7 +246,87 @@ elif [[ $OS_ARG = Windows ]]; then
 		./bin/game.exe
 	fi
 elif [[ $OS_ARG = Linux ]]; then
-	echo "Building game for Linux: [TODO]"
+	rm -f bin/game
+
+	# Build GLFW's X11 backend. GLFW loads the optional X11 extension libraries
+	# dynamically, so the final binary only needs the standard Linux dl/thread
+	# libraries.
+	GLFW_LIBRARY="$BUILD_CACHE_DIR/libglfw.a"
+	GLFW_OBJECT_DIR="$BUILD_CACHE_DIR/glfw_obj"
+	GLFW_SOURCES="x11_init.c x11_monitor.c x11_window.c xkb_unicode.c linux_joystick.c posix_module.c posix_poll.c posix_thread.c posix_time.c context.c egl_context.c glx_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
+	GLFW_REBUILD=0
+	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	for f in $GLFW_SOURCES; do
+		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+	done
+	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ $GLFW_REBUILD -eq 1 ]; then
+		echo "Building GLFW X11 backend ($GAME_BUILD_CONFIG)"
+		rm -rf "$GLFW_OBJECT_DIR"
+		mkdir -p "$GLFW_OBJECT_DIR"
+		for f in $GLFW_SOURCES; do
+			clang -c "src/extern/glfw/src/$f" \
+					$GAME_OPT_FLAGS \
+					-D _GLFW_X11 \
+					-I src/extern/glfw/include \
+					-o "$GLFW_OBJECT_DIR/${f%.*}.o" || exit 1
+		done
+		ar rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o || exit 1
+	fi
+
+	VMA_LIBRARY="$BUILD_CACHE_DIR/libvma.a"
+	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+		echo "Building VMA ($GAME_BUILD_CONFIG)"
+		clang++ -c src/extern/vma/vma_single_file.cpp \
+				$GAME_OPT_FLAGS \
+				--std=c++20 \
+				-Wno-everything \
+				-o "$BUILD_CACHE_DIR/vma.o" || exit 1
+		ar rcs "$VMA_LIBRARY" "$BUILD_CACHE_DIR/vma.o" || exit 1
+	fi
+
+	JOLT_LIBRARY="$BUILD_CACHE_DIR/libjolt.a"
+	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+		echo "Building Jolt ($GAME_BUILD_CONFIG)"
+		clang++ -c src/extern/Jolt/jolt_single_file.cpp \
+				$GAME_OPT_FLAGS \
+				--std=c++20 \
+				-I src/extern \
+				-o "$BUILD_CACHE_DIR/jolt.o" || exit 1
+		ar rcs "$JOLT_LIBRARY" "$BUILD_CACHE_DIR/jolt.o" || exit 1
+	fi
+
+	clang++ src/main.cpp \
+		$GAME_OPT_FLAGS \
+		$GAME_WARNING_FLAGS \
+		$GAME_FEATURE_FLAGS \
+		-o bin/game \
+		-I src \
+		-I src/extern \
+		-I src/extern/glfw/include \
+		-I ../game_old/src/extern/imgui \
+		-I ../game_old/src/extern \
+		-I data \
+		-I data/shaders \
+		-I bin/shaders \
+		-I ../flatbuffers/include \
+		-I ../compiled_schemas/cpp \
+		--std=c++20 \
+		"$GLFW_LIBRARY" \
+		"$VMA_LIBRARY" \
+		"$JOLT_LIBRARY" \
+		-ldl \
+		-pthread
+
+	if [ $? -ne 0 ]; then
+		echo "game build failed"
+		exit 1
+	fi
+
+	if [[ $RUN_ARG != -norun ]]; then
+		./bin/game
+	fi
 else
 	echo "Invalid OS Passed to game/build.sh"
+	exit 1
 fi
