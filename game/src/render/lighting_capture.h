@@ -164,7 +164,7 @@ struct LightingCapture
 
 	bool is_initialized = false;
 
-	static constexpr VkFormat color_format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	VkFormat color_format = VK_FORMAT_R32G32B32A32_SFLOAT;
 
 	VkPipeline create_fullscreen_pipeline(
 		VulkanContext* ctx,
@@ -398,6 +398,7 @@ struct LightingCapture
 
 	void init(VulkanContext* ctx, const LightingCaptureDesc& in_desc)
 	{
+		color_format = ctx->capabilities.gbuffer_format;
 		assert(!is_initialized);
 		desc = in_desc;
 

@@ -270,6 +270,18 @@ static void draw_stats_ui(State& state)
 			(unsigned long long)metrics.pipeline_count,
 			metrics.pipeline_creation_ms,
 			(unsigned long long)state.vk.shader_build_hash);
+		ImGui::TextDisabled("GPU: %s | queues G:%u P:%u | present: %s | screenshots: %s",
+			state.vk.physical_device_properties.deviceName,
+			state.vk.graphics_queue_family_index,
+			state.vk.present_queue_family_index,
+			vulkan_present_mode_name(state.vk.present_mode),
+			state.vk.screenshot_supported ? "yes" : "no");
+		ImGui::TextDisabled("Formats: scene %i | depth %i | G-buffer %i | shadow %i | SSAO %i",
+			(i32)state.vk.capabilities.scene_color_format,
+			(i32)state.vk.capabilities.scene_depth_format,
+			(i32)state.vk.capabilities.gbuffer_format,
+			(i32)state.vk.capabilities.shadow_moments_format,
+			(i32)state.vk.capabilities.ssao_format);
 	}
 }
 

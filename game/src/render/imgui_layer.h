@@ -58,8 +58,8 @@ namespace ImGuiLayer
 		init_info.QueueFamily = ctx->graphics_queue_family_index;
 		init_info.Queue = ctx->graphics_queue;
 		init_info.DescriptorPoolSize = 512;
-		init_info.MinImageCount = 2;
-		init_info.ImageCount = (u32) ctx->swapchain_images.size();
+		init_info.MinImageCount = ctx->swapchain_min_image_count;
+		init_info.ImageCount = ctx->swapchain_image_count;
 		init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 		init_info.UseDynamicRendering = true;
 		init_info.PipelineRenderingCreateInfo = rendering_info;
@@ -76,6 +76,14 @@ namespace ImGuiLayer
 			ImGui_ImplVulkan_RemoveTexture(set);
 		}
 		texture_sets.clear();
+	}
+
+	inline void handle_swapchain_recreated(VulkanContext* ctx)
+	{
+		if (initialized)
+		{
+			ImGui_ImplVulkan_SetMinImageCount(ctx->swapchain_min_image_count);
+		}
 	}
 
 	inline void unregister_texture(VkImageView view)
@@ -438,6 +446,7 @@ namespace ImGuiLayer
 	inline constexpr bool initialized = false;
 	inline void init(VulkanContext*) {}
 	inline void clear_textures() {}
+	inline void handle_swapchain_recreated(VulkanContext*) {}
 	inline void unregister_texture(VkImageView) {}
 	inline void begin_frame() {}
 	inline void draw_controls(State&, GI_Scene&) {}

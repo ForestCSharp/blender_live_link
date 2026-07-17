@@ -152,6 +152,7 @@ public:
 				if (!wants_device_local)
 				{
 					memcpy(mapped_data, data, size);
+					VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, 0, size));
 				}
 				else
 				{
@@ -169,6 +170,7 @@ public:
 		assert(in_size <= size);
 		get_gpu_buffer();
 		memcpy(mapped_data, in_data, in_size);
+		VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, 0, in_size));
 	}
 
 	void read_gpu_buffer(T* out_data, u64 in_size)
@@ -216,6 +218,7 @@ protected:
 			void* target_mapped = nullptr;
 			VK_CHECK(vmaMapMemory(g_vulkan_context->allocator, allocation, &target_mapped));
 			memcpy(target_mapped, data, size);
+			VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, 0, size));
 			vmaUnmapMemory(g_vulkan_context->allocator, allocation);
 			return;
 		}
@@ -247,6 +250,7 @@ protected:
 		vulkan_set_object_name(g_vulkan_context, VK_OBJECT_TYPE_BUFFER, (u64)staging_buffer, "Static Buffer Upload Staging");
 
 		memcpy(staging_allocation_info.pMappedData, data, size);
+		VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, staging_allocation, 0, size));
 		g_vulkan_context->metrics.upload_bytes += size;
 
 		const u64 copy_size = size;

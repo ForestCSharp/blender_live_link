@@ -18,19 +18,19 @@ void main()
 	{
 		Material material = material_data_array[in_material_index];
 		out_color = material.base_color_image_index >= 0
-			? texture(sampler2D(scene_textures[material.base_color_image_index], scene_sampler), in_texcoord)
+			? texture(sampler2D(SCENE_TEXTURE(material.base_color_image_index), scene_sampler), in_texcoord)
 			: material.base_color;
 		out_roughness_metallic_emissive.g = material.metallic_image_index >= 0
-			? texture(sampler2D(scene_textures[material.metallic_image_index], scene_sampler), in_texcoord).r
+			? texture(sampler2D(SCENE_TEXTURE(material.metallic_image_index), scene_sampler), in_texcoord).r
 			: material.metallic;
 		out_roughness_metallic_emissive.r = material.roughness_image_index >= 0
-			? texture(sampler2D(scene_textures[material.roughness_image_index], scene_sampler), in_texcoord).r
+			? texture(sampler2D(SCENE_TEXTURE(material.roughness_image_index), scene_sampler), in_texcoord).r
 			: material.roughness;
 		if (material.emission_strength > 0.0)
 		{
 			out_roughness_metallic_emissive.b = material.emission_strength;
 			out_color.rgb = material.emission_color_image_index >= 0
-				? texture(sampler2D(scene_textures[material.emission_color_image_index], scene_sampler), in_texcoord).rgb
+				? texture(sampler2D(SCENE_TEXTURE(material.emission_color_image_index), scene_sampler), in_texcoord).rgb
 				: material.emission_color.rgb;
 			out_color.a = 1.0;
 		}

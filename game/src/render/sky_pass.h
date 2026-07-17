@@ -36,14 +36,14 @@ static SkyPass sky_pass;
 
 void sky_pass_init(VulkanContext* ctx)
 {
-	// Bake target: single RGBA32F, fixed 256x256
+	// Bake target uses the negotiated G-buffer precision, fixed 256x256.
 	sky_pass.bake_render_pass.init((RenderPassDesc) {
 		.initial_width = SKY_BAKE_RESOLUTION,
 		.initial_height = SKY_BAKE_RESOLUTION,
 		.num_outputs = 1,
 		.outputs = {
 			{
-				.format = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 			},
@@ -157,7 +157,7 @@ void sky_pass_init(VulkanContext* ctx)
 			.attachmentCount = 1,
 			.pAttachments = &blend_attachment,
 		};
-		VkFormat bake_format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		VkFormat bake_format = Render::GBUFFER_FORMAT;
 		VkPipelineRenderingCreateInfo rendering_create_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 			.colorAttachmentCount = 1,

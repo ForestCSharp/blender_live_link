@@ -1227,6 +1227,7 @@ void handle_resize(bool in_force = false)
 	// buffers only) — idle covers render-scale changes; the window-resize
 	// path already idled inside recreate_swapchain
 	VK_CHECK(vulkan_device_wait_idle(&state.vk));
+	ImGuiLayer::handle_swapchain_recreated(&state.vk);
 	ImGuiLayer::clear_textures();
 
 	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
@@ -1727,6 +1728,11 @@ void framebuffer_size_callback(GLFWwindow* in_window, i32 in_width, i32 in_heigh
 	// values here so handle_resize() can detect the change after recreation
 	// and resize all scaled offscreen targets exactly once.
 	state.vk.needs_resize = true;
+}
+
+void glfw_error_callback(i32 in_error, const char* in_description)
+{
+	fprintf(stderr, "GLFW error %i: %s\n", in_error, in_description ? in_description : "(no description)");
 }
 
 void update_debug_camera(f32 in_delta_time)
@@ -2661,6 +2667,7 @@ int main(int argc, char** argv)
 		state.debug_ui.visible = false;
 	}
 
+	glfwSetErrorCallback(glfw_error_callback);
 	if (!glfwInit())
 	{
 		printf("Failed to initialize GLFW\n");
@@ -2688,6 +2695,7 @@ int main(int argc, char** argv)
 	jolt_init();
 
 	vulkan_context_init(&state.vk, window);
+	Render::configure_formats(state.vk);
 	ImGuiLayer::init(&state.vk);
 	#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	glfwSetMonitorCallback(ImGui_ImplGlfw_MonitorCallback);
@@ -2855,7 +2863,7 @@ int main(int argc, char** argv)
 		.initial_height = ShadowDepthPass::ShadowMapResolution,
 		.num_outputs = 1,
 		.outputs = {{
-			.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+			.format = Render::SCENE_COLOR_FORMAT,
 			.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
 			.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 			.clear_value = {{{ 0.0f, 0.0f, 0.0f, 1.0f }}},

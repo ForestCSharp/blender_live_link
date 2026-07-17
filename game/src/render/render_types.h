@@ -41,17 +41,29 @@ namespace Render
 
 	// Internal scene target: HDR-capable for future lighting; the copy pass
 	// samples linear values and the sRGB swapchain view encodes on write
-	constexpr VkFormat SCENE_COLOR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
-	constexpr VkFormat SCENE_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+	inline VkFormat SCENE_COLOR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+	inline VkFormat SCENE_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
-	// G-buffer attachments (game/ parity: 4x RGBA32F)
-	constexpr VkFormat GBUFFER_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
+	// G-buffer attachments prefer game/ parity (4x RGBA32F); capability
+	// selection falls back to RGBA16F when RGBA32F cannot render/filter.
+	inline VkFormat GBUFFER_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
 	constexpr i32 GBUFFER_OUTPUT_COUNT = 4;
 
 	// EVSM4 moments (warped depths + second moments)
-	constexpr VkFormat SHADOW_MOMENTS_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+	inline VkFormat SHADOW_MOMENTS_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-	// Single-channel occlusion (game/ picks R8 when renderable + filterable —
-	// always true on MoltenVK/Metal)
-	constexpr VkFormat SSAO_FORMAT = VK_FORMAT_R8_UNORM;
+	// Single-channel occlusion prefers R8 and falls back to R16F.
+	inline VkFormat SSAO_FORMAT = VK_FORMAT_R8_UNORM;
+
+	inline void configure_formats(const VulkanContext& in_context)
+	{
+		SCENE_COLOR_FORMAT = in_context.capabilities.scene_color_format;
+		SCENE_DEPTH_FORMAT = in_context.capabilities.scene_depth_format;
+		GBUFFER_FORMAT = in_context.capabilities.gbuffer_format;
+		SHADOW_MOMENTS_FORMAT = in_context.capabilities.shadow_moments_format;
+		SSAO_FORMAT = in_context.capabilities.ssao_format;
+		printf("Render formats: scene=%i depth=%i gbuffer=%i shadow=%i ssao=%i\n",
+			(i32)SCENE_COLOR_FORMAT, (i32)SCENE_DEPTH_FORMAT, (i32)GBUFFER_FORMAT,
+			(i32)SHADOW_MOMENTS_FORMAT, (i32)SSAO_FORMAT);
+	}
 }

@@ -107,10 +107,14 @@ void gpu_image_transition(
 	}
 
 	const VkImageLayout old_layout = in_discard_contents ? VK_IMAGE_LAYOUT_UNDEFINED : in_image.current_layout;
+	// Discarding contents changes oldLayout, but it does not remove the need
+	// to synchronize prior accesses to the allocation (including an earlier
+	// frame's attachment writes on the same queue).
+	const VkImageLayout source_usage_layout = in_image.current_layout;
 
 	VkPipelineStageFlags2 src_stage;
 	VkAccessFlags2 src_access;
-	gpu_image_layout_sync_info(old_layout, &src_stage, &src_access);
+	gpu_image_layout_sync_info(source_usage_layout, &src_stage, &src_access);
 
 	VkPipelineStageFlags2 dst_stage;
 	VkAccessFlags2 dst_access;
@@ -192,7 +196,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 	if (in_desc.label)
 	{
 		vmaSetAllocationName(in_allocator, result.allocation, in_desc.label);
-		if (vkSetDebugUtilsObjectNameEXT)
+		if (g_vulkan_debug_utils_enabled && vkSetDebugUtilsObjectNameEXT)
 		{
 			VkDebugUtilsObjectNameInfoEXT name_info = {
 				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
@@ -221,7 +225,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 	};
 
 	VK_CHECK(vkCreateImageView(in_device, &image_view_create_info, nullptr, &result.view));
-	if (in_desc.label && vkSetDebugUtilsObjectNameEXT)
+	if (in_desc.label && g_vulkan_debug_utils_enabled && vkSetDebugUtilsObjectNameEXT)
 	{
 		char view_label[192];
 		snprintf(view_label, sizeof(view_label), "%s View", in_desc.label);
@@ -254,7 +258,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 			};
 			VkImageView layer_view = VK_NULL_HANDLE;
 			VK_CHECK(vkCreateImageView(in_device, &layer_view_create_info, nullptr, &layer_view));
-			if (in_desc.label && vkSetDebugUtilsObjectNameEXT)
+			if (in_desc.label && g_vulkan_debug_utils_enabled && vkSetDebugUtilsObjectNameEXT)
 			{
 				char layer_label[192];
 				snprintf(layer_label, sizeof(layer_label), "%s Layer %u View", in_desc.label, layer_idx);

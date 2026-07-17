@@ -44,7 +44,7 @@ void main()
 		// Base Color
 		if (material.base_color_image_index >= 0)
 		{
-			out_color = texture(sampler2D(scene_textures[material.base_color_image_index], scene_sampler), in_texcoord);
+			out_color = texture(sampler2D(SCENE_TEXTURE(material.base_color_image_index), scene_sampler), in_texcoord);
 		}
 		else
 		{
@@ -54,7 +54,7 @@ void main()
 		// Metallic
 		if (material.metallic_image_index >= 0)
 		{
-			out_roughness_metallic_emissive.g = texture(sampler2D(scene_textures[material.metallic_image_index], scene_sampler), in_texcoord).r;
+			out_roughness_metallic_emissive.g = texture(sampler2D(SCENE_TEXTURE(material.metallic_image_index), scene_sampler), in_texcoord).r;
 		}
 		else
 		{
@@ -64,7 +64,7 @@ void main()
 		// Roughness
 		if (material.roughness_image_index >= 0)
 		{
-			out_roughness_metallic_emissive.r = texture(sampler2D(scene_textures[material.roughness_image_index], scene_sampler), in_texcoord).r;
+			out_roughness_metallic_emissive.r = texture(sampler2D(SCENE_TEXTURE(material.roughness_image_index), scene_sampler), in_texcoord).r;
 		}
 		else
 		{
@@ -77,7 +77,7 @@ void main()
 			out_roughness_metallic_emissive.b = material.emission_strength;
 			if (material.emission_color_image_index >= 0)
 			{
-				out_color.rgb = texture(sampler2D(scene_textures[material.emission_color_image_index], scene_sampler), in_texcoord).rgb;
+				out_color.rgb = texture(sampler2D(SCENE_TEXTURE(material.emission_color_image_index), scene_sampler), in_texcoord).rgb;
 				out_color.a = 1.0;
 			}
 			else

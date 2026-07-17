@@ -105,6 +105,7 @@ struct Material
 };
 
 #if !defined(__cplusplus)
+#extension GL_EXT_nonuniform_qualifier : require
 layout(set = 0, binding = 0, std140) uniform PerFrameBlock
 {
 	PerFrameData per_frame;
@@ -133,6 +134,7 @@ layout(set = 0, binding = 3, std430) readonly buffer SkinMatrixBlock
 // PARTIALLY_BOUND descriptor binding — only sample when image_index >= 0.
 layout(set = 0, binding = 4) uniform texture2D scene_textures[MAX_BINDLESS_IMAGES];
 layout(set = 0, binding = 5) uniform sampler scene_sampler;
+#define SCENE_TEXTURE(image_index) scene_textures[nonuniformEXT(image_index)]
 
 // Weighted 4-bone skin matrix (port of game/'s get_skin_matrix,
 // shader_common.h:88-101); identity when total weight is ~zero

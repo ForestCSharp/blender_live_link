@@ -65,8 +65,10 @@ both bind the same port.
 
 ## Debug helpers
 
+- `GAME_PRESENT_MODE=fifo|mailbox|immediate|fifo_relaxed` — request a present
+  mode; unsupported requests fall back to FIFO (`GAME2_PRESENT_MODE` alias)
 - `GAME2_SCREENSHOT=<path> [GAME2_SCREENSHOT_FRAME=<n>]` — dump frame n
-  (default 60) to a PPM file
+  (default 60) to a PPM file when the surface supports transfer-source images
 - `GAME2_TEST_RESIZE=1` — programmatically resize at frame 30 to exercise
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
@@ -93,7 +95,17 @@ both bind the same port.
   (freed once the owning frame's fence has been waited), since live-link
   updates can replace meshes mid-flight.
 - Vulkan 1.3 dynamic rendering + synchronization2; no render passes or
-  framebuffers. MoltenVK portability extensions always enabled.
+  framebuffers. Required features, extensions, queues, descriptor limits, and
+  image formats are queried before device creation. Portability/debug-utils
+  extensions are enabled only when advertised.
+- Devices are scored after compatibility checks. Graphics and presentation may
+  use separate queue families; swapchain extent, count, transforms, alpha,
+  usage, and presentation mode are negotiated from surface capabilities.
+- Preferred render formats retain the port's output (RGBA16F scene/shadows,
+  RGBA32F G-buffer, D32, R8 SSAO), with validated higher/lower-precision
+  fallbacks where the preferred format is unavailable.
+- Persistently mapped VMA writes are flushed through VMA, which is a no-op on
+  coherent heaps and supplies the required aligned cache operation elsewhere.
 - Volk loads the Vulkan loader at runtime — nothing links `libvulkan`;
   `build.sh` exports `VK_ICD_FILENAMES` to select MoltenVK.
 - Negative-height viewport flips Y so all HMM math from `game_old/` is unchanged
@@ -104,7 +116,7 @@ both bind the same port.
   dynamic rendering, running game_old/'s full post chain (Phases 3a+3b,
   reverse-Z): cascaded EVSM shadow maps (2048²×4 layered Array pass + 21-tap
   separable moments blur, Frustum/CenteredSquares placement) → G-buffer
-  geometry (4× RGBA32F + D32, sky composited at the far plane from a 256²
+  geometry (preferably 4× RGBA32F + D32, sky composited at the far plane from a 256²
   octahedral bake cached on sun movement) → half-res SSAO + blur → half-res
   screen-space contact shadows (trace + edge-aware filter) → cook-torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →

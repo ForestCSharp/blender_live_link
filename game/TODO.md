@@ -25,8 +25,43 @@ from. The completed phases are retained as architectural and validation history.
       MoltenVK 1.4.1. Existing unused-vertex-attribute best-practice warnings
       remain for a later renderer cleanup checkpoint.
 
-The remaining Vulkan-native hardening checkpoints (capability negotiation,
-upload/lifetime scheduling, resource-aware synchronization, and compact
+## Vulkan-native hardening — checkpoint 2 ✅ (2026-07-16)
+
+- [x] Added `VulkanCapabilities` and `QueueSelection`: enumerate and score all
+      devices, require Vulkan 1.3/dynamic rendering/synchronization2/demote,
+      exact bindless descriptor features and limits, swapchain support, queues,
+      surface support, and required image-format capabilities. Rejections now
+      report all missing requirements.
+- [x] Enable only the features/extensions used by the renderer. Portability
+      enumeration/subset and debug-utils are conditional on advertisement;
+      removed unused variable descriptor count, runtime array, and buffer
+      device-address enablement.
+- [x] Mark bindless material texture indexes `nonuniformEXT` and require
+      `shaderSampledImageArrayNonUniformIndexing` while retaining the fixed
+      128-entry partially-bound array.
+- [x] Negotiate preferred/fallback scene, depth, G-buffer, shadow, and SSAO
+      formats and route the selected formats through main and GI capture passes.
+- [x] Flush every project-owned VMA mapped write and invalidate screenshot and
+      tessellation readbacks before host access.
+- [x] Complete WSI negotiation: clamp variable extents, bound image count,
+      select supported transform/composite alpha/usage, support separate
+      graphics and present queues, and select FIFO/Mailbox/Immediate/FIFO
+      Relaxed via `GAME_PRESENT_MODE` with safe FIFO fallback. Screenshot usage
+      disables cleanly on unsupported surfaces/formats.
+- [x] Added a GLFW error callback and exposed selected GPU, queues, present mode,
+      screenshot support, and negotiated formats in the Vulkan/VMA Stats panel.
+- [x] Synchronization validation found and verified fixes for discard barriers
+      losing prior access scopes and presentation being signaled before the
+      final layout transition. Standard + synchronization validation now report
+      no hazards on Apple M2 Max / MoltenVK 1.4.1.
+- [x] Debug, Develop, Release, and `WITH_DEBUG_UI=0` compile gates passed;
+      FIFO and Immediate runtime, unsupported Mailbox fallback, resize, offline
+      benchmark, and screenshot readback were exercised. Best-practices-only
+      warnings for unused vertex attributes, small dedicated MoltenVK image
+      allocations, and deliberately uninitialized gated textures remain.
+
+The remaining Vulkan-native hardening checkpoints (upload/lifetime scheduling,
+descriptor allocation, resource-aware synchronization refactoring, and compact
 G-buffer evaluation) are intentionally deferred until explicitly resumed.
 
 ## Phase 0 — small gaps in already-ported systems  ✅ (2026-07-08)
