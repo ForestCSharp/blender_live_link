@@ -1,0 +1,307 @@
+name: Cross-platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-platform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BLENDER_VERSION: 5.1.2
+  BLENDER_RELEASE_SERIES: Blender5.1
+  VULKAN_SDK_VERSION: 1.4.350.0
+
+jobs:
+  blender-smoke:
+    name: Blender extension (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            kind: linux
+            archive: blender-5.1.2-linux-x64.tar.xz
+            checksum: aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb
+          - name: macOS
+            os: macos-15
+            kind: macos
+            archive: blender-5.1.2-macos-arm64.dmg
+            checksum: f104ffee2ba6aee32328e5c203b7e4608d8a1745f7bbcf2766f3b9777e8fbe17
+          - name: Windows
+            os: windows-2025
+            kind: windows
+            archive: blender-5.1.2-windows-x64.zip
+            checksum: 345bedea7b0acf7cc9666423d8553f9129622aea34ded65c23e8cb70f83f14ff
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux Blender runtime libraries
+        if: matrix.kind == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libegl1 libgl1 libsm6 libx11-6 libxfixes3 libxi6 libxkbcommon0 \
+            libxrender1 libxxf86vm1
+
+      - name: Restore Blender download
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/blender-download/${{ matrix.archive }}
+          key: blender-${{ matrix.archive }}-${{ matrix.checksum }}
+
+      - name: Download, verify, and unpack Blender
+        shell: bash
+        env:
+          BLENDER_ARCHIVE: ${{ matrix.archive }}
+          BLENDER_ARCHIVE_SHA256: ${{ matrix.checksum }}
+          BLENDER_KIND: ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+
+          ci_temp="$RUNNER_TEMP"
+          if command -v cygpath > /dev/null 2>&1; then
+            ci_temp=$(cygpath -u "$ci_temp")
+          fi
+          download_dir="$ci_temp/blender-download"
+          install_dir="$ci_temp/blender"
+          archive_path="$download_dir/$BLENDER_ARCHIVE"
+          mkdir -p "$download_dir" "$install_dir"
+
+          if [[ ! -f "$archive_path" ]]; then
+            for release_base in \
+              "https://download.blender.org/release" \
+              "https://mirror.clarkson.edu/blender/release"; do
+              if curl --fail --location --retry 4 --retry-all-errors \
+                "$release_base/$BLENDER_RELEASE_SERIES/$BLENDER_ARCHIVE" \
+                --output "$archive_path"; then
+                break
+              fi
+              rm -f "$archive_path"
+            done
+          fi
+
+          if [[ ! -f "$archive_path" ]]; then
+            echo "Failed to download $BLENDER_ARCHIVE from the Blender release mirrors" >&2
+            exit 1
+          fi
+
+          if command -v sha256sum > /dev/null 2>&1; then
+            printf '%s  %s\n' "$BLENDER_ARCHIVE_SHA256" "$archive_path" | sha256sum --check
+          else
+            actual_checksum=$(shasum -a 256 "$archive_path" | awk '{print $1}')
+            [[ "$actual_checksum" == "$BLENDER_ARCHIVE_SHA256" ]]
+          fi
+
+          case "$BLENDER_KIND" in
+            linux)
+              tar -xf "$archive_path" -C "$install_dir"
+              blender_bin="$install_dir/blender-$BLENDER_VERSION-linux-x64/blender"
+              blender_user_resources="$ci_temp/blender-user"
+              ;;
+            macos)
+              mount_dir="$ci_temp/blender-dmg"
+              mkdir -p "$mount_dir"
+              hdiutil attach "$archive_path" -readonly -nobrowse -mountpoint "$mount_dir"
+              trap 'hdiutil detach "$mount_dir" || true' EXIT
+              cp -R "$mount_dir/Blender.app" "$install_dir/Blender.app"
+              hdiutil detach "$mount_dir"
+              trap - EXIT
+              blender_bin="$install_dir/Blender.app/Contents/MacOS/Blender"
+              blender_user_resources="$ci_temp/blender-user"
+              ;;
+            windows)
+              7z x -y "$archive_path" "-o$install_dir"
+              blender_bin="$install_dir/blender-$BLENDER_VERSION-windows-x64/blender.exe"
+              blender_user_resources=$(cygpath -w "$ci_temp/blender-user")
+              ;;
+            *)
+              echo "Unsupported Blender archive kind: $BLENDER_KIND" >&2
+              exit 1
+              ;;
+          esac
+
+          [[ -x "$blender_bin" ]]
+          mkdir -p "$ci_temp/blender-user" "$GITHUB_WORKSPACE/ci-artifacts"
+          printf 'BLENDER_BIN=%s\n' "$blender_bin" >> "$GITHUB_ENV"
+          printf 'BLENDER_USER_RESOURCES=%s\n' "$blender_user_resources" >> "$GITHUB_ENV"
+
+      - name: Generate schemas and package extension
+        shell: bash
+        run: ./build.sh --package-only 2>&1 | tee ci-artifacts/package.log
+
+      - name: Install and enable extension
+        shell: bash
+        run: |
+          "$BLENDER_BIN" --factory-startup \
+            --command extension install-file \
+            "$GITHUB_WORKSPACE/blend_src/blender_live_link.zip" \
+            --repo user_default --enable \
+            2>&1 | tee ci-artifacts/install.log
+
+      - name: Run Blender extension smoke test
+        shell: bash
+        run: |
+          "$BLENDER_BIN" --background --python-exit-code 1 \
+            --python "$GITHUB_WORKSPACE/tools/ci_blender_smoke.py" \
+            -- "$GITHUB_WORKSPACE/blend_files/test_file.blend" \
+            "$GITHUB_WORKSPACE/ci-artifacts/scene_update.bin" \
+            2>&1 | tee ci-artifacts/blender-smoke.log
+
+      - name: Upload extension and Blender diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blender-smoke-${{ matrix.name }}
+          path: |
+            blend_src/blender_live_link.zip
+            ci-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  game-build:
+    name: Vulkan game compile (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            game_os: Linux
+          - name: macOS
+            os: macos-15
+            game_os: Mac
+          - name: Windows
+            os: windows-2025
+            game_os: Windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux X11 development libraries
+        if: matrix.game_os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libxxf86vm-dev
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+          cache_save_if: ${{ github.ref_name == 'main' }}
+          stripdown: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate schemas and package extension
+        shell: bash
+        run: ./build.sh --package-only
+
+      - name: Compile game without launching it
+        shell: bash
+        env:
+          GAME_BUILD_CONFIG: Debug
+          WITH_DEBUG_UI: 0
+        run: ./game/build.sh ${{ matrix.game_os }} -norun 2>&1 | tee game-build.log
+
+      - name: Upload game binary, shaders, and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: game-build-${{ matrix.name }}
+          path: |
+            game/bin/game
+            game/bin/game.exe
+            game/bin/shaders/
+            game-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  renderer-smoke:
+    name: Experimental Linux renderer smoke
+    if: github.event_name == 'workflow_dispatch'
+    needs: [blender-smoke, game-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install X11 runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libx11-6 libxcursor1 libxi6 libxinerama1 libxrandr2 \
+            libxrender1 libxxf86vm1 xvfb
+
+      - name: Install Vulkan SDK and Lavapipe
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+          cache_save_if: ${{ github.ref_name == 'main' }}
+          install_lavapipe: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Linux Blender capture
+        uses: actions/download-artifact@v7
+        with:
+          name: blender-smoke-Linux
+          path: renderer-input
+
+      - name: Download Linux game build
+        uses: actions/download-artifact@v7
+        with:
+          name: game-build-Linux
+          path: renderer-game
+
+      - name: Run renderer with software Vulkan
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p renderer-output game/bin
+          cp renderer-game/game/bin/game game/bin/game
+          cp -R renderer-game/game/bin/shaders game/bin/shaders
+          chmod +x game/bin/game
+
+          cd game
+          GAME2_SCREENSHOT="$GITHUB_WORKSPACE/renderer-output/frame.ppm" \
+          GAME2_SCREENSHOT_FRAME=5 \
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' \
+            ./bin/game \
+              --file "$GITHUB_WORKSPACE/renderer-input/ci-artifacts/scene_update.bin" \
+              --no-live-link \
+              --warmup-frames 2 \
+              --benchmark-frames 8 \
+              --benchmark-output "$GITHUB_WORKSPACE/renderer-output/benchmark.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/renderer-output/renderer.log"
+
+          test -s "$GITHUB_WORKSPACE/renderer-output/frame.ppm"
+          test -s "$GITHUB_WORKSPACE/renderer-output/benchmark.json"
+
+      - name: Upload renderer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: renderer-smoke-Linux
+          path: renderer-output/
+          if-no-files-found: warn
+          retention-days: 14

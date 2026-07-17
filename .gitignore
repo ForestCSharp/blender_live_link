@@ -5,6 +5,10 @@
 /flatbuffers/build/*
 /__pycache__/*
 /blend_src/
+/ci-artifacts/
+/renderer-input/
+/renderer-game/
+/renderer-output/
 
 .DS_Store
 

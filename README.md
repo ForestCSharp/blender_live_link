@@ -180,6 +180,17 @@ Sokol runtime instead:
 
 `-game_old` also applies to full native or Python serialization builds.
 
+### Package Extension Only
+
+```sh
+./build.sh --package-only
+```
+
+This generates the C++ and Python FlatBuffers schemas and writes the extension
+ZIP under `blend_src/` without installing or launching Blender and without
+building or running the game. It is the non-interactive packaging entry point
+used by continuous integration.
+
 ### Choose A Blend File
 
 ```sh
@@ -219,6 +230,18 @@ The test script:
 4. Writes a timestamped log under `blend_src/parity_logs/`.
 
 Use the same `-f` path forms supported by `build.sh`.
+
+### Cross-Platform CI
+
+`.github/workflows/cross-platform-ci.yml` runs the packaged extension inside
+stock Blender 5.1.2 in background mode and compiles the Vulkan game without
+launching it on Linux, macOS, and Windows. Each job uploads its extension,
+binary, and diagnostic logs.
+
+The workflow's manual `workflow_dispatch` trigger also enables an experimental,
+non-blocking Linux renderer smoke test under Xvfb with Lavapipe software Vulkan.
+It consumes the synthetic FlatBuffer captured by the Blender smoke test and
+uploads its screenshot, benchmark JSON, and renderer log.
 
 ## Native Blender Source Options
 

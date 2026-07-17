@@ -5,6 +5,38 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
 
 mkdir -p bin/shaders
+VULKAN_SDK_PATH=${VULKAN_SDK:-}
+if [[ -n "$VULKAN_SDK_PATH" ]] && command -v cygpath > /dev/null 2>&1; then
+	VULKAN_SDK_PATH=$(cygpath -u "$VULKAN_SDK_PATH")
+fi
+
+resolve_glslc() {
+	if [[ -n "${GLSLC:-}" ]]; then
+		printf "%s\n" "$GLSLC"
+		return
+	fi
+
+	if [[ -n "$VULKAN_SDK_PATH" ]]; then
+		local candidate
+		for candidate in \
+			"$VULKAN_SDK_PATH/bin/glslc" \
+			"$VULKAN_SDK_PATH/Bin/glslc.exe" \
+			"$VULKAN_SDK_PATH/bin/glslc.exe"; do
+			if [[ -x "$candidate" ]]; then
+				printf "%s\n" "$candidate"
+				return
+			fi
+		done
+	fi
+
+	command -v glslc || true
+}
+
+GLSLC_BINARY=$(resolve_glslc)
+if [[ -z "$GLSLC_BINARY" ]]; then
+	echo "Error: glslc was not found. Install the Vulkan SDK, set VULKAN_SDK, or set GLSLC."
+	exit 1
+fi
 
 GAME_BUILD_CONFIG=${GAME_BUILD_CONFIG:-Develop}
 SHADER_OPT_FLAGS=${SHADER_OPT_FLAGS:--O -g}
@@ -31,7 +63,7 @@ for ext in vert frag comp; do
 		done
 		if [ $NEEDS_REBUILD -eq 1 ]; then
 			echo "compiling $f to $compiled_file ($GAME_BUILD_CONFIG)"
-			glslc $SHADER_OPT_FLAGS -I data/shaders --target-env=vulkan1.3 -DSHADOWS_ENABLED "$f" -o "$compiled_file"
+			"$GLSLC_BINARY" $SHADER_OPT_FLAGS -I data/shaders --target-env=vulkan1.3 -DSHADOWS_ENABLED "$f" -o "$compiled_file"
 		fi
 	done < <(find data/shaders -name "*.$ext")
 done

@@ -3,8 +3,8 @@
 # game build: Vulkan (via MoltenVK on Mac) + Volk + VMA + GLFW. No CMake.
 #
 # Prerequisites:
-#  - Vulkan SDK installed (headers in /usr/local/include, glslc on PATH,
-#    MoltenVK ICD at /usr/local/share/vulkan/icd.d/MoltenVK_icd.json)
+#  - Vulkan SDK installed (set VULKAN_SDK or place headers/tools under
+#    /usr/local; glslc must be available through the SDK, GLSLC, or PATH)
 #  - ../compiled_schemas/cpp/blender_live_link_generated.h generated
 #    (run the repo root ./build.sh once)
 #
@@ -24,6 +24,52 @@ RUN_ARG=$2
 GAME_WARNING_FLAGS="-Wno-c99-designator"
 WITH_DEBUG_UI=${WITH_DEBUG_UI:-1}
 GAME_BUILD_CONFIG=${GAME_BUILD_CONFIG:-Develop}
+VULKAN_INCLUDE_ARGS=()
+VULKAN_SDK_PATH=${VULKAN_SDK:-}
+if [[ -n "$VULKAN_SDK_PATH" ]] && command -v cygpath > /dev/null 2>&1; then
+	VULKAN_SDK_PATH=$(cygpath -u "$VULKAN_SDK_PATH")
+fi
+
+resolve_vulkan_include_args() {
+	if [[ -z "$VULKAN_SDK_PATH" ]]; then
+		return
+	fi
+
+	local include_dir=""
+	if [[ -d "$VULKAN_SDK_PATH/include" ]]; then
+		include_dir="$VULKAN_SDK_PATH/include"
+	elif [[ -d "$VULKAN_SDK_PATH/Include" ]]; then
+		include_dir="$VULKAN_SDK_PATH/Include"
+	fi
+
+	if [[ -z "$include_dir" ]]; then
+		echo "Error: VULKAN_SDK is set but no include directory was found beneath it: $VULKAN_SDK_PATH"
+		exit 1
+	fi
+
+	VULKAN_INCLUDE_ARGS=(-I "$include_dir")
+}
+
+configure_moltenvk_runtime() {
+	if [[ -n "${VK_ICD_FILENAMES:-}" || -n "${VK_DRIVER_FILES:-}" ]]; then
+		return
+	fi
+
+	local candidate
+	for candidate in \
+		"${VULKAN_SDK_PATH}/share/vulkan/icd.d/MoltenVK_icd.json" \
+		"${VULKAN_SDK_PATH}/etc/vulkan/icd.d/MoltenVK_icd.json" \
+		"/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"; do
+		if [[ -f "$candidate" ]]; then
+			export VK_ICD_FILENAMES="$candidate"
+			return
+		fi
+	done
+
+	echo "Warning: MoltenVK ICD manifest was not found; Vulkan loader discovery will use its defaults."
+}
+
+resolve_vulkan_include_args
 
 case "$GAME_BUILD_CONFIG" in
 	Debug)
@@ -98,6 +144,7 @@ if [[ $OS_ARG = Mac ]]; then
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
+				"${VULKAN_INCLUDE_ARGS[@]}" \
 				-o "$VMA_LIBRARY"
 	fi
 
@@ -130,6 +177,7 @@ if [[ $OS_ARG = Mac ]]; then
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
+		"${VULKAN_INCLUDE_ARGS[@]}" \
 		--std=c++20 \
 		-lc++ \
 		"$GLFW_LIBRARY" \
@@ -144,8 +192,9 @@ if [[ $OS_ARG = Mac ]]; then
 		exit 1
 	fi
 
-	# Point volk's runtime loader at MoltenVK
-	export VK_ICD_FILENAMES=/usr/local/share/vulkan/icd.d/MoltenVK_icd.json
+	# Point volk's runtime loader at MoltenVK when the caller did not already
+	# select a Vulkan driver.
+	configure_moltenvk_runtime
 
 	## Run game
 	if [[ $RUN_ARG != -norun ]]; then
@@ -193,7 +242,7 @@ elif [[ $OS_ARG = Windows ]]; then
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
-				-I "$VULKAN_SDK/Include" \
+				"${VULKAN_INCLUDE_ARGS[@]}" \
 				-o "$VMA_LIBRARY"
 	fi
 
@@ -221,7 +270,7 @@ elif [[ $OS_ARG = Windows ]]; then
 		-I src/extern/glfw/include \
 		-I ../game_old/src/extern/imgui \
 		-I ../game_old/src/extern \
-		-I "$VULKAN_SDK/Include" \
+		"${VULKAN_INCLUDE_ARGS[@]}" \
 		-I data \
 		-I data/shaders \
 		-I bin/shaders \

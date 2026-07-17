@@ -3,6 +3,7 @@
 # Running ./build.sh builds native blender integration by default, then builds and runs game in parallel after schema generation
 # Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
 # Running ./build.sh -g only rebuilds the default Vulkan game and runs it
+# Running ./build.sh --package-only generates schemas and packages the extension without launching either application
 # Passing -game_old selects the legacy Sokol runtime (game_old/)
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -21,6 +22,7 @@ esac
 echo OS is ${OS}
 
 BUILD_ONLY_GAME=false
+PACKAGE_ONLY=false
 GAME_DIR=game
 GAME_BRANCH_LABEL="Game (Vulkan)"
 BLENDER_BUILD_MODE=native
@@ -91,6 +93,8 @@ package_extension() {
 			-x!"$BASE_DIR/.git/*" \
 			-x!"$BASE_DIR/.agents/*" \
 			-x!"$BASE_DIR/.codex/*" \
+			-x!"$BASE_DIR/.claude/*" \
+			-x!"$BASE_DIR/.github/*" \
 			-x!"$BASE_DIR/tools/*" \
 			-x!"$BASE_DIR/game/*" \
 			-x!"$BASE_DIR/game_old/*" \
@@ -100,6 +104,7 @@ package_extension() {
 			-x!"$BASE_DIR/compiled_schemas/cpp/*" \
 			-x!"$BASE_DIR/docs/*" \
 			-x!"$BASE_DIR/__pycache__/*" \
+			-x!"*/__pycache__/*" \
 			-x!"$BASE_DIR/*.pyc" \
 			-x!"$BASE_DIR/build.sh" \
 			-x!"$BASE_DIR/build_blend_src.sh" \
@@ -117,6 +122,8 @@ package_extension() {
 			-x "$BASE_DIR/.git/*" \
 			-x "$BASE_DIR/.agents/*" \
 			-x "$BASE_DIR/.codex/*" \
+			-x "$BASE_DIR/.claude/*" \
+			-x "$BASE_DIR/.github/*" \
 			-x "$BASE_DIR/tools/*" \
 			-x "$BASE_DIR/game/*"\
 			-x "$BASE_DIR/game_old/*"\
@@ -126,6 +133,7 @@ package_extension() {
 			-x "$BASE_DIR/compiled_schemas/cpp/*" \
 			-x "$BASE_DIR/docs/*" \
 			-x "$BASE_DIR/__pycache__/*" \
+			-x "*/__pycache__/*" \
 			-x "$BASE_DIR/*.pyc" \
 			-x "$BASE_DIR/build.sh" \
 			-x "$BASE_DIR/build_blend_src.sh" \
@@ -143,6 +151,8 @@ package_extension() {
 			--exclude "$BASE_DIR/.git/*" \
 			--exclude "$BASE_DIR/.agents/*" \
 			--exclude "$BASE_DIR/.codex/*" \
+			--exclude "$BASE_DIR/.claude/*" \
+			--exclude "$BASE_DIR/.github/*" \
 			--exclude "$BASE_DIR/tools/*" \
 			--exclude "$BASE_DIR/game/*" \
 			--exclude "$BASE_DIR/game_old/*" \
@@ -152,6 +162,7 @@ package_extension() {
 			--exclude "$BASE_DIR/compiled_schemas/cpp/*" \
 			--exclude "$BASE_DIR/docs/*" \
 			--exclude "$BASE_DIR/__pycache__/*" \
+			--exclude "*/__pycache__/*" \
 			--exclude "$BASE_DIR/*.pyc" \
 			--exclude "$BASE_DIR/build.sh" \
 			--exclude "$BASE_DIR/build_blend_src.sh" \
@@ -706,6 +717,10 @@ while [[ $# -gt 0 ]]; do
     	BUILD_ONLY_GAME=true
     	shift # past argument
     	;;
+    --package-only)
+		PACKAGE_ONLY=true
+		shift # past argument
+		;;
     -game_old|--game-old|--game_old)
 		GAME_DIR=game_old
 		GAME_BRANCH_LABEL="Game Old (Sokol)"
@@ -734,6 +749,18 @@ while [[ $# -gt 0 ]]; do
     	;;
   esac
 done
+
+if [[ "$PACKAGE_ONLY" = "true" && "$BUILD_ONLY_GAME" = "true" ]]; then
+	echo "Error: --package-only and --game are mutually exclusive"
+	exit 1
+fi
+
+if [[ "$PACKAGE_ONLY" = "true" ]]; then
+	echo "PACKAGE ONLY"
+	prepare_flatbuffers_and_schemas || exit
+	package_extension || exit
+	exit 0
+fi
 
 if [[ "$BUILD_ONLY_GAME" != "true" && "$BLENDER_BUILD_MODE" = native && $OS != Mac && $OS != Linux ]]; then
 	echo "Error: native Blender compilation is currently implemented only for macOS and Linux."
