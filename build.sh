@@ -308,20 +308,35 @@ prepare_flatbuffers_and_schemas() {
 		mkdir -p compiled_schemas/cpp || exit
 		./flatbuffers/build.sh "$OS" || exit
 
+		FLATC_BINARY=""
 		if [[ $OS = Windows ]]; then
-			FLATC_BINARY=flatbuffers/build/Debug/flatc.exe
-		else
+			for candidate in \
+				flatbuffers/build/Release/flatc.exe \
+				flatbuffers/build/flatc.exe \
+				flatbuffers/build/Debug/flatc.exe; do
+				if [[ -f "$candidate" ]]; then
+					FLATC_BINARY="$candidate"
+					break
+				fi
+			done
+		elif [[ -f flatbuffers/build/flatc ]]; then
 			FLATC_BINARY=flatbuffers/build/flatc
+		fi
+
+		if [[ -z "$FLATC_BINARY" ]]; then
+			echo "Error: the FlatBuffers build completed without producing flatc for $OS." >&2
+			echo "Checked beneath: $SCRIPT_DIR/flatbuffers/build" >&2
+			exit 1
 		fi
 
 		# compile schema for cpp
 		touch compiled_schemas/__init__.py || exit
-		echo FLATC IS $FLATC_BINARY
-		$FLATC_BINARY -o compiled_schemas/cpp --cpp blender_live_link.fbs || exit
+		echo "FLATC IS $FLATC_BINARY"
+		"$FLATC_BINARY" -o compiled_schemas/cpp --cpp blender_live_link.fbs || exit
 
 		mkdir -p compiled_schemas/python || exit
 		touch compiled_schemas/python/__init__.py || exit
-		$FLATC_BINARY -o compiled_schemas/python --python blender_live_link.fbs || exit
+		"$FLATC_BINARY" -o compiled_schemas/python --python blender_live_link.fbs || exit
 
 		# copy flatbuffers python package
 		cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || exit

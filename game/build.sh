@@ -36,14 +36,14 @@ resolve_vulkan_include_args() {
 	fi
 
 	local include_dir=""
-	if [[ -d "$VULKAN_SDK_PATH/include" ]]; then
+	if [[ -f "$VULKAN_SDK_PATH/include/vulkan/vulkan.h" ]]; then
 		include_dir="$VULKAN_SDK_PATH/include"
-	elif [[ -d "$VULKAN_SDK_PATH/Include" ]]; then
+	elif [[ -f "$VULKAN_SDK_PATH/Include/vulkan/vulkan.h" ]]; then
 		include_dir="$VULKAN_SDK_PATH/Include"
 	fi
 
 	if [[ -z "$include_dir" ]]; then
-		echo "Error: VULKAN_SDK is set but no include directory was found beneath it: $VULKAN_SDK_PATH"
+		echo "Error: VULKAN_SDK is set but vulkan/vulkan.h was not found beneath it: $VULKAN_SDK_PATH"
 		exit 1
 	fi
 
@@ -330,6 +330,7 @@ elif [[ $OS_ARG = Linux ]]; then
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
+				"${VULKAN_INCLUDE_ARGS[@]}" \
 				-o "$BUILD_CACHE_DIR/vma.o" || exit 1
 		ar rcs "$VMA_LIBRARY" "$BUILD_CACHE_DIR/vma.o" || exit 1
 	fi
@@ -360,6 +361,7 @@ elif [[ $OS_ARG = Linux ]]; then
 		-I bin/shaders \
 		-I ../flatbuffers/include \
 		-I ../compiled_schemas/cpp \
+		"${VULKAN_INCLUDE_ARGS[@]}" \
 		--std=c++20 \
 		"$GLFW_LIBRARY" \
 		"$VMA_LIBRARY" \
