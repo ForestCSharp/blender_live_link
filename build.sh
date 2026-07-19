@@ -96,6 +96,7 @@ package_extension() {
 			-x!"$BASE_DIR/.claude/*" \
 			-x!"$BASE_DIR/.github/*" \
 			-x!"$BASE_DIR/tools/*" \
+			-x!"$BASE_DIR/ci-artifacts/*" \
 			-x!"$BASE_DIR/game/*" \
 			-x!"$BASE_DIR/game_old/*" \
 			-x!"$BASE_DIR/blend_files/*" \
@@ -125,6 +126,7 @@ package_extension() {
 			-x "$BASE_DIR/.claude/*" \
 			-x "$BASE_DIR/.github/*" \
 			-x "$BASE_DIR/tools/*" \
+			-x "$BASE_DIR/ci-artifacts/*" \
 			-x "$BASE_DIR/game/*"\
 			-x "$BASE_DIR/game_old/*"\
 			-x "$BASE_DIR/blend_files/*" \
@@ -154,6 +156,7 @@ package_extension() {
 			--exclude "$BASE_DIR/.claude/*" \
 			--exclude "$BASE_DIR/.github/*" \
 			--exclude "$BASE_DIR/tools/*" \
+			--exclude "$BASE_DIR/ci-artifacts/*" \
 			--exclude "$BASE_DIR/game/*" \
 			--exclude "$BASE_DIR/game_old/*" \
 			--exclude "$BASE_DIR/blend_files/*" \

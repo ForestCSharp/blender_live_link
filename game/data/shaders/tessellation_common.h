@@ -3,11 +3,11 @@
 
 #include "shader_common.h"
 
-#if defined(__cplusplus) && defined(__STDC__)
+#if defined(__cplusplus)
 #include "core/types.h"
 #endif
 
-#if !defined(__cplusplus) || !defined(__STDC__)
+#if !defined(__cplusplus)
 #define TESS_SHADER 1
 #define TESS_U32 uint
 #define TESS_I32 int
