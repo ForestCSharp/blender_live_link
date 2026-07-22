@@ -117,20 +117,20 @@ if [[ $OS_ARG = Mac ]]; then
 	GLFW_REBUILD=0
 	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	for f in $GLFW_SOURCES; do
-		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+		if [ "extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	done
-	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ -f "$GLFW_LIBRARY" ] && find extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
 	if [ $GLFW_REBUILD -eq 1 ]; then
 		echo "Building GLFW ($GAME_BUILD_CONFIG)"
 		rm -rf "$GLFW_OBJECT_DIR"
 		mkdir -p "$GLFW_OBJECT_DIR"
 		GLFW_SOURCES="cocoa_init.m cocoa_joystick.m cocoa_monitor.m cocoa_time.c cocoa_window.m nsgl_context.m posix_module.c posix_thread.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
 		for f in $GLFW_SOURCES; do
-			clang -c src/extern/glfw/src/$f \
+			clang -c extern/glfw/src/$f \
 					$GAME_OPT_FLAGS \
 					-ObjC \
 					-D _GLFW_COCOA \
-					-I src/extern/glfw/include \
+					-I extern/glfw/include \
 					-o "$GLFW_OBJECT_DIR/${f%.*}.o"
 		done
 		ar rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o
@@ -138,9 +138,9 @@ if [[ $OS_ARG = Mac ]]; then
 
 	# Compile VMA as a static library, but only if it doesn't exist
 	VMA_LIBRARY="$BUILD_CACHE_DIR/libvma.a"
-	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+	if [ ! -f "$VMA_LIBRARY" ] || [ extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
 		echo "Building VMA ($GAME_BUILD_CONFIG)"
-		clang -c src/extern/vma/vma_single_file.cpp \
+		clang -c extern/vma/vma_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
@@ -152,12 +152,12 @@ if [[ $OS_ARG = Mac ]]; then
 	# IMPORTANT: keep the JPH_* define set EMPTY and identical between this
 	# compile and the main build below — mismatched defines break Jolt's ABI.
 	JOLT_LIBRARY="$BUILD_CACHE_DIR/libjolt.a"
-	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+	if [ ! -f "$JOLT_LIBRARY" ] || find extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
 		echo "Building Jolt ($GAME_BUILD_CONFIG)"
-		clang -c src/extern/Jolt/jolt_single_file.cpp \
+		clang -c extern/Jolt/jolt_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
-				-I src/extern \
+				-I extern \
 				-o "$JOLT_LIBRARY"
 	fi
 
@@ -168,10 +168,9 @@ if [[ $OS_ARG = Mac ]]; then
 		$GAME_FEATURE_FLAGS \
 		-o bin/game \
 		-I src \
-		-I src/extern \
-		-I src/extern/glfw/include \
-		-I ../game_old/src/extern/imgui \
-		-I ../game_old/src/extern \
+		-I extern \
+		-I extern/glfw/include \
+		-I extern/imgui \
 		-I data \
 		-I data/shaders \
 		-I bin/shaders \
@@ -216,19 +215,19 @@ elif [[ $OS_ARG = Windows ]]; then
 	GLFW_REBUILD=0
 	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	for f in $GLFW_SOURCES; do
-		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+		if [ "extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	done
-	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ -f "$GLFW_LIBRARY" ] && find extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
 	if [ $GLFW_REBUILD -eq 1 ]; then
 		echo "Building GLFW ($GAME_BUILD_CONFIG)"
 		rm -rf "$GLFW_OBJECT_DIR"
 		mkdir -p "$GLFW_OBJECT_DIR"
 		GLFW_SOURCES="win32_init.c win32_joystick.c win32_module.c win32_monitor.c win32_thread.c win32_time.c win32_window.c wgl_context.c context.c egl_context.c init.c input.c monitor.c null_init.c null_joystick.c null_monitor.c null_window.c osmesa_context.c platform.c vulkan.c window.c"
 		for f in $GLFW_SOURCES; do
-			clang -c src/extern/glfw/src/$f \
+			clang -c extern/glfw/src/$f \
 					$GAME_OPT_FLAGS \
 					-D _GLFW_WIN32 \
-					-I src/extern/glfw/include \
+					-I extern/glfw/include \
 					-o "$GLFW_OBJECT_DIR/${f%.*}.o"
 		done
 		"$AR_BIN" rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o
@@ -236,9 +235,9 @@ elif [[ $OS_ARG = Windows ]]; then
 
 	# Compile VMA as a static library, but only if it doesn't exist
 	VMA_LIBRARY="$BUILD_CACHE_DIR/vma.lib"
-	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+	if [ ! -f "$VMA_LIBRARY" ] || [ extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
 		echo "Building VMA ($GAME_BUILD_CONFIG)"
-		clang -c src/extern/vma/vma_single_file.cpp \
+		clang -c extern/vma/vma_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
@@ -247,15 +246,15 @@ elif [[ $OS_ARG = Windows ]]; then
 	fi
 
 	# Compile Jolt as a static library, but only if it doesn't exist
-	# (NOTE: correct src/extern/Jolt path — game_old/'s Windows branch still
+	# (NOTE: correct extern/Jolt path — game_old/'s Windows branch still
 	# points at a stale location. Keep JPH_* defines empty on both compiles.)
 	JOLT_LIBRARY="$BUILD_CACHE_DIR/jolt.lib"
-	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+	if [ ! -f "$JOLT_LIBRARY" ] || find extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
 		echo "Building Jolt ($GAME_BUILD_CONFIG)"
-		clang -c src/extern/Jolt/jolt_single_file.cpp \
+		clang -c extern/Jolt/jolt_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
-				-I src/extern \
+				-I extern \
 				-o "$JOLT_LIBRARY"
 	fi
 
@@ -266,10 +265,9 @@ elif [[ $OS_ARG = Windows ]]; then
 		$GAME_FEATURE_FLAGS \
 		-o bin/game.exe \
 		-I src \
-		-I src/extern \
-		-I src/extern/glfw/include \
-		-I ../game_old/src/extern/imgui \
-		-I ../game_old/src/extern \
+		-I extern \
+		-I extern/glfw/include \
+		-I extern/imgui \
 		"${VULKAN_INCLUDE_ARGS[@]}" \
 		-I data \
 		-I data/shaders \
@@ -306,27 +304,27 @@ elif [[ $OS_ARG = Linux ]]; then
 	GLFW_REBUILD=0
 	if [ ! -f "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	for f in $GLFW_SOURCES; do
-		if [ "src/extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
+		if [ "extern/glfw/src/$f" -nt "$GLFW_LIBRARY" ]; then GLFW_REBUILD=1; fi
 	done
-	if [ -f "$GLFW_LIBRARY" ] && find src/extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
+	if [ -f "$GLFW_LIBRARY" ] && find extern/glfw/include -type f -newer "$GLFW_LIBRARY" -print -quit | grep -q .; then GLFW_REBUILD=1; fi
 	if [ $GLFW_REBUILD -eq 1 ]; then
 		echo "Building GLFW X11 backend ($GAME_BUILD_CONFIG)"
 		rm -rf "$GLFW_OBJECT_DIR"
 		mkdir -p "$GLFW_OBJECT_DIR"
 		for f in $GLFW_SOURCES; do
-			clang -c "src/extern/glfw/src/$f" \
+			clang -c "extern/glfw/src/$f" \
 					$GAME_OPT_FLAGS \
 					-D _GLFW_X11 \
-					-I src/extern/glfw/include \
+					-I extern/glfw/include \
 					-o "$GLFW_OBJECT_DIR/${f%.*}.o" || exit 1
 		done
 		ar rcs "$GLFW_LIBRARY" "$GLFW_OBJECT_DIR"/*.o || exit 1
 	fi
 
 	VMA_LIBRARY="$BUILD_CACHE_DIR/libvma.a"
-	if [ ! -f "$VMA_LIBRARY" ] || [ src/extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ src/extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
+	if [ ! -f "$VMA_LIBRARY" ] || [ extern/vma/vma_single_file.cpp -nt "$VMA_LIBRARY" ] || [ extern/vma/vk_mem_alloc.h -nt "$VMA_LIBRARY" ]; then
 		echo "Building VMA ($GAME_BUILD_CONFIG)"
-		clang++ -c src/extern/vma/vma_single_file.cpp \
+		clang++ -c extern/vma/vma_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
 				-Wno-everything \
@@ -336,12 +334,12 @@ elif [[ $OS_ARG = Linux ]]; then
 	fi
 
 	JOLT_LIBRARY="$BUILD_CACHE_DIR/libjolt.a"
-	if [ ! -f "$JOLT_LIBRARY" ] || find src/extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
+	if [ ! -f "$JOLT_LIBRARY" ] || find extern/Jolt -type f -newer "$JOLT_LIBRARY" -print -quit | grep -q .; then
 		echo "Building Jolt ($GAME_BUILD_CONFIG)"
-		clang++ -c src/extern/Jolt/jolt_single_file.cpp \
+		clang++ -c extern/Jolt/jolt_single_file.cpp \
 				$GAME_OPT_FLAGS \
 				--std=c++20 \
-				-I src/extern \
+				-I extern \
 				-o "$BUILD_CACHE_DIR/jolt.o" || exit 1
 		ar rcs "$JOLT_LIBRARY" "$BUILD_CACHE_DIR/jolt.o" || exit 1
 	fi
@@ -352,10 +350,9 @@ elif [[ $OS_ARG = Linux ]]; then
 		$GAME_FEATURE_FLAGS \
 		-o bin/game \
 		-I src \
-		-I src/extern \
-		-I src/extern/glfw/include \
-		-I ../game_old/src/extern/imgui \
-		-I ../game_old/src/extern \
+		-I extern \
+		-I extern/glfw/include \
+		-I extern/imgui \
 		-I data \
 		-I data/shaders \
 		-I bin/shaders \

@@ -26,6 +26,10 @@ Prerequisites:
   repo root `./build.sh` once first
 - Run the binary from this directory (`bin/shaders/*.spv` paths are relative)
 
+Third-party source dependencies are vendored under `extern/`, separate from
+the first-party code in `src/`. The game owns a complete ImGui core and backend
+tree and does not require source or headers from `game_old/` to compile.
+
 Dependency objects and libraries are cached under `bin/build/<OS>/<config>`.
 Keep the `JPH_*` define set empty and identical between the Jolt library and
 main build — mismatched defines break the ABI.

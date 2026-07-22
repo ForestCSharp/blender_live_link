@@ -39,9 +39,9 @@ using std::optional;
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 	#define IMGUI_IMPLEMENTATION
-	#include "../../game_old/src/extern/imgui/misc/single_file/imgui_single_file.h"
-	#include "extern/imgui/backends/imgui_impl_glfw.cpp"
-	#include "extern/imgui/backends/imgui_impl_vulkan.cpp"
+	#include "imgui/misc/single_file/imgui_single_file.h"
+	#include "imgui/backends/imgui_impl_glfw.cpp"
+	#include "imgui/backends/imgui_impl_vulkan.cpp"
 #endif
 
 // Generated flatbuffer schema (from ../compiled_schemas/cpp)
@@ -1984,7 +1984,10 @@ void frame(f32 in_delta_time)
 		);
 		}
 
-		if (!ui_captures_mouse && !ui_captures_keyboard)
+		// A disabled GLFW cursor still has a virtual position, which can hover
+		// ImGui windows and set its capture flags. Once the mouse is locked,
+		// game controls must take priority regardless of that hidden position.
+		if (is_mouse_locked() || (!ui_captures_mouse && !ui_captures_keyboard))
 		{
 			update_debug_camera(in_delta_time);
 			update_camera_control(in_delta_time);

@@ -161,7 +161,7 @@ G-buffer evaluation) are intentionally deferred until explicitly resumed.
       shaded wireframe; normal skinned rendering is the in-shader path that
       shipped here. The compute pass will read the same skin-matrix arena.
 - [x] Jolt physics: vendored stock 5.2.1 tree, cached `libjolt.a` (Mac) /
-      `jolt.lib` (Windows — with the corrected `src/extern/Jolt` path;
+      `jolt.lib` (Windows — with the corrected `extern/Jolt` path;
       game_old/'s Windows branch still points at a stale location). Empty
       `JPH_*` define set on both TUs (ABI parity). `physics_system.h`
       near-verbatim; convex-hull bodies, add-before-map-insert at drain,
@@ -286,7 +286,7 @@ The Vulkan/GLFW ImGui integration is functional, but the menus are not yet at
 1:1 feature parity with game_old/. Extra game/ diagnostics may remain, but they do
 not replace the source controls and behavior catalogued below.
 
-- [x] Dear ImGui foundation — game_old/'s 1.92.3-WIP core plus matching official
+- [x] Dear ImGui foundation — vendored 1.92.3-WIP core plus matching official
       GLFW and Vulkan backends, Volk, dynamic rendering, Ctrl+I, callback
       forwarding, and mouse/keyboard capture gating.
 - [x] Restore a real `WITH_DEBUG_UI=0` compile-out path, default-enabled and

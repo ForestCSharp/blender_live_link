@@ -4,8 +4,8 @@
 
 #include "ankerl/unordered_dense.h"
 #include "imgui.h"
-#include "extern/imgui/backends/imgui_impl_glfw.h"
-#include "extern/imgui/backends/imgui_impl_vulkan.h"
+#include "imgui/backends/imgui_impl_glfw.h"
+#include "imgui/backends/imgui_impl_vulkan.h"
 #include "ui/stats_ui.h"
 #include "ui/cpu_profiler_ui.h"
 
