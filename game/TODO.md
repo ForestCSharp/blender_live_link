@@ -6,7 +6,7 @@ from. The completed phases are retained as architectural and validation history.
 
 ## Vulkan-native hardening — checkpoint 1 ✅ (2026-07-12)
 
-- [x] Added Debug, default Develop, and Release configurations with optimized
+- [x] Added default Debug, Develop, and Release configurations with optimized
       C++/GLSL, configuration-specific GLFW/VMA/Jolt caches, source freshness,
       and configuration-controlled validation.
 - [x] Added deterministic offline benchmark controls (`--no-live-link`,

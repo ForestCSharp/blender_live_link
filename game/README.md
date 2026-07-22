@@ -7,16 +7,26 @@ No CMake — plain `build.sh`, mirroring `game_old/`.
 ## Building & running
 
 ```sh
-./build.sh Mac                                  # Develop: -O2 -g + validation
-./build.sh Linux                                # Develop Linux/X11 build
-GAME_BUILD_CONFIG=Debug ./build.sh Mac -norun   # -O0 -g + validation
+./build.sh Mac                                  # Debug: -O0 -g + validation
+./build.sh Linux                                # Debug Linux/X11 build
+GAME_BUILD_CONFIG=Develop ./build.sh Mac -norun # -O2 -g + validation
 GAME_BUILD_CONFIG=Release ./build.sh Mac -norun # -O3, validation off
 WITH_DEBUG_UI=0 ./build.sh Mac -norun            # compile without ImGui/timings
+./build.sh Mac -full                            # rebuild dependencies + shaders
+./build.sh Mac -full -norun                     # full rebuild without launching
 ```
 
 `GAME_ENABLE_VALIDATION=0|1` overrides the configuration default. GLFW, VMA,
-Jolt, and shader caches are configuration-aware and rebuild when their sources
-change.
+and Jolt use content manifests under `bin/build/<OS>/<config>` and rebuild only
+when their vendored directory changes. Shader caching remains configuration-aware.
+`-full` clears the selected dependency cache and compiled shaders before building;
+`-full` and `-norun` may be passed in either order.
+
+Every build prints `[timing]` lines for shader processing, each dependency
+manifest scan, dependency rebuilds, the main game compile, and the final link.
+Each phase is announced before it starts. The shader step also reports how many
+shader sources it scanned and compiled, making cache misses visible without
+additional flags.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -30,7 +40,8 @@ Third-party source dependencies are vendored under `extern/`, separate from
 the first-party code in `src/`. The game owns a complete ImGui core and backend
 tree and does not require source or headers from `game_old/` to compile.
 
-Dependency objects and libraries are cached under `bin/build/<OS>/<config>`.
+Dependency objects, libraries, and manifests are cached under
+`bin/build/<OS>/<config>`.
 Keep the `JPH_*` define set empty and identical between the Jolt library and
 main build — mismatched defines break the ABI.
 
