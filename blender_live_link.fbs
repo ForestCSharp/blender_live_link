@@ -103,6 +103,21 @@ enum LightType : byte
 	Area 	= 3,
 }
 
+enum PartType : byte
+{
+	Body		= 0,
+	Legs		= 1,
+	LeftArm		= 2,
+	RightArm	= 3,
+	Head		= 4,
+}
+
+enum AttachmentBindingType : byte
+{
+	Object	= 0,
+	Bone	= 1,
+}
+
 struct PointLight
 {
 	// power in watts
@@ -172,13 +187,31 @@ table GameplayComponentFogController
 	anisotropy			: float = 0.2;
 }
 
+table GameplayComponentPart
+{
+	part_type : PartType = Body;
+}
+
+table GameplayComponentAttachmentPoint
+{
+	owner_part_id	: int = -1;
+	part_type		: PartType = Legs;
+	binding_type	: AttachmentBindingType = Object;
+	armature_id		: int = -1;
+	bone_name		: string;
+	local_transform	: Matrix;
+	valid			: bool = false;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
 {
 	GameplayComponentCharacter,
 	GameplayComponentCameraControl,
-	GameplayComponentFogController
+	GameplayComponentFogController,
+	GameplayComponentPart,
+	GameplayComponentAttachmentPoint
 }
 
 table GameplayComponentContainer

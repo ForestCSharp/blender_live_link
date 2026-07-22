@@ -181,6 +181,14 @@ struct Mesh
 	BoundingBox bounding_box;
 };
 
+void mesh_reset_skin_matrices(Mesh& in_mesh)
+{
+	for (u32 matrix_idx = 0; matrix_idx < in_mesh.skin_matrix_count; ++matrix_idx)
+	{
+		in_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
+	}
+}
+
 // The buffers a renderer should draw this mesh with. Skinned meshes with a
 // valid compute cache expose it as plain static vertices (port of game/'s
 // MeshRenderView; tessellated geometry joins in the tessellation step).

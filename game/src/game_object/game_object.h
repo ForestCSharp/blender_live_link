@@ -82,6 +82,38 @@ struct FogController
 	f32 anisotropy = 0.2f;
 };
 
+enum class PartType : u8
+{
+	Body = 0,
+	Legs,
+	LeftArm,
+	RightArm,
+	Head,
+	Count,
+};
+
+enum class AttachmentBindingType : u8
+{
+	Object = 0,
+	Bone,
+};
+
+struct Part
+{
+	PartType type = PartType::Body;
+};
+
+struct AttachmentPoint
+{
+	i32 owner_part_id = -1;
+	PartType part_type = PartType::Legs;
+	AttachmentBindingType binding_type = AttachmentBindingType::Object;
+	i32 armature_id = -1;
+	char* bone_name = nullptr;
+	HMM_Mat4 local_transform = HMM_M4D(1.0f);
+	bool valid = false;
+};
+
 struct ArmatureBone
 {
 	char* name = nullptr;
@@ -111,10 +143,37 @@ struct Armature
 	i32 current_frame = 0;
 };
 
+AnimationClip* armature_get_active_animation(Armature& in_armature)
+{
+	if (in_armature.animation_count == 0 || !in_armature.animations)
+	{
+		return nullptr;
+	}
+
+	in_armature.active_animation_index = CLAMP(
+		in_armature.active_animation_index,
+		0,
+		(i32) in_armature.animation_count - 1
+	);
+	return &in_armature.animations[in_armature.active_animation_index];
+}
+
 struct Object
 {
 	i32 unique_id;
 	char* name = nullptr;
+
+	// Runtime mech instances live in the ordinary scene object map so all
+	// render, culling, skinning, and animation paths can consume them. Their
+	// immutable mesh/armature data is borrowed from a hidden catalog template.
+	bool is_runtime_instance = false;
+	i32 template_object_id = -1;
+	i32 mech_instance_id = -1;
+	bool owns_name = true;
+	bool owns_mesh_resources = true;
+	bool owns_skin_matrices = true;
+	bool owns_armature_resources = true;
+	bool authoring_visibility;
 	bool visibility;
 
 	Transform initial_transform;
@@ -151,6 +210,12 @@ struct Object
 	// is Phase 3)
 	bool has_fog_controller = false;
 	FogController fog_controller;
+
+	bool has_part = false;
+	Part part;
+
+	bool has_attachment_point = false;
+	AttachmentPoint attachment_point;
 };
 
 bool object_has_dynamic_jolt_body(const Object& in_object)
@@ -167,7 +232,8 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 // often to bake — game/ parity)
 bool object_contributes_to_gi_scene(const Object& in_object)
 {
-	return in_object.visibility && in_object.has_mesh && !object_has_dynamic_jolt_actor(in_object);
+	return in_object.visibility && in_object.has_mesh && !in_object.has_part &&
+		!in_object.is_runtime_instance && !object_has_dynamic_jolt_actor(in_object);
 }
 
 void object_add_character(Object& in_object, const CharacterSettings& in_settings)
@@ -388,6 +454,7 @@ Object object_create(
 	Object out_object = {
 		.unique_id = unique_id,
 		.name = name,
+		.authoring_visibility = visibility,
 		.visibility = visibility,
 		.initial_transform = transform,
 		.current_transform = transform,
@@ -413,6 +480,13 @@ void object_cleanup_armature(Object& in_object)
 		return;
 	}
 
+	if (!in_object.owns_armature_resources)
+	{
+		in_object.armature = {};
+		in_object.has_armature = false;
+		return;
+	}
+
 	for (u32 bone_idx = 0; bone_idx < in_object.armature.bone_count; ++bone_idx)
 	{
 		free(in_object.armature.bones[bone_idx].name);
@@ -434,33 +508,48 @@ void object_cleanup_armature(Object& in_object)
 // deletion queue, so this is safe to call while frames are in flight.
 void object_cleanup(Object& in_object)
 {
-	free(in_object.name);
+	if (in_object.owns_name)
+	{
+		free(in_object.name);
+	}
 	in_object.name = nullptr;
 
 	if (in_object.has_mesh)
 	{
-		free(in_object.mesh.indices);
-		in_object.mesh.index_buffer.destroy_gpu_buffer();
-
-		free(in_object.mesh.wire_indices);
-		in_object.mesh.wire_index_buffer.destroy_gpu_buffer();
-
-		if (in_object.mesh.vertices)
+		if (in_object.owns_mesh_resources)
 		{
-			free(in_object.mesh.vertices);
-			in_object.mesh.vertex_buffer.destroy_gpu_buffer();
+			free(in_object.mesh.indices);
+			in_object.mesh.index_buffer.destroy_gpu_buffer();
+
+			free(in_object.mesh.wire_indices);
+			in_object.mesh.wire_index_buffer.destroy_gpu_buffer();
+
+			if (in_object.mesh.vertices)
+			{
+				free(in_object.mesh.vertices);
+				in_object.mesh.vertex_buffer.destroy_gpu_buffer();
+			}
+
+			if (in_object.mesh.has_skinned_vertices)
+			{
+				free(in_object.mesh.skinned_vertices);
+				in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
+			}
+
+			free(in_object.mesh.material_indices);
 		}
 
 		if (in_object.mesh.has_skinned_vertices)
 		{
-			free(in_object.mesh.skinned_vertices);
-			in_object.mesh.skinned_vertex_buffer.destroy_gpu_buffer();
 			in_object.mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
-			free(in_object.mesh.skin_matrices);
+			if (in_object.owns_skin_matrices)
+			{
+				free(in_object.mesh.skin_matrices);
+			}
 		}
-
-		free(in_object.mesh.material_indices);
 		mesh_cleanup_tessellated_geometry(in_object.mesh);
+		in_object.mesh = {};
+		in_object.has_mesh = false;
 	}
 
 	object_cleanup_armature(in_object);
@@ -478,5 +567,11 @@ void object_cleanup(Object& in_object)
 	if (in_object.has_camera_control)
 	{
 		object_remove_camera_control(in_object);
+	}
+
+	if (in_object.has_attachment_point)
+	{
+		free(in_object.attachment_point.bone_name);
+		in_object.attachment_point.bone_name = nullptr;
 	}
 }

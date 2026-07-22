@@ -33,12 +33,15 @@ except Exception:
 from .compiled_schemas.python import flatbuffers
 from .compiled_schemas.python.Blender.LiveLink import Armature
 from .compiled_schemas.python.Blender.LiveLink import Animation
+from .compiled_schemas.python.Blender.LiveLink import AttachmentBindingType
 from .compiled_schemas.python.Blender.LiveLink import Bone 
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentAttachmentPoint
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import Image
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import LightType
@@ -47,6 +50,7 @@ from .compiled_schemas.python.Blender.LiveLink import Matrix
 from .compiled_schemas.python.Blender.LiveLink import Mesh
 from .compiled_schemas.python.Blender.LiveLink import Object
 from .compiled_schemas.python.Blender.LiveLink import PointLight
+from .compiled_schemas.python.Blender.LiveLink import PartType
 from .compiled_schemas.python.Blender.LiveLink import Quat
 from .compiled_schemas.python.Blender.LiveLink import RigidBody 
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
@@ -246,6 +250,64 @@ class LiveLinkConnection():
     
         # No armature found, return None
         return None
+
+    def resolve_attachment_point(self, marker, attachment, dependency_graph):
+        owner = attachment.owner_part
+        owner_id = owner.session_uid if owner else -1
+        binding_type = AttachmentBindingType.AttachmentBindingType.Object
+        armature_id = -1
+        bone_name = ""
+        local_transform = marker.matrix_world.copy()
+        valid = False
+        error = "owner is not set"
+
+        if owner:
+            owner_is_body = any(
+                component.type == Component_Part.type_name
+                and component.part.part_type == 'BODY'
+                for component in owner.live_link_settings.components
+            )
+            if not owner_is_body:
+                error = f"owner '{owner.name}' is not a Body part"
+            elif marker.parent == owner and marker.parent_type == 'OBJECT':
+                owner_eval = owner.evaluated_get(dependency_graph) if dependency_graph else owner
+                marker_eval = marker.evaluated_get(dependency_graph) if dependency_graph else marker
+                local_transform = owner_eval.matrix_world.inverted_safe() @ marker_eval.matrix_world
+                valid = True
+            elif marker.parent_type == 'BONE' and marker.parent:
+                owner_armature = self.get_mesh_armature(owner)
+                armature = marker.parent
+                bone_name = marker.parent_bone or ""
+                binding_type = AttachmentBindingType.AttachmentBindingType.Bone
+                armature_id = armature.session_uid
+                if owner_armature != armature:
+                    error = "bone parent is not the Body part's armature"
+                elif not bone_name:
+                    error = "bone parent has no bone name"
+                else:
+                    armature_eval = armature.evaluated_get(dependency_graph) if dependency_graph else armature
+                    marker_eval = marker.evaluated_get(dependency_graph) if dependency_graph else marker
+                    pose_bone = armature_eval.pose.bones.get(bone_name) if armature_eval.pose else None
+                    if not pose_bone:
+                        error = f"bone '{bone_name}' was not found"
+                    else:
+                        bone_world = armature_eval.matrix_world @ pose_bone.matrix
+                        local_transform = bone_world.inverted_safe() @ marker_eval.matrix_world
+                        valid = True
+            else:
+                error = "marker must be parented to its Body or to the Body armature's bone"
+
+        if not valid:
+            print(f"Attachment Point '{marker.name}' is invalid: {error}")
+
+        return {
+            "owner_id": owner_id,
+            "binding_type": binding_type,
+            "armature_id": armature_id,
+            "bone_name": bone_name,
+            "local_transform": local_transform,
+            "valid": valid,
+        }
 
     def iter_action_fcurves(self, action):
         if not action:
@@ -649,7 +711,13 @@ class LiveLinkConnection():
             light_fb = Light.End(builder)
 
         # Add Object Gameplay Components
-        gameplay_components = builder_create_gameplay_components(builder, obj.live_link_settings)
+        gameplay_components = builder_create_gameplay_components(
+            builder,
+            obj.live_link_settings,
+            obj,
+            dependency_graph,
+            self,
+        )
         
         # Begin New Object 
         Object.Start(builder)
@@ -1474,6 +1542,14 @@ def menu_func(self, context):
 # Define Gameplay Components 
 # ------------------------------------------------------------
 
+def gameplay_component_property_update(self, _context):
+    if not depsgraph_update_post_callback.enabled:
+        return
+    source_object = getattr(self, "id_data", None)
+    if isinstance(source_object, bpy.types.Object):
+        batched_updates.add(source_object)
+        schedule_send(update_reason="gameplay_component_property_update")
+
 class Component(PropertyGroup):
     # Blender UI Info
     type_name = 'INVALID'
@@ -1484,10 +1560,15 @@ class Component(PropertyGroup):
         return (cls.type_name, cls.label, '')
 
     # Adds component to flatbuffers component list
-    def create_flatbuffers_object(self, builder):
+    def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
         # Functions to generate value_type and value (implemneted by child classes) 
         value_type = self.get_flatbuffers_value_type()
-        value = self.create_flatbuffers_value(builder)
+        value = self.create_flatbuffers_value(
+            builder,
+            source_object=source_object,
+            dependency_graph=dependency_graph,
+            exporter=exporter,
+        )
 
         # Create the container that contains our union and return that
         GameplayComponentContainer.Start(builder)
@@ -1496,7 +1577,7 @@ class Component(PropertyGroup):
             GameplayComponentContainer.AddValue(builder, value)
         return GameplayComponentContainer.End(builder)
 
-    def create_flatbuffers_value(self, builder):
+    def create_flatbuffers_value(self, builder, **_kwargs):
         return None
 
     def get_flatbuffers_value_type(self):
@@ -1513,7 +1594,7 @@ class Component_Character(Component):
     jump_speed: FloatProperty(name="Jump Speed", default=10.0)
 
     # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder):
+    def create_flatbuffers_value(self, builder, **_kwargs):
         GameplayComponentCharacter.Start(builder)
         GameplayComponentCharacter.AddPlayerControlled(builder, self.player_controlled)
         GameplayComponentCharacter.AddMoveSpeed(builder, self.move_speed)
@@ -1533,7 +1614,7 @@ class Component_CameraControl(Component):
     follow_speed: FloatProperty(name="Follow Speed", default=10.0)
 
     # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder):
+    def create_flatbuffers_value(self, builder, **_kwargs):
         GameplayComponentCameraControl.Start(builder)
         GameplayComponentCameraControl.AddFollowDistance(builder, self.follow_distance)
         GameplayComponentCameraControl.AddFollowSpeed(builder, self.follow_speed)
@@ -1569,7 +1650,7 @@ class Component_FogController(Component):
     anisotropy: FloatProperty(name="Anisotropy", default=0.2, min=-0.95, max=0.95)
 
     # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder):
+    def create_flatbuffers_value(self, builder, **_kwargs):
         GameplayComponentFogController.Start(builder)
         fog_color = Vec3.CreateVec3(builder, self.fog_color[0], self.fog_color[1], self.fog_color[2])
         GameplayComponentFogController.AddFogColor(builder, fog_color)
@@ -1589,16 +1670,92 @@ class Component_FogController(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentFogController
 
+PART_TYPE_ITEMS = [
+    ('BODY', 'Body', ''),
+    ('LEGS', 'Legs', ''),
+    ('LEFT_ARM', 'Left Arm', ''),
+    ('RIGHT_ARM', 'Right Arm', ''),
+    ('HEAD', 'Head', ''),
+]
+
+ATTACHMENT_PART_TYPE_ITEMS = PART_TYPE_ITEMS[1:]
+
+PART_TYPE_TO_FLATBUFFER = {
+    'BODY': PartType.PartType.Body,
+    'LEGS': PartType.PartType.Legs,
+    'LEFT_ARM': PartType.PartType.LeftArm,
+    'RIGHT_ARM': PartType.PartType.RightArm,
+    'HEAD': PartType.PartType.Head,
+}
+
+class Component_Part(Component):
+    type_name = 'PART'
+    label = 'Part'
+
+    part_type: EnumProperty(
+        name="Part Type",
+        items=PART_TYPE_ITEMS,
+        default='BODY',
+        update=gameplay_component_property_update,
+    )
+
+    def create_flatbuffers_value(self, builder, **_kwargs):
+        GameplayComponentPart.Start(builder)
+        GameplayComponentPart.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
+        return GameplayComponentPart.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentPart
+
+class Component_AttachmentPoint(Component):
+    type_name = 'ATTACHMENT_POINT'
+    label = 'Attachment Point'
+
+    owner_part: PointerProperty(
+        name="Owner Body",
+        type=bpy.types.Object,
+        update=gameplay_component_property_update,
+    )
+    part_type: EnumProperty(
+        name="Accepted Part",
+        items=ATTACHMENT_PART_TYPE_ITEMS,
+        default='LEGS',
+        update=gameplay_component_property_update,
+    )
+
+    def create_flatbuffers_value(self, builder, source_object=None, dependency_graph=None, exporter=None):
+        resolved = exporter.resolve_attachment_point(source_object, self, dependency_graph)
+        bone_name = builder.CreateString(resolved["bone_name"]) if resolved["bone_name"] else None
+        local_transform = exporter.make_flatbuffer_matrix(builder, resolved["local_transform"])
+
+        GameplayComponentAttachmentPoint.Start(builder)
+        GameplayComponentAttachmentPoint.AddOwnerPartId(builder, resolved["owner_id"])
+        GameplayComponentAttachmentPoint.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
+        GameplayComponentAttachmentPoint.AddBindingType(builder, resolved["binding_type"])
+        GameplayComponentAttachmentPoint.AddArmatureId(builder, resolved["armature_id"])
+        if bone_name is not None:
+            GameplayComponentAttachmentPoint.AddBoneName(builder, bone_name)
+        GameplayComponentAttachmentPoint.AddLocalTransform(builder, local_transform)
+        GameplayComponentAttachmentPoint.AddValid(builder, resolved["valid"])
+        return GameplayComponentAttachmentPoint.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentAttachmentPoint
+
 gameplay_component_enum = [
     Component_Character.enum_info(),
     Component_CameraControl.enum_info(),
     Component_FogController.enum_info(),
+    Component_Part.enum_info(),
+    Component_AttachmentPoint.enum_info(),
 ]
 
 TYPE_TO_GROUP = {
     Component_Character.type_name: 'player',
     Component_CameraControl.type_name: 'camera_control',
-    Component_FogController.type_name: 'fog_controller'
+    Component_FogController.type_name: 'fog_controller',
+    Component_Part.type_name: 'part',
+    Component_AttachmentPoint.type_name: 'attachment_point',
 }
 
 #GROUP_TO_TYPE = {v: k for k, v in TYPE_TO_GROUP.items()}
@@ -1614,11 +1771,18 @@ class ComponentContainer(PropertyGroup):
     player:         PointerProperty(type=Component_Character)
     camera_control: PointerProperty(type=Component_CameraControl)
     fog_controller: PointerProperty(type=Component_FogController)
+    part:           PointerProperty(type=Component_Part)
+    attachment_point: PointerProperty(type=Component_AttachmentPoint)
 
     # Simply forwards to relevant component data to create flatbuffer object
-    def create_flatbuffers_object(self, builder):
+    def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
        component_data = getattr(self, TYPE_TO_GROUP[self.type])
-       return component_data.create_flatbuffers_object(builder)
+       return component_data.create_flatbuffers_object(
+           builder,
+           source_object=source_object,
+           dependency_graph=dependency_graph,
+           exporter=exporter,
+       )
 
 # ------------------------------------------------------------
 # Property Group for Live-Link Specific Data 
@@ -1636,13 +1800,18 @@ class LiveLinkObjectSettings(bpy.types.PropertyGroup):
     components: CollectionProperty(type=ComponentContainer)
 
 #  Creates the flatbuffer array for the components under an object's live_link_settings
-def builder_create_gameplay_components(builder, live_link_settings):
+def builder_create_gameplay_components(builder, live_link_settings, source_object, dependency_graph, exporter):
     out_flatbuffers_object = None
 
     if len(live_link_settings.components) > 0:
         flatbuffer_components = []
         for component in live_link_settings.components:
-            flatbuffer_components.append(component.create_flatbuffers_object(builder))
+            flatbuffer_components.append(component.create_flatbuffers_object(
+                builder,
+                source_object=source_object,
+                dependency_graph=dependency_graph,
+                exporter=exporter,
+            ))
 
         Object.ObjectStartComponentsVector(builder, len(flatbuffer_components))
         for flatbuffer_component in reversed(flatbuffer_components): 
@@ -1663,8 +1832,16 @@ class OBJECT_OT_add_custom_item(Operator):
         obj = context.object
         settings = obj.live_link_settings
 
+        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name}:
+            if any(component.type == settings.add_type for component in settings.components):
+                self.report({'WARNING'}, f"{settings.add_type.replace('_', ' ').title()} already exists on this object")
+                return {'CANCELLED'}
+
         new_component = settings.components.add()
         new_component.type = settings.add_type
+
+        batched_updates.add(obj)
+        schedule_send(update_reason="gameplay_component_added")
 
         return {'FINISHED'}
 
@@ -1680,6 +1857,8 @@ class OBJECT_OT_remove_custom_item(Operator):
 
         if 0 <= self.index < len(settings.components):
             settings.components.remove(self.index)
+            batched_updates.add(obj)
+            schedule_send(update_reason="gameplay_component_removed")
             return {'FINISHED'}
         else:
             self.report({'WARNING'}, "Invalid index")
@@ -1748,6 +1927,8 @@ classes_to_register = [
     Component_Character,
     Component_CameraControl,
     Component_FogController,
+    Component_Part,
+    Component_AttachmentPoint,
     ComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,

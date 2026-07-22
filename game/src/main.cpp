@@ -54,6 +54,8 @@ using std::optional;
 #include "render/gpu_buffer.h"
 #include "game_object/game_object.h"
 #include "state/state.h"
+#include "game_object/attachment_point.h"
+#include "game_object/mech.h"
 #include "core/benchmark.h"
 #include "render/geometry_pass.h"
 #include "render/shadow_depth_pass.h"
@@ -79,6 +81,8 @@ using std::optional;
 
 void handle_resize(bool in_force);
 void rewind_skinned_animations();
+void advance_skinned_animations(f32 in_delta_time);
+void pack_skinned_animation_matrices();
 
 #include "render/imgui_layer.h"
 
@@ -728,6 +732,32 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 							state.scene.camera_control_id = game_object.unique_id;
 							break;
 						}
+						case Blender::LiveLink::GameplayComponent_GameplayComponentPart:
+						{
+							using Blender::LiveLink::GameplayComponentPart;
+							const GameplayComponentPart* part_component = reinterpret_cast<const GameplayComponentPart*>(component);
+							game_object.has_part = true;
+							game_object.part = {
+								.type = (PartType) part_component->part_type(),
+							};
+							break;
+						}
+						case Blender::LiveLink::GameplayComponent_GameplayComponentAttachmentPoint:
+						{
+							using Blender::LiveLink::GameplayComponentAttachmentPoint;
+							const GameplayComponentAttachmentPoint* attachment_component = reinterpret_cast<const GameplayComponentAttachmentPoint*>(component);
+							game_object.has_attachment_point = true;
+							game_object.attachment_point = {
+								.owner_part_id = attachment_component->owner_part_id(),
+								.part_type = (PartType) attachment_component->part_type(),
+								.binding_type = (AttachmentBindingType) attachment_component->binding_type(),
+								.armature_id = attachment_component->armature_id(),
+								.bone_name = copy_flatbuffer_string(attachment_component->bone_name()),
+								.local_transform = flatbuffer_helpers::to_hmm_mat4(attachment_component->local_transform()),
+								.valid = attachment_component->valid(),
+							};
+							break;
+						}
 						default:
 							// Character, fog, etc. return with their systems
 							break;
@@ -1058,6 +1088,10 @@ void live_link_drain_channels()
 		state.data_oriented.import_history.add(import_stats);
 		state.data_oriented.selected_import_history_index = (i32) state.data_oriented.import_history.length() - 1;
 
+		// Runtime clones borrow catalog allocations, so remove them before any
+		// template in this complete Live Link batch can be replaced or deleted.
+		mech_suspend_runtime_objects();
+
 		// Images (before materials — register_material resolves image ids)
 		for (const PendingImage& pending_image : scene_update.images)
 		{
@@ -1167,6 +1201,7 @@ void live_link_drain_channels()
 		{
 			state.data_oriented.frame.live_link_reset_count += 1;
 			state.runtime.blender_data_loaded = false;
+			mech_reset_all();
 
 			for (auto& [unique_id, object] : state.scene.objects)
 			{
@@ -1184,6 +1219,11 @@ void live_link_drain_channels()
 			reset_materials();
 			reset_images();
 			state.gi.layout_dirty = true;
+		}
+
+		if (!scene_update.reset)
+		{
+			mech_reconcile_instances();
 		}
 	}
 }
@@ -1335,25 +1375,6 @@ void update_physics_backed_object_transforms()
 
 // ---- Skinned animation (ports of game/src/main.cpp:445-575) ----
 
-AnimationClip* armature_get_active_animation(Armature& in_armature)
-{
-	if (in_armature.animation_count == 0 || !in_armature.animations)
-	{
-		return nullptr;
-	}
-
-	in_armature.active_animation_index = CLAMP(in_armature.active_animation_index, 0, (i32) in_armature.animation_count - 1);
-	return &in_armature.animations[in_armature.active_animation_index];
-}
-
-void mesh_reset_skin_matrices(Mesh& in_mesh)
-{
-	for (u32 matrix_idx = 0; matrix_idx < in_mesh.skin_matrix_count; ++matrix_idx)
-	{
-		in_mesh.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
-	}
-}
-
 void rewind_skinned_animations()
 {
 	scene_ensure_indexes(state);
@@ -1371,16 +1392,12 @@ void rewind_skinned_animations()
 	}
 }
 
-// Advances armature playback, computes each skinned mesh's final skin
-// matrices (armature_to_mesh * clip * mesh_to_armature), and packs them into
-// the shared per-frame arena (mesh.skin_matrix_arena_offset). Runs before
-// begin_frame — the arena ring makes the upload safe vs frames in flight.
-void update_skinned_animations(f32 in_delta_time)
+// Advances all armatures before mech attachment evaluation so bone sockets
+// and rendered skinning consume the same animation frame.
+void advance_skinned_animations(f32 in_delta_time)
 {
 	scene_ensure_indexes(state);
 	state.data_oriented.frame.animation_armature_candidates += (i32) state.scene.indexes.armature_object_ids.length();
-
-	state.skin_matrices.items.clear();
 
 	// Phase A: advance armature playback
 	for (i32 armature_object_id : state.scene.indexes.armature_object_ids)
@@ -1419,8 +1436,15 @@ void update_skinned_animations(f32 in_delta_time)
 		}
 		state.data_oriented.frame.animation_armatures_updated += 1;
 	}
+}
 
-	// Phase B: compute + pack per-mesh skin matrices
+// Computes each skinned mesh's final matrices (armature_to_mesh * clip *
+// mesh_to_armature) and packs the shared per-frame arena.
+void pack_skinned_animation_matrices()
+{
+	scene_ensure_indexes(state);
+	state.skin_matrices.items.clear();
+
 	state.data_oriented.frame.animation_skinned_mesh_candidates += (i32) state.scene.indexes.skinned_mesh_object_ids.length();
 	for (i32 skinned_object_id : state.scene.indexes.skinned_mesh_object_ids)
 	{
@@ -1977,8 +2001,14 @@ void frame(f32 in_delta_time)
 	}
 
 	{
+		CPU_TIMING_SCOPE("Skinned Animation Advance");
+		advance_skinned_animations(in_delta_time);
+	}
+
+	{
 		CPU_TIMING_SCOPE("Object Transforms");
 		update_physics_backed_object_transforms();
+		update_mech_transforms();
 		scene_ensure_indexes(state);
 		refresh_primary_sun_id();
 		refresh_active_fog_controller();
@@ -1988,8 +2018,8 @@ void frame(f32 in_delta_time)
 	}
 
 	{
-		CPU_TIMING_SCOPE("Skinned Animation");
-		update_skinned_animations(in_delta_time);
+		CPU_TIMING_SCOPE("Skinned Animation Pack");
+		pack_skinned_animation_matrices();
 	}
 
 	CPU_TIMING_SCOPE("Rendering");
@@ -3139,6 +3169,7 @@ int main(int argc, char** argv)
 	ImGuiLayer::shutdown();
 	GIDebugPass::shutdown(&state.vk);
 	gi_scene_cleanup(&state.vk, gi_scene);
+	mech_reset_all();
 
 	for (auto& [unique_id, object] : state.scene.objects)
 	{

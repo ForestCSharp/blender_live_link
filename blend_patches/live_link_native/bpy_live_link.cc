@@ -941,7 +941,10 @@ flatbuffers::Offset<ll::Light> export_light(flatbuffers::FlatBufferBuilder &buil
 }
 
 std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay_components(
-    flatbuffers::FlatBufferBuilder &builder, PyObject *py_object)
+    flatbuffers::FlatBufferBuilder &builder,
+    PyObject *py_object,
+    Object *object,
+    Depsgraph *depsgraph)
 {
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components_out;
 
@@ -965,6 +968,14 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
 
   const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
   components_out.reserve(size);
+  auto part_type_from_string = [](const std::string &value) {
+    if (value == "LEGS") return ll::PartType_Legs;
+    if (value == "LEFT_ARM") return ll::PartType_LeftArm;
+    if (value == "RIGHT_ARM") return ll::PartType_RightArm;
+    if (value == "HEAD") return ll::PartType_Head;
+    return ll::PartType_Body;
+  };
+
   for (Py_ssize_t index = 0; index < size; index++) {
     PyObject *component = PySequence_Fast_GET_ITEM(sequence.value, index);
     const std::string type = py_string_attr(component, "type");
@@ -1043,6 +1054,110 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
           py_float_attr(fog_controller, "anisotropy", 0.2f));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentFogController, value.Union()));
+    }
+    else if (type == "PART") {
+      PyPtr part(PyObject_GetAttrString(component, "part"));
+      if (!part) {
+        PyErr_Clear();
+        continue;
+      }
+      const auto value = ll::CreateGameplayComponentPart(
+          builder, part_type_from_string(py_string_attr(part, "part_type", "BODY")));
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentPart, value.Union()));
+    }
+    else if (type == "ATTACHMENT_POINT") {
+      PyPtr attachment(PyObject_GetAttrString(component, "attachment_point"));
+      if (!attachment) {
+        PyErr_Clear();
+        continue;
+      }
+
+      PyPtr owner_py(PyObject_GetAttrString(attachment, "owner_part"));
+      Object *owner = owner_py && owner_py.value != Py_None ? object_from_py(owner_py) : nullptr;
+      const int32_t owner_id = owner ? int32_t(owner->id.session_uid) : -1;
+      const ll::PartType part_type = part_type_from_string(
+          py_string_attr(attachment, "part_type", "LEGS"));
+      ll::AttachmentBindingType binding_type = ll::AttachmentBindingType_Object;
+      int32_t armature_id = -1;
+      const char *bone_name = "";
+      bool valid = false;
+
+      float local_transform[4][4];
+      copy_m4_m4(local_transform, object->object_to_world().ptr());
+
+      bool owner_is_body = false;
+      if (owner_py && owner_py.value != Py_None) {
+        PyPtr owner_settings(PyObject_GetAttrString(owner_py, "live_link_settings"));
+        PyPtr owner_components(owner_settings ? PyObject_GetAttrString(owner_settings, "components") : nullptr);
+        PyPtr owner_sequence(owner_components ?
+                                 PySequence_Fast(owner_components,
+                                                 "owner live_link_settings.components must be a sequence") :
+                                 nullptr);
+        if (owner_sequence) {
+          const Py_ssize_t owner_component_count = PySequence_Fast_GET_SIZE(owner_sequence);
+          for (Py_ssize_t owner_component_index = 0;
+               owner_component_index < owner_component_count;
+               owner_component_index++)
+          {
+            PyObject *owner_component = PySequence_Fast_GET_ITEM(owner_sequence.value,
+                                                                  owner_component_index);
+            if (py_string_attr(owner_component, "type") != "PART") continue;
+            PyPtr owner_part(PyObject_GetAttrString(owner_component, "part"));
+            owner_is_body = owner_part && py_string_attr(owner_part, "part_type") == "BODY";
+            if (owner_is_body) break;
+          }
+        }
+        else {
+          PyErr_Clear();
+        }
+      }
+
+      Object *object_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
+      if (owner && owner_is_body && object->parent == owner &&
+          (object->partype & PARTYPE) == PAROBJECT)
+      {
+        Object *owner_eval = depsgraph ? DEG_get_evaluated(depsgraph, owner) : owner;
+        float inverse_owner_world[4][4];
+        invert_m4_m4(inverse_owner_world, owner_eval->object_to_world().ptr());
+        mul_m4_m4m4(local_transform, inverse_owner_world, object_eval->object_to_world().ptr());
+        valid = true;
+      }
+      else if (owner && owner_is_body && object->parent &&
+               (object->partype & PARTYPE) == PARBONE)
+      {
+        Object *armature = object->parent;
+        Object *owner_armature = mesh_armature_object(owner);
+        binding_type = ll::AttachmentBindingType_Bone;
+        armature_id = int32_t(armature->id.session_uid);
+        bone_name = object->parsubstr;
+        if (armature == owner_armature && bone_name[0] != '\0') {
+          Object *armature_eval = depsgraph ? DEG_get_evaluated(depsgraph, armature) : armature;
+          bPoseChannel *pose_channel = armature_eval->pose ?
+                                           BKE_pose_channel_find_name(armature_eval->pose, bone_name) :
+                                           nullptr;
+          if (pose_channel) {
+            float bone_world[4][4];
+            float inverse_bone_world[4][4];
+            mul_m4_m4m4(bone_world, armature_eval->object_to_world().ptr(), pose_channel->pose_mat);
+            invert_m4_m4(inverse_bone_world, bone_world);
+            mul_m4_m4m4(local_transform, inverse_bone_world, object_eval->object_to_world().ptr());
+            valid = true;
+          }
+        }
+      }
+
+      const auto value = ll::CreateGameplayComponentAttachmentPoint(
+          builder,
+          owner_id,
+          part_type,
+          binding_type,
+          armature_id,
+          bone_name[0] != '\0' ? builder.CreateString(bone_name) : 0,
+          create_matrix(builder, local_transform),
+          valid);
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentAttachmentPoint, value.Union()));
     }
   }
 
@@ -1147,7 +1262,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   }
 
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
-      export_gameplay_components(builder, py_object);
+      export_gameplay_components(builder, py_object, object, depsgraph);
   const auto components_fb = components.empty() ? 0 : builder.CreateVector(components);
 
   return ll::CreateObject(builder,
@@ -2236,6 +2351,34 @@ void compare_component(DiffList &diffs,
       compare_float(diffs, path + ".fog_controller.ambient_intensity", native_fog->ambient_intensity(), python_fog->ambient_intensity());
       compare_float(diffs, path + ".fog_controller.sun_intensity", native_fog->sun_intensity(), python_fog->sun_intensity());
       compare_float(diffs, path + ".fog_controller.anisotropy", native_fog->anisotropy(), python_fog->anisotropy());
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentPart)
+  {
+    const ll::GameplayComponentPart *native_part = native_value->value_as_GameplayComponentPart();
+    const ll::GameplayComponentPart *python_part = python_value->value_as_GameplayComponentPart();
+    compare_exact(diffs, path + ".part.present", native_part != nullptr, python_part != nullptr);
+    if (native_part && python_part) {
+      compare_exact(diffs, path + ".part.part_type", int(native_part->part_type()), int(python_part->part_type()));
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentAttachmentPoint &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentAttachmentPoint)
+  {
+    const ll::GameplayComponentAttachmentPoint *native_attachment =
+        native_value->value_as_GameplayComponentAttachmentPoint();
+    const ll::GameplayComponentAttachmentPoint *python_attachment =
+        python_value->value_as_GameplayComponentAttachmentPoint();
+    compare_exact(diffs, path + ".attachment.present", native_attachment != nullptr, python_attachment != nullptr);
+    if (native_attachment && python_attachment) {
+      compare_exact(diffs, path + ".attachment.owner_part_id", native_attachment->owner_part_id(), python_attachment->owner_part_id());
+      compare_exact(diffs, path + ".attachment.part_type", int(native_attachment->part_type()), int(python_attachment->part_type()));
+      compare_exact(diffs, path + ".attachment.binding_type", int(native_attachment->binding_type()), int(python_attachment->binding_type()));
+      compare_exact(diffs, path + ".attachment.armature_id", native_attachment->armature_id(), python_attachment->armature_id());
+      compare_string(diffs, path + ".attachment.bone_name", fb_string(native_attachment->bone_name()), fb_string(python_attachment->bone_name()));
+      compare_matrix(diffs, path + ".attachment.local_transform", native_attachment->local_transform(), python_attachment->local_transform(), 1e-4);
+      compare_exact(diffs, path + ".attachment.valid", native_attachment->valid(), python_attachment->valid());
     }
   }
 }

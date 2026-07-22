@@ -162,6 +162,41 @@ struct SceneUpdate
 	bool reset = false;
 };
 
+enum class MechLoadoutSelectionType : u8
+{
+	Default = 0,
+	TemplateUid,
+};
+
+struct MechLoadoutSlot
+{
+	MechLoadoutSelectionType selection = MechLoadoutSelectionType::Default;
+	i32 template_uid = -1;
+};
+
+struct MechLoadout
+{
+	MechLoadoutSlot slots[(i32) PartType::Count];
+};
+
+struct MechArmatureInstance
+{
+	i32 template_uid = -1;
+	i32 instance_uid = -1;
+};
+
+struct MechInstance
+{
+	i32 runtime_id = -1;
+	i32 character_uid = -1;
+	MechLoadout loadout;
+	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
+	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
+	i32 socket_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
+	StretchyBuffer<MechArmatureInstance> armature_instances;
+	std::string last_diagnostic_signature;
+};
+
 // Global game state, in the shape of game/'s State struct
 struct State
 {
@@ -258,8 +293,20 @@ struct State
 			StretchyBuffer<i32> light_object_ids;
 			StretchyBuffer<i32> armature_object_ids;
 			StretchyBuffer<i32> skinned_mesh_object_ids;
+			StretchyBuffer<i32> part_object_ids;
+			StretchyBuffer<i32> attachment_point_object_ids;
 		} indexes;
 	} scene;
+
+	struct MechState
+	{
+		ankerl::unordered_dense::map<i32, MechInstance> instances;
+		ankerl::unordered_dense::map<i32, i32> character_to_instance;
+		ankerl::unordered_dense::map<i32, bool> auto_spawn_opt_outs;
+		i32 next_instance_id = 1;
+		// -1 is the empty-slot sentinel throughout mech descriptors.
+		i32 next_runtime_object_uid = -2;
+	} mech;
 
 	struct LiveLinkState
 	{
@@ -577,6 +624,8 @@ void scene_reset_indexes(State& in_state)
 	in_state.scene.indexes.light_object_ids.clear();
 	in_state.scene.indexes.armature_object_ids.clear();
 	in_state.scene.indexes.skinned_mesh_object_ids.clear();
+	in_state.scene.indexes.part_object_ids.clear();
+	in_state.scene.indexes.attachment_point_object_ids.clear();
 	in_state.scene.indexes.dirty = true;
 }
 
@@ -587,10 +636,25 @@ void scene_rebuild_indexes(State& in_state)
 	indexes.light_object_ids.clear();
 	indexes.armature_object_ids.clear();
 	indexes.skinned_mesh_object_ids.clear();
+	indexes.part_object_ids.clear();
+	indexes.attachment_point_object_ids.clear();
+
+	ankerl::unordered_dense::map<i32, bool> catalog_armature_ids;
+	for (auto& [unique_id, object] : in_state.scene.objects)
+	{
+		if (object.has_part && !object.is_runtime_instance && object.has_mesh &&
+			object.mesh.has_skinned_vertices && object.mesh.armature_id >= 0)
+		{
+			catalog_armature_ids[object.mesh.armature_id] = true;
+		}
+	}
 
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
-		if (object.has_mesh)
+		// Catalog Parts and sockets are immutable authoring templates. Runtime
+		// clones deliberately omit those components and enter normal render and
+		// skinning indexes below.
+		if (object.has_mesh && !object.has_part && !object.has_attachment_point)
 		{
 			indexes.mesh_object_ids.add(unique_id);
 
@@ -599,13 +663,22 @@ void scene_rebuild_indexes(State& in_state)
 				indexes.skinned_mesh_object_ids.add(unique_id);
 			}
 		}
-		if (object.has_light)
+		if (object.has_light && !object.has_part && !object.has_attachment_point)
 		{
 			indexes.light_object_ids.add(unique_id);
 		}
-		if (object.has_armature)
+		if (object.has_armature &&
+			(object.is_runtime_instance || !catalog_armature_ids.contains(unique_id)))
 		{
 			indexes.armature_object_ids.add(unique_id);
+		}
+		if (object.has_part && !object.is_runtime_instance)
+		{
+			indexes.part_object_ids.add(unique_id);
+		}
+		if (object.has_attachment_point && !object.is_runtime_instance)
+		{
+			indexes.attachment_point_object_ids.add(unique_id);
 		}
 	}
 

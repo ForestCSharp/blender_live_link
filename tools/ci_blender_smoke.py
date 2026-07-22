@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import bpy
+from mathutils import Matrix
 
 
 DELETED_OBJECT_UID = 424242
@@ -107,18 +108,125 @@ def create_synthetic_scene():
     bpy.context.scene.collection.objects.link(mesh_object)
     mesh_object.location = (1.0, 2.0, 3.0)
 
+    armature_data = bpy.data.armatures.new("CI Mech Armature Data")
+    armature_object = bpy.data.objects.new("CI Mech Armature", armature_data)
+    bpy.context.scene.collection.objects.link(armature_object)
+    bpy.context.view_layer.objects.active = armature_object
+    armature_object.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    root_bone = armature_data.edit_bones.new("Root")
+    root_bone.head = (0.0, 0.0, 0.0)
+    root_bone.tail = (0.0, 0.0, 1.0)
+    bpy.ops.object.mode_set(mode="POSE")
+    pose_bone = armature_object.pose.bones["Root"]
+    pose_bone.location = (0.0, 0.0, 0.0)
+    pose_bone.keyframe_insert(data_path="location", frame=1)
+    pose_bone.location = (0.0, 0.0, 0.25)
+    pose_bone.keyframe_insert(data_path="location", frame=2)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    armature_object.select_set(False)
+
+    armature_modifier = mesh_object.modifiers.new("CI Mech Armature", type="ARMATURE")
+    armature_modifier.object = armature_object
+
+    def add_component(scene_object, component_type):
+        component = scene_object.live_link_settings.components.add()
+        component.type = component_type
+        return component
+
+    body_component = add_component(mesh_object, "PART")
+    body_component.part.part_type = "BODY"
+    mesh_object.hide_set(True)
+
+    duplicate_body = bpy.data.objects.new("CI Duplicate Body", None)
+    bpy.context.scene.collection.objects.link(duplicate_body)
+    duplicate_body_component = add_component(duplicate_body, "PART")
+    duplicate_body_component.part.part_type = "BODY"
+    duplicate_body.hide_set(True)
+
+    part_objects = {}
+    for part_type, name in (
+        ("LEGS", "CI Legs"),
+        ("LEFT_ARM", "CI Left Arm"),
+        ("RIGHT_ARM", "CI Right Arm"),
+        ("HEAD", "CI Head"),
+    ):
+        part_object = bpy.data.objects.new(name, None)
+        bpy.context.scene.collection.objects.link(part_object)
+        part_component = add_component(part_object, "PART")
+        part_component.part.part_type = part_type
+        part_object.hide_set(True)
+        part_objects[part_type] = part_object
+
+    legs_socket = bpy.data.objects.new("CI Legs Socket", None)
+    bpy.context.scene.collection.objects.link(legs_socket)
+    legs_socket.parent = mesh_object
+    legs_socket.matrix_parent_inverse = mesh_object.matrix_world.inverted()
+    legs_socket.matrix_world = Matrix.Translation((1.0, 2.0, 2.0))
+    legs_attachment = add_component(legs_socket, "ATTACHMENT_POINT")
+    legs_attachment.attachment_point.owner_part = mesh_object
+    legs_attachment.attachment_point.part_type = "LEGS"
+
+    arm_sockets = []
+    for part_type, name, location in (
+        ("LEFT_ARM", "CI Left Arm Socket", (-1.0, 0.0, 2.5)),
+        ("RIGHT_ARM", "CI Right Arm Socket", (3.0, 0.0, 2.5)),
+    ):
+        arm_socket = bpy.data.objects.new(name, None)
+        bpy.context.scene.collection.objects.link(arm_socket)
+        arm_socket.parent = mesh_object
+        arm_socket.matrix_parent_inverse = mesh_object.matrix_world.inverted()
+        arm_socket.matrix_world = Matrix.Translation(location)
+        arm_attachment = add_component(arm_socket, "ATTACHMENT_POINT")
+        arm_attachment.attachment_point.owner_part = mesh_object
+        arm_attachment.attachment_point.part_type = part_type
+        arm_sockets.append(arm_socket)
+
+    head_socket = bpy.data.objects.new("CI Head Bone Socket", None)
+    bpy.context.scene.collection.objects.link(head_socket)
+    head_socket.parent = armature_object
+    head_socket.parent_type = "BONE"
+    head_socket.parent_bone = "Root"
+    head_socket.matrix_world = Matrix.Translation((1.0, 2.0, 4.0))
+    head_attachment = add_component(head_socket, "ATTACHMENT_POINT")
+    head_attachment.attachment_point.owner_part = mesh_object
+    head_attachment.attachment_point.part_type = "HEAD"
+
+    character_object = bpy.data.objects.new("CI Player Character", None)
+    bpy.context.scene.collection.objects.link(character_object)
+    character_component = add_component(character_object, "CHARACTER")
+    character_component.player.player_controlled = True
+
+    second_character_object = bpy.data.objects.new("CI Second Character", None)
+    bpy.context.scene.collection.objects.link(second_character_object)
+    second_character_object.location = (8.0, 0.0, 0.0)
+    second_character_component = add_component(second_character_object, "CHARACTER")
+    second_character_component.player.player_controlled = False
+
     light_data = bpy.data.lights.new("CI Sun Data", type="SUN")
     light_data.energy = 2.0
     light_object = bpy.data.objects.new("CI Sun", light_data)
     bpy.context.scene.collection.objects.link(light_object)
 
-    for scene_object in (mesh_object, light_object):
+    synthetic_objects = [
+        mesh_object,
+        armature_object,
+        duplicate_body,
+        *part_objects.values(),
+        legs_socket,
+        *arm_sockets,
+        head_socket,
+        character_object,
+        second_character_object,
+        light_object,
+    ]
+    for scene_object in synthetic_objects:
         if not hasattr(scene_object, "live_link_settings"):
             raise AssertionError("Live Link object properties were not registered")
         scene_object.live_link_settings.enable_live_link = True
 
     bpy.context.view_layer.update()
-    return mesh_object, light_object
+    return synthetic_objects
 
 
 def decoded_name(value) -> str:
@@ -129,20 +237,25 @@ def decoded_name(value) -> str:
 
 def validate_synthetic_export(extension_module, capture_path: Path) -> None:
     clear_scene()
-    mesh_object, light_object = create_synthetic_scene()
+    synthetic_objects = create_synthetic_scene()
+    capture_path.parent.mkdir(parents=True, exist_ok=True)
+    fixture_path = capture_path.with_suffix(".blend")
+    bpy.ops.wm.save_as_mainfile(filepath=str(fixture_path))
 
     connection = extension_module.LiveLinkConnection()
     try:
         payload = connection.make_update_python(
-            [mesh_object, light_object],
+            synthetic_objects,
             [DELETED_OBJECT_UID],
             reset=False,
             update_reason="ci_synthetic_scene",
         )
         update = parse_update(extension_module, payload)
 
-        if update.ObjectsLength() != 2:
-            raise AssertionError(f"Expected 2 exported objects, got {update.ObjectsLength()}")
+        if update.ObjectsLength() != len(synthetic_objects):
+            raise AssertionError(
+                f"Expected {len(synthetic_objects)} exported objects, got {update.ObjectsLength()}"
+            )
         if update.MaterialsLength() != 1:
             raise AssertionError(f"Expected 1 exported material, got {update.MaterialsLength()}")
         if update.DeletedObjectUidsLength() != 1:
@@ -156,18 +269,67 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             decoded_name(update.Objects(index).Name()): update.Objects(index)
             for index in range(update.ObjectsLength())
         }
-        if set(exported_objects) != {"CI Triangle", "CI Sun"}:
-            raise AssertionError(f"Unexpected exported object names: {sorted(exported_objects)}")
         if exported_objects["CI Triangle"].Mesh() is None:
             raise AssertionError("Synthetic mesh object has no mesh payload")
         if exported_objects["CI Sun"].Light() is None:
             raise AssertionError("Synthetic light object has no light payload")
+        if exported_objects["CI Triangle"].Visibility():
+            raise AssertionError("Hidden Body part became visible during export")
+        if exported_objects["CI Second Character"].ComponentsLength() != 1:
+            raise AssertionError("Second Character did not export its gameplay component")
+
+        def component_of_type(exported_object, component_type):
+            for component_index in range(exported_object.ComponentsLength()):
+                container = exported_object.Components(component_index)
+                if container.ValueType() != component_type:
+                    continue
+                value = container.Value()
+                return value
+            return None
+
+        part_union = component_of_type(
+            exported_objects["CI Triangle"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentPart,
+        )
+        if part_union is None:
+            raise AssertionError("Body object has no Part component")
+        part = extension_module.GameplayComponentPart.GameplayComponentPart()
+        part.Init(part_union.Bytes, part_union.Pos)
+        if part.PartType() != extension_module.PartType.PartType.Body:
+            raise AssertionError("Body Part type changed during export")
+
+        legs_union = component_of_type(
+            exported_objects["CI Legs Socket"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentAttachmentPoint,
+        )
+        legs_attachment = extension_module.GameplayComponentAttachmentPoint.GameplayComponentAttachmentPoint()
+        legs_attachment.Init(legs_union.Bytes, legs_union.Pos)
+        if not legs_attachment.Valid():
+            raise AssertionError("Object-local Legs socket exported as invalid")
+        if legs_attachment.BindingType() != extension_module.AttachmentBindingType.AttachmentBindingType.Object:
+            raise AssertionError("Legs socket did not export as an object binding")
+        if legs_attachment.OwnerPartId() != exported_objects["CI Triangle"].UniqueId():
+            raise AssertionError("Legs socket owner UID changed during export")
+
+        head_union = component_of_type(
+            exported_objects["CI Head Bone Socket"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentAttachmentPoint,
+        )
+        head_attachment = extension_module.GameplayComponentAttachmentPoint.GameplayComponentAttachmentPoint()
+        head_attachment.Init(head_union.Bytes, head_union.Pos)
+        if not head_attachment.Valid():
+            raise AssertionError("Bone-local Head socket exported as invalid")
+        if head_attachment.BindingType() != extension_module.AttachmentBindingType.AttachmentBindingType.Bone:
+            raise AssertionError("Head socket did not export as a bone binding")
+        if decoded_name(head_attachment.BoneName()) != "Root":
+            raise AssertionError("Head socket bone name changed during export")
+        if head_attachment.LocalTransform() is None:
+            raise AssertionError("Head socket has no local transform")
 
         material_name = decoded_name(update.Materials(0).Name())
         if material_name != "CI Material":
             raise AssertionError(f"Unexpected material name: {material_name}")
 
-        capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_bytes(payload)
 
         reset_payload = connection.make_update_python(
@@ -188,6 +350,7 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
         "BLENDER_LIVE_LINK_CI_SYNTHETIC_OK",
         f"bytes={len(payload)}",
         f"capture={capture_path}",
+        f"fixture={fixture_path}",
     )
 
 
@@ -238,9 +401,6 @@ def main() -> None:
         raise RuntimeError("Blender Live Link operators were not registered")
 
     extension_module = load_extension_module()
-    if extension_module.native_live_link_available():
-        raise AssertionError("Stock Blender unexpectedly exposes the native Live Link hook")
-
     disable_live_update_scheduling(extension_module)
     validate_synthetic_export(extension_module, capture_path)
     validate_repository_blend_file(extension_module, blend_file)

@@ -297,3 +297,26 @@ in the native development build.
   `bpy.app.live_link_make_update`.
 - The Python export fallback can be enabled from the Blender scene setting added
   by the extension.
+
+## Modular Mech Authoring
+
+Add a `Part` component to each catalog object and choose Body, Legs, Left Arm,
+Right Arm, or Head. Parts may use any Blender object type; renderable parts use
+the existing mesh and skinning export paths. Catalog parts are normally hidden
+in Blender. The imported objects remain immutable templates: the game creates
+negative-UID runtime instances for equipped parts and never moves or reveals
+the catalog objects themselves.
+
+Add one `Attachment Point` component per socket marker, normally on an Empty.
+Set its Owner Body and accepted child type, then use one of these parent setups:
+
+- Parent the marker directly to the Body part for a rigid, Body-local socket.
+- Bone-parent the marker to the armature used by the Body mesh for an animated
+  socket. No reserved bone names are required.
+
+At runtime the lowest session UID wins for each default part slot and each
+matching Body socket. Every Character receives one default mech, so multiple
+Characters can independently instance the same templates. The Body follows its
+own Character object. Missing or invalid child sockets hide only that instance's
+child and produce a per-mech diagnostic; Live Link batches automatically
+refresh all instances while preserving explicit template selections.
