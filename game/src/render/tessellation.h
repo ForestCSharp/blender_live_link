@@ -56,7 +56,6 @@ namespace Tessellation
 	inline PipelineState plan_patches;
 	inline PipelineState emit_vertices;
 	inline PipelineState emit_indices;
-	inline VkDescriptorPool pools[MAX_FRAMES_IN_FLIGHT] = {};
 	inline bool initialized = false;
 
 	inline u32 vertex_count_for_factor(u32 factor)
@@ -130,20 +129,6 @@ namespace Tessellation
 	inline void init(VulkanContext* ctx)
 	{
 		if (initialized) { return; }
-		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
-		{
-			VkDescriptorPoolSize pool_size = {
-				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = MAX_SETS_PER_FRAME * 5,
-			};
-			VkDescriptorPoolCreateInfo pool_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				.maxSets = MAX_SETS_PER_FRAME,
-				.poolSizeCount = 1,
-				.pPoolSizes = &pool_size,
-			};
-			VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_info, nullptr, &pools[frame_idx]));
-		}
 		create_pipeline(ctx, clear_counters, 1, "bin/shaders/tessellation_clear_counters.comp.spv", 0);
 		create_pipeline(ctx, measure_mesh_factor, 3, "bin/shaders/tessellation_measure_mesh_factor.comp.spv", sizeof(PlanParams));
 		create_pipeline(ctx, plan_patches, 4, "bin/shaders/tessellation_plan_patches.comp.spv", sizeof(PlanParams));
@@ -159,7 +144,7 @@ namespace Tessellation
 		VkDescriptorSet set = VK_NULL_HANDLE;
 		VkDescriptorSetAllocateInfo allocate_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = pools[ctx->frame_index],
+			.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
 			.descriptorSetCount = 1,
 			.pSetLayouts = &pipeline_state.set_layout,
 		};
@@ -178,8 +163,8 @@ namespace Tessellation
 				.pBufferInfo = &infos[idx],
 			};
 		}
-		vulkan_update_descriptor_sets(ctx, buffer_count, writes);
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		vulkan_update_descriptor_sets(ctx, buffer_count, writes, 0, nullptr, false);
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_state.pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 			pipeline_state.pipeline_layout, 0, 1, &set, 0, nullptr);
@@ -201,7 +186,7 @@ namespace Tessellation
 			.memoryBarrierCount = 1,
 			.pMemoryBarriers = &barrier,
 		};
-		vkCmdPipelineBarrier2(ctx->command_buffers[ctx->frame_index], &info);
+		vkCmdPipelineBarrier2(vulkan_current_command_buffer(ctx), &info);
 	}
 
 	inline void cleanup_slot(TessellatedGeometry::GpuSlot& slot)
@@ -382,7 +367,7 @@ namespace Tessellation
 		}
 		auto& slot = tessellated.gpu_slots[slot_idx];
 		slot.readback_requested = false; slot.has_counts = false; slot.counters = {};
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		{ VkBuffer buffers[] = { slot.counters_buffer.get_gpu_buffer() };
 			bind_set(ctx, clear_counters, buffers, 1); vulkan_cmd_dispatch(ctx, 1, 1, 1); }
@@ -464,7 +449,6 @@ namespace Tessellation
 		consume_readbacks(ctx, state);
 		reset_stats(state);
 		state.data_oriented.frame.tessellation_candidate_count += (i32) state.scene.indexes.mesh_object_ids.length();
-		VK_CHECK(vkResetDescriptorPool(ctx->device, pools[ctx->frame_index], 0));
 		if (!state.tessellation.enabled)
 		{
 			for (i32 object_id : state.scene.indexes.mesh_object_ids)
@@ -504,7 +488,6 @@ namespace Tessellation
 			vkDestroyPipelineLayout(ctx->device, pipeline_state->pipeline_layout, nullptr);
 			vkDestroyDescriptorSetLayout(ctx->device, pipeline_state->set_layout, nullptr);
 		}
-		for (VkDescriptorPool pool : pools) { vkDestroyDescriptorPool(ctx->device, pool, nullptr); }
 		initialized = false;
 	}
 }

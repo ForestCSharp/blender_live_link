@@ -422,7 +422,7 @@ namespace ImGuiLayer
 			.colorAttachmentCount = 1,
 			.pColorAttachments = &color_attachment,
 		};
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBeginRendering(command_buffer, &rendering_info);
 		ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
 		vkCmdEndRendering(command_buffer);

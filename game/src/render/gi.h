@@ -547,8 +547,7 @@ void gi_scene_update(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 	if (in_state.gi.layout_dirty)
 	{
 		printf("GI Scene Layout Dirty. Rebuilding...\n");
-		// The old layout buffers may still be referenced by in-flight frames
-		VK_CHECK(vulkan_device_wait_idle(ctx));
+		// Replaced buffers/images retire against the current frame fence.
 		gi_scene_rebuild_layout(in_gi_scene, in_state);
 	}
 

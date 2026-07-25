@@ -34,7 +34,6 @@ namespace WireOverlayPass
 	inline VkDescriptorSetLayout fs_set_layout = VK_NULL_HANDLE;	// set 1: fs UBO + position CIS
 	inline VkDescriptorSetLayout mesh_set_layout = VK_NULL_HANDLE;	// set 2: vertex + index SSBOs
 	inline VkDescriptorPool static_pool = VK_NULL_HANDLE;
-	inline VkDescriptorPool mesh_pools[MAX_FRAMES_IN_FLIGHT] = {};	// reset each frame
 	inline VkDescriptorSet copy_input_sets[MAX_FRAMES_IN_FLIGHT] = {};
 	inline VkDescriptorSet fs_sets[MAX_FRAMES_IN_FLIGHT] = {};
 
@@ -147,24 +146,6 @@ namespace WireOverlayPass
 					.label = "WireOverlayPass::fs_params",
 				});
 			}
-		}
-
-		// Per-frame mesh pools (reset each frame; sets are written during
-		// recording, which is legal — they're fresh allocations no in-flight
-		// command buffer references)
-		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
-		{
-			VkDescriptorPoolSize pool_size = {
-				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 2 * MAX_WIRE_MESHES_PER_FRAME,
-			};
-			VkDescriptorPoolCreateInfo pool_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				.maxSets = MAX_WIRE_MESHES_PER_FRAME,
-				.poolSizeCount = 1,
-				.pPoolSizes = &pool_size,
-			};
-			VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_create_info, nullptr, &mesh_pools[frame_idx]));
 		}
 
 		// Copy pipeline: layout B, fullscreen passthrough into the wire target
@@ -330,8 +311,6 @@ namespace WireOverlayPass
 	{
 		const u32 frame_index = ctx->frame_index;
 
-		VK_CHECK(vkResetDescriptorPool(ctx->device, mesh_pools[frame_index], 0));
-
 		fs_params_ubos[frame_index].update_gpu_buffer(&in_fs_params, sizeof(in_fs_params));
 
 		VkDescriptorBufferInfo ubo_info = {
@@ -385,7 +364,7 @@ namespace WireOverlayPass
 	// alpha-blended wires for every visible static mesh
 	inline void draw(VulkanContext* ctx, State& in_state, const HMM_Mat4& in_view_projection)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		const u32 frame_index = ctx->frame_index;
 
 		// Base copy
@@ -455,7 +434,7 @@ namespace WireOverlayPass
 			VkDescriptorSet mesh_set = VK_NULL_HANDLE;
 			VkDescriptorSetAllocateInfo allocate_info = {
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-				.descriptorPool = mesh_pools[frame_index],
+				.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
 				.descriptorSetCount = 1,
 				.pSetLayouts = &mesh_set_layout,
 			};
@@ -483,7 +462,7 @@ namespace WireOverlayPass
 					.pBufferInfo = &buffer_infos[1],
 				},
 			};
-			vulkan_update_descriptor_sets(ctx, 2, writes);
+			vulkan_update_descriptor_sets(ctx, 2, writes, 0, nullptr, false);
 
 			vkCmdBindDescriptorSets(
 				command_buffer,
@@ -512,7 +491,6 @@ namespace WireOverlayPass
 		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 		{
 			fs_params_ubos[frame_idx].destroy_gpu_buffer();
-			vkDestroyDescriptorPool(ctx->device, mesh_pools[frame_idx], nullptr);
 		}
 		vkDestroyDescriptorPool(ctx->device, static_pool, nullptr);
 		vkDestroyDescriptorSetLayout(ctx->device, mesh_set_layout, nullptr);

@@ -141,7 +141,7 @@ namespace GIDebugPass
 			.probe_debug_radius = gi_scene_debug_probe_radius(gi_scene), .atlas_total_size = GI_Scene::atlas_total_size,
 			.atlas_entry_size = GI_Scene::atlas_entry_size, .probe_vis_mode = (i32) state.gi.probe_vis_mode,
 			.isolated_probe_index = state.gi.probe_isolation_enable ? state.gi.isolated_probe_index : -1 };
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &sets[ctx->frame_index], 0, nullptr);
 		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), &params);

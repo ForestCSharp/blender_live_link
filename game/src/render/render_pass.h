@@ -135,13 +135,13 @@ struct RenderPass
 	{
 		for (GpuImage& image : color_outputs)
 		{
-			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, image);
+			vulkan_context_retire_image(g_vulkan_context, image);
 		}
 		color_outputs.reset();
 
 		for (GpuImage& image : depth_outputs)
 		{
-			gpu_image_destroy(g_vulkan_context->allocator, g_vulkan_context->device, image);
+			vulkan_context_retire_image(g_vulkan_context, image);
 		}
 		depth_outputs.reset();
 	}
@@ -225,9 +225,8 @@ struct RenderPass
 		return depth_outputs[in_image_idx];
 	}
 
-	// Recreates targets at the new size. Destruction is immediate (the
-	// deletion queue handles buffers only) — callers must have idled the
-	// device (main.cpp's handle_resize does).
+	// Recreates targets at the new size. Old targets retire against the
+	// current frame fence, so render-scale changes do not idle the device.
 	void handle_resize(i32 in_width, i32 in_height)
 	{
 		if (!desc.resize_with_window)
@@ -264,7 +263,7 @@ struct RenderPass
 	// Array passes loop once per slice (callback receives the slice index).
 	void execute(VulkanContext* ctx, const std::function<void(i32)>& in_callback)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		CPU_TIMING_SCOPE(desc.debug_label ? desc.debug_label : "RenderPass");
 		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
@@ -274,24 +273,6 @@ struct RenderPass
 		const bool is_multi = desc.type == ERenderPassType::Multi;
 		const bool is_sliced = desc.type == ERenderPassType::Array || desc.type == ERenderPassType::Cubemap;
 
-		// Own outputs -> attachment layouts (before BeginRendering; the
-		// swapchain image was already transitioned by begin_frame).
-		// Transitions span all layers and image sets.
-		if (!is_swapchain)
-		{
-			for (i32 flat_idx = 0; flat_idx < (i32) color_outputs.length(); ++flat_idx)
-			{
-				const i32 output_idx = desc.num_outputs > 0 ? flat_idx % desc.num_outputs : 0;
-				const bool discard = desc.outputs[output_idx].load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
-				gpu_image_transition(command_buffer, color_outputs[flat_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, discard);
-			}
-			for (GpuImage& depth_image : depth_outputs)
-			{
-				const bool discard = desc.depth_output.load_op != VK_ATTACHMENT_LOAD_OP_LOAD;
-				gpu_image_transition(command_buffer, depth_image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, discard);
-			}
-		}
-
 		const VkExtent2D render_extent = is_swapchain
 			? ctx->swapchain_extent
 			: (VkExtent2D) { (u32) current_width, (u32) current_height };
@@ -299,6 +280,56 @@ struct RenderPass
 		const i32 pass_count = get_pass_count();
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
+			// Declare the exact attachment slices used by this rendering
+			// instance and apply all required barriers in one dependency.
+			std::vector<ImageUsage> attachment_usages;
+			if (!is_swapchain)
+			{
+				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+				{
+					GpuImage& output = get_color_output(output_idx, is_multi ? pass_idx : 0);
+					attachment_usages.push_back({
+						.image = &output,
+						.range = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.baseMipLevel = 0,
+							.levelCount = 1,
+							.baseArrayLayer = is_sliced ? (u32)pass_idx : 0,
+							.layerCount = 1,
+						},
+						.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+						.access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.discard = desc.outputs[output_idx].load_op != VK_ATTACHMENT_LOAD_OP_LOAD,
+					});
+				}
+				if (has_depth())
+				{
+					GpuImage& depth = get_depth_output(is_multi ? pass_idx : 0);
+					attachment_usages.push_back({
+						.image = &depth,
+						.range = {
+							.aspectMask = depth.aspects,
+							.baseMipLevel = 0,
+							.levelCount = 1,
+							.baseArrayLayer = is_sliced ? (u32)pass_idx : 0,
+							.layerCount = 1,
+						},
+						.stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+							   | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+						.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+								| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+						.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+						.discard = desc.depth_output.load_op != VK_ATTACHMENT_LOAD_OP_LOAD,
+					});
+				}
+				gpu_image_apply_usages(
+					command_buffer,
+					attachment_usages.data(),
+					(u32)attachment_usages.size()
+				);
+			}
+
 			VkRenderingAttachmentInfo color_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
 			u32 color_attachment_count = 0;
 

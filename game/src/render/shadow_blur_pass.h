@@ -201,7 +201,7 @@ namespace ShadowBlurPass
 
 	inline void draw_blur_slice(VulkanContext* ctx, VkDescriptorSet in_input_set, HMM_Vec2 in_direction, i32 in_cascade_idx)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(
@@ -228,7 +228,7 @@ namespace ShadowBlurPass
 	{
 		RenderPass& horizontal_pass = in_entry.intermediate_pass();
 		RenderPass& vertical_pass = in_entry.final_pass();
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		horizontal_pass.set_pass_count_override(in_active_cascade_count);
 		horizontal_pass.execute(ctx, [&](i32 in_cascade_idx)

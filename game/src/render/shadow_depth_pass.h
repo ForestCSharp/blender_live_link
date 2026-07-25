@@ -409,7 +409,7 @@ namespace ShadowDepthPass
 		CullResult cull_result = cull_objects(in_state, light_view_proj,
 			in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
 
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		bound_pipeline = VK_NULL_HANDLE;
 
 		vkCmdBindDescriptorSets(

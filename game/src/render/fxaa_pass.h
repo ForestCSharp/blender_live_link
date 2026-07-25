@@ -177,7 +177,7 @@ namespace FXAAPass
 
 	inline void draw(VulkanContext* ctx, HMM_Vec2 in_screen_size)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(

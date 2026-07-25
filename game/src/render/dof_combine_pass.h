@@ -260,7 +260,7 @@ void dof_combine_pass_update(
 
 void dof_combine_pass_draw(VulkanContext* ctx)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, dof_combine_pass.pipeline);
 	vkCmdBindDescriptorSets(

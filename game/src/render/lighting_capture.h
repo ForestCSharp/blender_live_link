@@ -817,7 +817,7 @@ struct LightingCapture
 	)
 	{
 		assert(is_initialized);
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		const u32 frame_index = ctx->frame_index;
 
 		// Face cameras. game's uniform negative viewport provides the single
@@ -1258,8 +1258,8 @@ struct LightingCapture
 			}
 		}
 
-		gpu_image_destroy(ctx->allocator, ctx->device, default_image);
-		gpu_image_destroy(ctx->allocator, ctx->device, default_array_image);
+		vulkan_context_retire_image(ctx, default_image);
+		vulkan_context_retire_image(ctx, default_array_image);
 		geometry_pass.cleanup();
 		lighting_pass.cleanup();
 		radial_depth_pass.cleanup();

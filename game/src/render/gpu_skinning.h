@@ -30,7 +30,6 @@ namespace GpuSkinning
 	static_assert(sizeof(SkinningParams) == 16, "Must match gpu_skinning.comp's push constant block");
 
 	inline VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-	inline VkDescriptorPool pools[MAX_FRAMES_IN_FLIGHT] = {};	// reset each frame
 	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	inline VkPipeline pipeline = VK_NULL_HANDLE;
 
@@ -55,21 +54,6 @@ namespace GpuSkinning
 				.pBindings = bindings,
 			};
 			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &set_layout));
-		}
-
-		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
-		{
-			VkDescriptorPoolSize pool_size = {
-				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 4 * MAX_SKINNED_DISPATCH_SETS_PER_FRAME,
-			};
-			VkDescriptorPoolCreateInfo pool_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				.maxSets = MAX_SKINNED_DISPATCH_SETS_PER_FRAME,
-				.poolSizeCount = 1,
-				.pPoolSizes = &pool_size,
-			};
-			VK_CHECK(vkCreateDescriptorPool(ctx->device, &pool_create_info, nullptr, &pools[frame_idx]));
 		}
 
 		VkPushConstantRange push_constant_range = {
@@ -138,12 +122,12 @@ namespace GpuSkinning
 
 		ensure_cache(in_mesh);
 
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		VkDescriptorSet set = VK_NULL_HANDLE;
 		VkDescriptorSetAllocateInfo allocate_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = pools[ctx->frame_index],
+			.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
 			.descriptorSetCount = 1,
 			.pSetLayouts = &set_layout,
 		};
@@ -167,7 +151,7 @@ namespace GpuSkinning
 				.pBufferInfo = &buffer_infos[binding_idx],
 			};
 		}
-		vulkan_update_descriptor_sets(ctx, 4, writes);
+		vulkan_update_descriptor_sets(ctx, 4, writes, 0, nullptr, false);
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, nullptr);
@@ -213,8 +197,6 @@ namespace GpuSkinning
 
 		CPU_TIMING_SCOPE("GPU Skinning Cache");
 
-		VK_CHECK(vkResetDescriptorPool(ctx->device, pools[ctx->frame_index], 0));
-
 		bool dispatched_any = false;
 		u32 dispatch_count = 0;
 		for (const i32 unique_id : in_state.scene.indexes.skinned_mesh_object_ids)
@@ -253,7 +235,7 @@ namespace GpuSkinning
 				.memoryBarrierCount = 1,
 				.pMemoryBarriers = &memory_barrier,
 			};
-			vkCmdPipelineBarrier2(ctx->command_buffers[ctx->frame_index], &dependency_info);
+			vkCmdPipelineBarrier2(vulkan_current_command_buffer(ctx), &dependency_info);
 		}
 	}
 
@@ -261,10 +243,6 @@ namespace GpuSkinning
 	{
 		vkDestroyPipeline(ctx->device, pipeline, nullptr);
 		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
-		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
-		{
-			vkDestroyDescriptorPool(ctx->device, pools[frame_idx], nullptr);
-		}
 		vkDestroyDescriptorSetLayout(ctx->device, set_layout, nullptr);
 	}
 }

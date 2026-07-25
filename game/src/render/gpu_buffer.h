@@ -36,6 +36,12 @@ inline bool gpu_buffer_default_device_local()
 #endif
 }
 
+inline u64 gpu_next_resource_generation()
+{
+	static u64 generation = 1;
+	return generation++;
+}
+
 // Helper primarily used to pass between live link and main threads.
 // We want to wait until our data is back on the main thread to create GPU resources.
 template<typename T>
@@ -141,6 +147,7 @@ public:
 
 			mapped_data = allocation_info.pMappedData;
 			gpu_buffer = new_buffer;
+			generation = gpu_next_resource_generation();
 			if (label.has_value())
 			{
 				vmaSetAllocationName(g_vulkan_context->allocator, allocation, label->c_str());
@@ -191,6 +198,7 @@ public:
 			gpu_buffer.reset();
 			allocation = VK_NULL_HANDLE;
 			mapped_data = nullptr;
+			generation = gpu_next_resource_generation();
 		}
 	}
 
@@ -203,6 +211,7 @@ public:
 	}
 
 	u64 length() const { return _length; }
+	u64 resource_generation() const { return generation; }
 
 protected:
 	// Fills a device-local buffer: direct memcpy when the allocation happens
@@ -220,6 +229,48 @@ protected:
 			memcpy(target_mapped, data, size);
 			VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, 0, size));
 			vmaUnmapMemory(g_vulkan_context->allocator, allocation);
+			return;
+		}
+
+		if (vulkan_current_frame(g_vulkan_context).recording)
+		{
+			VkPipelineStageFlags2 dst_stage = 0;
+			VkAccessFlags2 dst_access = 0;
+			if (usage.vertex_buffer)
+			{
+				dst_stage |= VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+				dst_access |= VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+			}
+			if (usage.index_buffer)
+			{
+				dst_stage |= VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
+				dst_access |= VK_ACCESS_2_INDEX_READ_BIT;
+			}
+			if (usage.storage_buffer)
+			{
+				dst_stage |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+						  | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+						  | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+				dst_access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+			}
+			if (usage.uniform_buffer)
+			{
+				dst_stage |= VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+				dst_access |= VK_ACCESS_2_UNIFORM_READ_BIT;
+			}
+			if (dst_stage == 0)
+			{
+				dst_stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				dst_access = VK_ACCESS_2_MEMORY_READ_BIT;
+			}
+			vulkan_upload_record_buffer(
+				g_vulkan_context,
+				in_target_buffer,
+				data,
+				size,
+				dst_stage,
+				dst_access
+			);
 			return;
 		}
 
@@ -252,6 +303,7 @@ protected:
 		memcpy(staging_allocation_info.pMappedData, data, size);
 		VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, staging_allocation, 0, size));
 		g_vulkan_context->metrics.upload_bytes += size;
+		g_vulkan_context->metrics.upload_requests += 1;
 
 		const u64 copy_size = size;
 		vulkan_context_immediate_submit(g_vulkan_context, [&](VkCommandBuffer in_command_buffer)
@@ -283,6 +335,7 @@ protected:
 	optional<VkBuffer> gpu_buffer;
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	void* mapped_data = nullptr;
+	u64 generation = 0;
 
 	// Optional Label
 	optional<std::string> label;

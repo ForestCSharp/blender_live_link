@@ -347,7 +347,7 @@ namespace ScreenSpaceShadowsPass
 
 	inline void draw_fullscreen(VulkanContext* ctx, VkPipeline in_pipeline, VkPipelineLayout in_layout, VkDescriptorSet in_set)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_layout, 0, 1, &in_set, 0, nullptr);
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
@@ -359,7 +359,7 @@ namespace ScreenSpaceShadowsPass
 	{
 		RenderPass& trace_pass = in_entry.intermediate_pass();
 		RenderPass& filter_pass = in_entry.final_pass();
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		trace_pass.execute(ctx, [&](i32)
 		{

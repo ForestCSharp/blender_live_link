@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include <vector>
 
 // Minimal VMA-backed image. Used for the depth buffer now; offscreen render
 // targets for future passes will reuse this.
@@ -32,11 +33,71 @@ struct GpuImage
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	VkExtent2D extent = {};
 	u32 array_layers = 1;
+	u32 mip_levels = 1;
+	VkImageAspectFlags aspects = VK_IMAGE_ASPECT_COLOR_BIT;
+	u64 generation = 0;
 
-	// Tracked so gpu_image_transition can derive correct src barriers
-	// (transitions always span all layers)
-	VkImageLayout current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	struct ImageSubresourceState
+	{
+		VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+		VkAccessFlags2 access = 0;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	};
+	// Color/depth/stencil each own mip_levels * array_layers entries.
+	std::vector<ImageSubresourceState> subresource_states;
 };
+
+struct ImageUsage
+{
+	GpuImage* image = nullptr;
+	VkImageSubresourceRange range = {};
+	VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	VkAccessFlags2 access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+	VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
+	bool discard = false;
+};
+
+struct BufferUsage
+{
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VkDeviceSize offset = 0;
+	VkDeviceSize size = VK_WHOLE_SIZE;
+	VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	VkAccessFlags2 access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+};
+
+struct PassResourceUsage
+{
+	std::vector<ImageUsage> images;
+	std::vector<BufferUsage> buffers;
+};
+
+inline u64 gpu_image_next_generation()
+{
+	static u64 generation = 1;
+	return generation++;
+}
+
+inline i32 gpu_image_aspect_slot(VkImageAspectFlagBits in_aspect)
+{
+	switch (in_aspect)
+	{
+		case VK_IMAGE_ASPECT_COLOR_BIT: return 0;
+		case VK_IMAGE_ASPECT_DEPTH_BIT: return 1;
+		case VK_IMAGE_ASPECT_STENCIL_BIT: return 2;
+		default: return 0;
+	}
+}
+
+inline size_t gpu_image_state_index(
+	const GpuImage& in_image,
+	VkImageAspectFlagBits in_aspect,
+	u32 in_mip,
+	u32 in_layer)
+{
+	return (size_t)gpu_image_aspect_slot(in_aspect) * in_image.mip_levels * in_image.array_layers
+		+ (size_t)in_mip * in_image.array_layers + in_layer;
+}
 
 VkImageAspectFlags gpu_image_aspect_for_format(VkFormat in_format)
 {
@@ -90,64 +151,128 @@ void gpu_image_layout_sync_info(VkImageLayout in_layout, VkPipelineStageFlags2* 
 	}
 }
 
-// Transitions an image and updates its tracked layout. Must be recorded
-// OUTSIDE vkCmdBeginRendering/vkCmdEndRendering. in_discard_contents uses
-// oldLayout = UNDEFINED (contents dropped), which also guarantees a fresh
-// execution dependency each frame for clear-every-frame attachments.
+inline bool gpu_access_has_write(VkAccessFlags2 in_access)
+{
+	const VkAccessFlags2 writes =
+		VK_ACCESS_2_SHADER_WRITE_BIT
+		| VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+		| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+		| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		| VK_ACCESS_2_TRANSFER_WRITE_BIT
+		| VK_ACCESS_2_HOST_WRITE_BIT
+		| VK_ACCESS_2_MEMORY_WRITE_BIT;
+	return (in_access & writes) != 0;
+}
+
+void gpu_image_apply_usages(
+	VkCommandBuffer in_command_buffer,
+	const ImageUsage* in_usages,
+	u32 in_usage_count)
+{
+	std::vector<VkImageMemoryBarrier2> barriers;
+	for (u32 usage_index = 0; usage_index < in_usage_count; ++usage_index)
+	{
+		const ImageUsage& usage = in_usages[usage_index];
+		assert(usage.image && usage.image->image != VK_NULL_HANDLE);
+		GpuImage& image = *usage.image;
+		const VkImageAspectFlags aspect_mask = usage.range.aspectMask
+			? usage.range.aspectMask : image.aspects;
+		const u32 first_mip = usage.range.baseMipLevel;
+		const u32 mip_count = usage.range.levelCount == VK_REMAINING_MIP_LEVELS
+			? image.mip_levels - first_mip : usage.range.levelCount;
+		const u32 first_layer = usage.range.baseArrayLayer;
+		const u32 layer_count = usage.range.layerCount == VK_REMAINING_ARRAY_LAYERS
+			? image.array_layers - first_layer : usage.range.layerCount;
+
+		const VkImageAspectFlagBits aspect_bits[] = {
+			VK_IMAGE_ASPECT_COLOR_BIT,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
+			VK_IMAGE_ASPECT_STENCIL_BIT,
+		};
+		for (VkImageAspectFlagBits aspect : aspect_bits)
+		{
+			if ((aspect_mask & aspect) == 0) continue;
+			for (u32 mip = first_mip; mip < first_mip + mip_count; ++mip)
+			{
+				for (u32 layer = first_layer; layer < first_layer + layer_count; ++layer)
+				{
+					GpuImage::ImageSubresourceState& state =
+						image.subresource_states[gpu_image_state_index(image, aspect, mip, layer)];
+					const bool needs_barrier =
+						state.layout != usage.layout
+						|| gpu_access_has_write(state.access)
+						|| gpu_access_has_write(usage.access)
+						|| usage.discard;
+					if (needs_barrier)
+					{
+						barriers.push_back((VkImageMemoryBarrier2) {
+							.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+							.srcStageMask = state.stage,
+							.srcAccessMask = state.access,
+							.dstStageMask = usage.stage,
+							.dstAccessMask = usage.access,
+							.oldLayout = usage.discard ? VK_IMAGE_LAYOUT_UNDEFINED : state.layout,
+							.newLayout = usage.layout,
+							.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							.image = image.image,
+							.subresourceRange = {
+								.aspectMask = aspect,
+								.baseMipLevel = mip,
+								.levelCount = 1,
+								.baseArrayLayer = layer,
+								.layerCount = 1,
+							},
+						});
+						state.stage = usage.stage;
+						state.access = usage.access;
+						state.layout = usage.layout;
+					}
+					else
+					{
+						state.stage |= usage.stage;
+						state.access |= usage.access;
+					}
+				}
+			}
+		}
+	}
+
+	if (barriers.empty()) return;
+	VkDependencyInfo dependency_info = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = (u32)barriers.size(),
+		.pImageMemoryBarriers = barriers.data(),
+	};
+	vkCmdPipelineBarrier2(in_command_buffer, &dependency_info);
+}
+
+// Compatibility wrapper for call sites that have not yet moved their usage
+// declaration into a PassResourceUsage batch.
 void gpu_image_transition(
 	VkCommandBuffer in_command_buffer,
 	GpuImage& in_image,
 	VkImageLayout in_new_layout,
-	bool in_discard_contents = false
-)
+	bool in_discard_contents = false)
 {
-	if (!in_discard_contents && in_image.current_layout == in_new_layout)
-	{
-		return;
-	}
-
-	const VkImageLayout old_layout = in_discard_contents ? VK_IMAGE_LAYOUT_UNDEFINED : in_image.current_layout;
-	// Discarding contents changes oldLayout, but it does not remove the need
-	// to synchronize prior accesses to the allocation (including an earlier
-	// frame's attachment writes on the same queue).
-	const VkImageLayout source_usage_layout = in_image.current_layout;
-
-	VkPipelineStageFlags2 src_stage;
-	VkAccessFlags2 src_access;
-	gpu_image_layout_sync_info(source_usage_layout, &src_stage, &src_access);
-
-	VkPipelineStageFlags2 dst_stage;
-	VkAccessFlags2 dst_access;
-	gpu_image_layout_sync_info(in_new_layout, &dst_stage, &dst_access);
-
-	VkImageMemoryBarrier2 barrier = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = src_stage,
-		.srcAccessMask = src_access,
-		.dstStageMask = dst_stage,
-		.dstAccessMask = dst_access,
-		.oldLayout = old_layout,
-		.newLayout = in_new_layout,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = in_image.image,
-		.subresourceRange = {
-			.aspectMask = gpu_image_aspect_for_format(in_image.format),
+	VkPipelineStageFlags2 stage;
+	VkAccessFlags2 access;
+	gpu_image_layout_sync_info(in_new_layout, &stage, &access);
+	ImageUsage usage = {
+		.image = &in_image,
+		.range = {
+			.aspectMask = in_image.aspects,
 			.baseMipLevel = 0,
-			.levelCount = 1,
+			.levelCount = VK_REMAINING_MIP_LEVELS,
 			.baseArrayLayer = 0,
-			.layerCount = VK_REMAINING_ARRAY_LAYERS,	// transitions span all layers
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,
 		},
+		.stage = stage,
+		.access = access,
+		.layout = in_new_layout,
+		.discard = in_discard_contents,
 	};
-
-	VkDependencyInfo dependency_info = {
-		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &barrier,
-	};
-	vkCmdPipelineBarrier2(in_command_buffer, &dependency_info);
-
-	in_image.current_layout = in_new_layout;
+	gpu_image_apply_usages(in_command_buffer, &usage, 1);
 }
 
 GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const GpuImageDesc& in_desc)
@@ -158,7 +283,11 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		.format = in_desc.format,
 		.extent = { in_desc.width, in_desc.height },
 		.array_layers = array_layers,
+		.mip_levels = 1,
+		.aspects = in_desc.aspect,
+		.generation = gpu_image_next_generation(),
 	};
+	result.subresource_states.resize(3 * result.mip_levels * result.array_layers);
 
 	assert(!in_desc.cubemap || array_layers == 6);
 
@@ -297,4 +426,6 @@ void gpu_image_destroy(VmaAllocator in_allocator, VkDevice in_device, GpuImage& 
 		in_image.image = VK_NULL_HANDLE;
 		in_image.allocation = VK_NULL_HANDLE;
 	}
+	in_image.subresource_states.clear();
+	in_image.generation = gpu_image_next_generation();
 }

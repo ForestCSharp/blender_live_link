@@ -448,7 +448,7 @@ void lighting_pass_update(
 // Bind + fullscreen draw (inside the framework's execute callback)
 void lighting_pass_draw(VulkanContext* ctx)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, lighting_pass.pipeline);
 	vkCmdBindDescriptorSets(

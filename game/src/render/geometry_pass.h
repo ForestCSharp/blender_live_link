@@ -208,7 +208,7 @@ void geometry_pass_init(VulkanContext* ctx)
 
 void geometry_pass_bind(VulkanContext* ctx)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	geometry_pass.bound_pipeline = VK_NULL_HANDLE;
 
@@ -224,7 +224,7 @@ void geometry_pass_bind(VulkanContext* ctx)
 // Lazy GPU buffer creation happens here, on the main thread
 void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index, bool in_skinning_debug_view)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	MeshRenderView render_view = mesh_get_render_view(in_mesh);
 	const bool skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;

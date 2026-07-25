@@ -189,8 +189,13 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 		(unsigned long long)(end.descriptor_update_calls - state.metrics_start.descriptor_update_calls),
 		(unsigned long long)(end.descriptor_writes - state.metrics_start.descriptor_writes),
 		(unsigned long long)(end.descriptors_written - state.metrics_start.descriptors_written));
-	fprintf(output, "  \"uploads\": { \"bytes\": %llu, \"immediate_submits\": %llu },\n",
+	fprintf(output, "  \"uploads\": { \"bytes\": %llu, \"requests\": %llu, \"batches\": %llu, \"staging_grows\": %llu, \"staging_spills\": %llu, \"peak_frame_bytes\": %llu, \"immediate_submits\": %llu },\n",
 		(unsigned long long)(end.upload_bytes - state.metrics_start.upload_bytes),
+		(unsigned long long)(end.upload_requests - state.metrics_start.upload_requests),
+		(unsigned long long)(end.upload_batches - state.metrics_start.upload_batches),
+		(unsigned long long)(end.upload_staging_grows - state.metrics_start.upload_staging_grows),
+		(unsigned long long)(end.upload_staging_spills - state.metrics_start.upload_staging_spills),
+		(unsigned long long)end.upload_peak_frame_bytes,
 		(unsigned long long)(end.immediate_submit_count - state.metrics_start.immediate_submit_count));
 	fprintf(output, "  \"idle_waits\": { \"queue\": %llu, \"device\": %llu },\n",
 		(unsigned long long)(end.queue_wait_idle_count - state.metrics_start.queue_wait_idle_count),

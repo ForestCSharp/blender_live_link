@@ -976,12 +976,11 @@ void register_image(const PendingImage& in_pending)
 }
 
 // Images are only destroyed on scene reset (no individual removal — game/
-// parity). The deletion queue is buffers-only, so idle the device first.
+// parity). Retirement keeps old views/allocations alive until their frame fence.
 void reset_images()
 {
 	if (state.images.items.length() > 0)
 	{
-		VK_CHECK(vulkan_device_wait_idle(&state.vk));
 		for (GpuImage& image : state.images.items)
 		{
 			ImGuiLayer::unregister_texture(image.view);
@@ -989,7 +988,7 @@ void reset_images()
 			{
 				ImGuiLayer::unregister_texture(layer_view);
 			}
-			gpu_image_destroy(state.vk.allocator, state.vk.device, image);
+			vulkan_context_retire_image(&state.vk, image);
 		}
 	}
 	state.images.items.reset();
@@ -1263,10 +1262,8 @@ void handle_resize(bool in_force = false)
 	state.window.height = framebuffer_height;
 	update_render_resolution();
 
-	// Pass targets are destroyed immediately (the deletion queue handles
-	// buffers only) — idle covers render-scale changes; the window-resize
-	// path already idled inside recreate_swapchain
-	VK_CHECK(vulkan_device_wait_idle(&state.vk));
+	// Old pass targets are retired against this frame slot; no device-wide
+	// wait is required for render-scale or offscreen target replacement.
 	ImGuiLayer::handle_swapchain_recreated(&state.vk);
 	ImGuiLayer::clear_textures();
 
@@ -1939,6 +1936,17 @@ void frame(f32 in_delta_time)
 		state.debug_ui.gpu_time_sample_sum_ms = 0.0;
 		state.debug_ui.gpu_time_sample_count = 0;
 	}
+
+	// Acquire and reset the completed frame slot before Live Link can create
+	// or replace GPU resources. Uploads performed while draining below are
+	// recorded into this frame's reusable staging arena.
+	if (!vulkan_context_begin_frame(&state.vk))
+	{
+		reset_mouse_delta();
+		return;
+	}
+	handle_resize();
+
 	ImGuiLayer::begin_frame();
 
 	{
@@ -2026,18 +2034,6 @@ void frame(f32 in_delta_time)
 	}
 
 	CPU_TIMING_SCOPE("Rendering");
-
-	if (!vulkan_context_begin_frame(&state.vk))
-	{
-		#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
-		ImGui::EndFrame();
-		#endif
-		reset_mouse_delta();
-		return;
-	}
-
-	// Window size changes (begin_frame already recreated the swapchain)
-	handle_resize();
 	ImGuiLayer::draw_controls(state, gi_scene);
 
 	// View + Projection matrix setup (TAA jitters the projection; the
@@ -2408,7 +2404,7 @@ void frame(f32 in_delta_time)
 		shadow_render_pass.set_pass_count_override(-1);
 	}
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		shadow_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2427,7 +2423,7 @@ void frame(f32 in_delta_time)
 		);
 	}
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		shadow_blur_entry.final_pass().get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2449,7 +2445,7 @@ void frame(f32 in_delta_time)
 		);
 	});
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		shadow_debug_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2497,7 +2493,7 @@ void frame(f32 in_delta_time)
 	for (i32 gbuffer_idx = 0; gbuffer_idx < Render::GBUFFER_OUTPUT_COUNT; ++gbuffer_idx)
 	{
 		gpu_image_transition(
-			state.vk.command_buffers[state.vk.frame_index],
+			vulkan_current_command_buffer(&state.vk),
 			geometry_render_pass.get_color_output(gbuffer_idx),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
@@ -2509,7 +2505,7 @@ void frame(f32 in_delta_time)
 		ssao_pass_draw(&state.vk);
 	});
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		ssao_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2529,7 +2525,7 @@ void frame(f32 in_delta_time)
 		ScreenSpaceShadowsPass::execute(&state.vk, screen_space_shadows_entry);
 	}
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		screen_space_shadows_entry.final_pass().get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2542,7 +2538,7 @@ void frame(f32 in_delta_time)
 	// Fog reads the lit scene + G-buffer position; tonemapping then reads the
 	// post-fog color (or the lighting output directly when fog is off)
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		lighting_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2553,7 +2549,7 @@ void frame(f32 in_delta_time)
 			fog_pass_draw(&state.vk);
 		});
 		gpu_image_transition(
-			state.vk.command_buffers[state.vk.frame_index],
+			vulkan_current_command_buffer(&state.vk),
 			fog_render_pass.get_color_output(0),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
@@ -2565,7 +2561,7 @@ void frame(f32 in_delta_time)
 			dof_combine_pass_draw(&state.vk);
 		});
 		gpu_image_transition(
-			state.vk.command_buffers[state.vk.frame_index],
+			vulkan_current_command_buffer(&state.vk),
 			dof_combine_render_pass.get_color_output(0),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
@@ -2577,7 +2573,7 @@ void frame(f32 in_delta_time)
 			WireOverlayPass::draw(&state.vk, state, view_projection_matrix);
 		});
 		gpu_image_transition(
-			state.vk.command_buffers[state.vk.frame_index],
+			vulkan_current_command_buffer(&state.vk),
 			wire_overlay_render_pass.get_color_output(0),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
@@ -2591,7 +2587,7 @@ void frame(f32 in_delta_time)
 		for (i32 output_idx = 0; output_idx < 2; ++output_idx)
 		{
 			gpu_image_transition(
-				state.vk.command_buffers[state.vk.frame_index],
+				vulkan_current_command_buffer(&state.vk),
 				get_temporal_aa_pass(set_idx).get_color_output(output_idx),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			);
@@ -2607,7 +2603,7 @@ void frame(f32 in_delta_time)
 		for (i32 output_idx = 0; output_idx < 2; ++output_idx)
 		{
 			gpu_image_transition(
-				state.vk.command_buffers[state.vk.frame_index],
+				vulkan_current_command_buffer(&state.vk),
 				temporal_aa_target_pass.get_color_output(output_idx),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			);
@@ -2625,7 +2621,7 @@ void frame(f32 in_delta_time)
 
 	// FXAA filters the tonemapped LDR target; copy presents whichever ran last
 	gpu_image_transition(
-		state.vk.command_buffers[state.vk.frame_index],
+		vulkan_current_command_buffer(&state.vk),
 		tonemapping_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -2636,7 +2632,7 @@ void frame(f32 in_delta_time)
 			FXAAPass::draw(&state.vk, HMM_V2((f32) state.window.render_width, (f32) state.window.render_height));
 		});
 		gpu_image_transition(
-			state.vk.command_buffers[state.vk.frame_index],
+			vulkan_current_command_buffer(&state.vk),
 			fxaa_render_pass.get_color_output(0),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
@@ -2954,14 +2950,14 @@ int main(int argc, char** argv)
 				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 				.clear_value = {{{ 0.1f, 0.2f, 0.4f, 1.0f }}},
 			},
-			// 1: world position (w=1 valid)
+			// 1: world position
 			{
 				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 				.clear_value = {{{ 0.0f, 0.0f, 0.0f, 0.0f }}},
 			},
-			// 2: world normal (vec4(0) = no-geometry sentinel)
+			// 2: world normal
 			{
 				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,

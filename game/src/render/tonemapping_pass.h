@@ -22,16 +22,11 @@ static TonemappingPass tonemapping_pass;
 
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	// Input sets share frame_data's layout B + pool
+	// Input sets share frame_data's layout B and the persistent arena.
 	for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 	{
-		VkDescriptorSetAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = frame_data.pool,
-			.descriptorSetCount = 1,
-			.pSetLayouts = &frame_data.sampled_input_layout,
-		};
-		VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &tonemapping_pass.input_sets[frame_idx]));
+		tonemapping_pass.input_sets[frame_idx] =
+			vulkan_allocate_persistent_descriptor_set(ctx, frame_data.sampled_input_layout);
 	}
 
 	VkPushConstantRange push_constant_range = {
@@ -159,7 +154,7 @@ void tonemapping_pass_update(VulkanContext* ctx, VkImageView in_scene_color_view
 
 void tonemapping_pass_draw(VulkanContext* ctx, f32 in_exposure_bias)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, tonemapping_pass.pipeline);
 	vkCmdBindDescriptorSets(

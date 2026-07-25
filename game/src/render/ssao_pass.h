@@ -370,7 +370,7 @@ void ssao_pass_update(
 
 void ssao_pass_draw(VulkanContext* ctx)
 {
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ssao_pass.pipeline);
 	vkCmdBindDescriptorSets(
@@ -391,7 +391,7 @@ void ssao_pass_shutdown(VulkanContext* ctx)
 	{
 		ssao_pass.fs_params_ubos[frame_idx].destroy_gpu_buffer();
 	}
-	gpu_image_destroy(ctx->allocator, ctx->device, ssao_pass.noise_texture);
+	vulkan_context_retire_image(ctx, ssao_pass.noise_texture);
 	vkDestroyDescriptorPool(ctx->device, ssao_pass.pool, nullptr);
 	vkDestroyDescriptorSetLayout(ctx->device, ssao_pass.set_layout, nullptr);
 }

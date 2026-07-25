@@ -68,16 +68,11 @@ void sky_pass_init(VulkanContext* ctx)
 		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &sky_pass.bake_pipeline_layout));
 	}
 
-	// Composite input sets (layout B, baked sky) from frame_data's pool
+	// Composite input sets (layout B, baked sky) from the persistent arena
 	for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 	{
-		VkDescriptorSetAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = frame_data.pool,
-			.descriptorSetCount = 1,
-			.pSetLayouts = &frame_data.sampled_input_layout,
-		};
-		VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &sky_pass.composite_input_sets[frame_idx]));
+		sky_pass.composite_input_sets[frame_idx] =
+			vulkan_allocate_persistent_descriptor_set(ctx, frame_data.sampled_input_layout);
 	}
 
 	// Composite pipeline layout: set 0 = per-frame (layout A), set 1 = baked sky (layout B)
@@ -291,7 +286,7 @@ void sky_pass_bake_if_needed(VulkanContext* ctx, HMM_Vec3 in_sun_direction)
 
 	sky_pass.bake_render_pass.execute(ctx, [&](i32)
 	{
-		VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pass.bake_pipeline);
 
 		HMM_Vec4 sun_dir = HMM_V4V(in_sun_direction, 0.0f);
@@ -306,7 +301,7 @@ void sky_pass_bake_if_needed(VulkanContext* ctx, HMM_Vec3 in_sun_direction)
 
 	// Geometry pass (sky composite) samples it this same frame
 	gpu_image_transition(
-		ctx->command_buffers[ctx->frame_index],
+		vulkan_current_command_buffer(ctx),
 		sky_pass.bake_render_pass.get_color_output(0),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
@@ -324,7 +319,7 @@ void sky_pass_draw_composite(VulkanContext* ctx)
 		return;
 	}
 
-	VkCommandBuffer command_buffer = ctx->command_buffers[ctx->frame_index];
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pass.composite_pipeline);
 
