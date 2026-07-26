@@ -192,7 +192,14 @@ def create_synthetic_scene():
     head_attachment.attachment_point.owner_part = mesh_object
     head_attachment.attachment_point.part_type = "HEAD"
 
-    character_object = bpy.data.objects.new("CI Player Character", None)
+    character_mesh = bpy.data.meshes.new("CI Character Collision Mesh")
+    character_mesh.from_pydata(
+        [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.0, 0.5, 0.0)],
+        [],
+        [(0, 1, 2)],
+    )
+    character_mesh.update()
+    character_object = bpy.data.objects.new("CI Player Character", character_mesh)
     bpy.context.scene.collection.objects.link(character_object)
     character_component = add_component(character_object, "CHARACTER")
     character_component.player.player_controlled = True
@@ -202,6 +209,13 @@ def create_synthetic_scene():
     second_character_object.location = (8.0, 0.0, 0.0)
     second_character_component = add_component(second_character_object, "CHARACTER")
     second_character_component.player.player_controlled = False
+    second_character_component.player.hide_mesh_in_game = False
+
+    blender_hidden_character_object = bpy.data.objects.new("CI Blender Hidden Character", None)
+    bpy.context.scene.collection.objects.link(blender_hidden_character_object)
+    blender_hidden_character_component = add_component(blender_hidden_character_object, "CHARACTER")
+    blender_hidden_character_component.player.hide_mesh_in_game = False
+    blender_hidden_character_object.hide_set(True)
 
     light_data = bpy.data.lights.new("CI Sun Data", type="SUN")
     light_data.energy = 2.0
@@ -218,6 +232,7 @@ def create_synthetic_scene():
         head_socket,
         character_object,
         second_character_object,
+        blender_hidden_character_object,
         light_object,
     ]
     for scene_object in synthetic_objects:
@@ -275,6 +290,14 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             raise AssertionError("Synthetic light object has no light payload")
         if exported_objects["CI Triangle"].Visibility():
             raise AssertionError("Hidden Body part became visible during export")
+        if exported_objects["CI Player Character"].Visibility():
+            raise AssertionError("Character collision mesh was visible with the default setting")
+        if exported_objects["CI Player Character"].Mesh() is None:
+            raise AssertionError("Hidden Character collision mesh was omitted from the export")
+        if not exported_objects["CI Second Character"].Visibility():
+            raise AssertionError("Character remained hidden after disabling Hide Mesh in Game")
+        if exported_objects["CI Blender Hidden Character"].Visibility():
+            raise AssertionError("Hide Mesh in Game override forced a Blender-hidden object visible")
         if exported_objects["CI Second Character"].ComponentsLength() != 1:
             raise AssertionError("Second Character did not export its gameplay component")
 

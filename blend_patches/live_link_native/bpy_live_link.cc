@@ -182,6 +182,50 @@ bool object_visible_get(const Object *object, Depsgraph *depsgraph)
   return BKE_base_is_visible(nullptr, base);
 }
 
+bool object_visible_in_game_get(PyObject *py_object, const Object *object, Depsgraph *depsgraph)
+{
+  if (!object_visible_get(object, depsgraph)) {
+    return false;
+  }
+
+  PyPtr settings(PyObject_GetAttrString(py_object, "live_link_settings"));
+  if (!settings) {
+    PyErr_Clear();
+    return true;
+  }
+
+  PyPtr components(PyObject_GetAttrString(settings, "components"));
+  if (!components) {
+    PyErr_Clear();
+    return true;
+  }
+
+  PyPtr sequence(PySequence_Fast(components, "live_link_settings.components must be a sequence"));
+  if (!sequence) {
+    PyErr_Clear();
+    return true;
+  }
+
+  const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+  for (Py_ssize_t index = 0; index < size; index++) {
+    PyObject *component = PySequence_Fast_GET_ITEM(sequence.value, index);
+    if (py_string_attr(component, "type") != "CHARACTER") {
+      continue;
+    }
+
+    PyPtr character(PyObject_GetAttrString(component, "player"));
+    if (!character) {
+      PyErr_Clear();
+      continue;
+    }
+    if (py_bool_attr(character, "hide_mesh_in_game", true)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 Object *object_from_py(PyObject *py_object)
 {
   const PointerRNA *ptr = pyrna_struct_as_ptr(py_object, RNA_Object);
@@ -1268,7 +1312,7 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   return ll::CreateObject(builder,
                           builder.CreateString(id_name(object->id)),
                           int32_t(object->id.session_uid),
-                          object_visible_get(object, depsgraph),
+                          object_visible_in_game_get(py_object, object, depsgraph),
                           &location_fb,
                           &scale_fb,
                           &rotation_fb,

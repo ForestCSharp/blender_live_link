@@ -97,6 +97,23 @@ def scene_uses_python_export_fallback(scene=None):
 def is_mesh_export_object(obj):
     return obj is not None and obj.type in {'MESH', 'CURVE'}
 
+def object_visible_in_game(obj):
+    if not obj.visible_get():
+        return False
+
+    settings = getattr(obj, "live_link_settings", None)
+    if settings is None:
+        return True
+
+    for component in settings.components:
+        if component.type != 'CHARACTER':
+            continue
+        character = getattr(component, "player", None)
+        if character is not None and getattr(character, "hide_mesh_in_game", True):
+            return False
+
+    return True
+
 # Class to manage our live link connection
 class LiveLinkConnection():
     def __init__(self):
@@ -729,8 +746,9 @@ class LiveLinkConnection():
         session_uid = obj.session_uid
         Object.AddUniqueId(builder, session_uid)
 
-        # Check object visibility flag
-        is_visible = obj.visible_get()
+        # Character collision meshes can remain live-linked while opting out
+        # of in-game rendering.
+        is_visible = object_visible_in_game(obj)
         Object.AddVisibility(builder, is_visible)
 
         # Get world-space location, rotation, and scale
@@ -1592,6 +1610,12 @@ class Component_Character(Component):
     player_controlled: BoolProperty(name="Player Controlled", default=False)
     move_speed: FloatProperty(name="Move Speed", default=20.0)
     jump_speed: FloatProperty(name="Jump Speed", default=10.0)
+    hide_mesh_in_game: BoolProperty(
+        name="Hide Mesh in Game",
+        description="Hide this object's mesh in-game while keeping character collision and gameplay active",
+        default=True,
+        update=gameplay_component_property_update,
+    )
 
     # Adds component to flatbuffers component list
     def create_flatbuffers_value(self, builder, **_kwargs):
