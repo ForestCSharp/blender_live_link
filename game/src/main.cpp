@@ -88,6 +88,201 @@ void pack_skinned_animation_matrices();
 
 static GI_Scene gi_scene;
 
+enum class AutomatedScreenshotPhase
+{
+	Disabled,
+	WaitingForLiveLink,
+	WaitingForGi,
+	WaitingForEvenFrame,
+	Settling,
+	Ready,
+	CaptureQueued,
+	Complete,
+	Failed,
+};
+
+struct AutomatedScreenshotState
+{
+	AutomatedScreenshotPhase phase = AutomatedScreenshotPhase::Disabled;
+	std::string output_path;
+	f64 started_at = 0.0;
+	f64 timeout_seconds = 600.0;
+	i32 settle_frames_remaining = 0;
+
+	bool enabled() const
+	{
+		return phase != AutomatedScreenshotPhase::Disabled;
+	}
+
+	bool finished() const
+	{
+		return phase == AutomatedScreenshotPhase::Complete
+			|| phase == AutomatedScreenshotPhase::Failed;
+	}
+};
+
+static AutomatedScreenshotState automated_screenshot;
+
+const char* automated_screenshot_phase_name(AutomatedScreenshotPhase in_phase)
+{
+	switch (in_phase)
+	{
+		case AutomatedScreenshotPhase::Disabled: return "disabled";
+		case AutomatedScreenshotPhase::WaitingForLiveLink: return "waiting-for-live-link";
+		case AutomatedScreenshotPhase::WaitingForGi: return "waiting-for-gi";
+		case AutomatedScreenshotPhase::WaitingForEvenFrame: return "waiting-for-even-frame";
+		case AutomatedScreenshotPhase::Settling: return "settling";
+		case AutomatedScreenshotPhase::Ready: return "ready";
+		case AutomatedScreenshotPhase::CaptureQueued: return "capture-queued";
+		case AutomatedScreenshotPhase::Complete: return "complete";
+		case AutomatedScreenshotPhase::Failed: return "failed";
+	}
+	return "unknown";
+}
+
+bool automated_screenshot_configure()
+{
+	if (getenv("GAME2_SCREENSHOT_WAIT_FOR_GI") == nullptr)
+	{
+		return true;
+	}
+
+	const char* output_path = getenv("GAME2_SCREENSHOT");
+	if (output_path == nullptr || output_path[0] == '\0')
+	{
+		printf("Automated screenshot requires GAME2_SCREENSHOT\n");
+		return false;
+	}
+
+	const char* timeout_text = getenv("GAME2_SCREENSHOT_TIMEOUT_SECONDS");
+	const f64 timeout_seconds = timeout_text ? strtod(timeout_text, nullptr) : 600.0;
+	if (!std::isfinite(timeout_seconds) || timeout_seconds <= 0.0)
+	{
+		printf("Invalid GAME2_SCREENSHOT_TIMEOUT_SECONDS: %s\n", timeout_text ? timeout_text : "");
+		return false;
+	}
+
+	automated_screenshot.phase = AutomatedScreenshotPhase::WaitingForLiveLink;
+	automated_screenshot.output_path = output_path;
+	automated_screenshot.timeout_seconds = timeout_seconds;
+	automated_screenshot.started_at = glfwGetTime();
+
+	// A/B captures must not depend on how long GI takes to converge.
+	state.runtime.is_simulating = false;
+	state.debug_ui.visible = false;
+
+	printf(
+		"Automated screenshot armed: %s (timeout %.1fs)\n",
+		automated_screenshot.output_path.c_str(),
+		automated_screenshot.timeout_seconds
+	);
+	return true;
+}
+
+void automated_screenshot_fail(const char* in_reason)
+{
+	if (!automated_screenshot.enabled() || automated_screenshot.finished())
+	{
+		return;
+	}
+	printf(
+		"Automated screenshot failed during %s: %s\n",
+		automated_screenshot_phase_name(automated_screenshot.phase),
+		in_reason
+	);
+	automated_screenshot.phase = AutomatedScreenshotPhase::Failed;
+}
+
+void automated_screenshot_begin_frame()
+{
+	if (!automated_screenshot.enabled() || automated_screenshot.finished())
+	{
+		return;
+	}
+
+	if (glfwGetTime() - automated_screenshot.started_at > automated_screenshot.timeout_seconds)
+	{
+		printf(
+			"Automated screenshot timeout: imports=%zu GI dirty=%i updating=%i probe=%i/%zu\n",
+			state.data_oriented.import_history.length(),
+			state.gi.layout_dirty ? 1 : 0,
+			state.gi.is_updating ? 1 : 0,
+			gi_scene.probe_idx_to_update,
+			gi_scene.probes.length()
+		);
+		automated_screenshot_fail("timeout");
+		return;
+	}
+
+	if (automated_screenshot.phase == AutomatedScreenshotPhase::WaitingForLiveLink
+		&& state.data_oriented.import_history.length() > 0)
+	{
+		printf("Automated screenshot: first Live Link update drained\n");
+		automated_screenshot.phase = AutomatedScreenshotPhase::WaitingForGi;
+	}
+
+	if (automated_screenshot.phase == AutomatedScreenshotPhase::WaitingForGi
+		&& !state.gi.layout_dirty
+		&& !state.gi.is_updating)
+	{
+		printf("Automated screenshot: GI update complete\n");
+		automated_screenshot.phase = AutomatedScreenshotPhase::WaitingForEvenFrame;
+	}
+
+	if (automated_screenshot.phase == AutomatedScreenshotPhase::WaitingForEvenFrame
+		&& (state.vk.frame_number & 1ull) == 0)
+	{
+		state.temporal_aa.history_valid = false;
+		state.temporal_aa.history_index = 0;
+		automated_screenshot.settle_frames_remaining = 8;
+		automated_screenshot.phase = AutomatedScreenshotPhase::Settling;
+		printf("Automated screenshot: temporal history reset; settling for 8 frames\n");
+	}
+}
+
+void automated_screenshot_queue_if_ready()
+{
+	if (automated_screenshot.phase != AutomatedScreenshotPhase::Ready
+		|| (state.vk.frame_number & 1ull) != 0)
+	{
+		return;
+	}
+
+	state.vk.frame_dump_completed = false;
+	state.vk.frame_dump_succeeded = false;
+	state.vk.pending_frame_dump = automated_screenshot.output_path.c_str();
+	automated_screenshot.phase = AutomatedScreenshotPhase::CaptureQueued;
+	printf("Automated screenshot: capturing frame %llu\n", (unsigned long long)state.vk.frame_number);
+}
+
+void automated_screenshot_after_frame()
+{
+	if (automated_screenshot.phase == AutomatedScreenshotPhase::Settling)
+	{
+		automated_screenshot.settle_frames_remaining -= 1;
+		if (automated_screenshot.settle_frames_remaining == 0)
+		{
+			automated_screenshot.phase = AutomatedScreenshotPhase::Ready;
+			printf("Automated screenshot: settle complete\n");
+		}
+		return;
+	}
+
+	if (automated_screenshot.phase == AutomatedScreenshotPhase::CaptureQueued
+		&& state.vk.frame_dump_completed)
+	{
+		if (state.vk.frame_dump_succeeded)
+		{
+			automated_screenshot.phase = AutomatedScreenshotPhase::Complete;
+			printf("Automated screenshot complete: %s\n", automated_screenshot.output_path.c_str());
+		}
+		else
+		{
+			automated_screenshot_fail("frame readback or file write failed");
+		}
+	}
+}
+
 // Key with no binding, used as the "no modifier" sentinel in the event macros
 // (GLFW key 0 is unassigned; is_key_pressed(0) is always false, so we special
 // case it below)
@@ -1953,6 +2148,7 @@ void frame(f32 in_delta_time)
 		CPU_TIMING_SCOPE("Live Link");
 		live_link_drain_channels();
 	}
+	automated_screenshot_begin_frame();
 
 	{
 		CPU_TIMING_SCOPE("Camera + Controls");
@@ -1965,40 +2161,43 @@ void frame(f32 in_delta_time)
 		const bool ui_captures_mouse = false;
 		#endif
 
-		// Space + Left Control toggle simulation (physics + animation playback)
-		if (!ui_captures_keyboard)
+		if (!automated_screenshot.enabled())
 		{
-			DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, GLFW_KEY_SPACE, GLFW_KEY_LEFT_CONTROL);
-
-		// D + Left Control toggle debug camera
-		DEFINE_EVENT_TWO_KEYS(GLFW_KEY_D, GLFW_KEY_LEFT_CONTROL,
-			if (!state.debug_camera.active) state.debug_camera.camera = get_active_camera();
-			state.debug_camera.active = !state.debug_camera.active;
-		);
-
-		// R + Left Control: restore initial transforms (BEFORE body reset —
-		// the body rebuilds from current_transform), reset physics bodies,
-		// rewind animations
-		DEFINE_EVENT_TWO_KEYS(GLFW_KEY_R, GLFW_KEY_LEFT_CONTROL,
-			for (auto& [reset_uid, reset_object] : state.scene.objects)
+			// Space + Left Control toggle simulation (physics + animation playback)
+			if (!ui_captures_keyboard)
 			{
-				reset_object.current_transform = reset_object.initial_transform;
-				if (reset_object.has_rigid_body && reset_object.rigid_body.jolt_body != nullptr)
-				{
-					object_reset_jolt_body(reset_object);
-				}
-			}
-			rewind_skinned_animations();
-		);
-		}
+				DEFINE_TOGGLE_TWO_KEYS(state.runtime.is_simulating, GLFW_KEY_SPACE, GLFW_KEY_LEFT_CONTROL);
 
-		// A disabled GLFW cursor still has a virtual position, which can hover
-		// ImGui windows and set its capture flags. Once the mouse is locked,
-		// game controls must take priority regardless of that hidden position.
-		if (is_mouse_locked() || (!ui_captures_mouse && !ui_captures_keyboard))
-		{
-			update_debug_camera(in_delta_time);
-			update_camera_control(in_delta_time);
+				// D + Left Control toggle debug camera
+				DEFINE_EVENT_TWO_KEYS(GLFW_KEY_D, GLFW_KEY_LEFT_CONTROL,
+					if (!state.debug_camera.active) state.debug_camera.camera = get_active_camera();
+					state.debug_camera.active = !state.debug_camera.active;
+				);
+
+				// R + Left Control: restore initial transforms (BEFORE body reset —
+				// the body rebuilds from current_transform), reset physics bodies,
+				// rewind animations
+				DEFINE_EVENT_TWO_KEYS(GLFW_KEY_R, GLFW_KEY_LEFT_CONTROL,
+					for (auto& [reset_uid, reset_object] : state.scene.objects)
+					{
+						reset_object.current_transform = reset_object.initial_transform;
+						if (reset_object.has_rigid_body && reset_object.rigid_body.jolt_body != nullptr)
+						{
+							object_reset_jolt_body(reset_object);
+						}
+					}
+					rewind_skinned_animations();
+				);
+			}
+
+			// A disabled GLFW cursor still has a virtual position, which can hover
+			// ImGui windows and set its capture flags. Once the mouse is locked,
+			// game controls must take priority regardless of that hidden position.
+			if (is_mouse_locked() || (!ui_captures_mouse && !ui_captures_keyboard))
+			{
+				update_debug_camera(in_delta_time);
+				update_camera_control(in_delta_time);
+			}
 		}
 	}
 
@@ -2647,12 +2846,16 @@ void frame(f32 in_delta_time)
 	static const char* screenshot_path = getenv("GAME2_SCREENSHOT");
 	static const char* screenshot_frame_env = getenv("GAME2_SCREENSHOT_FRAME");
 	static const u64 screenshot_frame = screenshot_frame_env ? strtoull(screenshot_frame_env, nullptr, 10) : 60;
-	if (screenshot_path && state.vk.frame_number == screenshot_frame)
+	automated_screenshot_queue_if_ready();
+	if (!automated_screenshot.enabled() && screenshot_path && state.vk.frame_number == screenshot_frame)
 	{
+		state.vk.frame_dump_completed = false;
+		state.vk.frame_dump_succeeded = false;
 		state.vk.pending_frame_dump = screenshot_path;
 	}
 
 	vulkan_context_end_frame(&state.vk);
+	automated_screenshot_after_frame();
 
 	reset_mouse_delta();
 }
@@ -2700,6 +2903,11 @@ int main(int argc, char** argv)
 	if (!glfwInit())
 	{
 		printf("Failed to initialize GLFW\n");
+		return 1;
+	}
+	if (!automated_screenshot_configure())
+	{
+		glfwTerminate();
 		return 1;
 	}
 
@@ -3152,6 +3360,14 @@ int main(int argc, char** argv)
 		{
 			glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}
+		if (automated_screenshot.finished())
+		{
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
+	}
+	if (automated_screenshot.enabled() && !automated_screenshot.finished())
+	{
+		automated_screenshot_fail("window closed before capture completed");
 	}
 	benchmark_finalize(benchmark, &state.vk);
 
@@ -3221,5 +3437,5 @@ int main(int argc, char** argv)
 
 	glfwDestroyWindow(window);
 	glfwTerminate();
-	return 0;
+	return automated_screenshot.phase == AutomatedScreenshotPhase::Failed ? 1 : 0;
 }

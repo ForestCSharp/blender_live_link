@@ -233,6 +233,8 @@ struct VulkanContext
 	// When set, end_frame dumps the frame to this path (between submit and
 	// present, while the swapchain image is still acquired) then clears it
 	const char* pending_frame_dump = nullptr;
+	bool frame_dump_completed = false;
+	bool frame_dump_succeeded = false;
 
 	// GPU timestamp state
 	bool timestamps_supported = false;
@@ -2033,7 +2035,7 @@ bool vulkan_context_begin_frame(VulkanContext* ctx)
 	return true;
 }
 
-void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path);
+bool vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path);
 
 void vulkan_context_end_frame(VulkanContext* ctx)
 {
@@ -2119,7 +2121,8 @@ void vulkan_context_end_frame(VulkanContext* ctx)
 
 	if (ctx->pending_frame_dump != nullptr)
 	{
-		vulkan_context_dump_frame(ctx, ctx->pending_frame_dump);
+		ctx->frame_dump_succeeded = vulkan_context_dump_frame(ctx, ctx->pending_frame_dump);
+		ctx->frame_dump_completed = true;
 		ctx->pending_frame_dump = nullptr;
 	}
 
@@ -2148,12 +2151,12 @@ void vulkan_context_end_frame(VulkanContext* ctx)
 
 // Debug helper: copies the last-presented swapchain image to a PPM file.
 // Used for automated visual verification (set GAME2_SCREENSHOT=<path>).
-void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
+bool vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 {
 	if (!ctx->screenshot_supported)
 	{
 		printf("Frame dump skipped: this surface does not support transfer-source swapchain images\n");
-		return;
+		return false;
 	}
 	VK_CHECK(vulkan_device_wait_idle(ctx));
 
@@ -2258,11 +2261,14 @@ void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 	VK_CHECK(vulkan_queue_wait_idle(ctx));
 	vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &command_buffer);
 
-	// Write PPM from the negotiated common 8-bit swapchain format.
-	FILE* file = fopen(in_path, "wb");
+	// Write PPM from the negotiated common 8-bit swapchain format. A sibling
+	// temporary file prevents capture runners from observing a partial image.
+	const std::string temporary_path = std::string(in_path) + ".tmp";
+	std::remove(temporary_path.c_str());
+	FILE* file = fopen(temporary_path.c_str(), "wb");
 	if (file)
 	{
-		fprintf(file, "P6\n%u %u\n255\n", width, height);
+		bool write_succeeded = fprintf(file, "P6\n%u %u\n255\n", width, height) > 0;
 		const u8* pixels = (const u8*) readback_allocation_info.pMappedData;
 		VK_CHECK(vmaInvalidateAllocation(ctx->allocator, readback_allocation, 0, VK_WHOLE_SIZE));
 		for (u64 pixel_idx = 0; pixel_idx < (u64) width * height; ++pixel_idx)
@@ -2277,17 +2283,38 @@ void vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 			{
 				rgb[0] = pixel[0]; rgb[1] = pixel[1]; rgb[2] = pixel[2];
 			}
-			fwrite(rgb, 1, 3, file);
+			write_succeeded = fwrite(rgb, 1, 3, file) == 3 && write_succeeded;
 		}
-		fclose(file);
+		write_succeeded = fclose(file) == 0 && write_succeeded;
+		if (!write_succeeded)
+		{
+			printf("Failed while writing frame dump path %s\n", temporary_path.c_str());
+			std::remove(temporary_path.c_str());
+			vmaDestroyBuffer(ctx->allocator, readback_buffer, readback_allocation);
+			return false;
+		}
+
+		#if defined(_WIN32)
+		std::remove(in_path);
+		#endif
+		if (std::rename(temporary_path.c_str(), in_path) != 0)
+		{
+			printf("Failed to finalize frame dump path %s\n", in_path);
+			std::remove(temporary_path.c_str());
+			vmaDestroyBuffer(ctx->allocator, readback_buffer, readback_allocation);
+			return false;
+		}
 		printf("Wrote frame dump to %s\n", in_path);
 	}
 	else
 	{
-		printf("Failed to open frame dump path %s\n", in_path);
+		printf("Failed to open frame dump path %s\n", temporary_path.c_str());
+		vmaDestroyBuffer(ctx->allocator, readback_buffer, readback_allocation);
+		return false;
 	}
 
 	vmaDestroyBuffer(ctx->allocator, readback_buffer, readback_allocation);
+	return true;
 }
 
 void vulkan_context_shutdown(VulkanContext* ctx)

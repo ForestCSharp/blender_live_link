@@ -214,6 +214,32 @@ BLENDER_LIVE_LINK_SKIP_GAME=1 ./build.sh -native -f test_file.blend
 This builds and installs the Blender-side native serialization path without
 building or running the game. It is useful before running exporter-focused tests.
 
+### Deterministic Renderer Screenshots
+
+Capture one Blend file after its first automatic Live Link update and completed
+GI probe computation:
+
+```sh
+./build.sh -native -f test_file.blend \
+  -screenshot screenshots/gbuffer_compact/00_no_changes
+```
+
+This writes `screenshots/gbuffer_compact/00_no_changes/test_file.ppm`, then
+exits both the game and native Blender. Capture mode freezes simulation and
+camera motion, hides the debug UI, resets temporal history, and renders a fixed
+settling sequence before readback. Existing screenshots in the selected set are
+replaced.
+
+Capture the standard scene matrix sequentially:
+
+```sh
+./screenshots.sh 00_no_changes
+```
+
+The initial matrix contains `test_file.blend` and `shadow_test.blend`. Edit the
+`SCENES` array in `screenshots.sh` to extend it. The complete
+`screenshots/` workspace is gitignored.
+
 ## Testing
 
 Run the native/Python exporter parity check with a sample file:

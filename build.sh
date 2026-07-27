@@ -44,6 +44,11 @@ PARALLEL_BRANCH_LOG_FILES=()
 PARALLEL_BRANCH_RENDERED_LINES=()
 INSTALLED_BLENDER_KIND=""
 INSTALLED_BLENDER_COMMAND=()
+SCREENSHOT_MODE=false
+SCREENSHOT_DIR_ARG=""
+SCREENSHOT_OUTPUT_PATH=""
+SCREENSHOT_CONTROL_DIR=""
+SCREENSHOT_COMPLETION_FILE=""
 
 run_args="$SCRIPT_DIR/blend_files/test_file.blend"
 
@@ -77,6 +82,41 @@ resolve_blend_file_arg() {
 	fi
 }
 
+configure_screenshot_capture() {
+	if [[ ! -f "$run_args" ]]; then
+		echo "Error: screenshot Blend file was not found: $run_args"
+		return 1
+	fi
+
+	local output_dir
+	if [[ "$SCREENSHOT_DIR_ARG" = /* ]]; then
+		output_dir="$SCREENSHOT_DIR_ARG"
+	else
+		output_dir="$SCRIPT_DIR/$SCREENSHOT_DIR_ARG"
+	fi
+	mkdir -p "$output_dir" || return
+
+	local scene_file
+	local scene_name
+	scene_file=$(basename "$run_args")
+	scene_name="${scene_file%.blend}"
+	SCREENSHOT_OUTPUT_PATH="$output_dir/$scene_name.ppm"
+
+	# Capture sets are intentionally refreshable. Remove stale output and its
+	# temporary sibling before Blender starts watching the completion marker.
+	rm -f "$SCREENSHOT_OUTPUT_PATH" "$SCREENSHOT_OUTPUT_PATH.tmp" || return
+
+	SCREENSHOT_CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/blender_live_link_screenshot.XXXXXX") || return
+	SCREENSHOT_COMPLETION_FILE="$SCREENSHOT_CONTROL_DIR/complete"
+
+	export GAME2_SCREENSHOT="$SCREENSHOT_OUTPUT_PATH"
+	export GAME2_SCREENSHOT_WAIT_FOR_GI=1
+	export GAME2_SCREENSHOT_TIMEOUT_SECONDS="${GAME2_SCREENSHOT_TIMEOUT_SECONDS:-600}"
+	export BLENDER_LIVE_LINK_SCREENSHOT_COMPLETE="$SCREENSHOT_COMPLETION_FILE"
+
+	log_build "Screenshot capture: $run_args -> $SCREENSHOT_OUTPUT_PATH"
+}
+
 package_extension() {
 	log_build "Blender branch: packaging extension"
 	mkdir -p "$(dirname "$EXTENSION_ZIP_PATH")" || return
@@ -100,6 +140,7 @@ package_extension() {
 			-x!"$BASE_DIR/game/*" \
 			-x!"$BASE_DIR/game_old/*" \
 			-x!"$BASE_DIR/blend_files/*" \
+			-x!"$BASE_DIR/screenshots/*" \
 			-x!"$BASE_DIR/blend_src/*" \
 			-x!"$BASE_DIR/blend_patches/*" \
 			-x!"$BASE_DIR/compiled_schemas/cpp/*" \
@@ -108,6 +149,7 @@ package_extension() {
 			-x!"*/__pycache__/*" \
 			-x!"$BASE_DIR/*.pyc" \
 			-x!"$BASE_DIR/build.sh" \
+			-x!"$BASE_DIR/screenshots.sh" \
 			-x!"$BASE_DIR/build_blend_src.sh" \
 			-x!"$BASE_DIR/clean_blend_src.sh" \
 			-x!"$BASE_DIR/test_live_link_parity.sh" \
@@ -130,6 +172,7 @@ package_extension() {
 			-x "$BASE_DIR/game/*"\
 			-x "$BASE_DIR/game_old/*"\
 			-x "$BASE_DIR/blend_files/*" \
+			-x "$BASE_DIR/screenshots/*" \
 			-x "$BASE_DIR/blend_src/*" \
 			-x "$BASE_DIR/blend_patches/*" \
 			-x "$BASE_DIR/compiled_schemas/cpp/*" \
@@ -138,6 +181,7 @@ package_extension() {
 			-x "*/__pycache__/*" \
 			-x "$BASE_DIR/*.pyc" \
 			-x "$BASE_DIR/build.sh" \
+			-x "$BASE_DIR/screenshots.sh" \
 			-x "$BASE_DIR/build_blend_src.sh" \
 			-x "$BASE_DIR/clean_blend_src.sh" \
 			-x "$BASE_DIR/test_live_link_parity.sh" \
@@ -160,6 +204,7 @@ package_extension() {
 			--exclude "$BASE_DIR/game/*" \
 			--exclude "$BASE_DIR/game_old/*" \
 			--exclude "$BASE_DIR/blend_files/*" \
+			--exclude "$BASE_DIR/screenshots/*" \
 			--exclude "$BASE_DIR/blend_src/*" \
 			--exclude "$BASE_DIR/blend_patches/*" \
 			--exclude "$BASE_DIR/compiled_schemas/cpp/*" \
@@ -168,6 +213,7 @@ package_extension() {
 			--exclude "*/__pycache__/*" \
 			--exclude "$BASE_DIR/*.pyc" \
 			--exclude "$BASE_DIR/build.sh" \
+			--exclude "$BASE_DIR/screenshots.sh" \
 			--exclude "$BASE_DIR/build_blend_src.sh" \
 			--exclude "$BASE_DIR/clean_blend_src.sh" \
 			--exclude "$BASE_DIR/test_live_link_parity.sh" \
@@ -286,7 +332,13 @@ install_and_launch_native_blender() {
 	sleep 0.5
 
 	echo "Launching local Blender at $NATIVE_BLENDER_BINARY"
-	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" &
+	if [[ "$SCREENSHOT_MODE" = true ]]; then
+		local quit_expression
+		quit_expression='import bpy, os; p = os.environ["BLENDER_LIVE_LINK_SCREENSHOT_COMPLETE"]; bpy.app.timers.register(lambda: (bpy.ops.wm.quit_blender() and None) if os.path.isfile(p) else 0.25, first_interval=0.25)'
+		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" --python-expr "$quit_expression"
+	else
+		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" &
+	fi
 }
 
 prepare_flatbuffers_and_schemas() {
@@ -400,7 +452,18 @@ run_blender_side_build_and_launch() {
 run_game_build_and_launch() {
 	cd "$SCRIPT_DIR/$GAME_DIR" || return
 	log_build "$GAME_BRANCH_LABEL branch: building and launching $GAME_DIR"
-	./build.sh "$OS"
+	local game_status=0
+	./build.sh "$OS" || game_status=$?
+
+	if [[ "$SCREENSHOT_MODE" = true && $game_status -eq 0 ]]; then
+		if [[ ! -s "$SCREENSHOT_OUTPUT_PATH" ]]; then
+			echo "Error: game exited successfully without producing screenshot: $SCREENSHOT_OUTPUT_PATH"
+			return 1
+		fi
+		: > "$SCREENSHOT_COMPLETION_FILE" || return
+	fi
+
+	return "$game_status"
 }
 
 cleanup_parallel_status_dir() {
@@ -634,6 +697,30 @@ terminate_active_parallel_branches() {
 	done
 }
 
+cleanup_screenshot_run() {
+	if [[ "$SCREENSHOT_MODE" != true ]]; then
+		return
+	fi
+
+	local branch_index
+	for (( branch_index = 0; branch_index < ${#PARALLEL_BRANCH_PIDS[@]}; branch_index++ )); do
+		if [[ ${PARALLEL_BRANCH_STATUSES[$branch_index]} -eq -1 ]]; then
+			terminate_process_tree "${PARALLEL_BRANCH_PIDS[$branch_index]}"
+		fi
+	done
+
+	if [[ -n "$SCREENSHOT_CONTROL_DIR" && -d "$SCREENSHOT_CONTROL_DIR" ]]; then
+		rm -rf "$SCREENSHOT_CONTROL_DIR"
+		SCREENSHOT_CONTROL_DIR=""
+	fi
+}
+
+interrupt_screenshot_run() {
+	trap - INT TERM
+	cleanup_screenshot_run
+	exit 130
+}
+
 start_parallel_branch() {
 	local branch_name=$1
 	shift
@@ -753,10 +840,24 @@ while [[ $# -gt 0 ]]; do
     	shift # past argument
     	;;
     -f|--file)
+		if [[ $# -lt 2 ]]; then
+			echo "Error: $1 requires a Blend file"
+			exit 1
+		fi
 		run_args="$(resolve_blend_file_arg "$2")"
     	shift # past argument
     	shift # past argument
     	;;
+    -screenshot|--screenshot)
+		if [[ $# -lt 2 || -z "$2" ]]; then
+			echo "Error: $1 requires a capture-set directory"
+			exit 1
+		fi
+		SCREENSHOT_MODE=true
+		SCREENSHOT_DIR_ARG="$2"
+		shift # past argument
+		shift # past argument
+		;;
     -*|--*)
     	echo "Unknown option $1"
     	exit 1
@@ -771,6 +872,22 @@ done
 if [[ "$PACKAGE_ONLY" = "true" && "$BUILD_ONLY_GAME" = "true" ]]; then
 	echo "Error: --package-only and --game are mutually exclusive"
 	exit 1
+fi
+
+if [[ "$SCREENSHOT_MODE" = true ]]; then
+	if [[ "$BUILD_ONLY_GAME" = true || "$PACKAGE_ONLY" = true || "$GAME_DIR" != game || "$BLENDER_BUILD_MODE" != native ]]; then
+		echo "Error: -screenshot requires the native Vulkan full-build path"
+		echo "It cannot be combined with -g, --package-only, -game_old, or -python."
+		exit 1
+	fi
+	if [[ $OS != Mac && $OS != Linux ]]; then
+		echo "Error: automated native screenshots are currently supported only on macOS and Linux."
+		exit 1
+	fi
+
+	trap cleanup_screenshot_run EXIT
+	trap interrupt_screenshot_run INT TERM
+	configure_screenshot_capture || exit
 fi
 
 if [[ "$PACKAGE_ONLY" = "true" ]]; then

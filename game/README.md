@@ -84,6 +84,10 @@ both bind the same port.
   mode; unsupported requests fall back to FIFO (`GAME2_PRESENT_MODE` alias)
 - `GAME2_SCREENSHOT=<path> [GAME2_SCREENSHOT_FRAME=<n>]` — dump frame n
   (default 60) to a PPM file when the surface supports transfer-source images
+- `GAME2_SCREENSHOT_WAIT_FOR_GI=1` — with `GAME2_SCREENSHOT`, wait for the
+  first Live Link import and completed GI update, run a deterministic temporal
+  settle, capture, and exit; timeout defaults to 600 seconds and can be changed
+  with `GAME2_SCREENSHOT_TIMEOUT_SECONDS`
 - `GAME2_TEST_RESIZE=1` — programmatically resize at frame 30 to exercise
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
