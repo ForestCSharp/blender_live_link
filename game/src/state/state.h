@@ -159,6 +159,7 @@ struct SceneUpdate
 	StretchyBuffer<Object> objects;
 
 	StretchyBuffer<i32> deleted_object_uids;
+	std::optional<Camera> editor_camera;
 	bool reset = false;
 };
 
@@ -528,6 +529,7 @@ struct State
 	struct DebugCameraState
 	{
 		bool active = true;
+		bool live_link_initialization_complete = false;
 		Camera camera = {
 			.location = HMM_V3(2.5f, -15.0f, 3.0f),
 			.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),

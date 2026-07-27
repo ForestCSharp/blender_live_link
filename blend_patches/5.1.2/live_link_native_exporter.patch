@@ -1,4 +1,5 @@
 diff --git a/source/blender/python/intern/CMakeLists.txt b/source/blender/python/intern/CMakeLists.txt
+index a513086a..4cc4f181 100644
 --- a/source/blender/python/intern/CMakeLists.txt
 +++ b/source/blender/python/intern/CMakeLists.txt
 @@ -12,12 +12,22 @@ set(INC
@@ -33,17 +34,18 @@ diff --git a/source/blender/python/intern/CMakeLists.txt b/source/blender/python
    bpy_app_build_options.hh
    bpy_app_ffmpeg.hh
 diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/intern/bpy_app.cc
+index dc7afef1..c4b7908e 100644
 --- a/source/blender/python/intern/bpy_app.cc
 +++ b/source/blender/python/intern/bpy_app.cc
 @@ -14,6 +14,7 @@
 
  #include "bpy_app.hh"
- 
+
 +#include "bpy_live_link.hh"
  #include "bpy_app_alembic.hh"
  #include "bpy_app_build_options.hh"
  #include "bpy_app_ffmpeg.hh"
-@@ -752,6 +753,71 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
+@@ -752,6 +753,115 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
    return PyBool_FromLong(WM_jobs_has_running_type(wm, job_type_enum.value));
  }
 
@@ -51,7 +53,7 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +    /* Wrap. */
 +    bpy_app_live_link_make_update_doc,
 +    ".. staticmethod:: live_link_make_update(objects, deleted_object_uids, dependency_graph, "
-+    "reset=False, update_reason=\"unknown\", sequence=0)\n"
++    "reset=False, update_reason=\"unknown\", sequence=0, editor_camera=None)\n"
 +    "\n"
 +    "   Build a native Blender Live Link update.\n"
 +    "\n"
@@ -67,6 +69,8 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +    "   :type update_reason: str\n"
 +    "   :param sequence: Python-maintained update sequence number.\n"
 +    "   :type sequence: int\n"
++    "   :param editor_camera: Optional location/forward/up sequence containing 9 floats.\n"
++    "   :type editor_camera: sequence[float] | None\n"
 +    "   :return: Size-prefixed Live Link update bytes.\n"
 +    "   :rtype: bytes\n");
 +static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
@@ -79,6 +83,7 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +  bool reset = false;
 +  const char *update_reason = "unknown";
 +  int sequence = 0;
++  PyObject *editor_camera = Py_None;
 +
 +  static const char *_keywords[] = {
 +      "objects",
@@ -87,9 +92,10 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +      "reset",
 +      "update_reason",
 +      "sequence",
++      "editor_camera",
 +      nullptr};
 +  static _PyArg_Parser _parser = {
-+      "OOO|O&si" /* `objects`, `deleted_object_uids`, `dependency_graph`, optional args. */
++      "OOO|O&siO" /* `objects`, `deleted_object_uids`, `dependency_graph`, optional args. */
 +      ":live_link_make_update",
 +      _keywords,
 +      nullptr,
@@ -103,19 +109,59 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +                                        PyC_ParseBool,
 +                                        &reset,
 +                                        &update_reason,
-+                                        &sequence))
++                                        &sequence,
++                                        &editor_camera))
 +  {
 +    return nullptr;
 +  }
 +
 +  return BPY_live_link_make_update(
-+      objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence);
++      objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence, editor_camera);
++}
++
++PyDoc_STRVAR(
++    /* Wrap. */
++    bpy_app_live_link_compare_updates_doc,
++    ".. staticmethod:: live_link_compare_updates(native_bytes, python_bytes, max_diffs=100)\n"
++    "\n"
++    "   Compare native and Python Blender Live Link update bytes semantically.\n"
++    "\n"
++    "   :param native_bytes: Size-prefixed native Live Link update bytes.\n"
++    "   :type native_bytes: bytes\n"
++    "   :param python_bytes: Size-prefixed Python Live Link update bytes.\n"
++    "   :type python_bytes: bytes\n"
++    "   :param max_diffs: Maximum diagnostic differences to report.\n"
++    "   :type max_diffs: int\n"
++    "   :return: ``(matched, message)``.\n"
++    "   :rtype: tuple[bool, str]\n");
++static PyObject *bpy_app_live_link_compare_updates(PyObject * /*self*/,
++                                                  PyObject *args,
++                                                  PyObject *kwds)
++{
++  PyObject *native_bytes = nullptr;
++  PyObject *python_bytes = nullptr;
++  int max_diffs = 100;
++
++  static const char *_keywords[] = {"native_bytes", "python_bytes", "max_diffs", nullptr};
++  static _PyArg_Parser _parser = {
++      "OO|i" /* `native_bytes`, `python_bytes`, optional `max_diffs`. */
++      ":live_link_compare_updates",
++      _keywords,
++      nullptr,
++  };
++  if (!_PyArg_ParseTupleAndKeywordsFast(
++          args, kwds, &_parser, &native_bytes, &python_bytes, &max_diffs))
++  {
++    return nullptr;
++  }
++
++  return BPY_live_link_compare_updates(native_bytes, python_bytes, max_diffs);
 +}
 +
  char *(*BPY_python_app_help_text_fn)(bool all) = nullptr;
 
  PyDoc_STRVAR(
-@@ -821,6 +887,10 @@ static PyMethodDef bpy_app_methods[] = {
+@@ -821,6 +931,14 @@ static PyMethodDef bpy_app_methods[] = {
       reinterpret_cast<PyCFunction>(bpy_app_is_job_running),
       METH_VARARGS | METH_KEYWORDS | METH_STATIC,
       bpy_app_is_job_running_doc},
@@ -123,6 +169,10 @@ diff --git a/source/blender/python/intern/bpy_app.cc b/source/blender/python/int
 +     reinterpret_cast<PyCFunction>(bpy_app_live_link_make_update),
 +     METH_VARARGS | METH_KEYWORDS | METH_STATIC,
 +     bpy_app_live_link_make_update_doc},
++    {"live_link_compare_updates",
++     reinterpret_cast<PyCFunction>(bpy_app_live_link_compare_updates),
++     METH_VARARGS | METH_KEYWORDS | METH_STATIC,
++     bpy_app_live_link_compare_updates_doc},
      {"help_text",
       reinterpret_cast<PyCFunction>(bpy_app_help_text),
       METH_VARARGS | METH_KEYWORDS | METH_STATIC,

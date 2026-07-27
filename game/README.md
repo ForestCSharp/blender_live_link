@@ -78,6 +78,11 @@ both bind the same port.
 - Ctrl+I: toggle the Dear ImGui debug/tooling window
 - Escape: quit
 
+On the first Live Link update after launch, the debug camera adopts the current
+Blender 3D viewport position and orientation. Later Live Link updates and scene
+resets do not overwrite camera movement performed in the game. If Blender does
+not provide a valid 3D viewport transform, the built-in fallback view is used.
+
 ## Debug helpers
 
 - `GAME_PRESENT_MODE=fifo|mailbox|immediate|fifo_relaxed` — request a present

@@ -221,10 +221,10 @@ GI probe computation:
 
 ```sh
 ./build.sh -native -f test_file.blend \
-  -screenshot screenshots/gbuffer_compact/00_no_changes
+  -screenshot screenshots/test1
 ```
 
-This writes `screenshots/gbuffer_compact/00_no_changes/test_file.ppm`, then
+This writes `screenshots/test1/test_file.ppm`, then
 exits both the game and native Blender. Capture mode freezes simulation and
 camera motion, hides the debug UI, resets temporal history, and renders a fixed
 settling sequence before readback. Existing screenshots in the selected set are
@@ -233,12 +233,14 @@ replaced.
 Capture the standard scene matrix sequentially:
 
 ```sh
-./screenshots.sh 00_no_changes
+./screenshots.sh test1
 ```
 
 The initial matrix contains `test_file.blend` and `shadow_test.blend`. Edit the
-`SCENES` array in `screenshots.sh` to extend it. The complete
-`screenshots/` workspace is gitignored.
+`SCENES` array in `screenshots.sh` to extend it. The argument is appended
+directly to `screenshots/`, so `./screenshots.sh experiments/step1` writes to
+`screenshots/experiments/step1/`. The complete `screenshots/` workspace is
+gitignored.
 
 ## Testing
 

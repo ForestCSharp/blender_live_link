@@ -4,8 +4,9 @@ set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 usage() {
-	echo "Usage: ./screenshots.sh <step-name>"
-	echo "Example: ./screenshots.sh 00_no_changes"
+	echo "Usage: ./screenshots.sh <capture-path>"
+	echo "Example: ./screenshots.sh test1"
+	echo "Nested example: ./screenshots.sh experiments/step1"
 }
 
 if [[ $# -ne 1 || -z "$1" ]]; then
@@ -13,11 +14,27 @@ if [[ $# -ne 1 || -z "$1" ]]; then
 	exit 1
 fi
 
-STEP_NAME=$1
-if [[ ! "$STEP_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
-	echo "Error: step name may contain only letters, numbers, '.', '_', and '-'"
+CAPTURE_PATH=$1
+if [[ "$CAPTURE_PATH" = /* ]]; then
+	echo "Error: capture path must be relative to the screenshots directory"
 	exit 1
 fi
+if [[ "$CAPTURE_PATH" = */ ]]; then
+	echo "Error: capture path cannot end with '/'"
+	exit 1
+fi
+
+IFS='/' read -r -a CAPTURE_PATH_PARTS <<< "$CAPTURE_PATH"
+for path_part in "${CAPTURE_PATH_PARTS[@]}"; do
+	if [[ -z "$path_part" || "$path_part" = "." || "$path_part" = ".." ]]; then
+		echo "Error: capture path cannot contain empty, '.' or '..' components"
+		exit 1
+	fi
+	if [[ ! "$path_part" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		echo "Error: capture path components may contain only letters, numbers, '.', '_', and '-'"
+		exit 1
+	fi
+done
 
 # Keep the deterministic A/B scene matrix here. Each scene gets one PPM named
 # after its Blend file inside the selected capture-set directory.
@@ -26,7 +43,7 @@ SCENES=(
 	"shadow_test.blend"
 )
 
-OUTPUT_DIR="screenshots/gbuffer_compact/$STEP_NAME"
+OUTPUT_DIR="screenshots/$CAPTURE_PATH"
 
 echo "Capturing ${#SCENES[@]} scenes into $OUTPUT_DIR"
 for scene in "${SCENES[@]}"; do

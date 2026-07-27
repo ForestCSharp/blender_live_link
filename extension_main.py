@@ -14,6 +14,7 @@ from bpy.app.handlers import persistent
 
 import bmesh
 import builtins
+import math
 import numpy as np
 import socket
 import struct
@@ -21,6 +22,7 @@ import traceback
 import time
 
 from io import StringIO
+from mathutils import Vector
 
 # ignore SIGPIPE so that writing to a closed socket raises a Python exception
 import signal
@@ -35,6 +37,7 @@ from .compiled_schemas.python.Blender.LiveLink import Armature
 from .compiled_schemas.python.Blender.LiveLink import Animation
 from .compiled_schemas.python.Blender.LiveLink import AttachmentBindingType
 from .compiled_schemas.python.Blender.LiveLink import Bone 
+from .compiled_schemas.python.Blender.LiveLink import EditorCamera
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentAttachmentPoint
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraControl
@@ -93,6 +96,52 @@ def scene_uses_python_export_fallback(scene=None):
     if scene is None:
         scene = bpy.context.scene
     return bool(getattr(scene, "live_link_use_python_export_fallback", False))
+
+def get_editor_camera_snapshot(context=None):
+    """Return location/forward/up from the current Blender 3D viewport."""
+    context = context or bpy.context
+    area = getattr(context, "area", None)
+    if area is None or area.type != 'VIEW_3D':
+        window = getattr(context, "window", None)
+        screen = getattr(window, "screen", None)
+        if screen is None:
+            return None
+        view_areas = [
+            candidate
+            for candidate in screen.areas
+            if candidate.type == 'VIEW_3D'
+            and candidate.width > 0
+            and candidate.height > 0
+        ]
+        if not view_areas:
+            return None
+        area = max(view_areas, key=lambda candidate: candidate.width * candidate.height)
+
+    space = area.spaces.active
+    region_3d = getattr(space, "region_3d", None)
+    if region_3d is None:
+        return None
+
+    try:
+        inverse_view = region_3d.view_matrix.inverted_safe()
+        location = inverse_view.translation.copy()
+        rotation = region_3d.view_rotation.copy()
+        forward = rotation @ Vector((0.0, 0.0, -1.0))
+        up = rotation @ Vector((0.0, 1.0, 0.0))
+    except Exception:
+        return None
+
+    if forward.length_squared <= 1.0e-12 or up.length_squared <= 1.0e-12:
+        return None
+    forward.normalize()
+    up.normalize()
+
+    values = (*location, *forward, *up)
+    if not all(math.isfinite(value) for value in values):
+        return None
+    if abs(forward.dot(up)) >= 0.999:
+        return None
+    return tuple(float(value) for value in values)
 
 def is_mesh_export_object(obj):
     return obj is not None and obj.type in {'MESH', 'CURVE'}
@@ -801,6 +850,7 @@ class LiveLinkConnection():
         return live_link_object
 
     def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+        editor_camera = get_editor_camera_snapshot()
         if native_live_link_available() and not scene_uses_python_export_fallback():
             self.update_sequence += 1
             output = self.make_update_native(
@@ -810,6 +860,7 @@ class LiveLinkConnection():
                 reset=reset,
                 update_reason=update_reason,
                 sequence=self.update_sequence,
+                editor_camera=editor_camera,
             )
             print(
                 "Live Link Native Export Returned: "
@@ -823,6 +874,7 @@ class LiveLinkConnection():
             in_deleted_object_uids,
             reset=reset,
             update_reason=update_reason,
+            editor_camera=editor_camera,
         )
 
     def make_update_native(
@@ -833,6 +885,7 @@ class LiveLinkConnection():
         reset=False,
         update_reason="unknown",
         sequence=0,
+        editor_camera=None,
     ):
         if not native_live_link_available():
             raise RuntimeError("Native Live Link export is not available")
@@ -855,6 +908,7 @@ class LiveLinkConnection():
             reset,
             update_reason,
             sequence,
+            editor_camera,
         )
         if not isinstance(output, (bytes, bytearray)):
             raise TypeError("bpy.app.live_link_make_update must return bytes")
@@ -871,6 +925,7 @@ class LiveLinkConnection():
             raise RuntimeError("Native Live Link compare is not available")
 
         objects = self.make_full_update_object_list()
+        editor_camera = get_editor_camera_snapshot()
         old_sequence = self.update_sequence
         try:
             dependency_graph = bpy.context.evaluated_depsgraph_get()
@@ -881,6 +936,7 @@ class LiveLinkConnection():
                 reset=False,
                 update_reason="compare_native_python_native",
                 sequence=old_sequence + 1,
+                editor_camera=editor_camera,
             )
             python_bytes = self.make_update_python(
                 objects,
@@ -888,6 +944,7 @@ class LiveLinkConnection():
                 reset=False,
                 update_reason="compare_native_python_python",
                 increment_sequence=False,
+                editor_camera=editor_camera,
             )
         finally:
             self.update_sequence = old_sequence
@@ -908,6 +965,7 @@ class LiveLinkConnection():
         reset=False,
         update_reason="unknown",
         increment_sequence=True,
+        editor_camera=None,
     ):
         export_generation_start = time.perf_counter()
         if increment_sequence:
@@ -1187,6 +1245,17 @@ class LiveLinkConnection():
         self.add_export_timing(export_stats, "images", time.perf_counter() - images_start)
 
         flatbuffer_finish_start = time.perf_counter()
+        editor_camera_fb = None
+        if editor_camera is not None:
+            EditorCamera.Start(builder)
+            location_fb = Vec3.CreateVec3(builder, *editor_camera[0:3])
+            EditorCamera.AddLocation(builder, location_fb)
+            forward_fb = Vec3.CreateVec3(builder, *editor_camera[3:6])
+            EditorCamera.AddForward(builder, forward_fb)
+            up_fb = Vec3.CreateVec3(builder, *editor_camera[6:9])
+            EditorCamera.AddUp(builder, up_fb)
+            editor_camera_fb = EditorCamera.End(builder)
+
         # Begin writing top-level update table
         Update.Start(builder)
 
@@ -1196,6 +1265,8 @@ class LiveLinkConnection():
         Update.AddMaterials(builder, update_materials)
         Update.AddImages(builder, update_images)
         Update.AddReset(builder, reset)
+        if editor_camera_fb is not None:
+            Update.AddEditorCamera(builder, editor_camera_fb)
         export_stats["generation_seconds"] = time.perf_counter() - export_generation_start
         Update.AddGenerationSeconds(builder, export_stats["generation_seconds"])
 

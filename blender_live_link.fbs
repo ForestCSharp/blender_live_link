@@ -273,6 +273,13 @@ table Image
 	data		: [ubyte];
 }
 
+table EditorCamera
+{
+	location	: Vec3;
+	forward		: Vec3;
+	up			: Vec3;
+}
+
 table Update 
 {
 	objects				: [Object];
@@ -281,6 +288,7 @@ table Update
 	images				: [Image];
 	reset 				: bool = false;
 	generation_seconds	: double = 0.0;
+	editor_camera		: EditorCamera;
 }
 
 root_type Update;

@@ -11,7 +11,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
                                     PyObject *dependency_graph,
                                     bool reset,
                                     const char *update_reason,
-                                    int sequence);
+                                    int sequence,
+                                    PyObject *editor_camera);
 
 PyObject *BPY_live_link_compare_updates(PyObject *native_bytes,
                                         PyObject *python_bytes,

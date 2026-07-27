@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <optional>
 
@@ -430,6 +431,43 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	scene_update.stats.byte_count = (u64) flatbuffer_data.length();
 	scene_update.stats.generation_seconds = update->generation_seconds();
 	scene_update.stats.reset = update->reset();
+
+	if (auto editor_camera = update->editor_camera())
+	{
+		auto location_fb = editor_camera->location();
+		auto forward_fb = editor_camera->forward();
+		auto up_fb = editor_camera->up();
+		if (location_fb && forward_fb && up_fb)
+		{
+			Camera camera = {
+				.location = flatbuffer_helpers::to_hmm_vec3(location_fb),
+				.forward = flatbuffer_helpers::to_hmm_vec3(forward_fb),
+				.up = flatbuffer_helpers::to_hmm_vec3(up_fb),
+			};
+			const bool finite =
+				std::isfinite(camera.location.X) &&
+				std::isfinite(camera.location.Y) &&
+				std::isfinite(camera.location.Z) &&
+				std::isfinite(camera.forward.X) &&
+				std::isfinite(camera.forward.Y) &&
+				std::isfinite(camera.forward.Z) &&
+				std::isfinite(camera.up.X) &&
+				std::isfinite(camera.up.Y) &&
+				std::isfinite(camera.up.Z);
+			const bool non_degenerate =
+				HMM_LenSqrV3(camera.forward) > 1.0e-12f &&
+				HMM_LenSqrV3(camera.up) > 1.0e-12f;
+			if (finite && non_degenerate)
+			{
+				camera.forward = HMM_NormV3(camera.forward);
+				camera.up = HMM_NormV3(camera.up);
+				if (fabsf(HMM_DotV3(camera.forward, camera.up)) < 0.999f)
+				{
+					scene_update.editor_camera = camera;
+				}
+			}
+		}
+	}
 
 	// process images from update (pixels copied here — the flatbuffer memory
 	// dies with this function; the drain frees them after GPU upload)
@@ -1281,6 +1319,33 @@ void live_link_drain_channels()
 		state.data_oriented.last_import = import_stats;
 		state.data_oriented.import_history.add(import_stats);
 		state.data_oriented.selected_import_history_index = (i32) state.data_oriented.import_history.length() - 1;
+
+		if (!state.debug_camera.live_link_initialization_complete)
+		{
+			state.debug_camera.live_link_initialization_complete = true;
+			if (scene_update.editor_camera)
+			{
+				state.debug_camera.camera = *scene_update.editor_camera;
+				const Camera& camera = state.debug_camera.camera;
+				printf(
+					"Debug camera initialized from Blender viewport: "
+					"location=(%.3f, %.3f, %.3f) forward=(%.3f, %.3f, %.3f) up=(%.3f, %.3f, %.3f)\n",
+					camera.location.X,
+					camera.location.Y,
+					camera.location.Z,
+					camera.forward.X,
+					camera.forward.Y,
+					camera.forward.Z,
+					camera.up.X,
+					camera.up.Y,
+					camera.up.Z
+				);
+			}
+			else
+			{
+				printf("Debug camera using built-in fallback; first Live Link update had no valid Blender viewport camera\n");
+			}
+		}
 
 		// Runtime clones borrow catalog allocations, so remove them before any
 		// template in this complete Live Link batch can be replaced or deleted.

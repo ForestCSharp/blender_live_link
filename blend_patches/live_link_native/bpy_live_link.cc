@@ -103,6 +103,58 @@ struct PyPtr {
   }
 };
 
+struct EditorCameraData {
+  std::array<float, 3> location;
+  std::array<float, 3> forward;
+  std::array<float, 3> up;
+};
+
+bool editor_camera_from_py(PyObject *value, std::optional<EditorCameraData> &r_camera)
+{
+  r_camera.reset();
+  if (!value || value == Py_None) {
+    return true;
+  }
+
+  PyPtr sequence(PySequence_Fast(value, "editor_camera must be None or a sequence of 9 floats"));
+  if (!sequence) {
+    return false;
+  }
+  if (PySequence_Fast_GET_SIZE(sequence.value) != 9) {
+    PyErr_SetString(PyExc_ValueError, "editor_camera must contain exactly 9 floats");
+    return false;
+  }
+
+  std::array<float, 9> values;
+  for (int index = 0; index < 9; index++) {
+    const double item = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence.value, index));
+    if (PyErr_Occurred()) {
+      return false;
+    }
+    if (!std::isfinite(item)) {
+      PyErr_SetString(PyExc_ValueError, "editor_camera values must be finite");
+      return false;
+    }
+    values[index] = float(item);
+  }
+
+  const auto length_squared = [&](const int offset) {
+    return values[offset] * values[offset] + values[offset + 1] * values[offset + 1] +
+           values[offset + 2] * values[offset + 2];
+  };
+  if (length_squared(3) <= 1.0e-12f || length_squared(6) <= 1.0e-12f) {
+    PyErr_SetString(PyExc_ValueError, "editor_camera forward and up vectors must be non-zero");
+    return false;
+  }
+
+  r_camera = EditorCameraData{
+      {values[0], values[1], values[2]},
+      {values[3], values[4], values[5]},
+      {values[6], values[7], values[8]},
+  };
+  return true;
+}
+
 const char *id_name(const ID &id)
 {
   return id.name + 2;
@@ -2550,6 +2602,22 @@ void compare_image(DiffList &diffs, const std::string &path, const ll::Image &na
   compare_exact_vector(diffs, path + ".data", native_value.data(), python_value.data());
 }
 
+void compare_editor_camera(DiffList &diffs,
+                           const ll::EditorCamera *native_value,
+                           const ll::EditorCamera *python_value)
+{
+  compare_exact(
+      diffs, "update.editor_camera.present", native_value != nullptr, python_value != nullptr);
+  if (!native_value || !python_value) {
+    return;
+  }
+  compare_vec3(
+      diffs, "update.editor_camera.location", native_value->location(), python_value->location());
+  compare_vec3(
+      diffs, "update.editor_camera.forward", native_value->forward(), python_value->forward());
+  compare_vec3(diffs, "update.editor_camera.up", native_value->up(), python_value->up());
+}
+
 template<typename T, typename IdFn>
 std::unordered_map<int32_t, const T *> table_by_id(
     const flatbuffers::Vector<flatbuffers::Offset<T>> *values,
@@ -2602,7 +2670,9 @@ std::string describe_update(const ll::Update &update)
   std::ostringstream stream;
   stream << "objects=" << vector_size(update.objects()) << " deleted="
          << vector_size(update.deleted_object_uids()) << " materials=" << vector_size(update.materials())
-         << " images=" << vector_size(update.images()) << " reset=" << (update.reset() ? "true" : "false");
+         << " images=" << vector_size(update.images())
+         << " editor_camera=" << (update.editor_camera() ? "yes" : "no")
+         << " reset=" << (update.reset() ? "true" : "false");
   return stream.str();
 }
 
@@ -2627,6 +2697,7 @@ CompareResult compare_update_buffers_native(const uint8_t *native_data,
   DiffList diffs;
   diffs.max_diffs = std::max(max_diffs, 1);
   compare_exact(diffs, "update.reset", native_update->reset(), python_update->reset());
+  compare_editor_camera(diffs, native_update->editor_camera(), python_update->editor_camera());
   compare_exact_vector(
       diffs, "update.deleted_object_uids", native_update->deleted_object_uids(), python_update->deleted_object_uids());
 
@@ -2709,7 +2780,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
                                     PyObject *dependency_graph,
                                     bool reset,
                                     const char *update_reason,
-                                    int sequence)
+                                    int sequence,
+                                    PyObject *editor_camera)
 {
   auto start_time = std::chrono::steady_clock::now();
   Depsgraph *depsgraph = depsgraph_from_py(dependency_graph);
@@ -2725,6 +2797,11 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
 
   std::vector<int32_t> deleted_ids = deleted_ids_from_py(deleted_object_uids);
   if (PyErr_Occurred()) {
+    return nullptr;
+  }
+
+  std::optional<EditorCameraData> editor_camera_data;
+  if (!editor_camera_from_py(editor_camera, editor_camera_data)) {
     return nullptr;
   }
 
@@ -2768,18 +2845,33 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
   const double generation_seconds =
       std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
 
+  flatbuffers::Offset<ll::EditorCamera> editor_camera_offset = 0;
+  if (editor_camera_data) {
+    const ll::Vec3 location(editor_camera_data->location[0],
+                            editor_camera_data->location[1],
+                            editor_camera_data->location[2]);
+    const ll::Vec3 forward(editor_camera_data->forward[0],
+                           editor_camera_data->forward[1],
+                           editor_camera_data->forward[2]);
+    const ll::Vec3 up(
+        editor_camera_data->up[0], editor_camera_data->up[1], editor_camera_data->up[2]);
+    editor_camera_offset = ll::CreateEditorCamera(builder, &location, &forward, &up);
+  }
+
   const auto update = ll::CreateUpdate(builder,
                                        builder.CreateVector(reversed_copy(object_offsets)),
                                        builder.CreateVector(reversed_copy(deleted_ids)),
                                        builder.CreateVector(material_offsets),
                                        builder.CreateVector(image_offsets),
                                        reset,
-                                       generation_seconds);
+                                       generation_seconds,
+                                       editor_camera_offset);
   ll::FinishSizePrefixedUpdateBuffer(builder, update);
 
   PySys_WriteStdout(
       "Blender Live Link native make_update: sequence=%d reason=%s reset=%s objects=%zu "
-      "deleted=%zu materials=%zu images=%zu bytes=%zu generation_seconds=%.6f\n",
+      "deleted=%zu materials=%zu images=%zu editor_camera=%s bytes=%zu "
+      "generation_seconds=%.6f\n",
       sequence,
       update_reason,
       reset ? "true" : "false",
@@ -2787,6 +2879,7 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
       deleted_ids.size(),
       material_offsets.size(),
       image_offsets.size(),
+      editor_camera_data ? "yes" : "no",
       size_t(builder.GetSize()),
       generation_seconds);
 
