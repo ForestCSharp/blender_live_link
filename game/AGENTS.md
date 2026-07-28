@@ -1,0 +1,1 @@
+- walkthrough.html (in this directory) should be kept up to date with changes to this project
