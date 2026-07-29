@@ -270,7 +270,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				camera.up = HMM_NormV3(camera.up);
 				if (fabsf(HMM_DotV3(camera.forward, camera.up)) < 0.999f)
 				{
-					scene_update.editor_camera = camera;
+					scene_update.editor_camera = Camera{.location = camera.location, .forward = camera.forward, .up = UnitVectors::Up};
 				}
 			}
 		}
