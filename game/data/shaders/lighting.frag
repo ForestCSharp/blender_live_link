@@ -109,7 +109,7 @@ layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 frag_color;
 
-// ---- helpers (ports of game/ lighting.glsl + shader_common.h) ----
+// ---- shared lighting helpers ----
 
 float dist_squared(vec3 a, vec3 b)
 {
@@ -134,7 +134,7 @@ vec4 dither_noise()
 	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
 }
 
-// ---- light sampling (ports of game/ lighting.glsl:300-407) ----
+// ---- analytic light sampling ----
 
 vec3 sample_point_light(
 	PointLightData in_point_light,
@@ -170,7 +170,7 @@ vec3 sample_spot_light(
 {
 	vec3 light_location = in_spot_light.location.xyz;
 
-	// Spot light cone check (hard edge — edge_blend unused, game/ parity)
+	// Spot light cone check uses a hard edge; edge_blend is currently unused.
 	vec3 light_to_world_pos = normalize(in_surface_position - light_location);
 	float surface_cosine_angle = cosine_angle(light_to_world_pos, in_spot_light.direction.xyz);
 	float outer_cone_cosine_angle = cos(in_spot_light.spot_angle_radians);
@@ -223,7 +223,7 @@ vec3 sample_sun_light(
 const float EVSM_POSITIVE_EXPONENT = 5.0;
 const float EVSM_NEGATIVE_EXPONENT = 5.0;
 
-// Matches the depth-pass warp exactly (game/ shadow_depth.glsl:52-62)
+// Keep this warp synchronized with the shadow-depth write pass.
 vec2 evsm_warp_depth(float depth)
 {
 	float centered_depth = depth * 2.0 - 1.0;
@@ -382,9 +382,9 @@ float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
 const int SHADOW_CASCADE_PLACEMENT_FRUSTUM = 0;
 const int SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES = 1;
 
-// Cascade selection (game/ lighting.glsl:420-463). Frustum mode: first
-// cascade whose view-forward distance covers the receiver. CenteredSquares
-// mode: first cascade whose square actually contains the receiver.
+// Frustum mode selects the first cascade whose view-forward distance covers
+// the receiver. CenteredSquares mode selects the first cascade whose square
+// contains the receiver.
 int select_shadow_cascade(vec3 in_surface_position)
 {
 	if (shadow_cascade_placement_mode == SHADOW_CASCADE_PLACEMENT_CENTERED_SQUARES)

@@ -10,7 +10,7 @@ set -o pipefail
 #    (run the repo root ./build.sh once)
 #
 # Note: no Vulkan library is linked — volk dlopens the loader at runtime.
-# Don't run game/ and game_old/ at the same time; both listen on port 65432.
+# Only one runtime instance can listen on port 65432 at a time.
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
@@ -301,8 +301,7 @@ if [[ $OS_ARG = Mac ]]; then
 		./bin/game
 	fi
 elif [[ $OS_ARG = Windows ]]; then
-	# NOTE: drafted from game_old/build.sh's Windows branch + the reference
-	# project's build.bat — not yet tested on a Windows machine.
+	# This branch has not yet been tested on a Windows machine.
 	# Requires: clang + llvm-ar on PATH, VULKAN_SDK env var set by the SDK
 	# installer, glslc on PATH.
 	rm -rf bin/game.exe
@@ -349,8 +348,7 @@ elif [[ $OS_ARG = Windows ]]; then
 	fi
 
 	# Compile Jolt as a static library when its vendored directory changes.
-	# (NOTE: correct extern/Jolt path — game_old/'s Windows branch still
-	# points at a stale location. Keep JPH_* defines empty on both compiles.)
+	# Keep JPH_* defines empty on both compiles.
 	JOLT_LIBRARY="$BUILD_CACHE_DIR/jolt.lib"
 	if dependency_needs_rebuild jolt extern/Jolt "$JOLT_LIBRARY"; then
 		echo "Building Jolt ($GAME_BUILD_CONFIG)"

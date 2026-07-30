@@ -3,7 +3,7 @@
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
 
-// CPU frustum culling (port of game/src/render/culling.h:24-104).
+// CPU frustum culling.
 // Frustum/frustum_create/frustum_cull live in core/types.h.
 
 struct CullResult
@@ -16,7 +16,7 @@ struct CullResult
 };
 
 // Culls scene mesh objects against a view-projection frustum. Skinned meshes
-// bypass the frustum test (no animated bounds yet — game/ parity TODO).
+// bypass the frustum test because animated bounds are not yet available.
 CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bounds_padding)
 {
 	CullResult out_cull_result;
@@ -42,7 +42,7 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 		}
 
 		// TODO: Compute animated bounds for skinned meshes so they can be
-		// frustum culled safely (game/ parity)
+		// frustum culled safely.
 		if (object.mesh.has_skinned_vertices)
 		{
 			out_cull_result.object_ids.add(mesh_object_id);

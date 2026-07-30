@@ -11,12 +11,12 @@
 #include <cfloat>
 #include <cmath>
 
-// Cascaded EVSM shadow maps (port of game/src/render/shadow_depth_pass.h,
-// Frustum placement mode only — CenteredSquares arrives in 3b).
+// Cascaded EVSM shadow maps using frustum or centered-squares placement.
+// Cascade view-projection matrices are computed on the CPU.
 // Array pass: one 2048x2048 RGBA16F moments image with MAX_SHADOW_CASCADES
 // layers + throwaway D32; each slice renders one cascade. Exponential
 // doubling splits (100 * scale * 2^(i-1)), sphere-bounded frustum fit,
-// no texel snapping (game/ parity).
+// and no texel snapping.
 
 namespace ShadowDepthPass
 {
@@ -42,7 +42,7 @@ namespace ShadowDepthPass
 	inline VkPipeline skinned_pipeline = VK_NULL_HANDLE;
 	inline VkPipeline bound_pipeline = VK_NULL_HANDLE;
 
-	// Reverse-Z ortho: near/far swapped (game/ shadow_depth_pass.h:21-28)
+	// Reverse-Z orthographic projection swaps near and far.
 	inline HMM_Mat4 mat4_orthographic(f32 left, f32 right, f32 bottom, f32 top, f32 near_plane, f32 far_plane)
 	{
 		return HMM_Orthographic_RH_ZO(left, right, bottom, top, far_plane, near_plane);
@@ -272,8 +272,8 @@ namespace ShadowDepthPass
 		skinned_pipeline = create_pipeline(ctx, "bin/shaders/shadow_depth_skinned.vert.spv", /*in_skinned*/ true);
 	}
 
-	// Computes all cascade light view-projections on the CPU (port of game/
-	// shadow_depth_pass.h:296-408, both placement modes). Must run before the
+	// Computes all cascade light view-projections on the CPU for either
+	// placement mode. Must run before the
 	// lighting fs_params upload each frame — the matrices feed both the shadow
 	// draw and the lighting shader's receiver reprojection. Returns true when
 	// the matrices changed and the shadow map should re-render this frame;
@@ -321,7 +321,7 @@ namespace ShadowDepthPass
 		for (i32 cascade_idx = 0; cascade_idx < cascade_count; ++cascade_idx)
 		{
 			// Centered squares: axis-aligned ortho squares around a point
-			// ahead of the camera (game/ shadow_depth_pass.h:306-333)
+			// ahead of the camera.
 			if (in_state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
 			{
 				const f32 cascade_half_extent = get_cascade_distance(in_state, cascade_idx);

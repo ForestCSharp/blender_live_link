@@ -1,8 +1,8 @@
 #version 450
 
 // Projects a probe's lighting cubemap onto SH9 coefficients or fits SG9
-// lobes (port of game/data/shaders/probe_radiance_projection.glsl cs).
-// One workgroup per probe; lanes 0-8 own one coefficient/lobe each.
+// lobes. One workgroup processes each probe, and lanes 0-8 each own one
+// coefficient or lobe.
 
 #include "probe_radiance.h"
 

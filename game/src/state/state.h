@@ -25,8 +25,8 @@ static constexpr i32 MIN_RENDER_RESOLUTION_PERCENTAGE = 5;
 static constexpr i32 MAX_RENDER_RESOLUTION_PERCENTAGE = 100;
 static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 50;
 
-// Frame-order pass registry (game/'s lives in state.h too; game/'s full list
-// slots back in here as passes are ported in Phase 3)
+// Frame-order pass registry and render limits shared across scene state and
+// render passes.
 static constexpr i32 MAX_SHADOW_CASCADES = 4;
 
 enum class EShadowCascadePlacementMode : i32
@@ -99,11 +99,11 @@ enum class ERenderPass : i32
 };
 
 // ---- Live link messages ----
-// game_old/ registers images/materials on the live-link thread; game must not
-// (GPU image creation submits to the graphics queue, and the id->index maps
-// are read by the main thread). Instead the parse thread packages one
+// Images and materials must not be registered on the live-link thread: GPU
+// image creation submits to the graphics queue, and the id->index maps are
+// read by the main thread. Instead the parse thread packages one
 // SceneUpdate per flatbuffer Update and ALL registration happens at drain
-// on the main thread, preserving game/'s ordering:
+// on the main thread in this order:
 // images -> materials -> objects -> deleted -> reset.
 
 struct PendingImage
@@ -200,7 +200,7 @@ struct MechInstance
 	std::string last_diagnostic_signature;
 };
 
-// Global game state, in the shape of game/'s State struct
+// Global runtime state.
 struct State
 {
 	struct RuntimeState
@@ -287,8 +287,8 @@ struct State
 		std::optional<i32> primary_sun_id;
 		std::optional<i32> player_character_id;
 
-		// Per-kind object id lists rebuilt lazily when dirty (port of game/'s
-		// scene indexes)
+		// Per-kind object id lists are rebuilt lazily when dirty and cached
+		// until the next scene mutation.
 		struct IndexState
 		{
 			bool dirty = true;
@@ -323,15 +323,15 @@ struct State
 	} live_link;
 
 	// Batched per-object GPU data, rebuilt each frame and triple-buffered so
-	// the CPU never writes a buffer a frame in flight still reads
-	// (port of game/src/state/state.h:156-163)
+	// the CPU never writes a buffer that a frame in flight still reads.
+	// Each ring slot has an independent allocation.
 	ResizableGpuStreamRing<ObjectData> render_objects;
 
-	// Registered materials (port of game/src/state/state.h:203-208). The GPU
+	// Registered materials. The GPU
 	// buffer is a fixed MAX_MATERIALS-slot stream buffer created at init and
 	// kept alive across resets — descriptor set 0 binding 2 is written every
-	// frame and must always have a buffer (deviation from game/'s
-	// destroy-on-reset).
+	// frame and must always have a buffer.
+	// Registered entries are append-only between resets.
 	struct MaterialState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
@@ -339,8 +339,8 @@ struct State
 		GpuBuffer<Material> buffer;
 	} materials;
 
-	// Registered images backing the bindless texture array
-	// (port of game/src/state/state.h:210-216 minus debug fields)
+	// Registered images backing the bindless texture array. Indices remain
+	// stable until a scene reset.
 	struct ImageState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
@@ -351,15 +351,15 @@ struct State
 
 	// Per-frame skin matrix arena: every skinned mesh's matrices are packed
 	// into one SSBO each frame (mesh.skin_matrix_arena_offset indexes it).
-	// Triple-buffered ring like the render-object snapshot. Deviation from
-	// game_old/'s per-mesh stream buffers: game's mapped stream buffers would
-	// race the frame in flight; the ring is the same fix the snapshot uses.
+	// The triple-buffered ring prevents mapped writes from racing a frame in
+	// flight, using the same lifetime scheme as the render-object snapshot.
+	// Offsets are valid only for the current ring slot.
 	ResizableGpuStreamRing<HMM_Mat4> skin_matrices;
 
 	// Packed light data for the lighting pass. CPU arrays rebuilt when
 	// needs_data_update; GPU side is a 3-ring per type uploaded every frame
-	// (same hazard fix as the snapshot — game's mapped stream buffers
-	// would otherwise race frames in flight)
+	// so mapped writes cannot race frames in flight.
+	// Point, spot, and sun lights use independent rings.
 	struct LightingState
 	{
 		bool direct_enable = true;
@@ -377,7 +377,7 @@ struct State
 
 	struct TonemappingState
 	{
-		f32 exposure_bias = 1.5f;	// game/ parity (state.h:361)
+		f32 exposure_bias = 1.5f;	// Default scene exposure bias.
 	} tonemapping;
 
 	struct GiState
@@ -431,8 +431,8 @@ struct State
 		bool rendering_enable = true;
 	} sky;
 
-	// Cascaded shadow settings (minimal port of game/'s ShadowState;
-	// CenteredSquares mode + blur + debug fields arrive in 3b)
+	// Cascaded shadow settings shared by depth, blur, and lighting passes.
+	// Placement supports frustum-fit and centered-squares modes.
 	struct ShadowState
 	{
 		bool rendering_enable = true;
@@ -506,9 +506,9 @@ struct State
 		bool debug_show_coc = false;
 	} dof;
 
-	// Fog controller selection (data only — fs_params + the fog render pass
-	// arrive in Phase 3). Deviation from game/: active_fog_controller_id
-	// lives here rather than in SceneState.
+	// Fog controller selection. The lowest-id enabled and visible controller
+	// supplies the fog render pass parameters.
+	// The active id is refreshed as scene visibility changes.
 	struct FogState
 	{
 		bool debug_active = true;
@@ -686,8 +686,8 @@ void scene_ensure_indexes(State& in_state)
 	scene_record_index_counts(in_state);
 }
 
-// Grows all snapshot buffers (doubling) when the mesh count exceeds capacity
-// (port of game/src/state/state.h:557-587). Old buffers go through the
+// Grows all snapshot buffers (doubling) when the mesh count exceeds capacity.
+// Old buffers go through the
 // deletion queue, so this is safe while frames are in flight.
 void render_object_snapshot_ensure_capacity(State& in_state, i32 in_required_capacity)
 {
@@ -699,7 +699,7 @@ void render_object_snapshot_ensure_capacity(State& in_state, i32 in_required_cap
 }
 
 // Rebuilds the per-object GPU snapshot for this frame and advances the buffer
-// ring (port of game/src/state/state.h:589-637). Runs before begin_frame:
+// ring. Runs before begin_frame:
 // with a 3-buffer ring and 2 frames in flight, the buffer written here was
 // last consumed 3 frames ago.
 void build_render_object_snapshot(State& in_state)
@@ -742,8 +742,8 @@ GpuBuffer<ObjectData>& get_render_object_snapshot_buffer(State& in_state)
 	return in_state.render_objects.current();
 }
 
-// Fixed-size materials SSBO, created once (port of game/'s
-// init_materials_buffer, state.h:722-743)
+// Fixed-size materials SSBO, created once and kept valid across scene resets.
+// Descriptor binding 2 always points at this allocation.
 void init_materials_buffer(State& in_state)
 {
 	in_state.materials.buffer = GpuBuffer((GpuBufferDesc<Material>){
@@ -759,7 +759,7 @@ void init_materials_buffer(State& in_state)
 
 // Uploads the whole registered-material array. Append-only updates are safe
 // vs frames in flight: existing prefix bytes are rewritten with identical
-// values (registered materials never change — game/ parity).
+// values because registered materials never change.
 void update_materials_buffer(State& in_state)
 {
 	if (in_state.materials.items.length() == 0)
@@ -923,8 +923,8 @@ void init_lighting_buffers(State& in_state)
 	}
 }
 
-// Rebuilds the packed CPU light arrays from the scene when dirty
-// (port of game/src/main.cpp:2830-2909)
+// Rebuilds the packed CPU light arrays from the scene when dirty.
+// The lighting pass uploads the packed arrays through per-type stream rings.
 void pack_lights(State& in_state)
 {
 	if (!in_state.lighting.needs_data_update)

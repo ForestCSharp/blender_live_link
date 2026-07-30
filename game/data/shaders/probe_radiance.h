@@ -1,8 +1,8 @@
 #ifndef PROBE_RADIANCE_H
 #define PROBE_RADIANCE_H
 
-// SH9/SG9 probe radiance basis helpers (port of game/data/shaders/
-// shader_common.h @block probe_radiance). GLSL-only.
+// SH9/SG9 probe radiance basis helpers for projection and evaluation.
+// GLSL-only.
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

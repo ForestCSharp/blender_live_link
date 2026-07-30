@@ -1,8 +1,8 @@
 #version 450
 
-// Wireframe mesh pass (port of game/data/shaders/wire_overlay.glsl mesh_vs):
-// manual vertex pulling from the mesh's vertex/index SSBOs so barycentrics
-// can be generated per-corner from the sequential gl_VertexIndex.
+// Wireframe mesh pass manually pulls vertices from the mesh's vertex and
+// index SSBOs so barycentrics can be generated per corner from sequential
+// gl_VertexIndex values.
 
 #include "shader_common.h"
 

@@ -14,7 +14,7 @@
 #include "render/culling.h"
 #include "state/state.h"
 
-// Probe lighting capture (port of game/src/render/lighting_capture.h):
+// Probe lighting capture:
 // renders the scene's G-buffer for 6 cube faces (Multi pass), lights each
 // face into a cubemap, renders radial-depth moments into a second cubemap,
 // projects both into one entry of the padded octahedral atlas, and
@@ -47,7 +47,7 @@ inline AtlasViewport get_atlas_viewport(int atlas_size, int render_size, int idx
 	return { grid_x * render_size, grid_y * render_size, render_size, render_size };
 }
 
-// Metal/D3D-convention cube face bases (game/ render_types.h:57-64)
+// Metal/D3D-convention cube face bases.
 inline const HMM_Vec3 CUBE_FORWARD_AND_UP[NUM_CUBE_FACES][2] = {
 	{ {  1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } },	// +X
 	{ { -1.0f,  0.0f,  0.0f }, {  0.0f, -1.0f,  0.0f } },	// -X
@@ -1110,8 +1110,8 @@ struct LightingCapture
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		const u32 frame_index = ctx->frame_index;
 
-		// Face cameras. game's uniform negative viewport provides the single
-		// Y flip (game/ flips the projection instead — same net orientation).
+		// Face cameras use a negative viewport height for the required Y flip,
+		// keeping all six faces consistently oriented.
 		const f32 fov = HMM_AngleDeg(90.0f);
 		HMM_Mat4 projection_matrix = mat4_perspective(fov, 1.0f);
 

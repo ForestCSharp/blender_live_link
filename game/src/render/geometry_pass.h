@@ -106,7 +106,7 @@ static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* 
 		.scissorCount = 1,
 	};
 
-	// CULL_NONE: game/ parity (geometry_pass.h uses SG_CULLMODE_NONE)
+	// Disable rasterizer culling; mesh winding is not constrained.
 	VkPipelineRasterizationStateCreateInfo rasterization = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.polygonMode = VK_POLYGON_MODE_FILL,

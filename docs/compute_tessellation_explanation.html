@@ -232,7 +232,7 @@
   <section class="card">
     <h2>Executive Summary</h2>
     <p>
-      Tessellation is a frame-local GPU geometry generation path. All tessellation modes now plan patch records in
+      Tessellation is a frame-local GPU geometry generation path. All tessellation modes plan patch records in
       compute. Fixed mode computes exact draw counts on the CPU from source triangle count and factor, while adaptive
       modes read back a tiny counter buffer for GPU-chosen counts. Draw passes ask each mesh for a
       <code>MeshRenderView</code>, so the same downstream rendering code can use either source geometry or tessellated
@@ -248,7 +248,7 @@
       <div class="card">
         <h3>Emission</h3>
         <p><span class="tag">compute</span><span class="tag">storage buffers</span></p>
-        <p>Generate interpolated vertices, Phong-smoothed positions, and triangle indices. Wire line indices are retained for legacy/debug paths.</p>
+        <p>Generate interpolated vertices, Phong-smoothed positions, triangle indices, and a line-list representation of triangle edges.</p>
       </div>
       <div class="card">
         <h3>Rendering</h3>
@@ -286,7 +286,7 @@ SSAO reads geometry pass position/normal outputs</code></pre>
 
   <h2>Patch Planning</h2>
   <p>
-    The renderer treats each source triangle as one or more tessellation patches, and <code>plan_patches</code> now writes
+    The renderer treats each source triangle as one or more tessellation patches, and <code>plan_patches</code> writes
     those patch records for every mode. Fixed mode uses a uniform factor supplied by the CPU. Per-mesh adaptive mode runs
     <code>measure_mesh_factor</code> first, then writes one patch per source triangle using that mesh-wide factor.
     Per-triangle adaptive mode chooses per-edge LODs, optional virtual patch splits, and per-patch factors directly in
@@ -305,8 +305,8 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
   </p>
   <p>
     In per-triangle mode, large source triangles split into virtual patches inside the planner shader before factor
-    selection. A virtual patch stores a smaller barycentric domain inside the original source triangle, so emission can
-    still read the same three source vertices while generating denser local geometry.
+    selection. A virtual patch stores a smaller barycentric domain inside the original source triangle, so emission
+    reads the same three source vertices while generating denser local geometry.
   </p>
   <p>
     Skinned source meshes are first converted into a mesh-local <code>Vertex</code> cache by a compute pass. The
@@ -334,7 +334,7 @@ generated_wire_index_count = generated_index_count * 2;</code></pre>
           Measures world-space edge angular size relative to the active camera, converts that to approximate pixels,
           and gives every patch in the mesh the highest factor needed by any mesh edge.
         </td>
-        <td>Keeping the legacy one-factor-per-mesh behavior for comparison and debugging.</td>
+        <td>Applying one stable factor across a mesh for inspection and debugging.</td>
       </tr>
       <tr>
         <td><code>AdaptiveAngularPerTriangle</code></td>
@@ -399,15 +399,15 @@ static_assert(sizeof(TessellationCounters) == 32);</code></pre>
       <tr>
         <td>Generated wire indices</td>
         <td><code>u32</code> / <code>TessellationIndex</code></td>
-        <td>Legacy/debug line index buffer. The anti-aliased shaded wireframe overlay reads triangle indices directly.</td>
+        <td>Line-list representation of every generated triangle edge.</td>
       </tr>
     </tbody>
   </table>
 
   <h2>Compute Shader Flow</h2>
   <p>
-    <code>tessellation.glsl</code> contains the compute entry points that plan and emit generated geometry. The CPU no
-    longer uploads patch records.
+    Dedicated compute shaders clear counters, measure mesh-wide factors, plan patches, and emit generated geometry.
+    The CPU supplies push constants and buffer capacities; patch records are written on the GPU.
   </p>
   <div class="grid">
     <div class="card">
@@ -445,7 +445,7 @@ static_assert(sizeof(TessellationCounters) == 32);</code></pre>
       <h3><code>emit_indices_gpu</code></h3>
       <p>
         Walks the triangular grid and emits <code>factor * factor</code> small triangles. It also emits three line
-        segments per generated triangle for legacy/debug wireframe data.
+        segments per generated triangle into the line-list index buffer.
       </p>
     </div>
   </div>
@@ -482,13 +482,14 @@ out_position = mix(linear_position, projected_position, phong_strength);</code><
   <h2>Render Pass Integration</h2>
   <p>
     Geometry consumers do not inspect tessellation settings directly. They call <code>mesh_get_render_view()</code>,
-    bind the returned buffers, and draw the returned counts.
+    bind the returned Vulkan buffers, and draw the returned counts.
   </p>
   <pre><code>MeshRenderView render_view = mesh_get_render_view(mesh);
 
-bindings.vertex_buffers[0] = render_view.vertex_buffer;
-bindings.index_buffer = render_view.index_buffer;
-sg_draw(0, render_view.index_count, 1);</code></pre>
+VkDeviceSize vertex_offset = 0;
+vkCmdBindVertexBuffers(command_buffer, 0, 1, &amp;render_view.vertex_buffer, &amp;vertex_offset);
+vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);</code></pre>
   <table>
     <thead>
       <tr>
@@ -528,22 +529,20 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
 
   <h2>Shaded Wireframe</h2>
   <p>
-    The visualization mode now runs after lighting and depth of field, before tonemapping. It copies the lit HDR image,
+    The visualization mode runs after lighting and depth of field, before tonemapping. It copies the lit HDR image,
     draws the active mesh triangles again, and computes wire coverage analytically from per-corner barycentric values
     in the fragment shader.
   </p>
-  <pre><code>if (wireframe.shaded_wireframe)
-{
-    copy_lit_color_to_wire_overlay();
-    sg_apply_pipeline(WireOverlayPass::get_mesh_overlay_pipeline(...));
-    bindings.views[0] = render_view.vertex_storage_view;
-    bindings.views[1] = render_view.index_storage_view;
-    sg_draw(0, render_view.index_count, 1);
-}</code></pre>
+  <pre><code>record wire overlay commands:
+    copy lit color into the overlay target
+    bind the Vulkan wire-overlay graphics pipeline
+    bind render_view.vertex_buffer and render_view.index_buffer as storage descriptors
+    push the object's render index
+    draw render_view.index_count vertices</code></pre>
   <p>
     The overlay samples the geometry position buffer for visibility rejection, so hidden triangles do not draw over
-    foreground geometry. It no longer writes fake wire material into the G-buffer or depends on hardware line
-    rasterization.
+    foreground geometry. Barycentric edge coverage is computed in the fragment shader, so the pass does not depend on
+    hardware line rasterization.
   </p>
 
   <h2>Controls And Stats</h2>
@@ -640,17 +639,18 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
     <div class="card">
       <h3>Triangle Patches</h3>
       <p>
-        Live-link meshes arrive triangulated, so tessellation still starts from triangles. Virtual patches split large
+        Live-link meshes arrive triangulated, so tessellation starts from triangles. Virtual patches split large
         triangles in barycentric space, but quad-aware topology is deferred until source polygon metadata exists.
       </p>
     </div>
     <div class="card">
       <h3>Readback Counts</h3>
       <p>
-        Sokol draw calls still use CPU-visible counts. Adaptive modes select factors and write patch records in compute,
-        then read back a tiny <code>TessellationCounters</code> buffer on Metal and D3D11. Fixed mode avoids readback
-        because its counts are exact from <code>source_triangle_count</code> and <code>fixed_factor</code>. Unsupported
-        backends warn and fall back for adaptive modes until their readback paths or indirect draw are implemented.
+        Indexed draws use CPU-visible counts because this path does not issue indirect draw commands. Adaptive modes
+        select factors and write patch records in compute, then copy a tiny <code>TessellationCounters</code> buffer
+        into host-visible staging memory. The CPU consumes the result after the in-flight frames complete and renders
+        the latest completed slot in the meantime. Fixed mode avoids readback because its counts are exact from
+        <code>source_triangle_count</code> and <code>fixed_factor</code>.
       </p>
     </div>
     <div class="card">
@@ -664,7 +664,7 @@ sg_draw(0, render_view.index_count, 1);</code></pre>
 
   <section class="note">
     <strong>Practical debug path:</strong>
-    start with <code>Fixed</code> mode at factor <code>1</code> to confirm source parity, switch to factors
+    start with <code>Fixed</code> mode at factor <code>1</code> to inspect the unsplit surface, switch to factors
     <code>2</code>, <code>4</code>, or <code>8</code> to inspect counts, then enable <code>Shaded Wireframe</code> and
     <code>Phong Strength</code> to see where smoothing changes the generated mesh.
   </section>
@@ -783,7 +783,8 @@ source vertex buffer:
           <td>Dispatches <code>emit_indices_gpu</code> across the slot's patch capacity.</td>
           <td>
             The shader walks each patch's triangular grid cells and emits <code>factor * factor</code> tiny triangles.
-            Indices are patch-local plus the patch's generated vertex offset. Legacy/debug line indices are also emitted.
+            Indices are patch-local plus the patch's generated vertex offset. A line-list representation of the edges
+            is emitted at the same time.
           </td>
           <td>Generated triangle index buffer filled at <code>generated_index_offset</code>.</td>
         </tr>
@@ -794,7 +795,7 @@ source vertex buffer:
             readback of <code>TessellationCounters</code>; rendering uses the latest completed non-overflowed slot, or
             the source mesh if no valid slot is ready.
           </td>
-          <td>Metal/D3D11 copy the counter buffer to CPU-readable staging memory for adaptive modes.</td>
+          <td>Vulkan copies the counter buffer to CPU-readable staging memory for adaptive modes.</td>
           <td>CPU-visible draw counts for the generated slot.</td>
         </tr>
         <tr>

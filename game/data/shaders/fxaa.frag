@@ -1,7 +1,7 @@
 #version 450
 
-// Simple luma-based FXAA over the tonemapped LDR target (port of
-// game/data/shaders/fxaa.glsl fs).
+// Simple luma-based FXAA over the tonemapped LDR target; local contrast
+// selects edge candidates and their sampling direction.
 
 layout(set = 0, binding = 0) uniform sampler2D color_tex;
 

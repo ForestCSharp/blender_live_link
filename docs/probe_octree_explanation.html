@@ -168,9 +168,9 @@
   <header>
     <h1>GI Probe Octree Placement Explained</h1>
     <p class="subtitle">
-      Probe placement is now built from a sparse, pruned octree instead of a fixed dense grid. The CPU builds the
-      layout from visible mesh bounds, shares probes across octree cell corners, uploads the compact structure to the
-      GPU, and the lighting shader walks the octree to find the best cell for each shaded point.
+      Probe placement uses a sparse, pruned octree. The CPU builds the layout from visible mesh bounds, shares probes
+      across octree cell corners, uploads the compact structure to the GPU, and the lighting shader walks the octree
+      to find the best cell for each shaded point.
     </p>
   </header>
 
@@ -179,9 +179,9 @@
     <span class="tag">Sparse octree</span>
     <span class="tag">GPU lookup</span>
     <p>
-      The important change is that probe density now follows scene occupancy. Child octree nodes are only created
-      where their bounds intersect visible mesh bounds. Missing child slots are pruned, and shader traversal falls
-      back to the deepest valid ancestor payload.
+      Probe density follows scene occupancy. Child octree nodes are only created where their bounds intersect visible
+      mesh bounds. Missing child slots are pruned, and shader traversal falls back to the deepest valid ancestor
+      payload.
     </p>
     <pre><code>if (!gi_scene_bounds_intersect_any(child_bounds, in_geometry_bounds))
 {
@@ -231,12 +231,12 @@ struct GI_OctreeNode
       <tr>
         <td><code>octree_nodes</code></td>
         <td>Bounds, child links, leaf flag, and payload index for each octree node.</td>
-        <td><code>lighting.glsl</code> octree traversal.</td>
+        <td><code>lighting.frag</code> octree traversal.</td>
       </tr>
       <tr>
         <td><code>cells</code></td>
         <td>Eight probe indices for the trilinear cell attached to an octree node.</td>
-        <td><code>lighting.glsl</code> probe interpolation.</td>
+        <td><code>lighting.frag</code> probe interpolation.</td>
       </tr>
       <tr>
         <td><code>probes</code></td>
@@ -306,7 +306,7 @@ HMM_Vec3 gi_scene_lattice_position(
   <h2>Cell Payloads</h2>
   <p>
     Every octree node that is actually created receives a <code>GI_Cell</code> payload. The payload stores eight corner
-    probes. Coarser nodes use a larger coordinate scale so their corners still line up with the max-depth lattice.
+    probes. Coarser nodes use a larger coordinate scale so their corners remain aligned with the max-depth lattice.
   </p>
   <pre><code>const i32 coord_scale = 1 &lt;&lt; (out_gi_scene.octree_depth - in_depth);
 const f32 cell_extent = gi_scene_cell_extent_from_depth(out_gi_scene, in_depth);
@@ -359,7 +359,7 @@ for (i32 corner_z = 0; corner_z &lt; 2; ++corner_z)
 }</code></pre>
   <p>
     If no children are created, the node remains a leaf. If some children are absent, those slots stay
-    <code>-1</code>. The shader can still shade points in that region by using the node's own payload.
+    <code>-1</code>. The shader shades points in that region by using the node's own payload.
   </p>
 
   <h2>Fallback Probe</h2>
@@ -381,7 +381,7 @@ out_gi_scene.probes.add(
 
   <h2>GPU Traversal</h2>
   <p>
-    <code>lighting.glsl</code> receives <code>gi_octree_node_count</code> and the
+    <code>lighting.frag</code> receives <code>gi_octree_node_count</code> and the
     <code>GIOctreeNodesBuffer</code>. It starts at node <code>0</code>, checks that the surface position is inside the
     root bounds, and then descends toward the child slot containing the position.
   </p>
@@ -424,15 +424,15 @@ out_gi_scene.probes.add(
     return payload_index;
 }</code></pre>
   <p>
-    Returning the last valid payload is what makes pruning work. A shaded point can land in a missing child slot and
-    still use the ancestor cell instead of failing the GI lookup.
+    Returning the last valid payload is what makes pruning work. A shaded point that lands in a missing child slot
+    uses the ancestor cell.
   </p>
 
   <h2>Probe Blending</h2>
   <p>
     Once the shader has a payload index, it loads the <code>GI_Cell</code>, computes local alpha from corner probes
     <code>0</code> and <code>7</code>, and trilinearly blends the eight probe samples. Existing normal-facing,
-    occlusion, and weight-threshold logic still apply after the octree lookup.
+    occlusion, and weight-threshold logic apply after the octree lookup.
   </p>
   <pre><code>GI_Cell cell = gi_cells[cell_index];
 
@@ -493,14 +493,14 @@ for (int i = 0; i &lt; 8; ++i)
     </tbody>
   </table>
   <p>
-    Probe capture still happens incrementally. <code>gi_scene_update()</code> captures up to
+    Probe capture happens incrementally. <code>gi_scene_update()</code> captures up to
     <code>probes_to_update_per_frame</code> probes per frame, assigns atlas slots lazily, and updates the probes buffer
     when newly assigned atlas indices need to reach the GPU.
   </p>
 
   <h2>Debug UI</h2>
   <p>
-    The Global Illumination panel now exposes the octree layout directly. It shows depth, node count, payload count,
+    The Global Illumination panel exposes the octree layout directly. It shows depth, node count, payload count,
     non-fallback probe count, atlas usage, scene bounds, occupied cell extent range, and maximum radial depth.
   </p>
   <pre><code>ImGui::SliderInt("GI Octree Depth", &amp;state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);

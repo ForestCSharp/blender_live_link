@@ -1,8 +1,8 @@
 #version 450
 
-// Hemisphere-kernel SSAO over the G-buffer (port of game/data/shaders/
-// ssao.glsl fs). Runs at half render resolution; output is blurred before
-// lighting samples it.
+// Hemisphere-kernel SSAO samples view-space positions around each G-buffer
+// surface. The pass runs at half render resolution, and its output is
+// blurred before lighting samples it.
 
 #include "ssao_constants.h"
 

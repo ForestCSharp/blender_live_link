@@ -1,14 +1,14 @@
 #version 450
 
 // Bakes the atmosphere into a 256x256 octahedral map, re-run only when the
-// sun direction changes (port of game/data/shaders/sky_bake.glsl)
+// sun direction changes.
 
 #include "octahedral_helpers.h"
 #include "sky_atmosphere.h"
 
 layout(push_constant) uniform PushConstants
 {
-	vec4 sun_dir;	// xyz = direction toward the sun (game/ convention)
+	vec4 sun_dir;	// xyz = direction toward the sun
 } pc;
 
 layout(location = 0) in vec2 uv;

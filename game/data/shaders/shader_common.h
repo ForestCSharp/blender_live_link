@@ -24,9 +24,9 @@
 #define MAX_BINDLESS_IMAGES 128
 
 // Per-frame data: camera + primary sun. std140 (all members 16-byte aligned).
-// sun_direction.xyz is the direction the light TRAVELS (game/ convention:
-// (0,0,-1) rotated by the sun object's rotation); shaders negate it to get
-// the surface-to-light vector.
+// sun_direction.xyz is the direction the light travels: local (0,0,-1)
+// rotated by the sun object's rotation. Shaders negate it to get the
+// surface-to-light vector.
 struct PerFrameData
 {
 	mat4 view;
@@ -39,8 +39,8 @@ struct PerFrameData
 	vec4 sun_color;			// rgb = light.color * sun.power; w unused
 };
 
-// Per-object data. std430, 144-byte stride — matches game/'s
-// geometry_ObjectData_t exactly (mat4 + mat4 + int + 12 bytes pad).
+// Per-object data uses a std430-compatible 144-byte stride: two mat4 values,
+// one int, and 12 bytes of padding.
 struct ObjectData
 {
 	mat4 model_matrix;
@@ -51,9 +51,9 @@ struct ObjectData
 	int _pad2;
 };
 
-// Light data for the lighting pass SSBOs. Byte-identical to game/'s
-// lighting_*Light_t layouts; trailing vec3s become vec4 (std430 vec3 has
-// vec4 alignment, so the layout is unchanged — .xyz used, .w padding).
+// Light data for the lighting-pass SSBOs uses byte-identical C++ and GLSL
+// layouts. Three-component values use vec4 storage because std430 gives
+// vec3 the same alignment; .xyz contains data and .w is padding.
 // Named *Data to avoid colliding with the C++ gameplay Light structs.
 
 struct PointLightData	// 48 bytes
@@ -88,8 +88,8 @@ struct SunLightData		// 64 bytes
 	vec4 direction;		// xyz = light travel direction
 };
 
-// Material. std430, 64-byte stride — field order matches game/'s
-// geometry_Material_t exactly (don't "fix" the image-index ordering).
+// Material data uses a std430-compatible 64-byte stride. Field order is
+// part of the GPU ABI; keep the image-index ordering unchanged.
 struct Material
 {
 	vec4 base_color;
@@ -111,8 +111,8 @@ layout(set = 0, binding = 0, std140) uniform PerFrameBlock
 	PerFrameData per_frame;
 };
 
-// Named object_data_array (game/ parity) — "object_data" is a reserved
-// address-space keyword in Metal, which breaks MoltenVK's SPIRV->MSL pass
+// Named object_data_array because "object_data" is a reserved address-space
+// keyword in Metal, which breaks MoltenVK's SPIRV->MSL pass
 layout(set = 0, binding = 1, std430) readonly buffer ObjectDataBlock
 {
 	ObjectData object_data_array[];
@@ -136,8 +136,8 @@ layout(set = 0, binding = 4) uniform texture2D scene_textures[MAX_BINDLESS_IMAGE
 layout(set = 0, binding = 5) uniform sampler scene_sampler;
 #define SCENE_TEXTURE(image_index) scene_textures[nonuniformEXT(image_index)]
 
-// Weighted 4-bone skin matrix (port of game/'s get_skin_matrix,
-// shader_common.h:88-101); identity when total weight is ~zero
+// Weighted 4-bone skin matrix; identity when total weight is ~zero.
+// in_base_offset selects the mesh's slice of the per-frame matrix arena.
 mat4 get_skin_matrix(int in_base_offset, vec4 in_joint_indices, vec4 in_joint_weights)
 {
 	float total_weight = in_joint_weights.x + in_joint_weights.y + in_joint_weights.z + in_joint_weights.w;

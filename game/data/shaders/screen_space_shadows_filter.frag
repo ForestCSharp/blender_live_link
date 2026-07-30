@@ -1,7 +1,7 @@
 #version 450
 
-// Edge-aware smoothing of the raw contact-shadow mask (port of
-// game/data/shaders/screen_space_shadows.glsl filter_fs).
+// Edge-aware smoothing of the raw contact-shadow mask using the captured
+// surface positions and normals.
 
 layout(set = 0, binding = 0) uniform filter_fs_params
 {

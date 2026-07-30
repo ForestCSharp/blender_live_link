@@ -8,8 +8,8 @@
 #include "shader_common.h"
 
 static_assert(sizeof(PerFrameData) == 320, "PerFrameData must match its std140 layout (vec4/mat4 members only)");
-static_assert(sizeof(ObjectData) == 144, "ObjectData must match game/'s geometry_ObjectData_t stride");
-static_assert(sizeof(Material) == 64, "Material must match game/'s geometry_Material_t stride");
+static_assert(sizeof(ObjectData) == 144, "ObjectData must match the geometry shader SSBO stride");
+static_assert(sizeof(Material) == 64, "Material must match the geometry shader SSBO stride");
 
 // Descriptor set 0 plumbing shared by scene passes, plus the sampled-input
 // set used by fullscreen passes (copy-to-swapchain now, post passes later).

@@ -180,7 +180,7 @@ namespace flatbuffer_helpers
 
 	// Column-major passthrough: flatbuffer stores 16 floats column-major,
 	// HMM Elements[col][row] is column-major, GLSL mat4 is column-major —
-	// no transpose anywhere (port of game/src/main.cpp:221-239)
+	// no transpose is required.
 	HMM_Mat4 to_hmm_mat4(const Blender::LiveLink::Matrix* in_flatbuffers_matrix)
 	{
 		HMM_Mat4 out_matrix = HMM_M4D(1.0f);
@@ -434,7 +434,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 					printf("\tDropping malformed mesh vertex streams on object UID: %i\n", unique_id);
 				}
 
-				// Check for skinning data (port of game/src/main.cpp:816-864)
+				// Parse optional skinning data.
 				SkinnedVertex* skinned_vertices = nullptr;
 				u32 skin_matrix_count = 0;
 				i32 armature_id = object_mesh->armature_id();
@@ -502,8 +502,8 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				}
 
 				// Material ids stay raw here; resolve_mesh_material_indices
-				// maps them to indices at drain (game/ resolves at parse, but
-				// game registers materials on the main thread)
+				// maps them to indices when the main thread drains this update.
+				// Registration deliberately happens after parsing.
 				u32 num_material_indices = 0;
 				i32* material_indices = nullptr;
 				if (auto flatbuffer_material_ids = object_mesh->material_ids())
@@ -544,7 +544,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 				}
 			}
 
-			// Armature: bones + animation clips (port of game/src/main.cpp:936-1017)
+			// Parse armature bones and animation clips.
 			if (auto object_armature = object->armature())
 			{
 				game_object.has_armature = true;
@@ -979,8 +979,8 @@ void live_link_thread_function()
 }
 
 // Registers one image (main thread): creates + uploads the GPU image backing
-// a bindless array slot (port of game/src/main.cpp:264-309). Takes ownership
-// of pending.pixels (frees in all paths).
+// a bindless array slot. Takes ownership of pending.pixels and frees it in
+// all paths.
 void register_image(const PendingImage& in_pending)
 {
 	if (state.images.id_to_index.contains(in_pending.unique_id))
@@ -997,7 +997,7 @@ void register_image(const PendingImage& in_pending)
 	}
 
 	// UNORM (not SRGB): the addon sends linear-encoded bytes (Blender
-	// image.pixels are scene-linear floats * 255) — game/ parity. Banding in
+	// image.pixels are scene-linear floats * 255). Banding in
 	// darks is the known tradeoff until the addon sends sRGB-encoded data.
 	GpuImage image = gpu_image_create_from_data(
 		&state.vk,
@@ -1013,8 +1013,8 @@ void register_image(const PendingImage& in_pending)
 	state.images.items.add(image);
 }
 
-// Images are only destroyed on scene reset (no individual removal — game/
-// parity). Retirement keeps old views/allocations alive until their frame fence.
+// Images are only destroyed on scene reset; individual removal is unsupported.
+// Retirement keeps old views/allocations alive until their frame fence.
 void reset_images()
 {
 	if (state.images.items.length() > 0)
@@ -1034,8 +1034,8 @@ void reset_images()
 }
 
 // Registers one material (main thread). Returns true when it was newly
-// appended (port of game/src/main.cpp:320-384). Updates to an already
-// registered id are ignored until a scene reset — game/ parity.
+// appended. Updates to an already registered id are ignored until a scene
+// reset.
 bool register_material(const PendingMaterial& in_pending)
 {
 	if (state.materials.id_to_index.contains(in_pending.unique_id))
@@ -1062,7 +1062,7 @@ bool register_material(const PendingMaterial& in_pending)
 	};
 
 	// Resolve image ids -> bindless indices (images in the same update were
-	// registered just before materials; id 0 = no image, game/'s `> 0` guard)
+	// registered just before materials; id 0 means no image).
 	auto resolve_image_index = [](i32 in_image_id) -> i32
 	{
 		if (in_image_id <= 0)
@@ -1111,7 +1111,7 @@ void resolve_mesh_material_indices(Mesh& in_mesh)
 
 // Drains SceneUpdate messages on the main thread. GPU buffer destruction for
 // replaced/deleted objects routes through the deletion queue, so this is safe
-// while frames are in flight. Per-message order mirrors game/'s parse order:
+// while frames are in flight. Per-message processing order is:
 // images -> materials -> objects -> deleted -> reset.
 void live_link_drain_channels()
 {
@@ -1193,14 +1193,14 @@ void live_link_drain_channels()
 			}
 
 			// Create the Jolt body on the drained copy BEFORE the map insert
-			// (the JPH::Body* copies into the map — game/ main.cpp:2010)
+			// so the JPH::Body* is copied into the map.
 			if (updated_object.has_rigid_body)
 			{
 				object_add_jolt_body(updated_object);
 			}
 
-			// Finalize the character here too (parse only fills settings —
-			// Jolt creation is main-thread; deviation from game/)
+			// Finalize the character here too: parsing only fills settings,
+			// because Jolt objects must be created on the main thread.
 			if (updated_object.has_character)
 			{
 				updated_object.character = character_create(jolt_state, updated_object.character.settings);
@@ -1249,7 +1249,7 @@ void live_link_drain_channels()
 }
 
 // Derives the internal render size from the window size and resolution
-// percentage (port of game/src/main.cpp:1356-1370)
+// percentage.
 void update_render_resolution()
 {
 	state.window.resolution_percentage = CLAMP(
@@ -1266,8 +1266,8 @@ void update_render_resolution()
 	state.window.render_height = MAX(1, (i32)(source_height * scale + 0.5f));
 }
 
-// Resizes all pass targets when the framebuffer size changed (port of
-// game/src/main.cpp:1372-1400). Swapchain-type passes track the window;
+// Resizes all pass targets when the framebuffer size changes.
+// Swapchain-type passes track the window;
 // everything else tracks the scaled render resolution.
 void handle_resize(bool in_force = false)
 {
@@ -1306,8 +1306,8 @@ void handle_resize(bool in_force = false)
 }
 
 // Camera-relative WASD player movement, Shift sprint, Space jump
-// (port of game/src/main.cpp:1811-1880). Disabled while the debug camera is
-// active or no player-controlled character exists.
+// is disabled while the debug camera is active or when no player-controlled
+// character exists.
 void update_player_character_control(f32 in_delta_time)
 {
 	if (!state.scene.player_character_id || state.debug_camera.active)
@@ -1379,9 +1379,9 @@ void update_player_character_control(f32 in_delta_time)
 	character_move(player_character_state, move_direction, jump, in_delta_time);
 }
 
-// Copies Jolt body transforms back into object transforms every frame
-// (unconditional — a no-op while paused since bodies don't move;
-// port of game/src/main.cpp:1800-1809)
+// Copies Jolt body transforms back into object transforms every frame.
+// This is a no-op while paused because bodies do not move.
+// The object transforms therefore remain unchanged while paused.
 void update_physics_backed_object_transforms()
 {
 	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
@@ -1391,7 +1391,7 @@ void update_physics_backed_object_transforms()
 	}
 }
 
-// ---- Skinned animation (ports of game/src/main.cpp:445-575) ----
+// ---- Skinned animation ----
 
 void rewind_skinned_animations()
 {
@@ -1513,9 +1513,9 @@ void pack_skinned_animation_matrices()
 	skin_matrix_arena_upload(state);
 }
 
-// Picks the active fog controller: lowest-uid enabled+visible controller
-// (selection half of game/src/main.cpp:608-666; the fs_params packing is
-// Phase 3 with the fog render pass)
+// Picks the active fog controller: the lowest-uid enabled and visible
+// controller supplies the fog render pass parameters.
+// Selection is refreshed after live-link updates.
 void refresh_active_fog_controller()
 {
 	const std::optional<i32> previous_id = state.fog.active_fog_controller_id;
@@ -1553,7 +1553,7 @@ void refresh_active_fog_controller()
 }
 
 // Keeps state.scene.primary_sun_id pointing at a valid sun object, rescanning
-// the light index when the cached id goes stale (port of game/src/main.cpp:577-606)
+// the light index when the cached id goes stale.
 void refresh_primary_sun_id()
 {
 	if (state.scene.primary_sun_id)
@@ -1828,8 +1828,8 @@ void update_debug_camera(f32 in_delta_time)
 	}
 }
 
-// Player camera control: mouse-orbit + follow the controlled object
-// (port of game/src/main.cpp:2725-2763)
+// Player camera control orbits around and follows the controlled object.
+// The debug camera takes precedence when active.
 void update_camera_control(f32 in_delta_time)
 {
 	if (!state.scene.camera_control_id || state.debug_camera.active)
@@ -2062,8 +2062,8 @@ void frame(f32 in_delta_time)
 	ImGuiLayer::draw_controls(state, gi_scene);
 
 	// View + Projection matrix setup (TAA jitters the projection; the
-	// unjittered previous VP is not kept — game/ reprojects with the
-	// jittered one, main.cpp:3526)
+	// unjittered previous VP is not kept, so reprojection uses the jittered
+	// matrix).
 	const Camera& camera = get_active_camera();
 	const f32 fov = HMM_AngleDeg(60.0f);
 	const f32 aspect_ratio = (f32) state.window.render_width / (f32) state.window.render_height;
@@ -2094,8 +2094,8 @@ void frame(f32 in_delta_time)
 	Tessellation::update(&state.vk, state, camera, fov);
 
 	// Per-frame UBO. Sun sourced from the scene's primary sun; the hardcoded
-	// fallback only drives the sky bake now (deviation from game/'s black
-	// fallback) — geometry lighting comes solely from the light buffers, so
+	// fallback drives only the sky bake. Geometry lighting comes solely from
+	// the light buffers, so
 	// sunless scenes render unlit meshes under a daytime sky.
 	PerFrameData per_frame_data = {
 		.view = view_matrix,
@@ -2151,8 +2151,8 @@ void frame(f32 in_delta_time)
 			.ambient_intensity = fog_controller.ambient_intensity,
 			.sun_intensity = fog_controller.sun_intensity,
 			.anisotropy = fog_controller.anisotropy,
-			// game/ parity: no real sun means no sun in-scatter (the
-			// PerFrameData fallback sun only drives the sky)
+			// No real sun means no sun in-scatter; the PerFrameData fallback
+			// sun drives only the sky.
 			.sun_direction = state.scene.primary_sun_id ? per_frame_data.sun_direction.XYZ : HMM_V3(0.0f, 0.0f, -1.0f),
 			.sun_color = state.scene.primary_sun_id ? per_frame_data.sun_color.XYZ : HMM_V3(0.0f, 0.0f, 0.0f),
 		};
@@ -2277,7 +2277,7 @@ void frame(f32 in_delta_time)
 	// Re-bake the octahedral sky when the sun moved (records before the
 	// geometry pass, which samples it for the composite). The atmosphere
 	// wants the direction toward the sun — the negated light-travel
-	// direction (game/ sky_pass.h:96)
+	// direction.
 	sky_pass_bake_if_needed(&state.vk, -per_frame_data.sun_direction.XYZ);
 
 	// Incrementally capture and project GI probes after GPU skinning and the
@@ -2290,7 +2290,7 @@ void frame(f32 in_delta_time)
 	// Cascade matrices are CPU-side inputs to both the shadow draw and the
 	// lighting shader's receiver reprojection — compute before the fs_params
 	// upload below. The centered-squares anchor tracks the camera unless the
-	// shadow map is frozen (game/ main.cpp:2990).
+	// shadow map is frozen.
 	if (!state.shadow.depth_freeze)
 	{
 		state.shadow.centered_square_center = camera.location
@@ -2364,7 +2364,7 @@ void frame(f32 in_delta_time)
 		lighting_fs_params.screen_space_shadow_intensity = state.shadow.screen_space.intensity;
 	}
 	// Lighting samples the blurred moments (soft penumbra) unless the blur is
-	// disabled — game/'s default is blurred
+	// disabled; blur is enabled by default.
 	VkImageView shadow_moments_view = state.shadow.blur_enable
 		? shadow_blur_entry.final_pass().get_color_output(0).view
 		: shadow_render_pass.get_color_output(0).view;
@@ -2476,7 +2476,7 @@ void frame(f32 in_delta_time)
 	});
 
 	// Geometry: scene meshes -> G-buffer at render resolution, camera-frustum
-	// culled on the CPU (game/ parity; skinned meshes bypass the frustum test)
+	// culled on the CPU; skinned meshes bypass the frustum test.
 	geometry_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		geometry_pass_bind(&state.vk);
@@ -2886,7 +2886,7 @@ int main(int argc, char** argv)
 	);
 
 	// SSAO at half render resolution; the generic BlurPass smooths it before
-	// lighting samples it (game/ main.cpp:1485-1566)
+	// lighting samples it.
 	const auto make_ssao_desc = [](const char* in_debug_label)
 	{
 		return (RenderPassDesc) {
@@ -2917,7 +2917,7 @@ int main(int argc, char** argv)
 		.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
 		.outputs = {
 			// 0: base/emission color — sky-blue clear keeps empty scenes
-			// readable until the sky pass lands (game/ clears {0,0,0,1})
+			// readable until the sky pass executes.
 			{
 				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -3066,8 +3066,8 @@ int main(int argc, char** argv)
 
 	handle_resize(/*in_force=*/ true);
 
-	// If we passed an init file, load it as a flatbuffer Update on startup
-	// (port of game/src/main.cpp:1666-1684)
+	// If an init file was provided, load it as a flatbuffer Update on startup
+	// before entering the live-link loop.
 	if (state.runtime.init_file)
 	{
 		if (FILE* file = fopen(state.runtime.init_file->c_str(), "rb"))
@@ -3138,7 +3138,7 @@ int main(int argc, char** argv)
 	benchmark_finalize(benchmark, &state.vk);
 
 	// Tell live_link_thread we're done running and wait for it to complete.
-	// Note: like game/, the thread blocks in accept() until Blender's first
+	// The thread blocks in accept() until Blender's first
 	// connection, so quitting before any connection waits on that accept.
 	state.runtime.game_running = false;
 	if (!no_live_link)

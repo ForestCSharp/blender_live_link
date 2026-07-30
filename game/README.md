@@ -1,8 +1,8 @@
 # game
 
-Golden-path Vulkan runtime, ported from `game_old/`: renders the Blender live-link scene with
-**Vulkan (via MoltenVK on macOS) + Volk + VMA**, windowed with **GLFW 3.4**.
-No CMake — plain `build.sh`, mirroring `game_old/`.
+The Vulkan game runtime renders the Blender live-link scene with **Vulkan (via
+MoltenVK on macOS) + Volk + VMA**, windowed with **GLFW 3.4**. It uses a plain
+`build.sh` instead of CMake.
 
 ## Building & running
 
@@ -38,7 +38,7 @@ Prerequisites:
 
 Third-party source dependencies are vendored under `extern/`, separate from
 the first-party code in `src/`. The game owns a complete ImGui core and backend
-tree and does not require source or headers from `game_old/` to compile.
+tree.
 
 Dependency objects, libraries, and manifests are cached under
 `bin/build/<OS>/<config>`.
@@ -62,8 +62,7 @@ pipeline cache defaults to `bin/pipeline_cache.bin`; override it with
 ## Live link
 
 The game listens on `127.0.0.1:65432` (override with `--port`); the Blender
-addon connects to it. **Don't run `game_old/` and `game/` at the same time** —
-both bind the same port.
+addon connects to it.
 
 ## Controls
 
@@ -111,10 +110,11 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_GI_SPECULAR=0|1` — disable or enable roughness-aware probe specular
   IBL for deterministic A/B captures
 
-## Architecture notes (vs game_old/ legacy runtime)
+## Architecture notes
 
-- Same unity build: only `src/main.cpp` compiles; everything else is headers.
-- Same lazy `GpuBuffer` contract: the live-link thread only *describes*
+- The game uses a unity build: only `src/main.cpp` compiles; everything else is
+  headers.
+- `GpuBuffer` is lazy: the live-link thread only *describes*
   buffers; the first draw on the main thread creates them (VMA, host-visible
   + persistently mapped — fine on Apple Silicon UMA).
 - GPU buffer destruction goes through a deletion queue in `VulkanContext`
@@ -127,20 +127,20 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - Devices are scored after compatibility checks. Graphics and presentation may
   use separate queue families; swapchain extent, count, transforms, alpha,
   usage, and presentation mode are negotiated from surface capabilities.
-- Preferred render formats retain the port's output (RGBA16F scene/shadows,
-  RGBA32F G-buffer, D32, R8 SSAO), with validated higher/lower-precision
-  fallbacks where the preferred format is unavailable.
+- Preferred render formats are RGBA16F for scene/shadows, RGBA32F for the
+  G-buffer, D32 for depth, and R8 for SSAO, with validated
+  higher/lower-precision fallbacks where a preferred format is unavailable.
 - Persistently mapped VMA writes are flushed through VMA, which is a no-op on
   coherent heaps and supplies the required aligned cache operation elsewhere.
 - Volk loads the Vulkan loader at runtime — nothing links `libvulkan`;
   `build.sh` exports `VK_ICD_FILENAMES` to select MoltenVK.
-- Negative-height viewport flips Y so all HMM math from `game_old/` is unchanged
-  (the `RenderPass` framework applies it uniformly in every pass).
+- A negative-height viewport flips Y; the `RenderPass` framework applies the
+  convention uniformly in every pass.
 - Shaders are plain GLSL 450 compiled by `glslc` with `#include` support
   (`-I data/shaders`); `shader_common.h` is shared between GLSL and C++.
-- Rendering goes through a `RenderPass` framework (port of game_old/'s) on
-  dynamic rendering, running game_old/'s full post chain (Phases 3a+3b,
-  reverse-Z): cascaded EVSM shadow maps (2048²×4 layered Array pass + 21-tap
+- Rendering goes through a `RenderPass` framework on dynamic rendering. The
+  reverse-Z render chain uses cascaded EVSM shadow maps (2048²×4 layered Array
+  pass + 21-tap
   separable moments blur, Frustum/CenteredSquares placement) → G-buffer
   geometry (preferably 4× RGBA32F + D32, sky composited at the far plane from a 256²
   octahedral bake cached on sun movement) → half-res SSAO + blur → half-res
@@ -150,8 +150,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   ping-pong history) → tonemapping (exposure 1.5 + Reinhard) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
   sun live in a per-frame UBO; per-object transforms in a triple-buffered
-  ObjectData SSBO indexed by a push-constant `object_index` (game_old/'s snapshot
-  pattern). GPU timestamps feed the GpuTimings system.
+  ObjectData SSBO indexed by a push-constant `object_index`. GPU timestamps feed
+  the GpuTimings system.
 - Content systems (Phase 2): materials + **bindless** textures (128-slot
   sampled-image array, PARTIALLY_BOUND, rewritten per frame), armatures +
   in-shader skinning (shared per-frame skin-matrix arena ring), Jolt 5.2.1
@@ -171,4 +171,4 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   viewers, and overlay status text. The `GAME2_*` toggles remain available for
   automated/headless verification.
 
-See [TODO.md](TODO.md) for the full catalog of remaining porting work.
+See [TODO.md](TODO.md) for the full catalog of known implementation work.

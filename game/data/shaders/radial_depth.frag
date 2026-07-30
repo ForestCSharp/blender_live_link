@@ -1,8 +1,8 @@
 #version 450
 
-// Radial distance moments for probe occlusion (port of game/data/shaders/
-// radial_depth.glsl fs): Chebyshev (2 moments) or EVRP4 (warped 4 moments)
-// from the capture G-buffer's world positions.
+// Writes radial-distance moments for probe occlusion from the capture
+// G-buffer's world positions: Chebyshev uses 2 moments and EVRP4 uses 4
+// warped moments.
 
 layout(push_constant) uniform fs_params
 {

@@ -6,11 +6,11 @@
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 
-// Exponential height fog over the lit scene (port of game/'s fog_pass.h +
-// fog.glsl). Runs after lighting when an enabled fog controller exists;
+// Exponential height fog over the lit scene.
+// Runs after lighting when an enabled fog controller exists;
 // downstream passes read this output instead of the lighting target.
 
-// Mirrors fog.frag's fs_params / game/'s fog_fs_params_t (std140)
+// Mirrors fog.frag's fs_params block (std140).
 struct FogFsParams
 {
 	HMM_Vec3 camera_position;
@@ -30,7 +30,7 @@ struct FogFsParams
 	HMM_Vec3 sun_color;
 	f32 _pad1;
 };
-static_assert(sizeof(FogFsParams) == 96, "Must match game/'s fog_fs_params_t std140 layout");
+static_assert(sizeof(FogFsParams) == 96, "FogFsParams must match fog.frag's fs_params std140 layout");
 
 struct FogPass
 {

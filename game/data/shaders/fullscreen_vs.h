@@ -8,7 +8,7 @@
 //
 // The framework applies a negative-height (Y-flip) viewport in every pass,
 // so uv.y = 0.5 - 0.5*y maps screen-top to texel row v=0 — this compensates
-// exactly, no double flip (same formula as the original copy pass).
+// exactly; applying another flip would invert the sampled image.
 
 layout(location = 0) out vec2 uv;
 

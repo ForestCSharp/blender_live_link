@@ -1,9 +1,9 @@
 #ifndef GI_HELPERS_H
 #define GI_HELPERS_H
 
-// Shared GI structs + octree traversal helpers (port of game/data/shaders/
-// gi_helpers.h, @block markers stripped). Structs are byte-identical between
-// C++ and GLSL std430.
+// Shared GI structs and octree traversal helpers. Structs use byte-identical
+// C++ and GLSL std430 layouts so buffers can be shared without
+// translation.
 
 #include "shader_common.h"
 

@@ -1,8 +1,8 @@
 #version 450
 
-// Exposure + Reinhard (port of game/data/shaders/tonemapping.glsl; the
-// alternate filmic/uncharted2 operators can return with a UI toggle).
-// No shader-side gamma — the sRGB target view encodes on write.
+// Exposure + Reinhard tonemapping; alternate filmic/Uncharted 2 operators
+// can be wired to a UI toggle. No shader-side gamma is applied because the
+// sRGB target view encodes on write.
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 

@@ -1,8 +1,8 @@
 #version 450
 
-// Single-pass gather depth-of-field (port of game/data/shaders/
-// dof_combine.glsl fs): signed circle-of-confusion from the G-buffer world
-// position, 16-tap poisson disk gather with cross-depth bleed suppression.
+// Single-pass gather depth-of-field computes a signed circle-of-confusion
+// from the G-buffer world position and performs a 16-tap Poisson-disk
+// gather with cross-depth bleed suppression.
 
 layout(set = 0, binding = 0) uniform fs_params
 {

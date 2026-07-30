@@ -6,13 +6,13 @@
 #include "render/shader_module.h"
 #include "state/state.h"
 
-// GPU skinning cache (port of game/'s gpu_skinning.h): a compute pass bakes
+// GPU skinning cache: a compute pass bakes
 // each skinned mesh's posed vertices into a per-mesh cache buffer so
 // tessellation and the wire overlay can consume skinned meshes as static
-// geometry. Only runs when a consumer needs it (game/ parity: tessellation
-// or shaded wireframe); the normal draw path keeps in-shader skinning.
-// Deviation from game/: skin matrices come from the shared per-frame arena
-// ring, so the push constants carry each mesh's arena offset.
+// geometry. It runs only for tessellation or shaded-wireframe consumers; the
+// normal draw path keeps in-shader skinning. Skin matrices come from the
+// shared per-frame arena ring, so push constants carry each mesh's offset.
+// Each cache remains valid until the source pose changes.
 
 namespace GpuSkinning
 {

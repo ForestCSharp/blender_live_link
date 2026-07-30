@@ -8,10 +8,10 @@
 #include "render/gpu_buffer.h"
 #include "render/culling.h"
 
-// Shaded wireframe overlay (port of game/'s wire_overlay_pass.h +
-// wire_overlay.glsl): copies the current scene color, then alpha-blends
+// Shaded wireframe overlay: copies the current scene color, then alpha-blends
 // anti-aliased triangle edges on top. Wires only draw where the G-buffer
-// says the surface is visible. Skinned meshes use the compute-baked cache;
+// says the surface is visible.
+// Skinned meshes use the compute-baked cache;
 // tessellated meshes use the generated render view.
 
 // Mirrors wire_overlay_mesh.frag's mesh_fs_params (std140)
@@ -45,7 +45,7 @@ namespace WireOverlayPass
 	inline GpuBuffer<WireOverlayMeshFsParams> fs_params_ubos[MAX_FRAMES_IN_FLIGHT];
 
 	inline VkSampler linear_sampler = VK_NULL_HANDLE;	// borrowed from frame_data
-	inline VkSampler nearest_sampler = VK_NULL_HANDLE;	// owned (game/ samples position with nearest)
+	inline VkSampler nearest_sampler = VK_NULL_HANDLE;	// owned; position sampling requires nearest
 
 	constexpr u32 MAX_WIRE_MESHES_PER_FRAME = 1024;
 
@@ -237,7 +237,7 @@ namespace WireOverlayPass
 			VkPipelineDepthStencilStateCreateInfo depth_stencil = {
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 			};
-			// game/ blend: src_alpha/one_minus_src_alpha rgb, one/one_minus alpha
+			// Standard alpha blend: src_alpha/one_minus_src_alpha RGB, one/one_minus alpha.
 			VkPipelineColorBlendAttachmentState blend_attachment = {
 				.blendEnable = in_blend ? VK_TRUE : VK_FALSE,
 				.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,

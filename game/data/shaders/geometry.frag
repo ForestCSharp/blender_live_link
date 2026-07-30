@@ -17,7 +17,7 @@ layout(push_constant) uniform PushConstants
 	int _pad0;
 } pc;
 
-// G-buffer (game/ layout):
+// G-buffer attachment layout:
 //  0: base color, or emission color when emission_strength > 0
 //  1: world position (w = 1 marks valid geometry)
 //  2: world normal   (vec4(0) = sky/no-geometry sentinel for lighting)
@@ -97,9 +97,9 @@ void main()
 	}
 	else
 	{
-		// Deviation from game/ (magenta + invalid-geometry sentinel):
-		// material-less objects render as LIT grey so pre-material scenes
-		// stay meaningful
+		// Material-less objects use a lit grey fallback and retain valid
+		// geometry data so scenes remain legible before materials are
+		// assigned.
 		out_color = vec4(0.6, 0.6, 0.6, 1.0);
 		out_roughness_metallic_emissive = vec4(0.5, 0.0, 0.0, 0.0);
 		out_position = in_world_position;

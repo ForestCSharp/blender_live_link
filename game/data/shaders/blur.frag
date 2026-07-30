@@ -1,7 +1,7 @@
 #version 450
 
-// Generic separable gaussian blur (port of game/data/shaders/blur.glsl fs).
-// The 2D counterpart of shadow_blur.frag.
+// Generic separable Gaussian blur for 2D images.
+// The array-texture counterpart is shadow_blur.frag.
 
 layout(set = 0, binding = 0) uniform sampler2D color_tex;
 

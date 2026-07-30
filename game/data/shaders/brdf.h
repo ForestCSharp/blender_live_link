@@ -1,7 +1,7 @@
 #ifndef BRDF_H
 #define BRDF_H
 
-// Cook-Torrance BRDF (port of game/data/shaders/brdf.h, sokol blocks removed)
+// Cook-Torrance BRDF utilities.
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

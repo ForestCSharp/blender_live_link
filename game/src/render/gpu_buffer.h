@@ -11,7 +11,7 @@
 
 using std::optional;
 
-// Buffer usage info (mirrors the shape of sokol's sg_buffer_usage in game/)
+// Buffer usage and memory-placement requirements.
 struct GpuBufferUsage
 {
 	bool vertex_buffer = false;

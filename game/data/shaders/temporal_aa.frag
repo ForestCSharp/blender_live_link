@@ -1,8 +1,8 @@
 #version 450
 
-// Temporal AA resolve (port of game/data/shaders/temporal_aa.glsl fs):
-// 2-phase jittered reprojection with neighborhood clamp + rejection, plus a
-// jitter-axis sharpen. MRT: resolved scene color + this frame's history.
+// Temporal AA resolve uses 2-phase jittered reprojection with neighborhood
+// clamping and rejection, followed by a jitter-axis sharpen. MRT outputs are
+// the resolved scene color and this frame's history.
 
 layout(set = 0, binding = 0) uniform fs_params
 {

@@ -1,6 +1,5 @@
 
 /game/bin/*
-/game_old/bin/*
 /compiled_schemas/*
 /flatbuffers/build/*
 /__pycache__/*

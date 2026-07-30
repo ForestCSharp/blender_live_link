@@ -158,8 +158,8 @@ struct Mesh
 
 	// Skinning. skin_matrices is the CPU array update_skinned_animations
 	// fills each frame and appends into the shared arena SSBO; there is no
-	// per-mesh GPU skin matrix buffer (deviation from game/ — the arena ring
-	// makes per-frame writes safe vs frames in flight). The Phase 3 GPU
+	// per-mesh GPU skin matrix buffer. The arena ring makes per-frame writes
+	// safe against frames in flight. The GPU
 	// skinning compute pass reads the same arena.
 	bool has_skinned_vertices;
 	SkinnedVertex* skinned_vertices;
@@ -172,7 +172,7 @@ struct Mesh
 	HMM_Mat4 armature_to_mesh;
 
 	// GPU-skinned vertex cache (compute-baked; consumed by tessellation and
-	// the wire overlay via mesh_get_render_view — game/ parity)
+	// the wire overlay via mesh_get_render_view)
 	GpuBuffer<Vertex> skinned_vertex_cache_buffer;
 	u32 skinned_vertex_cache_capacity = 0;
 	bool skinned_vertex_cache_valid = false;
@@ -190,8 +190,8 @@ void mesh_reset_skin_matrices(Mesh& in_mesh)
 }
 
 // The buffers a renderer should draw this mesh with. Skinned meshes with a
-// valid compute cache expose it as plain static vertices (port of game/'s
-// MeshRenderView; tessellated geometry joins in the tessellation step).
+// valid compute cache expose it as plain static vertices; tessellated geometry
+// joins in the tessellation step.
 struct MeshRenderView
 {
 	VkBuffer vertex_buffer = VK_NULL_HANDLE;

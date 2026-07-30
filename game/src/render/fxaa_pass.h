@@ -6,7 +6,7 @@
 #include "render/fullscreen_pipeline.h"
 #include "render/frame_data.h"
 
-// Luma FXAA over the tonemapped LDR target (port of game/'s fxaa_pass.h).
+// Luma FXAA over the tonemapped LDR target.
 // Uses layout B (single sampled input) + a small push constant block; the
 // copy pass samples this output when enabled.
 
@@ -78,7 +78,7 @@ namespace FXAAPass
 			0, 1, &input_sets.current(ctx),
 			0, nullptr
 		);
-		// game/ parity constants (main.cpp:3567-3571)
+		// Tuned FXAA thresholds.
 		PushConstants push_constants = {
 			.screen_size = in_screen_size,
 			.contrast_threshold = 0.0312f,

@@ -8,8 +8,8 @@
 #include "render/frame_data.h"
 #include "render/shadow_depth_pass.h"
 
-// Separable gaussian blur over the EVSM moments array (port of
-// game/src/render/shadow_blur_pass.h). Horizontal (intermediate pass) then
+// Separable gaussian blur over the EVSM moments array.
+// Horizontal (intermediate pass) then
 // vertical (final pass); lighting samples the final output when
 // state.shadow.blur_enable is set. The blur is what makes EVSM shadows soft.
 

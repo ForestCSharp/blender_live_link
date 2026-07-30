@@ -11,11 +11,11 @@
 
 #include "ssao_constants.h"
 
-// Hemisphere-kernel SSAO over the G-buffer at half render resolution (port
-// of game/'s ssao pass, game/src/main.cpp:1485-1557 + ssao.glsl). The raw
+// Hemisphere-kernel SSAO over the G-buffer at half render resolution.
+// The raw
 // output goes through the generic BlurPass before lighting samples it.
 
-// Mirrors ssao.frag's fs_params / game/'s ssao_fs_params_t (std140)
+// Mirrors ssao.frag's fs_params block (std140).
 struct SsaoFsParams
 {
 	HMM_Vec2 screen_size;
@@ -26,7 +26,7 @@ struct SsaoFsParams
 	i32 ssao_enable;
 	f32 _pad1[3];
 };
-static_assert(sizeof(SsaoFsParams) == 928, "Must match game/'s ssao_fs_params_t std140 layout");
+static_assert(sizeof(SsaoFsParams) == 928, "SsaoFsParams must match ssao.frag's fs_params std140 layout");
 
 struct SsaoPass
 {
@@ -56,7 +56,7 @@ void ssao_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 {
 	ssao_pass.linear_sampler = in_linear_sampler;
 
-	// Noise texture + hemisphere kernel (game/src/main.cpp:1511-1557)
+	// Noise texture and hemisphere kernel.
 	{
 		std::uniform_real_distribution<f32> randomf32s(0.0, 1.0);
 		std::default_random_engine generator;

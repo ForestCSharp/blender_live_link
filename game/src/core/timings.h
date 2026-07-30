@@ -16,8 +16,8 @@ static constexpr i32 GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH = 256;
 
 #include "core/stretchy_buffer.h"
 
-// game_old/ uses sokol_time (stm_*); game keeps the same tick-based interface on
-// std::chrono. Ticks are nanoseconds.
+// Tick-based timing interface backed by std::chrono.
+// Ticks are nanoseconds.
 inline u64 timings_now_ticks()
 {
 	return (u64) std::chrono::duration_cast<std::chrono::nanoseconds>(

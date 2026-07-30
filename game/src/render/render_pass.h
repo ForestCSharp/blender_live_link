@@ -11,14 +11,14 @@
 
 using std::optional;
 
-// Port of game/src/render/render_pass.h onto Vulkan dynamic rendering.
+// Render-pass framework built on Vulkan dynamic rendering.
 //
 // The framework owns pass targets (allocation + resize), image layout
 // transitions for its own outputs, render begin/end, the uniform
 // negative-height (Y-flip) viewport, and timing scopes. Pass files own
 // pipelines and record draws in the execute callback.
 //
-// Cross-pass wiring is imperative, like game/: execute_sampled handles the
+// Cross-pass wiring is imperative: execute_sampled handles the
 // common execute-then-sample operation for whole color outputs. Conditional
 // passes and specialized subresources keep explicit transitions (barriers are
 // illegal inside dynamic rendering). There is no dependency graph — passes
@@ -443,7 +443,7 @@ struct RenderPass
 	}
 };
 
-// Entry with an optional intermediate pass (separable blurs etc. — game/ parity)
+// Entry with an optional intermediate pass for separable blurs and similar work.
 struct RenderPassEntry
 {
 	RenderPass final;

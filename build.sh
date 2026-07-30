@@ -4,7 +4,6 @@
 # Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
 # Running ./build.sh -g only rebuilds the default Vulkan game and runs it
 # Running ./build.sh --package-only generates schemas and packages the extension without launching either application
-# Passing -game_old selects the legacy Sokol runtime (game_old/)
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 BASE_DIR="${SCRIPT_DIR##*/}"
@@ -23,8 +22,6 @@ echo OS is ${OS}
 
 BUILD_ONLY_GAME=false
 PACKAGE_ONLY=false
-GAME_DIR=game
-GAME_BRANCH_LABEL="Game (Vulkan)"
 BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
 if [[ $OS = Linux ]]; then
@@ -44,7 +41,6 @@ EXTENSION_PACKAGE_EXCLUSIONS=(
 	"$BASE_DIR/tools/*"
 	"$BASE_DIR/ci-artifacts/*"
 	"$BASE_DIR/game/*"
-	"$BASE_DIR/game_old/*"
 	"$BASE_DIR/blend_files/*"
 	"$BASE_DIR/screenshots/*"
 	"$BASE_DIR/blend_src/*"
@@ -405,8 +401,8 @@ run_blender_side_build_and_launch() {
 }
 
 run_game_build_and_launch() {
-	cd "$SCRIPT_DIR/$GAME_DIR" || return
-	log_build "$GAME_BRANCH_LABEL branch: building and launching $GAME_DIR"
+	cd "$SCRIPT_DIR/game" || return
+	log_build "Game (Vulkan) branch: building and launching game"
 	local game_status=0
 	./build.sh "$OS" || game_status=$?
 
@@ -781,11 +777,6 @@ while [[ $# -gt 0 ]]; do
 		PACKAGE_ONLY=true
 		shift # past argument
 		;;
-    -game_old|--game-old|--game_old)
-		GAME_DIR=game_old
-		GAME_BRANCH_LABEL="Game Old (Sokol)"
-    	shift # past argument
-    	;;
     -python|--python)
 		set_blender_build_mode python
     	shift # past argument
@@ -830,9 +821,9 @@ if [[ "$PACKAGE_ONLY" = "true" && "$BUILD_ONLY_GAME" = "true" ]]; then
 fi
 
 if [[ "$SCREENSHOT_MODE" = true ]]; then
-	if [[ "$BUILD_ONLY_GAME" = true || "$PACKAGE_ONLY" = true || "$GAME_DIR" != game || "$BLENDER_BUILD_MODE" != native ]]; then
+	if [[ "$BUILD_ONLY_GAME" = true || "$PACKAGE_ONLY" = true || "$BLENDER_BUILD_MODE" != native ]]; then
 		echo "Error: -screenshot requires the native Vulkan full-build path"
-		echo "It cannot be combined with -g, --package-only, -game_old, or -python."
+		echo "It cannot be combined with -g, --package-only, or -python."
 		exit 1
 	fi
 	if [[ $OS != Mac && $OS != Linux ]]; then
@@ -883,6 +874,6 @@ if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
 	exit 0
 fi
 
-start_parallel_branch "$GAME_BRANCH_LABEL" run_game_build_and_launch || exit
+start_parallel_branch "Game (Vulkan)" run_game_build_and_launch || exit
 start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
 wait_for_parallel_branches

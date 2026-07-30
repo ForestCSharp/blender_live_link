@@ -338,7 +338,7 @@
       <section id="static-panel" class="tab-panel">
         <h2>Static Meshes</h2>
         <p>
-          Static meshes are the baseline path. Their source vertex and triangle index buffers are uploaded once,
+          Static mesh source vertex and triangle index buffers are uploaded once,
           then each frame chooses whether passes should render those source buffers or a tessellated GPU output slot.
           There is no per-triangle CPU planning in the tessellation path.
         </p>
@@ -367,7 +367,7 @@
             <p>
               <span class="tag">vertex buffer</span>
               <span class="tag">index buffer</span>
-              <span class="tag">storage views</span>
+              <span class="tag">storage buffers</span>
             </p>
           </article>
 
@@ -408,15 +408,15 @@
             <strong>Passes ask the mesh for a render view.</strong>
             <p>
               Geometry, shadows, GI capture, and wire overlay all use <code>MeshRenderView</code>. This keeps pass code
-              from caring whether the mesh is still source topology or generated tessellation output.
+              from caring whether the mesh uses source topology or generated tessellation output.
             </p>
           </div>
 
           <div class="flow-step">
             <strong>Raster passes bind the active buffers.</strong>
             <p>
-              <code>mesh_apply_render_bindings()</code> binds the active vertex and index buffers. Static meshes use the
-              non-skinned pipelines because positions and normals are already in mesh-local space.
+              Each raster pass binds the active vertex and index buffers from <code>MeshRenderView</code>. Static meshes
+              use the non-skinned pipelines because positions and normals are already in mesh-local space.
             </p>
           </div>
 
@@ -424,7 +424,7 @@
             <strong>Post-lighting wireframe fetches active triangle buffers.</strong>
             <p>
               The shaded wireframe overlay draws triangles after lighting and DOF. It fetches positions and indices from
-              storage views and computes anti-aliased edge coverage from barycentrics in the fragment shader.
+              storage-buffer descriptors and computes anti-aliased edge coverage from barycentrics in the fragment shader.
             </p>
           </div>
         </div>
@@ -443,8 +443,9 @@
           <tr>
             <th>Source rendering</th>
             <td>
-              Uses <code>Mesh::vertex_buffer</code> and <code>Mesh::index_buffer</code> directly. This is the fallback path
-              whenever tessellation is disabled, unsupported, overflowing, or has no completed adaptive slot yet.
+              Uses <code>Mesh::vertex_buffer</code> and <code>Mesh::index_buffer</code> directly. This is the fallback
+              path whenever tessellation is disabled, over budget, has no generated indices, or has no completed
+              adaptive slot yet.
             </td>
           </tr>
           <tr>
@@ -458,14 +459,14 @@
             <th>Adaptive tessellation</th>
             <td>
               GPU compute measures and plans patch density. The CPU does not iterate source triangles; it consumes a small
-              counter readback on supported backends to know the completed draw sizes.
+              Vulkan counter readback to determine the completed draw sizes.
             </td>
           </tr>
           <tr>
             <th>Wire overlay</th>
             <td>
-              Uses the same active render view as shaded rendering, but through storage views because the overlay shader
-              fetches vertices and indices manually with <code>gl_VertexIndex</code>.
+              Uses the same active render view as shaded rendering, but binds its buffers as storage buffers because
+              the overlay shader fetches vertices and indices manually with <code>gl_VertexIndex</code>.
             </td>
           </tr>
         </table>
@@ -539,7 +540,7 @@
           <div class="flow-step">
             <strong>Object storage is updated normally.</strong>
             <p>
-              The object transform still applies after skinning. Skinning writes mesh-local deformed vertices, so world
+              The object transform applies after skinning. Skinning writes mesh-local deformed vertices, so world
               transforms, camera transforms, shadows, and GI continue to use the same object data model.
             </p>
           </div>
@@ -617,7 +618,7 @@
           <tr>
             <th>Adaptive readback latency</th>
             <td>
-              Adaptive tessellation still uses completed counter readbacks for draw sizes. For active skinned slots, emission
+              Adaptive tessellation uses completed counter readbacks for draw sizes. For active skinned slots, emission
               is refreshed from the current pre-skinned cache so the visible pose does not wait on the readback.
             </td>
           </tr>

@@ -1,8 +1,8 @@
 #version 450
 
 // Screen-space contact shadows: short ray march toward the sun through the
-// G-buffer (port of game/data/shaders/screen_space_shadows.glsl trace_fs).
-// Half render resolution; the filter pass smooths the raw mask.
+// G-buffer. Runs at half render resolution; the filter pass smooths the raw
+// mask.
 
 layout(set = 0, binding = 0) uniform trace_fs_params
 {

@@ -1,9 +1,9 @@
 #version 450
 
-// Separable gaussian over the EVSM moments array, one cascade layer per
-// slice (port of game/data/shaders/shadow_blur.glsl fs). Blurring moments is
-// what gives EVSM its soft penumbra — chebyshev over raw moments is nearly
-// binary.
+// Applies a separable Gaussian blur to the EVSM moments array, one cascade
+// layer per slice. Blurred moments give EVSM its soft penumbra, while
+// Chebyshev evaluation over unfiltered moments produces an almost binary
+// result.
 
 layout(set = 0, binding = 0) uniform sampler2DArray color_tex;
 

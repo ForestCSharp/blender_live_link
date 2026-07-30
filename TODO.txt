@@ -17,5 +17,5 @@ Tasks:
 		- Cascaded Shadow Map on Sunlight
 		- Screen Space Shadows
 	- Temporal Anti Aliasing
-	- Sokol Compute Shaders
+	- Compute Shaders
 		- [TODO] first use-case

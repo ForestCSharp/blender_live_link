@@ -7,7 +7,7 @@
 #include "render/frame_data.h"
 #include "render/render_pass.h"
 
-// Sky rendering (port of game/src/render/sky_pass.h):
+// Sky rendering:
 //  - SkyBakePass: integrates the atmosphere into a 256x256 octahedral map,
 //    re-run only when the sun direction changes
 //  - Sky composite: fullscreen quad at the far plane drawn INSIDE the
@@ -19,7 +19,7 @@ static constexpr i32 SKY_BAKE_RESOLUTION = 256;
 struct SkyPass
 {
 	// Bake target lives outside the ERenderPass chain (fixed size, lazily
-	// executed) — game/ manages it the same way
+	// executed).
 	RenderPass bake_render_pass;
 	VkPipelineLayout bake_pipeline_layout = VK_NULL_HANDLE;
 	VkPipeline bake_pipeline = VK_NULL_HANDLE;

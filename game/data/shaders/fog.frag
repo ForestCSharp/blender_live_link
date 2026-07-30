@@ -1,8 +1,8 @@
 #version 450
 
-// Exponential height fog with optional ceiling + Henyey-Greenstein sun
-// in-scatter (port of game/data/shaders/fog.glsl fs). Reads the lit scene
-// color + G-buffer world position; writes the fogged scene color.
+// Exponential height fog with an optional ceiling and Henyey-Greenstein sun
+// in-scatter. Reads the lit scene color and G-buffer world position, then
+// writes the fogged scene color.
 
 const float M_PI = 3.14159265358979323846;
 

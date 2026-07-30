@@ -7,8 +7,8 @@
 #include "render/shader_module.h"
 #include "render/frame_data.h"
 
-// Generic separable gaussian blur over a 2D target (port of game/'s
-// blur_pass.h): horizontal (intermediate pass) then vertical (final pass).
+// Generic separable gaussian blur over a 2D target: horizontal
+// (intermediate pass) then vertical (final pass).
 // The 2D counterpart of ShadowBlurPass. Inputs resize with the window, so
 // each consumer gets per-frame descriptor sets rewritten in its update.
 

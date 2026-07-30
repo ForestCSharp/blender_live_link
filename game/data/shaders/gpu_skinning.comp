@@ -1,10 +1,10 @@
 #version 450
 
-// GPU skinning cache (port of game/data/shaders/gpu_skinning.glsl):
-// bakes skinned vertices into a per-mesh cache buffer so tessellation and
-// the wire overlay can treat skinned meshes as static geometry. Deviation
-// from game/: skin matrices live in the shared per-frame arena, so params
-// carry the mesh's arena offset.
+// GPU skinning cache stores each skinned mesh in a dedicated vertex buffer.
+// Skinning runs once, then tessellation and the wire overlay consume the
+// cached vertices as static geometry. Skin matrices live in the shared
+// per-frame arena; push constants carry the mesh's arena offset for direct
+// indexing.
 
 layout(push_constant) uniform skinning_params
 {

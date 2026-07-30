@@ -1,7 +1,7 @@
 #version 450
 
-// EVSM4 moments (port of game/data/shaders/shadow_depth.glsl fs). The depth
-// attachment is throwaway; lighting samples these moments.
+// Writes EVSM4 moments for lighting. The depth attachment is used only while
+// rendering this pass and is not sampled afterward.
 
 layout(location = 0) out vec4 frag_color;
 

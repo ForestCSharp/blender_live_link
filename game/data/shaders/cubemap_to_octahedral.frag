@@ -1,8 +1,8 @@
 #version 450
 
 // Projects a probe's lighting + radial-depth cubemaps into one padded
-// octahedral atlas entry (port of game/data/shaders/cubemap_to_octahedral.glsl
-// fs). MRT 0 = irradiance/lighting atlas, MRT 1 = depth-moment atlas.
+// octahedral atlas entry. MRT 0 stores irradiance or lighting, and MRT 1
+// stores radial-depth moments.
 
 #include "octahedral_helpers.h"
 

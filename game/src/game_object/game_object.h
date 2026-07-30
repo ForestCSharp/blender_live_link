@@ -19,8 +19,8 @@
 
 #include "game_object/mesh.h"
 
-// Stripped-down port of game/'s game_object.h: no Jolt rigid bodies,
-// characters, armatures, or fog controllers yet.
+// Scene object definitions and helpers for transforms, animation, physics,
+// rendering, and live-link updates.
 
 enum class LightType : u8
 {
@@ -237,7 +237,7 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 }
 
 // Static visible meshes feed the GI probe layout (dynamic actors move too
-// often to bake — game/ parity)
+// often to bake).
 bool object_contributes_to_gi_scene(const Object& in_object)
 {
 	return in_object.visibility && in_object.has_mesh && !in_object.has_part &&
@@ -256,8 +256,8 @@ void object_remove_character(Object& in_object)
 	in_object.has_character = false;
 }
 
-// Builds a convex hull from the mesh vertices, scaled by the object's scale
-// (port of game/src/game_object/game_object.h:175-249)
+// Builds a convex hull from the mesh vertices, scaled by the object's scale,
+// and creates the corresponding Jolt body.
 void object_add_jolt_body(Object& in_object)
 {
 	if (!in_object.has_mesh)
@@ -417,8 +417,8 @@ HMM_Mat4 object_get_model_matrix(const Object& in_object)
 	return HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix));
 }
 
-// Builds this object's row of the render-object snapshot SSBO
-// (port of game/src/game_object/game_object.h:303-324)
+// Builds this object's row of the render-object snapshot SSBO for the current
+// frame.
 ObjectData object_make_render_data(const Object& in_object)
 {
 	const Transform& current_transform = in_object.current_transform;
@@ -430,8 +430,8 @@ ObjectData object_make_render_data(const Object& in_object)
 	HMM_Mat4 rotation_matrix = HMM_QToM4(rotation);
 	HMM_Mat4 translation_matrix = HMM_Translate(HMM_V3(location.X, location.Y, location.Z));
 
-	// Just set to first material index for now (game/ parity — per-face
-	// materials are not supported)
+	// Use the first material index for the whole mesh; per-face materials are
+	// not supported.
 	int material_index = (in_object.has_mesh && in_object.mesh.material_indices_count > 0)
 		? in_object.mesh.material_indices[0]
 		: -1;
@@ -479,8 +479,8 @@ Object object_create(
 	return out_object;
 }
 
-// Frees armature bones/clips (heap name strings + matrix arrays)
-// (port of game/src/game_object/game_object.h:394-416)
+// Frees armature bones and clips, including heap name strings and matrix
+// arrays owned by each animation clip.
 void object_cleanup_armature(Object& in_object)
 {
 	if (!in_object.has_armature)

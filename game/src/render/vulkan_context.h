@@ -416,8 +416,8 @@ inline VkWriteDescriptorSet descriptor_write_image(
 	};
 }
 
-// Set by vulkan_context_init; used by GpuBuffer's lazy creation (the way
-// sokol's global context backs sg_make_buffer in game/)
+// Set by vulkan_context_init and used by GpuBuffer's lazy creation.
+// This singleton supplies the context required for lazy buffer allocation.
 static VulkanContext* g_vulkan_context = nullptr;
 
 inline u64 vulkan_hash_bytes(u64 in_hash, const void* in_data, size_t in_size)

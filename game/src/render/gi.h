@@ -12,7 +12,7 @@
 
 #include "gi_helpers.h"
 
-// GI probe scene (port of game/src/render/gi.h): a sparse octree over the
+// GI probe scene: a sparse octree over the
 // static scene geometry, probes at occupied-cell corners, radiance captured
 // a few probes per frame into an octahedral atlas (+ optional SH9/SG9).
 // The debug probe visualization lives separately in gi_debug_pass.h.

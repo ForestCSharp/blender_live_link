@@ -20,8 +20,8 @@
 
 static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 20;
 
-// C++ mirror of the lighting fs_params UBO. Byte-identical to game/'s
-// lighting_fs_params_t (lighting.compiled.h:136-166), including GI/SSAO/SSS.
+// C++ mirror of the lighting shader's fs_params UBO, including GI/SSAO/SSS.
+// The byte layout must remain identical to the shader declaration.
 struct LightingFsParams
 {
 	HMM_Vec3 view_position;

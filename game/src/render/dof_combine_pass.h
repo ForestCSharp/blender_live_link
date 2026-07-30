@@ -6,11 +6,11 @@
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 
-// Single-pass gather depth-of-field (port of game/'s DOF combine pass desc,
-// main.cpp:1573-1594 + dof_combine.glsl). Reads the post-fog scene color +
+// Single-pass gather depth-of-field.
+// Reads the post-fog scene color and
 // G-buffer world position; writes the DOF'd scene color.
 
-// Mirrors dof_combine.frag's fs_params / game/'s dof_combine_fs_params_t
+// Mirrors dof_combine.frag's fs_params block (std140).
 struct DofCombineFsParams
 {
 	HMM_Vec4 cam_pos;
@@ -23,7 +23,7 @@ struct DofCombineFsParams
 	f32 background_blur_scale;
 	i32 debug_mode;
 };
-static_assert(sizeof(DofCombineFsParams) == 64, "Must match game/'s dof_combine_fs_params_t std140 layout");
+static_assert(sizeof(DofCombineFsParams) == 64, "DofCombineFsParams must match dof_combine.frag's fs_params std140 layout");
 
 struct DofCombinePass
 {

@@ -2,7 +2,7 @@
 
 // Visible sky composite: samples the baked octahedral map and writes all 4
 // G-buffer attachments with the invalid-geometry sentinel so lighting passes
-// the sky color straight through (port of game/data/shaders/sky_pass.glsl)
+// the sky color straight through.
 
 #include "shader_common.h"
 #include "octahedral_helpers.h"

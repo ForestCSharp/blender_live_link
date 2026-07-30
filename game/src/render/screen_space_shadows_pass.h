@@ -7,7 +7,7 @@
 #include "render/shader_module.h"
 #include "render/gpu_buffer.h"
 
-// Screen-space contact shadows (port of game/'s screen_space_shadows_pass.h):
+// Screen-space contact shadows:
 // a short G-buffer ray march toward the sun (trace, intermediate pass) then
 // an edge-aware smooth (filter, final pass), both at half render resolution.
 // Lighting multiplies the mask into the sun's shadow visibility.

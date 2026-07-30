@@ -74,10 +74,10 @@ vec3 octahedral_decode(vec2 o)
 #define ATLAS_GUTTER_SIZE 2.0
 
 /** 
-	Function used when rendering the cubemap data into the atlas. 
-	While we use sg_apply_viewport to ensure that we are rendering into the correct tile of the atlas, 
-	we also need to adjust our UV calculations to account for the gutter space we have in each tile to 
-	prevent bleeding between tiles.
+	Maps cubemap data into padded octahedral atlas tiles.
+	The render-pass viewport selects the target tile. UV remapping accounts for
+	the gutter inside each tile and expands the decoded region beyond the active
+	data area, preventing samples from bleeding between adjacent tiles.
 **/
 vec2 make_padded_atlas_uv(vec2 quad_uv, float atlas_entry_size)
 {

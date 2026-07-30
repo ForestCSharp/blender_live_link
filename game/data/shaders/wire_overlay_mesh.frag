@@ -1,8 +1,8 @@
 #version 450
 
-// Wireframe edge shading (port of game/data/shaders/wire_overlay.glsl
-// mesh_fs): barycentric distance-to-edge in pixels, visibility test against
-// the G-buffer world position (only wires on visible surfaces draw).
+// Wireframe edge shading uses barycentric distance-to-edge in pixels and
+// tests visibility against the G-buffer world position so only wires on
+// visible surfaces draw.
 
 layout(set = 1, binding = 0) uniform mesh_fs_params
 {

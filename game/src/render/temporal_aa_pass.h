@@ -6,7 +6,7 @@
 #include "render/shader_module.h"
 #include "render/gpu_buffer.h"
 
-// Temporal AA (port of game/'s temporal_aa_pass.h): Decima-style 2-phase
+// Temporal AA: Decima-style 2-phase
 // jitter, previous-frame reprojection with neighborhood clamp/rejection, and
 // a jitter-axis sharpen. game ping-pongs two target sets through the
 // RenderPassEntry's intermediate (set 0) and final (set 1) passes — each has
@@ -25,7 +25,7 @@ struct TemporalAaFsParams
 	i32 debug_mode;
 	f32 _pad0[3];
 };
-static_assert(sizeof(TemporalAaFsParams) == 112, "Must match game/'s temporal_aa_fs_params_t std140 layout");
+static_assert(sizeof(TemporalAaFsParams) == 112, "TemporalAaFsParams must match temporal_aa.frag's fs_params std140 layout");
 
 namespace TemporalAAPass
 {
