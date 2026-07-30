@@ -67,8 +67,23 @@ struct GI_Scene
 	static constexpr i32 cubemap_capture_size = 256;
 	static constexpr i32 atlas_total_size = 2048;
 	static constexpr i32 atlas_entry_size = 16;
+	static constexpr i32 specular_atlas_entry_size = 48;
+	static constexpr i32 specular_atlas_mip_count = 4;
+	static constexpr i32 maximum_lattice_probe_count = 4914; // 17^3 corners + fallback
+	static constexpr i32 maximum_specular_slots_per_dimension = 71;
+	static constexpr i32 maximum_specular_atlas_size =
+		maximum_specular_slots_per_dimension * specular_atlas_entry_size;
 	static constexpr i32 probes_to_update_per_frame = 4;
 };
+static_assert(
+	GI_Scene::maximum_specular_slots_per_dimension * GI_Scene::maximum_specular_slots_per_dimension
+		>= GI_Scene::maximum_lattice_probe_count,
+	"Specular atlas grid must hold the maximum-depth probe lattice."
+);
+static_assert(
+	GI_Scene::maximum_specular_atlas_size <= 4096,
+	"Fixed-quality specular atlas must fit Vulkan's minimum 2D image dimension."
+);
 
 #define GI_LOG_SCENE_INIT 0
 #define GI_LOG_SCENE_UPDATE 0
@@ -458,7 +473,7 @@ void gi_scene_recreate_gpu_buffers(GI_Scene& out_gi_scene)
 	});
 }
 
-void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
+void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 {
 	out_gi_scene.octree_depth = std::clamp(in_state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
 	in_state.gi.octree_depth = out_gi_scene.octree_depth;
@@ -485,6 +500,7 @@ void gi_scene_rebuild_layout(GI_Scene& out_gi_scene, State& in_state)
 	assert(out_gi_scene.octree_nodes.length() > 0);
 	assert(out_gi_scene.cells.length() > 0);
 	gi_scene_recreate_gpu_buffers(out_gi_scene);
+	out_gi_scene.lighting_capture.resize_specular_atlas(ctx, (i32)out_gi_scene.probes.length());
 
 	out_gi_scene.probe_idx_to_update = 0;
 	out_gi_scene.next_atlas_index = 0;
@@ -531,10 +547,14 @@ void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 		.cubemap_render_size = GI_Scene::cubemap_capture_size,
 		.octahedral_total_size = GI_Scene::atlas_total_size,
 		.octahedral_entry_size = GI_Scene::atlas_entry_size,
+		.specular_entry_size = GI_Scene::specular_atlas_entry_size,
+		.specular_mip_count = GI_Scene::specular_atlas_mip_count,
 	};
+	assert((i32)ctx->capabilities.properties.limits.maxImageDimension2D
+		>= GI_Scene::maximum_specular_atlas_size);
 	out_gi_scene.lighting_capture.init(ctx, lighting_capture_desc);
 
-	gi_scene_rebuild_layout(out_gi_scene, in_state);
+	gi_scene_rebuild_layout(ctx, out_gi_scene, in_state);
 }
 
 // Records this frame's probe captures into the command buffer (a few probes
@@ -548,7 +568,7 @@ void gi_scene_update(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 	{
 		printf("GI Scene Layout Dirty. Rebuilding...\n");
 		// Replaced buffers/images retire against the current frame fence.
-		gi_scene_rebuild_layout(in_gi_scene, in_state);
+		gi_scene_rebuild_layout(ctx, in_gi_scene, in_state);
 	}
 
 	if (!in_state.gi.is_updating)
@@ -623,6 +643,16 @@ VkImageView gi_scene_get_octahedral_lighting_view(GI_Scene& in_gi_scene)
 VkImageView gi_scene_get_octahedral_depth_view(GI_Scene& in_gi_scene)
 {
 	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1).view;
+}
+
+VkImageView gi_scene_get_specular_lighting_view(GI_Scene& in_gi_scene)
+{
+	return in_gi_scene.lighting_capture.specular_atlas.view;
+}
+
+VkImageView gi_scene_get_brdf_lut_view(GI_Scene& in_gi_scene)
+{
+	return in_gi_scene.lighting_capture.brdf_lut.view;
 }
 
 void gi_scene_cleanup(VulkanContext* ctx, GI_Scene& in_gi_scene)

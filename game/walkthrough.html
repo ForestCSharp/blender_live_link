@@ -97,6 +97,7 @@ kbd{font-size:.8em;background:var(--bg3);border:1px solid var(--line2);border-bo
 <section class="panel overview" id="panel-overview" data-file="overview" hidden>
   <h2>game runtime: C++ + GLSL</h2>
   <p class="lede">A Vulkan 1.3 game runtime that treats Blender as its authoring environment. Blender streams complete scene updates over TCP; the game applies them on the main thread, simulates gameplay with Jolt, prepares derived geometry and lighting data, then runs a dynamic-rendering frame graph through presentation.</p>
+  <p>The GI probe captures now drive both diffuse irradiance and split-sum GGX specular IBL. Reflections use a fixed-quality 48-pixel octahedral tile per probe with four manually blended roughness mips; the existing eight-probe spatial and visibility blend is reused without parallax correction.</p>
   <p><b>26,656 lines across 115 tracked C++ and GLSL files.</b> The 48-file, 22,022-line C++ runtime is a unity build: only <code>main.cpp</code> is compiled. Its 58 GLSL stages and 9 shared shader headers add 4,634 lines compiled to SPIR-V and loaded by the Vulkan pass modules. Every source file has a walkthrough tab grouped into annotated blocks.</p>
 
   <div class="snapshot">

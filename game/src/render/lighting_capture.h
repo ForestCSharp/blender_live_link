@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "core/types.h"
 #include "render/vulkan_context.h"
 #include "render/render_types.h"
@@ -60,6 +62,8 @@ struct LightingCaptureDesc
 	i32 cubemap_render_size = 256;
 	i32 octahedral_total_size = 1024;
 	i32 octahedral_entry_size = 16;
+	i32 specular_entry_size = 48;
+	i32 specular_mip_count = 4;
 };
 
 // Mirrors geometry_capture.vert's push constants
@@ -106,6 +110,15 @@ struct ProbeProjectionPushConstants
 	i32 sample_count;
 	i32 _padding0;
 };
+
+struct SpecularPrefilterPushConstants
+{
+	i32 atlas_entry_size;
+	f32 roughness;
+	i32 sample_count;
+	i32 padding0;
+};
+static_assert(sizeof(SpecularPrefilterPushConstants) == 16, "Specular prefilter push constants mismatch");
 
 struct LightingCapture
 {
@@ -155,6 +168,19 @@ struct LightingCapture
 	static constexpr i32 PROJECTION_SLOTS_PER_FRAME = 8;	// <=2 modes * 4 probes
 	VkDescriptorSet projection_slot_sets[MAX_FRAMES_IN_FLIGHT][PROJECTION_SLOTS_PER_FRAME] = {};
 	i32 projection_slot_cursor = 0;
+
+	// GGX specular atlas + split-sum BRDF LUT.
+	GpuImage specular_atlas = {};
+	GpuImage brdf_lut = {};
+	i32 specular_atlas_total_size = 0;
+	i32 specular_atlas_capacity = 0;
+	VkSampler specular_sampler = VK_NULL_HANDLE;
+	VkDescriptorSetLayout specular_prefilter_set_layout = VK_NULL_HANDLE;
+	VkPipelineLayout specular_prefilter_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline specular_prefilter_pipeline = VK_NULL_HANDLE;
+	VkDescriptorSet specular_prefilter_set = VK_NULL_HANDLE;
+	VkPipelineLayout brdf_lut_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline brdf_lut_pipeline = VK_NULL_HANDLE;
 
 	VkDescriptorPool pool = VK_NULL_HANDLE;
 
@@ -514,6 +540,20 @@ struct LightingCapture
 			};
 			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &projection_set_layout));
 		}
+		{
+			VkDescriptorSetLayoutBinding binding = {
+				.binding = 0,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			};
+			VkDescriptorSetLayoutCreateInfo layout_create_info = {
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+				.bindingCount = 1,
+				.pBindings = &binding,
+			};
+			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &specular_prefilter_set_layout));
+		}
 
 		// ---- Pool + sets ----
 		{
@@ -574,6 +614,8 @@ struct LightingCapture
 				.pSetLayouts = &cube_to_oct_set_layout,
 			};
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &cube_to_oct_set));
+			allocate_info.pSetLayouts = &specular_prefilter_set_layout;
+			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &specular_prefilter_set));
 		}
 
 		// ---- Pipeline layouts ----
@@ -652,6 +694,27 @@ struct LightingCapture
 			};
 			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &projection_pipeline_layout));
 		}
+		{
+			VkPushConstantRange push_range = {
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.offset = 0,
+				.size = sizeof(SpecularPrefilterPushConstants),
+			};
+			VkPipelineLayoutCreateInfo layout_create_info = {
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+				.setLayoutCount = 1,
+				.pSetLayouts = &specular_prefilter_set_layout,
+				.pushConstantRangeCount = 1,
+				.pPushConstantRanges = &push_range,
+			};
+			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &specular_prefilter_pipeline_layout));
+		}
+		{
+			VkPipelineLayoutCreateInfo layout_create_info = {
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			};
+			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &brdf_lut_pipeline_layout));
+		}
 
 		// ---- Pipelines ----
 		capture_geometry_pipeline = create_capture_geometry_pipeline(ctx, "bin/shaders/geometry_capture.vert.spv", false);
@@ -693,6 +756,19 @@ struct LightingCapture
 			);
 		}
 		{
+			VkFormat prefilter_formats[1] = { ctx->capabilities.scene_color_format };
+			specular_prefilter_pipeline = create_fullscreen_pipeline(
+				ctx, specular_prefilter_pipeline_layout,
+				"bin/shaders/cubemap_to_octahedral.vert.spv", "bin/shaders/probe_specular_prefilter.frag.spv",
+				prefilter_formats, 1, VK_FORMAT_UNDEFINED, false
+			);
+			brdf_lut_pipeline = create_fullscreen_pipeline(
+				ctx, brdf_lut_pipeline_layout,
+				"bin/shaders/cubemap_to_octahedral.vert.spv", "bin/shaders/brdf_integration.frag.spv",
+				prefilter_formats, 1, VK_FORMAT_UNDEFINED, false
+			);
+		}
+		{
 			VkShaderModule compute_module = create_shader_module_from_file(ctx->device, "bin/shaders/probe_radiance_projection.comp.spv");
 			VkComputePipelineCreateInfo pipeline_create_info = {
 				.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -722,6 +798,77 @@ struct LightingCapture
 		vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer command_buffer)
 		{
 			gpu_image_transition(command_buffer, default_array_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true);
+		});
+
+		{
+			VkSamplerCreateInfo sampler_create_info = {
+				.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+				.magFilter = VK_FILTER_LINEAR,
+				.minFilter = VK_FILTER_LINEAR,
+				.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+				.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+				.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+				.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+				.minLod = 0.0f,
+				.maxLod = (f32)(desc.specular_mip_count - 1),
+			};
+			VK_CHECK(vkCreateSampler(ctx->device, &sampler_create_info, nullptr, &specular_sampler));
+			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_SAMPLER, (u64)specular_sampler, "GI Specular Atlas Sampler");
+
+			VkDescriptorImageInfo cube_info = {
+				.sampler = frame_data.linear_sampler,
+				.imageView = lighting_pass.get_color_output(0).view,
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			};
+			VkWriteDescriptorSet cube_write = {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = specular_prefilter_set,
+				.dstBinding = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &cube_info,
+			};
+			vulkan_update_descriptor_sets(ctx, 1, &cube_write);
+		}
+
+		brdf_lut = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
+			.width = 256,
+			.height = 256,
+			.format = ctx->capabilities.scene_color_format,
+			.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+			.label = "GI Split-Sum BRDF LUT",
+		});
+		vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer command_buffer)
+		{
+			gpu_image_transition(command_buffer, brdf_lut, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true);
+			VkRenderingAttachmentInfo attachment = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+				.imageView = brdf_lut.view,
+				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			};
+			VkRenderingInfo rendering_info = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = { .offset = {0, 0}, .extent = brdf_lut.extent },
+				.layerCount = 1,
+				.colorAttachmentCount = 1,
+				.pColorAttachments = &attachment,
+			};
+			vkCmdBeginRendering(command_buffer, &rendering_info);
+			VkViewport viewport = {
+				.x = 0.0f, .y = (f32)brdf_lut.extent.height,
+				.width = (f32)brdf_lut.extent.width, .height = -(f32)brdf_lut.extent.height,
+				.minDepth = 0.0f, .maxDepth = 1.0f,
+			};
+			VkRect2D scissor = { .offset = {0, 0}, .extent = brdf_lut.extent };
+			vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, brdf_lut_pipeline);
+			vkCmdDraw(command_buffer, 3, 1, 0, 0);
+			vkCmdEndRendering(command_buffer);
+			gpu_image_transition(command_buffer, brdf_lut, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		});
 
 		// Sky input sets: the baked octahedral sky image is fixed-size
@@ -793,6 +940,149 @@ struct LightingCapture
 		});
 
 		is_initialized = true;
+	}
+
+	void resize_specular_atlas(VulkanContext* ctx, i32 in_probe_count)
+	{
+		assert(is_initialized);
+		const i32 slots_per_dimension = (i32)std::ceil(std::sqrt((f64)std::max(in_probe_count, 1)));
+		const i32 required_size = slots_per_dimension * desc.specular_entry_size;
+		assert(required_size <= (i32)ctx->capabilities.properties.limits.maxImageDimension2D);
+
+		if (specular_atlas.image == VK_NULL_HANDLE || specular_atlas_total_size != required_size)
+		{
+			vulkan_context_retire_image(ctx, specular_atlas);
+			specular_atlas = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
+				.width = (u32)required_size,
+				.height = (u32)required_size,
+				.format = ctx->capabilities.scene_color_format,
+				.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+					| VK_IMAGE_USAGE_SAMPLED_BIT
+					| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+				.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+				.mip_levels = (u32)desc.specular_mip_count,
+				.label = "GI Specular Prefilter Atlas",
+			});
+			specular_atlas_total_size = required_size;
+			specular_atlas_capacity = slots_per_dimension * slots_per_dimension;
+		}
+
+		auto clear_atlas = [&](VkCommandBuffer command_buffer)
+		{
+			const VkClearColorValue clear_value = {{ 0.0f, 0.0f, 0.0f, 0.0f }};
+			const VkImageSubresourceRange clear_range = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = (u32)desc.specular_mip_count,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			};
+			gpu_image_transition(command_buffer, specular_atlas, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
+			vkCmdClearColorImage(
+				command_buffer, specular_atlas.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				&clear_value, 1, &clear_range
+			);
+			gpu_image_transition(command_buffer, specular_atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		};
+
+		if (vulkan_current_frame(ctx).recording)
+		{
+			clear_atlas(vulkan_current_command_buffer(ctx));
+		}
+		else
+		{
+			vulkan_context_immediate_submit(ctx, clear_atlas);
+		}
+	}
+
+	void render_specular_prefilter(VulkanContext* ctx, i32 in_atlas_idx)
+	{
+		assert(specular_atlas.image != VK_NULL_HANDLE);
+		assert(in_atlas_idx >= 0 && in_atlas_idx < specular_atlas_capacity);
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+
+		for (i32 mip = 0; mip < desc.specular_mip_count; ++mip)
+		{
+			const i32 mip_total_size = specular_atlas_total_size >> mip;
+			const i32 mip_entry_size = desc.specular_entry_size >> mip;
+			const AtlasViewport atlas_viewport = get_atlas_viewport(
+				mip_total_size, mip_entry_size, in_atlas_idx
+			);
+			ImageUsage attachment_usage = {
+				.image = &specular_atlas,
+				.range = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = (u32)mip,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+				.access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+				.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			};
+			gpu_image_apply_usages(command_buffer, &attachment_usage, 1);
+
+			VkRenderingAttachmentInfo attachment = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+				.imageView = specular_atlas.mip_views[mip],
+				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			};
+			VkRenderingInfo rendering_info = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = {(u32)mip_total_size, (u32)mip_total_size},
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = 1,
+				.pColorAttachments = &attachment,
+			};
+			vkCmdBeginRendering(command_buffer, &rendering_info);
+
+			VkViewport viewport = {
+				.x = (f32)atlas_viewport.x,
+				.y = (f32)(atlas_viewport.y + atlas_viewport.h),
+				.width = (f32)atlas_viewport.w,
+				.height = -(f32)atlas_viewport.h,
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f,
+			};
+			VkRect2D scissor = {
+				.offset = {atlas_viewport.x, atlas_viewport.y},
+				.extent = {(u32)atlas_viewport.w, (u32)atlas_viewport.h},
+			};
+			vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+			SpecularPrefilterPushConstants push_constants = {
+				.atlas_entry_size = mip_entry_size,
+				.roughness = (f32)mip / (f32)(desc.specular_mip_count - 1),
+				.sample_count = mip == 0 ? 1 : 1024,
+			};
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, specular_prefilter_pipeline);
+			vkCmdBindDescriptorSets(
+				command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				specular_prefilter_pipeline_layout, 0, 1, &specular_prefilter_set, 0, nullptr
+			);
+			vkCmdPushConstants(
+				command_buffer, specular_prefilter_pipeline_layout,
+				VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants
+			);
+			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
+			vkCmdEndRendering(command_buffer);
+
+			ImageUsage sampled_usage = {
+				.image = &specular_atlas,
+				.range = attachment_usage.range,
+				.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+				.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+				.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			};
+			gpu_image_apply_usages(command_buffer, &sampled_usage, 1);
+		}
 	}
 
 	// Resets the per-frame slot cursors (call once per frame after the fence)
@@ -1010,7 +1300,7 @@ struct LightingCapture
 					.pBufferInfo = &light_infos[binding_idx - 6],
 				};
 			}
-			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14 };
+			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14, 18, 19 };
 			for (u32 binding_idx : fallback_image_bindings)
 			{
 				writes[write_count++] = (VkWriteDescriptorSet) {
@@ -1051,6 +1341,7 @@ struct LightingCapture
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, lighting_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		render_specular_prefilter(ctx, in_atlas_idx);
 
 		// ---- Radial depth cubemap ----
 		radial_depth_pass.execute(ctx, [&](i32 face_idx)
@@ -1234,6 +1525,8 @@ struct LightingCapture
 			return;
 		}
 
+		vkDestroyPipeline(ctx->device, brdf_lut_pipeline, nullptr);
+		vkDestroyPipeline(ctx->device, specular_prefilter_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, projection_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, cube_to_oct_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, radial_depth_pipeline, nullptr);
@@ -1241,11 +1534,14 @@ struct LightingCapture
 		vkDestroyPipeline(ctx->device, capture_sky_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, capture_geometry_skinned_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, capture_geometry_pipeline, nullptr);
+		vkDestroyPipelineLayout(ctx->device, brdf_lut_pipeline_layout, nullptr);
+		vkDestroyPipelineLayout(ctx->device, specular_prefilter_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, projection_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, cube_to_oct_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, radial_depth_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, capture_sky_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, capture_geometry_pipeline_layout, nullptr);
+		vkDestroyDescriptorSetLayout(ctx->device, specular_prefilter_set_layout, nullptr);
 		vkDestroyDescriptorSetLayout(ctx->device, projection_set_layout, nullptr);
 		vkDestroyDescriptorSetLayout(ctx->device, cube_to_oct_set_layout, nullptr);
 		vkDestroyDescriptorPool(ctx->device, pool, nullptr);
@@ -1260,6 +1556,9 @@ struct LightingCapture
 
 		vulkan_context_retire_image(ctx, default_image);
 		vulkan_context_retire_image(ctx, default_array_image);
+		vulkan_context_retire_image(ctx, brdf_lut);
+		vulkan_context_retire_image(ctx, specular_atlas);
+		vkDestroySampler(ctx->device, specular_sampler, nullptr);
 		geometry_pass.cleanup();
 		lighting_pass.cleanup();
 		radial_depth_pass.cleanup();

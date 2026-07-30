@@ -42,6 +42,7 @@ SCENES=(
 	"test_file.blend"
 	"shadow_test.blend"
     "cornell_box.blend"
+	"pbr_test.blend"
 )
 
 OUTPUT_DIR="screenshots/$CAPTURE_PATH"

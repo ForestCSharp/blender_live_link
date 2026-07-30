@@ -16,8 +16,9 @@
 //   11-12 = GI probe/cell SSBOs           (FS)
 //   13-14 = GI lighting/depth atlases     (FS)
 //   15-17 = SH9/SG9/octree SSBOs          (FS)
+//   18-19 = GI specular atlas/BRDF LUT     (FS)
 
-static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 18;
+static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 20;
 
 // C++ mirror of the lighting fs_params UBO. Byte-identical to game/'s
 // lighting_fs_params_t (lighting.compiled.h:136-166), including GI/SSAO/SSS.
@@ -35,6 +36,10 @@ struct LightingFsParams
 	i32 gi_probe_occlusion;
 	i32 probe_occlusion_mode;
 	i32 probe_radiance_mode;
+	i32 probe_specular_enable;
+	i32 specular_atlas_total_size;
+	i32 specular_atlas_entry_size;
+	i32 specular_mip_count;
 	f32 gi_intensity;
 	i32 atlas_total_size;
 	i32 atlas_entry_size;
@@ -53,7 +58,7 @@ struct LightingFsParams
 	HMM_Vec4 shadow_cascade_distances;
 	HMM_Mat4 shadow_view_projections[4];
 };
-static_assert(sizeof(LightingFsParams) == 400, "Must match game/'s lighting_fs_params_t std140 layout");
+static_assert(sizeof(LightingFsParams) == 416, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {
@@ -130,6 +135,15 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
 		}
+		for (u32 binding_idx = 18; binding_idx <= 19; ++binding_idx)
+		{
+			bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
+				.binding = binding_idx,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			};
+		}
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -143,7 +157,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 9 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 11 * MAX_FRAMES_IN_FLIGHT },
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
@@ -299,7 +313,10 @@ void lighting_pass_update(
 	VkImageView in_gi_depth_view,
 	VkBuffer in_sh9_buffer,
 	VkBuffer in_sg9_buffer,
-	VkBuffer in_gi_octree_buffer
+	VkBuffer in_gi_octree_buffer,
+	VkSampler in_gi_specular_sampler,
+	VkImageView in_gi_specular_view,
+	VkImageView in_brdf_lut_view
 )
 {
 	const u32 frame_index = ctx->frame_index;
@@ -439,6 +456,22 @@ void lighting_pass_update(
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.pImageInfo = &gi_image_infos[gi_image_idx],
+		};
+	}
+
+	VkDescriptorImageInfo specular_image_infos[] = {
+		{ .sampler = in_gi_specular_sampler, .imageView = in_gi_specular_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ .sampler = lighting_pass.linear_sampler, .imageView = in_brdf_lut_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	for (u32 specular_image_idx = 0; specular_image_idx < 2; ++specular_image_idx)
+	{
+		writes[write_count++] = (VkWriteDescriptorSet) {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = lighting_pass.sets[frame_index],
+			.dstBinding = 18 + specular_image_idx,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &specular_image_infos[specular_image_idx],
 		};
 	}
 

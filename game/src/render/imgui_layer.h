@@ -307,19 +307,37 @@ namespace ImGuiLayer
 					if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth)) { state.gi.layout_dirty = true; state.gi.is_updating = true; }
 					ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
 					ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
+					u64 specular_pixels = 0;
+					for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
+					{
+						const u64 dimension = (u64)gi_scene.lighting_capture.specular_atlas_total_size >> mip;
+						specular_pixels += dimension * dimension;
+					}
+					const u64 specular_bytes_per_pixel =
+						gi_scene.lighting_capture.specular_atlas.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 16;
+					ImGui::Text(
+						"Specular Atlas: %d x %d, tile %d, %d mips, %.1f MiB",
+						gi_scene.lighting_capture.specular_atlas_total_size,
+						gi_scene.lighting_capture.specular_atlas_total_size,
+						gi_scene.lighting_capture.desc.specular_entry_size,
+						gi_scene.lighting_capture.desc.specular_mip_count,
+						(f64)(specular_pixels * specular_bytes_per_pixel) / (1024.0 * 1024.0)
+					);
 					ImGui::Text("Bounds Min: %.2f %.2f %.2f", gi_scene.scene_bounds.min.X, gi_scene.scene_bounds.min.Y, gi_scene.scene_bounds.min.Z);
 					ImGui::Text("Bounds Max: %.2f %.2f %.2f", gi_scene.scene_bounds.max.X, gi_scene.scene_bounds.max.Y, gi_scene.scene_bounds.max.Z);
 					ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", gi_scene.min_occupied_cell_extent, gi_scene.max_occupied_cell_extent, gi_scene.max_radial_depth);
 					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.gi.probe_radiance_mode, "Octahedral\0SH9\0SG9\0")) state.gi.is_updating = true;
 					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0")) state.gi.is_updating = true;
 					if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes)) state.gi.is_updating = true;
+					ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
 					ImGui::Checkbox("Show Probes", &state.gi.show_probes);
 					if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable)) { if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; set_mouse_locked(false); } else state.gi.isolated_probe_index = -1; }
 					if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; ImGui::SameLine(); if (ImGui::SmallButton("Clear")) state.gi.isolated_probe_index = -1; ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None"); }
 					ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
 					if (ImGui::Button("Update GI Probes") && !state.gi.is_updating) state.gi.is_updating = true;
 					ImGui::SameLine(); ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance); if (state.gi.is_updating) { ImGui::SameLine(); ImGui::Text("Updating..."); }
-					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0") && (state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance)) state.gi.is_updating = true;
+					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0") && (state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance)) state.gi.is_updating = true;
+					if (state.gi.probe_vis_mode == EProbeVisMode::Specular) ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
 					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes)) state.gi.is_updating = true;
 				}
 				ImGui::Unindent();
@@ -353,6 +371,16 @@ namespace ImGuiLayer
 			}
 			draw_texture(frame_data.linear_sampler, "Octahedral Atlas: Lighting", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0), 256.0f);
 			draw_texture(frame_data.linear_sampler, "Octahedral Atlas: Depth", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1), 256.0f);
+			for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
+			{
+				char label[64];
+				snprintf(label, sizeof(label), "Specular Atlas: Mip %d", mip);
+				draw_texture(
+					frame_data.linear_sampler, label, gi_scene.lighting_capture.specular_atlas,
+					256.0f, gi_scene.lighting_capture.specular_atlas.mip_views[mip]
+				);
+			}
+			draw_texture(frame_data.linear_sampler, "Split-Sum BRDF LUT", gi_scene.lighting_capture.brdf_lut, 256.0f);
 			draw_texture(frame_data.linear_sampler, "Baked Sky", sky_pass.bake_render_pass.get_color_output(0), 256.0f);
 		}
 		if (state.images.items.length() > 0 && ImGui::CollapsingHeader("Debug Image Viewer"))

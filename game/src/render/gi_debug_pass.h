@@ -14,10 +14,12 @@ namespace GIDebugPass
 		i32 atlas_entry_size = 0;
 		i32 probe_vis_mode = 0;
 		i32 isolated_probe_index = -1;
-		i32 padding0 = 0;
-		i32 padding1 = 0;
+		i32 specular_atlas_total_size = 0;
+		i32 specular_atlas_entry_size = 0;
+		i32 specular_mip_count = 0;
+		f32 specular_debug_roughness = 0.0f;
 	};
-	static_assert(sizeof(PushConstants) == 96, "GI debug push constants mismatch");
+	static_assert(sizeof(PushConstants) == 112, "GI debug push constants mismatch");
 
 	inline VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
 	inline VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -35,6 +37,7 @@ namespace GIDebugPass
 			{ .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
 			{ .binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
 			{ .binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
+			{ .binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
 		};
 		VkDescriptorSetLayoutCreateInfo set_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -43,7 +46,7 @@ namespace GIDebugPass
 		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &set_info, nullptr, &set_layout));
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = MAX_FRAMES_IN_FLIGHT,
@@ -124,23 +127,28 @@ namespace GIDebugPass
 		VkDescriptorImageInfo images[] = {
 			{ .sampler = frame_data.linear_sampler, .imageView = gi_scene_get_octahedral_lighting_view(gi_scene), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 			{ .sampler = frame_data.linear_sampler, .imageView = gi_scene_get_octahedral_depth_view(gi_scene), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			{ .sampler = gi_scene.lighting_capture.specular_sampler, .imageView = gi_scene_get_specular_lighting_view(gi_scene), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		};
-		VkWriteDescriptorSet writes[6] = {};
-		for (u32 idx = 0; idx < 6; ++idx)
+		VkWriteDescriptorSet writes[7] = {};
+		for (u32 idx = 0; idx < 7; ++idx)
 		{
-			const bool image = idx == 1 || idx == 2;
+			const bool image = idx == 1 || idx == 2 || idx == 6;
 			u32 buffer_idx = idx == 0 ? 0 : idx - 2;
 			writes[idx] = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[ctx->frame_index],
 				.dstBinding = idx, .descriptorCount = 1,
 				.descriptorType = image ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.pImageInfo = image ? &images[idx - 1] : nullptr,
+				.pImageInfo = image ? &images[idx == 6 ? 2 : idx - 1] : nullptr,
 				.pBufferInfo = image ? nullptr : &buffers[buffer_idx] };
 		}
-		vulkan_update_descriptor_sets(ctx, 6, writes);
+		vulkan_update_descriptor_sets(ctx, 7, writes);
 		PushConstants params = { .view_projection = view_projection, .debug_probe_start_index = 0,
 			.probe_debug_radius = gi_scene_debug_probe_radius(gi_scene), .atlas_total_size = GI_Scene::atlas_total_size,
 			.atlas_entry_size = GI_Scene::atlas_entry_size, .probe_vis_mode = (i32) state.gi.probe_vis_mode,
-			.isolated_probe_index = state.gi.probe_isolation_enable ? state.gi.isolated_probe_index : -1 };
+			.isolated_probe_index = state.gi.probe_isolation_enable ? state.gi.isolated_probe_index : -1,
+			.specular_atlas_total_size = gi_scene.lighting_capture.specular_atlas_total_size,
+			.specular_atlas_entry_size = gi_scene.lighting_capture.desc.specular_entry_size,
+			.specular_mip_count = gi_scene.lighting_capture.desc.specular_mip_count,
+			.specular_debug_roughness = state.gi.specular_debug_roughness };
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &sets[ctx->frame_index], 0, nullptr);

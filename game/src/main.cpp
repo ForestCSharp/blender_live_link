@@ -2358,6 +2358,10 @@ void frame(f32 in_delta_time)
 	lighting_fs_params.gi_probe_occlusion = state.gi.probe_occlusion ? 1 : 0;
 	lighting_fs_params.probe_occlusion_mode = (i32) state.gi.probe_occlusion_mode;
 	lighting_fs_params.probe_radiance_mode = (i32) state.gi.probe_radiance_mode;
+	lighting_fs_params.probe_specular_enable = state.gi.probe_specular_enable ? 1 : 0;
+	lighting_fs_params.specular_atlas_total_size = gi_scene.lighting_capture.specular_atlas_total_size;
+	lighting_fs_params.specular_atlas_entry_size = gi_scene.lighting_capture.desc.specular_entry_size;
+	lighting_fs_params.specular_mip_count = gi_scene.lighting_capture.desc.specular_mip_count;
 	lighting_fs_params.gi_intensity = state.gi.intensity;
 	lighting_fs_params.atlas_total_size = GI_Scene::atlas_total_size;
 	lighting_fs_params.atlas_entry_size = GI_Scene::atlas_entry_size;
@@ -2426,7 +2430,10 @@ void frame(f32 in_delta_time)
 		gi_scene_get_octahedral_depth_view(gi_scene),
 		gi_scene.sh9_coefficients_buffer.get_gpu_buffer(),
 		gi_scene.sg9_lobes_buffer.get_gpu_buffer(),
-		gi_scene.octree_nodes_buffer.get_gpu_buffer()
+		gi_scene.octree_nodes_buffer.get_gpu_buffer(),
+		gi_scene.lighting_capture.specular_sampler,
+		gi_scene_get_specular_lighting_view(gi_scene),
+		gi_scene_get_brdf_lut_view(gi_scene)
 	);
 
 	ssao_pass_update(
@@ -2903,6 +2910,10 @@ int main(int argc, char** argv)
 	if (const char* gi_occlusion_env = getenv("GAME2_GI_OCCLUSION_MODE"))
 	{
 		state.gi.probe_occlusion_mode = (EProbeOcclusionMode) CLAMP((i32) strtol(gi_occlusion_env, nullptr, 10), 0, 1);
+	}
+	if (const char* gi_specular_env = getenv("GAME2_GI_SPECULAR"))
+	{
+		state.gi.probe_specular_enable = strtol(gi_specular_env, nullptr, 10) != 0;
 	}
 
 	// Register render passes and size their targets

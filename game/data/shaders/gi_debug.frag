@@ -13,8 +13,10 @@ layout(push_constant) uniform DebugParams
 	int atlas_entry_size;
 	int probe_vis_mode;
 	int isolated_probe_index;
-	int padding0;
-	int padding1;
+	int specular_atlas_total_size;
+	int specular_atlas_entry_size;
+	int specular_mip_count;
+	float specular_debug_roughness;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D lighting_atlas;
@@ -22,6 +24,7 @@ layout(set = 0, binding = 2) uniform sampler2D depth_atlas;
 layout(set = 0, binding = 3, std430) readonly buffer ProbeFragmentBlock { GI_Probe probes[]; };
 layout(set = 0, binding = 4, std430) readonly buffer SH9Block { ProbeRadianceCoefficient sh9_coefficients[]; };
 layout(set = 0, binding = 5, std430) readonly buffer SG9Block { ProbeSGLobe sg9_lobes[]; };
+layout(set = 0, binding = 6) uniform sampler2D specular_atlas;
 
 layout(location = 0) in vec4 world_position;
 layout(location = 1) in vec4 world_normal;
@@ -52,6 +55,22 @@ vec3 sample_sg9(int index, vec3 normal)
 	return max(result / max(weight, 0.00001), vec3(0.0));
 }
 
+vec3 sample_specular(GI_Probe probe, vec3 direction)
+{
+	float lod = clamp(specular_debug_roughness, 0.0, 1.0) * float(specular_mip_count - 1);
+	int low_mip = int(floor(lod));
+	int high_mip = min(low_mip + 1, specular_mip_count - 1);
+	int low_total = specular_atlas_total_size >> low_mip;
+	int low_entry = specular_atlas_entry_size >> low_mip;
+	int high_total = specular_atlas_total_size >> high_mip;
+	int high_entry = specular_atlas_entry_size >> high_mip;
+	vec3 low = textureLod(specular_atlas,
+		padded_atlas_uv_from_normal(direction, probe.atlas_idx, low_total, low_entry), float(low_mip)).rgb;
+	vec3 high = textureLod(specular_atlas,
+		padded_atlas_uv_from_normal(direction, probe.atlas_idx, high_total, high_entry), float(high_mip)).rgb;
+	return mix(low, high, fract(lod));
+}
+
 void main()
 {
 	GI_Probe probe = probes[probe_index];
@@ -67,7 +86,8 @@ void main()
 		else if (probe_vis_mode == 2) color = vec4(sample_sg9(probe_index, normal), 1.0);
 		else if (probe_vis_mode == 3) color = vec4(vec3(clamp(texture(depth_atlas, atlas_uv).x / max(probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
 		else if (probe_vis_mode == 4) color = vec4(vec3(clamp(texture(depth_atlas, atlas_uv).y / max(probe.max_radial_depth * probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
-		else color = vec4(vec3(clamp((texture(depth_atlas, atlas_uv).x - 1.0) / (exp(5.0) - 1.0), 0.0, 1.0)), 1.0);
+		else if (probe_vis_mode == 5) color = vec4(vec3(clamp((texture(depth_atlas, atlas_uv).x - 1.0) / (exp(5.0) - 1.0), 0.0, 1.0)), 1.0);
+		else color = vec4(sample_specular(probe, normal), 1.0);
 	}
 	out_color = color;
 	out_position = world_position;

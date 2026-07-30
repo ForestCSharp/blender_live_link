@@ -11,8 +11,10 @@ layout(push_constant) uniform DebugParams
 	int atlas_entry_size;
 	int probe_vis_mode;
 	int isolated_probe_index;
-	int padding0;
-	int padding1;
+	int specular_atlas_total_size;
+	int specular_atlas_entry_size;
+	int specular_mip_count;
+	float specular_debug_roughness;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer ProbeVertexBlock

@@ -14,6 +14,7 @@ struct GpuImageDesc
 	VkImageUsageFlags usage;
 	VkImageAspectFlags aspect;
 	u32 array_layers = 1;	// > 1 = 2D array (per-layer attachment views + array sampled view)
+	u32 mip_levels = 1;		// whole-image view samples every mip; mip_views render one mip at a time
 	bool cubemap = false;	// requires array_layers == 6; sampled view is CUBE
 	const char* label = nullptr;
 };
@@ -28,6 +29,9 @@ struct GpuImage
 
 	// Per-layer 2D views for rendering into individual slices (layered only)
 	StretchyBuffer<VkImageView> layer_views;
+
+	// Per-mip views for rendering into an individual mip (mipped images only)
+	StretchyBuffer<VkImageView> mip_views;
 
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkFormat format = VK_FORMAT_UNDEFINED;
@@ -278,12 +282,13 @@ void gpu_image_transition(
 GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const GpuImageDesc& in_desc)
 {
 	const u32 array_layers = MAX(in_desc.array_layers, 1u);
+	const u32 mip_levels = MAX(in_desc.mip_levels, 1u);
 
 	GpuImage result = {
 		.format = in_desc.format,
 		.extent = { in_desc.width, in_desc.height },
 		.array_layers = array_layers,
-		.mip_levels = 1,
+		.mip_levels = mip_levels,
 		.aspects = in_desc.aspect,
 		.generation = gpu_image_next_generation(),
 	};
@@ -301,7 +306,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 			.height = in_desc.height,
 			.depth = 1,
 		},
-		.mipLevels = 1,
+		.mipLevels = mip_levels,
 		.arrayLayers = array_layers,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -347,7 +352,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		.subresourceRange = {
 			.aspectMask = in_desc.aspect,
 			.baseMipLevel = 0,
-			.levelCount = 1,
+			.levelCount = mip_levels,
 			.baseArrayLayer = 0,
 			.layerCount = array_layers,
 		},
@@ -403,11 +408,52 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		}
 	}
 
+	if (mip_levels > 1)
+	{
+		for (u32 mip_idx = 0; mip_idx < mip_levels; ++mip_idx)
+		{
+			VkImageViewCreateInfo mip_view_create_info = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image = result.image,
+				.viewType = array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+				.format = in_desc.format,
+				.subresourceRange = {
+					.aspectMask = in_desc.aspect,
+					.baseMipLevel = mip_idx,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = array_layers,
+				},
+			};
+			VkImageView mip_view = VK_NULL_HANDLE;
+			VK_CHECK(vkCreateImageView(in_device, &mip_view_create_info, nullptr, &mip_view));
+			if (in_desc.label && g_vulkan_debug_utils_enabled && vkSetDebugUtilsObjectNameEXT)
+			{
+				char mip_label[192];
+				snprintf(mip_label, sizeof(mip_label), "%s Mip %u View", in_desc.label, mip_idx);
+				VkDebugUtilsObjectNameInfoEXT name_info = {
+					.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+					.objectType = VK_OBJECT_TYPE_IMAGE_VIEW,
+					.objectHandle = (u64)mip_view,
+					.pObjectName = mip_label,
+				};
+				vkSetDebugUtilsObjectNameEXT(in_device, &name_info);
+			}
+			result.mip_views.add(mip_view);
+		}
+	}
+
 	return result;
 }
 
 void gpu_image_destroy(VmaAllocator in_allocator, VkDevice in_device, GpuImage& in_image)
 {
+	for (VkImageView mip_view : in_image.mip_views)
+	{
+		vkDestroyImageView(in_device, mip_view, nullptr);
+	}
+	in_image.mip_views.reset();
+
 	for (VkImageView layer_view : in_image.layer_views)
 	{
 		vkDestroyImageView(in_device, layer_view, nullptr);

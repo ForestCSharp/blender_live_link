@@ -108,6 +108,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_GI_PROBES=1` — render the GI probe visualization
 - `GAME2_GI_RADIANCE_MODE=<0..2>` / `GAME2_GI_OCCLUSION_MODE=<0..1>` —
   select probe radiance and visibility representations for headless tests
+- `GAME2_GI_SPECULAR=0|1` — disable or enable roughness-aware probe specular
+  IBL for deterministic A/B captures
 
 ## Architecture notes (vs game_old/ legacy runtime)
 
@@ -158,7 +160,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   composite `SceneUpdate` channel message per flatbuffer update.
 - Phase 3c GI uses a sparse scene octree, four-probes-per-frame cubemap
   capture, padded octahedral lighting/depth atlases, and optional SH9/SG9
-  projection. Compute tessellation supports fixed and both adaptive modes,
+  projection. The same captures feed a fixed-quality 48-pixel, four-level
+  GGX-prefiltered specular atlas and split-sum BRDF LUT; nearby probes blend
+  without parallax correction. Compute tessellation supports fixed and both adaptive modes,
   two rotating output/readback slots, virtual patches, Phong projection,
   skinned inputs, and shared render views across geometry/shadows/GI/wires.
 - Dear ImGui uses the official GLFW + Vulkan backends with Vulkan 1.3 dynamic

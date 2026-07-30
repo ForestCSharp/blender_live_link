@@ -1906,8 +1906,13 @@ void vulkan_context_retire_image(VulkanContext* ctx, GpuImage& in_image)
 	{
 		if (layer_view != VK_NULL_HANDLE) retired.image_views.push_back(layer_view);
 	}
+	for (VkImageView mip_view : in_image.mip_views)
+	{
+		if (mip_view != VK_NULL_HANDLE) retired.image_views.push_back(mip_view);
+	}
 	vulkan_context_retire(ctx, std::move(retired));
 	in_image.layer_views.reset();
+	in_image.mip_views.reset();
 	in_image.view = VK_NULL_HANDLE;
 	in_image.image = VK_NULL_HANDLE;
 	in_image.allocation = VK_NULL_HANDLE;

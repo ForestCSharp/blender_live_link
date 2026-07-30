@@ -44,6 +44,7 @@ enum class EProbeVisMode : i32
 	RadialDepth = 3,
 	RadialDepthSquared = 4,
 	EVRPPositiveMoment = 5,
+	Specular = 6,
 	MAX,
 };
 
@@ -402,9 +403,11 @@ struct State
 		EProbeRadianceMode probe_radiance_mode = EProbeRadianceMode::Octahedral;
 		bool render_sky_to_probes = true;
 		bool debug_constant_white_probes = false;
+		bool probe_specular_enable = true;
 		f32 intensity = 1.0f;
 		bool show_probes = false;
 		EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
+		f32 specular_debug_roughness = 0.0f;
 		bool probe_isolation_enable = false;
 		i32 isolated_probe_index = -1;
 		bool compute_irradiance = true;

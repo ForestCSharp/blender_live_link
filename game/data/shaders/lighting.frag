@@ -22,6 +22,10 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	int gi_probe_occlusion;
 	int probe_occlusion_mode;
 	int probe_radiance_mode;
+	int probe_specular_enable;
+	int specular_atlas_total_size;
+	int specular_atlas_entry_size;
+	int specular_mip_count;
 	float gi_intensity;
 	int atlas_total_size;
 	int atlas_entry_size;
@@ -87,6 +91,9 @@ layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
 {
 	GI_OctreeNode gi_octree_nodes[];
 };
+
+layout(set = 0, binding = 18) uniform sampler2D specular_probe_atlas;
+layout(set = 0, binding = 19) uniform sampler2D brdf_lut;
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -302,6 +309,32 @@ vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 	return texture(octahedral_lighting_texture, atlas_uv).rgb;
 }
 
+vec3 sample_probe_specular(GI_Probe probe, vec3 reflection_direction, float roughness)
+{
+	if (probe.atlas_idx < 0 || probe_specular_enable == 0 || specular_mip_count <= 0)
+	{
+		return vec3(0.0);
+	}
+
+	float lod = clamp(roughness, 0.0, 1.0) * float(specular_mip_count - 1);
+	int low_mip = int(floor(lod));
+	int high_mip = min(low_mip + 1, specular_mip_count - 1);
+	float mip_alpha = fract(lod);
+
+	int low_total_size = specular_atlas_total_size >> low_mip;
+	int low_entry_size = specular_atlas_entry_size >> low_mip;
+	vec2 low_uv = padded_atlas_uv_from_normal(
+		reflection_direction, probe.atlas_idx, low_total_size, low_entry_size);
+	vec3 low_radiance = textureLod(specular_probe_atlas, low_uv, float(low_mip)).rgb;
+
+	int high_total_size = specular_atlas_total_size >> high_mip;
+	int high_entry_size = specular_atlas_entry_size >> high_mip;
+	vec2 high_uv = padded_atlas_uv_from_normal(
+		reflection_direction, probe.atlas_idx, high_total_size, high_entry_size);
+	vec3 high_radiance = textureLod(specular_probe_atlas, high_uv, float(high_mip)).rgb;
+	return mix(low_radiance, high_radiance, mip_alpha);
+}
+
 int find_gi_octree_payload_index(vec3 position)
 {
 	if (gi_octree_node_count <= 0)
@@ -500,6 +533,13 @@ void main()
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
 			const float gi_shadow_multiplier = mix(0.5, 1.0, sample_gi_shadow_visibility(position, normal));
+			const vec3 view_direction = normalize(view_position - position);
+			const vec3 reflection_direction = reflect(-view_direction, normal);
+			const float n_dot_v = max(dot(normal, view_direction), 0.0);
+			const vec3 f0 = mix(vec3(0.04), color, vec3(metallic));
+			const vec3 environment_fresnel = fresnel_schlick_roughness(n_dot_v, f0, roughness);
+			const vec3 environment_diffuse_weight = (vec3(1.0) - environment_fresnel) * (1.0 - metallic);
+			const vec2 environment_brdf = texture(brdf_lut, vec2(n_dot_v, roughness)).rg;
 
 #if defined(SHADOWS_ENABLED)
 			if (shadow_debug_show_cascade_selection != 0)
@@ -556,7 +596,13 @@ void main()
 						if (probe.atlas_idx >= 0)
 						{
 							vec3 irradiance = sample_probe_radiance(probe, gi_fallback_probe_index, normal);
-							final_color.xyz += irradiance * color * (1.0 - metallic) * gi_intensity * gi_shadow_multiplier;
+							vec3 specular_radiance = sample_probe_specular(
+								probe, reflection_direction, roughness);
+							vec3 indirect_diffuse = irradiance * color * environment_diffuse_weight;
+							vec3 indirect_specular = specular_radiance
+								* (environment_fresnel * environment_brdf.x + environment_brdf.y);
+							final_color.xyz += (indirect_diffuse + indirect_specular)
+								* gi_intensity * gi_shadow_multiplier;
 						}
 					}
 				}
@@ -568,8 +614,10 @@ void main()
 					vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
 					vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
 					vec3 unoccluded_irradiance = vec3(0.0);
+					vec3 unoccluded_specular = vec3(0.0);
 					float unoccluded_weight = 0.0;
 					vec3 occluded_irradiance = vec3(0.0);
+					vec3 occluded_specular = vec3(0.0);
 					float occluded_weight = 0.0;
 
 					for (int i = 0; i < 8; ++i)
@@ -586,6 +634,8 @@ void main()
 						}
 
 						vec3 probe_radiance = sample_probe_radiance(probe, probe_index, normal);
+						vec3 probe_specular = sample_probe_specular(
+							probe, reflection_direction, roughness);
 						vec3 position_to_probe = probe.position.xyz - position;
 						vec3 probe_to_position = -position_to_probe;
 						float distance_to_pixel = length(probe_to_position);
@@ -603,6 +653,7 @@ void main()
 						weight *= trilinear_weight + 0.001;
 
 						unoccluded_irradiance += probe_radiance * weight;
+						unoccluded_specular += probe_specular * weight;
 						unoccluded_weight += weight;
 
 						if (gi_probe_occlusion != 0)
@@ -631,6 +682,7 @@ void main()
 							weight *= square(weight) / square(threshold);
 						}
 						occluded_irradiance += probe_radiance * weight;
+						occluded_specular += probe_specular * weight;
 						occluded_weight += weight;
 					}
 
@@ -640,7 +692,15 @@ void main()
 							unoccluded_irradiance / unoccluded_weight,
 							occluded_irradiance / occluded_weight,
 							saturate(occluded_weight));
-						final_color.xyz += irradiance * color * (1.0 - metallic) * gi_intensity * gi_shadow_multiplier;
+						vec3 specular_radiance = mix(
+							unoccluded_specular / unoccluded_weight,
+							occluded_specular / occluded_weight,
+							saturate(occluded_weight));
+						vec3 indirect_diffuse = irradiance * color * environment_diffuse_weight;
+						vec3 indirect_specular = specular_radiance
+							* (environment_fresnel * environment_brdf.x + environment_brdf.y);
+						final_color.xyz += (indirect_diffuse + indirect_specular)
+							* gi_intensity * gi_shadow_multiplier;
 					}
 				}
 			}
