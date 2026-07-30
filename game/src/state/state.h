@@ -71,10 +71,26 @@ enum class ETessellationMode : i32
 	MAX,
 };
 
+enum class ETonemappingMode : i32
+{
+	ExposureFusionLocal = 0,
+	AgX = 1,
+	AcesFitted = 2,
+	Reinhard = 3,
+	MAX,
+};
+
 inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
 	"Fixed",
 	"Adaptive Angular (Per Mesh)",
 	"Adaptive Angular (Per Triangle)",
+};
+
+inline const char* ETonemappingModeNames[(i32) ETonemappingMode::MAX] = {
+	"Exposure Fusion (Local)",
+	"AgX",
+	"ACES Fitted",
+	"Reinhard (Legacy)",
 };
 
 enum class ERenderPass : i32
@@ -377,7 +393,14 @@ struct State
 
 	struct TonemappingState
 	{
-		f32 exposure_bias = 1.5f;	// Default scene exposure bias.
+		f32 exposure_bias = 0.0f;	// Default scene exposure bias.
+		ETonemappingMode mode = ETonemappingMode::ExposureFusionLocal;
+		f32 local_shadow_recovery = 1.5f;
+		f32 local_highlight_recovery = 2.0f;
+		f32 local_exposure_preference_sigma = 5.0f;
+		i32 local_coarsest_mip = 6;
+		i32 local_reconstruction_mip = 2;
+		bool local_contrast_boost = false;
 	} tonemapping;
 
 	struct GiState

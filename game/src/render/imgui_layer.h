@@ -239,7 +239,77 @@ namespace ImGuiLayer
 			ImGui::Separator();
 			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
 			{
+				ImGui::Combo(
+					"Tonemapping",
+					(i32*)&state.tonemapping.mode,
+					ETonemappingModeNames,
+					(i32)ETonemappingMode::MAX);
 				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+				if (state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+				{
+					ImGui::Indent();
+					ImGui::SliderFloat(
+						"Shadow Recovery",
+						&state.tonemapping.local_shadow_recovery,
+						0.0f, 4.0f, "%.2f EV");
+					ImGui::SliderFloat(
+						"Highlight Recovery",
+						&state.tonemapping.local_highlight_recovery,
+						0.0f, 4.0f, "%.2f EV");
+					ImGui::SliderFloat(
+						"Exposure Preference Sigma",
+						&state.tonemapping.local_exposure_preference_sigma,
+						0.0f, 10.0f, "%.2f");
+
+					const i32 max_mip = tonemapping_pass_get_max_full_resolution_mip();
+					const i32 minimum_reconstruction_mip = MIN(2, max_mip);
+					state.tonemapping.local_reconstruction_mip = CLAMP(
+						state.tonemapping.local_reconstruction_mip,
+						minimum_reconstruction_mip,
+						max_mip);
+					state.tonemapping.local_coarsest_mip = CLAMP(
+						state.tonemapping.local_coarsest_mip,
+						state.tonemapping.local_reconstruction_mip,
+						max_mip);
+					ImGui::SliderInt(
+						"Coarsest Mip",
+						&state.tonemapping.local_coarsest_mip,
+						state.tonemapping.local_reconstruction_mip,
+						max_mip,
+						"%d",
+						ImGuiSliderFlags_ClampOnInput);
+					if (ImGui::SliderInt(
+						"Reconstruction Mip",
+						&state.tonemapping.local_reconstruction_mip,
+						minimum_reconstruction_mip,
+						state.tonemapping.local_coarsest_mip,
+						"%d",
+						ImGuiSliderFlags_ClampOnInput))
+					{
+						state.tonemapping.local_coarsest_mip = MAX(
+							state.tonemapping.local_coarsest_mip,
+							state.tonemapping.local_reconstruction_mip);
+					}
+					ImGui::Checkbox(
+						"Boost Local Contrast",
+						&state.tonemapping.local_contrast_boost);
+					if (ImGui::Button("Reset Local Defaults"))
+					{
+						state.tonemapping.local_shadow_recovery = 1.5f;
+						state.tonemapping.local_highlight_recovery = 2.0f;
+						state.tonemapping.local_exposure_preference_sigma = 5.0f;
+						state.tonemapping.local_coarsest_mip = MIN(6, max_mip);
+						state.tonemapping.local_reconstruction_mip =
+							MIN(2, state.tonemapping.local_coarsest_mip);
+						state.tonemapping.local_contrast_boost = false;
+					}
+					ImGui::TextDisabled(
+						"Effective mip range: %d -> %d (available through %d)",
+						state.tonemapping.local_coarsest_mip,
+						state.tonemapping.local_reconstruction_mip,
+						max_mip);
+					ImGui::Unindent();
+				}
 				ImGui::Checkbox("SSAO", &state.ssao.enable); ImGui::Checkbox("Fog", &state.fog.debug_active);
 				if (ImGui::CollapsingHeader("Antialiasing", ImGuiTreeNodeFlags_DefaultOpen))
 				{

@@ -1300,6 +1300,10 @@ void handle_resize(bool in_force = false)
 			entry.handle_resize(state.window.render_width, state.window.render_height);
 		}
 	}
+	tonemapping_pass_handle_resize(
+		&state.vk,
+		state.window.render_width,
+		state.window.render_height);
 
 	// The TAA history targets were just recreated
 	state.temporal_aa.history_valid = false;
@@ -2595,9 +2599,13 @@ void frame(f32 in_delta_time)
 		state.temporal_aa.history_index = temporal_aa_previous_index;
 	}
 
+	if (state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+	{
+		tonemapping_pass_prepare_local(&state.vk, state.tonemapping);
+	}
 	tonemapping_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
-		tonemapping_pass_draw(&state.vk, state.tonemapping.exposure_bias);
+		tonemapping_pass_draw(&state.vk, state.tonemapping);
 	});
 
 	// FXAA filters the tonemapped LDR target; copy presents whichever ran last
@@ -2780,6 +2788,25 @@ int main(int argc, char** argv)
 	{
 		state.temporal_aa.enable_fxaa = strtol(fxaa_env, nullptr, 10) != 0;
 	}
+	if (const char* tonemap_mode_env = getenv("GAME2_TONEMAP_MODE"))
+	{
+		if (strcmp(tonemap_mode_env, "agx") == 0)
+		{
+			state.tonemapping.mode = ETonemappingMode::AgX;
+		}
+		else if (strcmp(tonemap_mode_env, "aces") == 0)
+		{
+			state.tonemapping.mode = ETonemappingMode::AcesFitted;
+		}
+		else if (strcmp(tonemap_mode_env, "reinhard") == 0)
+		{
+			state.tonemapping.mode = ETonemappingMode::Reinhard;
+		}
+		else
+		{
+			state.tonemapping.mode = ETonemappingMode::ExposureFusionLocal;
+		}
+	}
 	if (const char* tessellation_env = getenv("GAME2_TESSELLATION"))
 	{
 		state.tessellation.enabled = strtol(tessellation_env, nullptr, 10) != 0;
@@ -2922,7 +2949,7 @@ int main(int argc, char** argv)
 				.format = Render::GBUFFER_FORMAT,
 				.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-				.clear_value = {{{ 0.1f, 0.2f, 0.4f, 1.0f }}},
+				.clear_value = {{{ 0.0f, 0.0f, 0.0f, 1.0f }}},
 			},
 			// 1: world position
 			{

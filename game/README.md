@@ -96,6 +96,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the copy pass upsamples to the window)
+- `GAME2_TONEMAP_MODE=local|agx|aces|reinhard` — choose the exposure-fusion
+  local default or one of the global tonemapping comparisons
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
   frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
@@ -147,7 +149,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   screen-space contact shadows (trace + edge-aware filter) → cook-torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
-  ping-pong history) → tonemapping (exposure 1.5 + Reinhard) → FXAA →
+  ping-pong history) → tonemapping (exposure-fusion local by default, with
+  AgX/ACES/Reinhard global comparisons) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
   sun live in a per-frame UBO; per-object transforms in a triple-buffered
   ObjectData SSBO indexed by a push-constant `object_index`. GPU timestamps feed
@@ -167,8 +170,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   skinned inputs, and shared render views across geometry/shadows/GI/wires.
 - Dear ImGui uses the official GLFW + Vulkan backends with Vulkan 1.3 dynamic
   rendering. Ctrl+I exposes live-import stats, CPU/GPU timings, render and
-  simulation controls, GI/tessellation controls, probe picking, render-target
-  viewers, and overlay status text. The `GAME2_*` toggles remain available for
-  automated/headless verification.
+  simulation controls, tonemapping selection and local exposure-fusion tuning,
+  GI/tessellation controls, probe picking, render-target viewers, and overlay
+  status text. The `GAME2_*` toggles remain available for automated/headless
+  verification.
 
 See [TODO.md](TODO.md) for the full catalog of known implementation work.

@@ -98,7 +98,7 @@ kbd{font-size:.8em;background:var(--bg3);border:1px solid var(--line2);border-bo
   <h2>game runtime: C++ + GLSL</h2>
   <p class="lede">A Vulkan 1.3 game runtime that treats Blender as its authoring environment. Blender streams complete scene updates over TCP; the game applies them on the main thread, simulates gameplay with Jolt, prepares derived geometry and lighting data, then runs a dynamic-rendering frame graph through presentation.</p>
   <p>The GI probe captures now drive both diffuse irradiance and split-sum GGX specular IBL. Reflections use a fixed-quality 48-pixel octahedral tile per probe with four manually blended roughness mips; the existing eight-probe spatial and visibility blend is reused without parallax correction.</p>
-  <p><b>26,656 lines across 115 tracked C++ and GLSL files.</b> The 48-file, 22,022-line C++ runtime is a unity build: only <code>main.cpp</code> is compiled. Its 58 GLSL stages and 9 shared shader headers add 4,634 lines compiled to SPIR-V and loaded by the Vulkan pass modules. Every source file has a walkthrough tab grouped into annotated blocks.</p>
+  <p><b>28,110 lines across 123 tracked C++ and GLSL files.</b> The 49-file, 22,985-line C++ runtime is a unity build: only <code>main.cpp</code> is compiled. Its 64 GLSL stages and 10 shared shader headers add 5,125 lines compiled to SPIR-V and loaded by the Vulkan pass modules. Core source files have walkthrough tabs grouped into annotated blocks; the overview also records newer multi-stage additions.</p>
 
   <div class="snapshot">
     <span class="label">Snapshot</span>
@@ -196,7 +196,7 @@ kbd{font-size:.8em;background:var(--bg3);border:1px solid var(--line2);border-bo
         <text x="305" y="230">Depth of field</text><text class="sub" x="305" y="246">optional gather</text>
         <text x="515" y="230">Wire overlay</text><text class="sub" x="515" y="246">optional barycentrics</text>
         <text x="725" y="230">Temporal AA</text><text class="sub" x="725" y="246">ping-pong history</text>
-        <text x="935" y="230">Tonemapping</text><text class="sub" x="935" y="246">HDR → LDR</text>
+        <text x="935" y="230">Tonemapping</text><text class="sub" x="935" y="246">local fusion / global</text>
         <text x="935" y="318">FXAA</text><text class="sub" x="935" y="334">optional LDR filter</text>
         <text x="725" y="318">Copy input</text><text class="sub" x="725" y="334">descriptor rewrite</text>
         <text x="515" y="318">Swapchain copy</text><text class="sub" x="515" y="334">upscale if needed</text>
@@ -204,13 +204,18 @@ kbd{font-size:.8em;background:var(--bg3);border:1px solid var(--line2);border-bo
         <text class="accent" x="95" y="318">Present</text><text class="sub" x="95" y="334">graphics / present queue</text>
       </g>
     </svg>
-    <figcaption>The first row prepares dependencies rather than simply forming a linear chain. <code>MeshRenderView</code> lets geometry, shadows, GI capture, and wireframe consume original, skinned, or tessellated geometry through the same interface.</figcaption>
+    <figcaption>The first row prepares dependencies rather than simply forming a linear chain. <code>MeshRenderView</code> lets geometry, shadows, GI capture, and wireframe consume original, skinned, or tessellated geometry through the same interface. Tonemapping runs Exposure Fusion Local by default; global AgX, ACES Fitted, and legacy Reinhard skip its proxy pyramid.</figcaption>
   </figure>
+
+  <div class="grid2">
+    <article class="card"><h4>Exposure-fusion tonemapping</h4><p>The default tonemapper builds three synthetic AgX lightness exposures and well-exposedness weights, filters them through half-to-quarter-resolution Gaussian pyramids, blends a coarse Gaussian level, and reconstructs weighted Laplacians. A 3×3 guided fit transfers the fused lightness to the full-resolution HDR source before final AgX output.</p><p class="files">render/tonemapping_pass.h · data/shaders/tonemapping_local_*.frag · data/shaders/tonemapping_operators.h</p></article>
+    <article class="card"><h4>Artist and diagnostic control</h4><p>The Image Effects panel switches Local, AgX, ACES Fitted, and Reinhard at runtime. Local controls expose exposure, shadow/highlight recovery, preference sigma, coarse and reconstruction mips, and Laplacian local-contrast boost. GPU scopes split proxy, pyramid, reconstruction, and final costs.</p><p class="files">state/state.h · render/imgui_layer.h · GAME2_TONEMAP_MODE</p></article>
+  </div>
 
 
   <h3>From GLSL source to a Vulkan pipeline</h3>
   <div class="grid2 shader-overview">
-    <article class="card"><h4>Compile contract</h4><p><code>compile_shaders.sh</code> scans every <code>.vert</code>, <code>.frag</code>, and <code>.comp</code>, invokes <code>glslc</code> for Vulkan 1.3 with <code>SHADOWS_ENABLED</code>, and writes one SPIR-V module per stage under <code>bin/shaders</code>.</p><p class="files">58 stages · 9 shared headers · 4,634 lines</p></article>
+    <article class="card"><h4>Compile contract</h4><p><code>compile_shaders.sh</code> scans every <code>.vert</code>, <code>.frag</code>, and <code>.comp</code>, invokes <code>glslc</code> for Vulkan 1.3 with <code>SHADOWS_ENABLED</code>, and writes one SPIR-V module per stage under <code>bin/shaders</code>.</p><p class="files">64 stages · 10 shared headers · 5,125 lines</p></article>
     <article class="card"><h4>Runtime assembly</h4><p>C++ pass modules load SPIR-V, combine compatible stages, create descriptor and pipeline layouts, then build graphics or compute pipelines. The shader tabs link back to each loader.</p><p class="files">render/shader_module.h · render/*_pass.h · data/shaders/*</p></article>
     <article class="card"><h4>The ABI is split across languages</h4><p>Vertex locations, descriptor sets, bindings, push constants, storage records, and specialization assumptions must match their C++ declarations exactly. Cross-links expose both halves of that contract.</p><p class="files">render/render_types.h · data/shaders/shader_common.h · pass-local structs</p></article>
     <article class="card"><h4>Synchronization stays on the CPU</h4><p>Shaders declare what they read or write, but render passes own image layouts and cross-dispatch visibility. Shader barriers only coordinate work within the scope allowed by GLSL and the dispatch.</p><p class="files">render/render_pass.h · render/gpu_image.h · compute stages</p></article>

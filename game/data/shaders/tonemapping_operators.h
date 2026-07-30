@@ -1,0 +1,76 @@
+#ifndef TONEMAPPING_OPERATORS_H
+#define TONEMAPPING_OPERATORS_H
+
+const vec3 TONEMAP_LUMINANCE_WEIGHTS = vec3(0.2126, 0.7152, 0.0722);
+
+vec3 tonemap_reinhard(vec3 color)
+{
+	color = max(color, vec3(0.0));
+	return color / (color + vec3(1.0));
+}
+
+vec3 tonemap_aces_fitted(vec3 color)
+{
+	color = max(color, vec3(0.0));
+	const float a = 2.51;
+	const float b = 0.03;
+	const float c = 2.43;
+	const float d = 0.59;
+	const float e = 0.14;
+	return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+vec3 agx_default_contrast(vec3 x)
+{
+	vec3 x2 = x * x;
+	vec3 x4 = x2 * x2;
+	return 15.5 * x4 * x2
+		- 40.14 * x4 * x
+		+ 31.96 * x4
+		- 6.868 * x2 * x
+		+ 0.4298 * x2
+		+ 0.1191 * x
+		- 0.00232;
+}
+
+vec3 tonemap_agx(vec3 color)
+{
+	// Linear sRGB -> linear Rec.2020.
+	const mat3 srgb_to_rec2020 = mat3(
+		vec3(0.6274, 0.0691, 0.0164),
+		vec3(0.3293, 0.9195, 0.0880),
+		vec3(0.0433, 0.0113, 0.8956)
+	);
+	const mat3 rec2020_to_srgb = mat3(
+		vec3(1.6605, -0.1246, -0.0182),
+		vec3(-0.5876, 1.1329, -0.1006),
+		vec3(-0.0728, -0.0083, 1.1187)
+	);
+	const mat3 inset = mat3(
+		vec3(0.856627153315983, 0.137318972929847, 0.111898212999950),
+		vec3(0.095121240538159, 0.761241990602591, 0.076799418603190),
+		vec3(0.048251606145858, 0.101439036467562, 0.811302368396859)
+	);
+	const mat3 outset = mat3(
+		vec3(1.127100581814437, -0.141329763498438, -0.141329763498438),
+		vec3(-0.110606643096603, 1.157823702216272, -0.110606643096603),
+		vec3(-0.016493938717835, -0.016493938717834, 1.251936406595041)
+	);
+
+	vec3 value = inset * (srgb_to_rec2020 * max(color, vec3(0.0)));
+	value = log2(max(value, vec3(1e-10)));
+	const float min_ev = -12.47393;
+	const float max_ev = 4.026069;
+	value = clamp((value - min_ev) / (max_ev - min_ev), 0.0, 1.0);
+	value = agx_default_contrast(value);
+	value = outset * value;
+	value = pow(max(value, vec3(0.0)), vec3(2.2));
+	return clamp(rec2020_to_srgb * value, 0.0, 1.0);
+}
+
+float tonemap_perceptual_lightness(vec3 tonemapped_color)
+{
+	return sqrt(max(dot(clamp(tonemapped_color, 0.0, 1.0), TONEMAP_LUMINANCE_WEIGHTS), 0.0));
+}
+
+#endif
