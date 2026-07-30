@@ -138,31 +138,23 @@ namespace Tessellation
 	}
 
 	inline VkDescriptorSet bind_set(VulkanContext* ctx, PipelineState& pipeline_state,
-		const VkBuffer* buffers, u32 buffer_count)
-	{
-		assert(buffer_count == pipeline_state.binding_count);
-		VkDescriptorSet set = VK_NULL_HANDLE;
-		VkDescriptorSetAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
-			.descriptorSetCount = 1,
-			.pSetLayouts = &pipeline_state.set_layout,
-		};
-		VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &set));
-		VkDescriptorBufferInfo infos[5] = {};
-		VkWriteDescriptorSet writes[5] = {};
-		for (u32 idx = 0; idx < buffer_count; ++idx)
+			const VkBuffer* buffers, u32 buffer_count)
 		{
-			infos[idx] = { .buffer = buffers[idx], .offset = 0, .range = VK_WHOLE_SIZE };
-			writes[idx] = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = set,
-				.dstBinding = idx,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.pBufferInfo = &infos[idx],
-			};
-		}
+			assert(buffer_count == pipeline_state.binding_count);
+			VkDescriptorSet set =
+				vulkan_allocate_transient_descriptor_set(ctx, pipeline_state.set_layout);
+			VkDescriptorBufferInfo infos[5] = {};
+			VkWriteDescriptorSet writes[5] = {};
+			for (u32 idx = 0; idx < buffer_count; ++idx)
+			{
+				infos[idx] = descriptor_buffer(buffers[idx]);
+				writes[idx] = descriptor_write_buffer(
+					set,
+					idx,
+					VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					&infos[idx]
+				);
+			}
 		vulkan_update_descriptor_sets(ctx, buffer_count, writes, 0, nullptr, false);
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_state.pipeline);

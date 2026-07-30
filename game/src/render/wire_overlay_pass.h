@@ -431,37 +431,19 @@ namespace WireOverlayPass
 				break;
 			}
 
-			VkDescriptorSet mesh_set = VK_NULL_HANDLE;
-			VkDescriptorSetAllocateInfo allocate_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-				.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
-				.descriptorSetCount = 1,
-				.pSetLayouts = &mesh_set_layout,
-			};
-			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &mesh_set));
+				VkDescriptorSet mesh_set =
+					vulkan_allocate_transient_descriptor_set(ctx, mesh_set_layout);
 
-			VkDescriptorBufferInfo buffer_infos[] = {
-				{ .buffer = render_view.vertex_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
-				{ .buffer = render_view.index_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
-			};
-			VkWriteDescriptorSet writes[] = {
-				{
-					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = mesh_set,
-					.dstBinding = 0,
-					.descriptorCount = 1,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.pBufferInfo = &buffer_infos[0],
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = mesh_set,
-					.dstBinding = 1,
-					.descriptorCount = 1,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.pBufferInfo = &buffer_infos[1],
-				},
-			};
+				VkDescriptorBufferInfo buffer_infos[] = {
+					descriptor_buffer(render_view.vertex_buffer),
+					descriptor_buffer(render_view.index_buffer),
+				};
+				VkWriteDescriptorSet writes[] = {
+					descriptor_write_buffer(
+						mesh_set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_infos[0]),
+					descriptor_write_buffer(
+						mesh_set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_infos[1]),
+				};
 			vulkan_update_descriptor_sets(ctx, 2, writes, 0, nullptr, false);
 
 			vkCmdBindDescriptorSets(

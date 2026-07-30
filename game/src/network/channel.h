@@ -3,29 +3,28 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <utility>
 
 template <typename T>
 struct Channel
 {
 public:
-	void send(const T& data)
+	void send(T&& data)
 	{
-		queue_mutex.lock();	
-		data_queue.push(data);
-		queue_mutex.unlock();
+		std::lock_guard<std::mutex> lock(queue_mutex);
+		data_queue.push(std::move(data));
 	}
 
 	std::optional<T> receive()
 	{
-		std::optional<T> out_optional_value;
-		queue_mutex.lock();	
-		if (data_queue.size() > 0)
+		std::lock_guard<std::mutex> lock(queue_mutex);
+		if (!data_queue.empty())
 		{
-			out_optional_value = data_queue.front();
+			std::optional<T> out_optional_value(std::move(data_queue.front()));
 			data_queue.pop();
+			return out_optional_value;
 		}
-		queue_mutex.unlock();
-		return out_optional_value;
+		return std::nullopt;
 	}
 	
 protected:

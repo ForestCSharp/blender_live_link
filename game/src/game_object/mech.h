@@ -39,6 +39,26 @@ i32 mech_find_armature_instance(const MechInstance& in_mech, i32 in_template_uid
 	return -1;
 }
 
+Object mech_make_runtime_instance_base(
+	const Object& in_template,
+	const MechInstance& in_mech,
+	ObjectStorageKind in_storage_kind)
+{
+	const i32 instance_uid = mech_allocate_runtime_object_uid();
+	Object instance = object_create(
+		instance_uid,
+		mech_instance_name(in_template.name, in_mech.runtime_id),
+		false,
+		in_template.initial_transform.location,
+		in_template.initial_transform.rotation,
+		in_template.initial_transform.scale
+	);
+	instance.storage_kind = in_storage_kind;
+	instance.template_object_id = in_template.unique_id;
+	instance.mech_instance_id = in_mech.runtime_id;
+	return instance;
+}
+
 i32 mech_clone_armature(MechInstance& in_mech, i32 in_template_uid)
 {
 	const i32 existing_uid = mech_find_armature_instance(in_mech, in_template_uid);
@@ -53,55 +73,39 @@ i32 mech_clone_armature(MechInstance& in_mech, i32 in_template_uid)
 
 	auto template_found = state.scene.objects.find(in_template_uid);
 	if (template_found == state.scene.objects.end() || !template_found->second.has_armature ||
-		template_found->second.is_runtime_instance)
+		object_is_runtime_instance(template_found->second))
 	{
 		return -1;
 	}
 
 	Object& armature_template = template_found->second;
-	const i32 instance_uid = mech_allocate_runtime_object_uid();
-	Object armature_instance = object_create(
-		instance_uid,
-		mech_instance_name(armature_template.name, in_mech.runtime_id),
-		false,
-		armature_template.initial_transform.location,
-		armature_template.initial_transform.rotation,
-		armature_template.initial_transform.scale
+	Object armature_instance = mech_make_runtime_instance_base(
+		armature_template,
+		in_mech,
+		ObjectStorageKind::RuntimeArmature
 	);
-	armature_instance.is_runtime_instance = true;
-	armature_instance.template_object_id = in_template_uid;
-	armature_instance.mech_instance_id = in_mech.runtime_id;
-	armature_instance.owns_armature_resources = false;
+	const i32 instance_uid = armature_instance.unique_id;
 	armature_instance.has_armature = true;
 	armature_instance.armature = armature_template.armature;
 	armature_instance.armature.playback_time = 0.0f;
 	armature_instance.armature.current_frame = 0;
 
-	state.scene.objects[instance_uid] = armature_instance;
+	scene_insert_or_replace_object(state, std::move(armature_instance));
 	in_mech.armature_instances.add({
 		.template_uid = in_template_uid,
 		.instance_uid = instance_uid,
 	});
-	scene_mark_indexes_dirty(state);
 	return instance_uid;
 }
 
 i32 mech_clone_part(MechInstance& in_mech, const Object& in_template)
 {
-	const i32 instance_uid = mech_allocate_runtime_object_uid();
-	Object instance = object_create(
-		instance_uid,
-		mech_instance_name(in_template.name, in_mech.runtime_id),
-		false,
-		in_template.initial_transform.location,
-		in_template.initial_transform.rotation,
-		in_template.initial_transform.scale
+	Object instance = mech_make_runtime_instance_base(
+		in_template,
+		in_mech,
+		ObjectStorageKind::RuntimePart
 	);
-	instance.is_runtime_instance = true;
-	instance.template_object_id = in_template.unique_id;
-	instance.mech_instance_id = in_mech.runtime_id;
-	instance.owns_mesh_resources = false;
-	instance.owns_skin_matrices = true;
+	const i32 instance_uid = instance.unique_id;
 	instance.has_mesh = in_template.has_mesh;
 	instance.has_light = in_template.has_light;
 	instance.light = in_template.light;
@@ -138,9 +142,7 @@ i32 mech_clone_part(MechInstance& in_mech, const Object& in_template)
 		}
 	}
 
-	state.scene.objects[instance_uid] = instance;
-	scene_mark_indexes_dirty(state);
-	if (instance.has_light) mark_lighting_dirty(state);
+	scene_insert_or_replace_object(state, std::move(instance));
 	return instance_uid;
 }
 
@@ -150,25 +152,21 @@ void mech_destroy_runtime_objects(MechInstance& in_mech)
 	{
 		const i32 instance_uid = in_mech.part_instance_uids[part_idx];
 		auto found = state.scene.objects.find(instance_uid);
-		if (found != state.scene.objects.end() && found->second.is_runtime_instance)
+		if (found != state.scene.objects.end() && object_is_runtime_instance(found->second))
 		{
-			if (found->second.has_light) mark_lighting_dirty(state);
-			object_cleanup(found->second);
-			state.scene.objects.erase(instance_uid);
+			scene_remove_object(state, instance_uid);
 		}
 		in_mech.part_instance_uids[part_idx] = -1;
 	}
 	for (const MechArmatureInstance& mapping : in_mech.armature_instances)
 	{
 		auto found = state.scene.objects.find(mapping.instance_uid);
-		if (found != state.scene.objects.end() && found->second.is_runtime_instance)
+		if (found != state.scene.objects.end() && object_is_runtime_instance(found->second))
 		{
-			object_cleanup(found->second);
-			state.scene.objects.erase(mapping.instance_uid);
+			scene_remove_object(state, mapping.instance_uid);
 		}
 	}
 	in_mech.armature_instances.clear();
-	scene_mark_indexes_dirty(state);
 }
 
 void mech_suspend_runtime_objects()
@@ -183,15 +181,13 @@ void mech_suspend_runtime_objects()
 	StretchyBuffer<i32> orphan_uids;
 	for (auto& [object_uid, object] : state.scene.objects)
 	{
-		if (object.is_runtime_instance) orphan_uids.add(object_uid);
+		if (object_is_runtime_instance(object)) orphan_uids.add(object_uid);
 	}
 	for (i32 orphan_uid : orphan_uids)
 	{
-		object_cleanup(state.scene.objects[orphan_uid]);
-		state.scene.objects.erase(orphan_uid);
+		scene_remove_object(state, orphan_uid);
 	}
 	orphan_uids.reset();
-	scene_mark_indexes_dirty(state);
 }
 
 void mech_resolve_templates(MechInstance& in_mech)
@@ -206,7 +202,7 @@ void mech_resolve_templates(MechInstance& in_mech)
 		{
 			auto explicit_found = state.scene.objects.find(slot.template_uid);
 			if (explicit_found != state.scene.objects.end() && explicit_found->second.has_part &&
-				!explicit_found->second.is_runtime_instance &&
+				!object_is_runtime_instance(explicit_found->second) &&
 				(i32) explicit_found->second.part.type == part_idx)
 			{
 				in_mech.part_template_uids[part_idx] = slot.template_uid;
@@ -250,7 +246,7 @@ void mech_build_runtime_objects(MechInstance& in_mech)
 		const i32 template_uid = in_mech.part_template_uids[part_idx];
 		auto template_found = state.scene.objects.find(template_uid);
 		if (template_found != state.scene.objects.end() && template_found->second.has_part &&
-			!template_found->second.is_runtime_instance)
+			!object_is_runtime_instance(template_found->second))
 		{
 			in_mech.part_instance_uids[part_idx] = mech_clone_part(in_mech, template_found->second);
 		}
@@ -354,7 +350,7 @@ void mech_reconcile_instances()
 	StretchyBuffer<i32> character_uids;
 	for (auto& [object_uid, object] : state.scene.objects)
 	{
-		if (!object.has_character || object.is_runtime_instance) continue;
+		if (!object.has_character || object_is_runtime_instance(object)) continue;
 		character_uids.add(object_uid);
 		if (object.character.settings.player_controlled &&
 			(!state.scene.player_character_id || object_uid < *state.scene.player_character_id))
@@ -388,7 +384,7 @@ bool mech_part_instance_can_render(const Object& in_part, std::string& out_error
 	if (!in_part.has_mesh || !in_part.mesh.has_skinned_vertices) return true;
 	auto armature_found = state.scene.objects.find(in_part.mesh.armature_id);
 	if (armature_found == state.scene.objects.end() || !armature_found->second.has_armature ||
-		!armature_found->second.is_runtime_instance)
+		!object_is_runtime_instance(armature_found->second))
 	{
 		out_error = "part armature is missing";
 		return false;
@@ -435,7 +431,7 @@ void update_mech_transforms()
 		else
 		{
 			auto body_found = state.scene.objects.find(mech.part_instance_uids[(i32) PartType::Body]);
-			if (body_found == state.scene.objects.end() || !body_found->second.is_runtime_instance)
+			if (body_found == state.scene.objects.end() || !object_is_runtime_instance(body_found->second))
 			{
 				const MechLoadoutSlot& slot = mech.loadout.slots[(i32) PartType::Body];
 				add_error(PartType::Body, slot.selection == MechLoadoutSelectionType::TemplateUid ?
@@ -455,7 +451,7 @@ void update_mech_transforms()
 				{
 					const PartType part_type = (PartType) part_idx;
 					auto part_found = state.scene.objects.find(mech.part_instance_uids[part_idx]);
-					if (part_found == state.scene.objects.end() || !part_found->second.is_runtime_instance)
+					if (part_found == state.scene.objects.end() || !object_is_runtime_instance(part_found->second))
 					{
 						const MechLoadoutSlot& slot = mech.loadout.slots[part_idx];
 						add_error(part_type, slot.selection == MechLoadoutSelectionType::TemplateUid ?
@@ -503,4 +499,3 @@ void update_mech_transforms()
 	}
 	if (has_instanced_lights) mark_lighting_dirty(state);
 }
-

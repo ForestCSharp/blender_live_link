@@ -158,6 +158,13 @@ AnimationClip* armature_get_active_animation(Armature& in_armature)
 	return &in_armature.animations[in_armature.active_animation_index];
 }
 
+enum class ObjectStorageKind : u8
+{
+	Authored,
+	RuntimePart,
+	RuntimeArmature,
+};
+
 struct Object
 {
 	i32 unique_id;
@@ -166,13 +173,9 @@ struct Object
 	// Runtime mech instances live in the ordinary scene object map so all
 	// render, culling, skinning, and animation paths can consume them. Their
 	// immutable mesh/armature data is borrowed from a hidden catalog template.
-	bool is_runtime_instance = false;
+	ObjectStorageKind storage_kind = ObjectStorageKind::Authored;
 	i32 template_object_id = -1;
 	i32 mech_instance_id = -1;
-	bool owns_name = true;
-	bool owns_mesh_resources = true;
-	bool owns_skin_matrices = true;
-	bool owns_armature_resources = true;
 	bool authoring_visibility;
 	bool visibility;
 
@@ -218,6 +221,11 @@ struct Object
 	AttachmentPoint attachment_point;
 };
 
+bool object_is_runtime_instance(const Object& in_object)
+{
+	return in_object.storage_kind != ObjectStorageKind::Authored;
+}
+
 bool object_has_dynamic_jolt_body(const Object& in_object)
 {
 	return in_object.has_rigid_body && in_object.rigid_body.is_dynamic;
@@ -233,7 +241,7 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 bool object_contributes_to_gi_scene(const Object& in_object)
 {
 	return in_object.visibility && in_object.has_mesh && !in_object.has_part &&
-		!in_object.is_runtime_instance && !object_has_dynamic_jolt_actor(in_object);
+		!object_is_runtime_instance(in_object) && !object_has_dynamic_jolt_actor(in_object);
 }
 
 void object_add_character(Object& in_object, const CharacterSettings& in_settings)
@@ -480,7 +488,7 @@ void object_cleanup_armature(Object& in_object)
 		return;
 	}
 
-	if (!in_object.owns_armature_resources)
+	if (in_object.storage_kind == ObjectStorageKind::RuntimeArmature)
 	{
 		in_object.armature = {};
 		in_object.has_armature = false;
@@ -508,15 +516,12 @@ void object_cleanup_armature(Object& in_object)
 // deletion queue, so this is safe to call while frames are in flight.
 void object_cleanup(Object& in_object)
 {
-	if (in_object.owns_name)
-	{
-		free(in_object.name);
-	}
+	free(in_object.name);
 	in_object.name = nullptr;
 
 	if (in_object.has_mesh)
 	{
-		if (in_object.owns_mesh_resources)
+		if (in_object.storage_kind != ObjectStorageKind::RuntimePart)
 		{
 			free(in_object.mesh.indices);
 			in_object.mesh.index_buffer.destroy_gpu_buffer();
@@ -542,10 +547,7 @@ void object_cleanup(Object& in_object)
 		if (in_object.mesh.has_skinned_vertices)
 		{
 			in_object.mesh.skinned_vertex_cache_buffer.destroy_gpu_buffer();
-			if (in_object.owns_skin_matrices)
-			{
-				free(in_object.mesh.skin_matrices);
-			}
+			free(in_object.mesh.skin_matrices);
 		}
 		mesh_cleanup_tessellated_geometry(in_object.mesh);
 		in_object.mesh = {};

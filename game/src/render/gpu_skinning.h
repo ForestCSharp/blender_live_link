@@ -124,33 +124,24 @@ namespace GpuSkinning
 
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-		VkDescriptorSet set = VK_NULL_HANDLE;
-		VkDescriptorSetAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
-			.descriptorSetCount = 1,
-			.pSetLayouts = &set_layout,
-		};
-		VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &set));
+			VkDescriptorSet set = vulkan_allocate_transient_descriptor_set(ctx, set_layout);
 
-		VkDescriptorBufferInfo buffer_infos[] = {
-			{ .buffer = in_mesh.vertex_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
-			{ .buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
-			{ .buffer = get_skin_matrix_arena_buffer(in_state).get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
-			{ .buffer = in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer(), .offset = 0, .range = VK_WHOLE_SIZE },
-		};
-		VkWriteDescriptorSet writes[4] = {};
-		for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
-		{
-			writes[binding_idx] = (VkWriteDescriptorSet) {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = set,
-				.dstBinding = binding_idx,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.pBufferInfo = &buffer_infos[binding_idx],
+			VkDescriptorBufferInfo buffer_infos[] = {
+				descriptor_buffer(in_mesh.vertex_buffer.get_gpu_buffer()),
+				descriptor_buffer(in_mesh.skinned_vertex_buffer.get_gpu_buffer()),
+				descriptor_buffer(get_skin_matrix_arena_buffer(in_state).get_gpu_buffer()),
+				descriptor_buffer(in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer()),
 			};
-		}
+			VkWriteDescriptorSet writes[4] = {};
+			for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
+			{
+				writes[binding_idx] = descriptor_write_buffer(
+					set,
+					binding_idx,
+					VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					&buffer_infos[binding_idx]
+				);
+			}
 		vulkan_update_descriptor_sets(ctx, 4, writes, 0, nullptr, false);
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);

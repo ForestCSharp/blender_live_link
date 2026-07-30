@@ -321,6 +321,101 @@ inline VkDescriptorSet vulkan_allocate_persistent_descriptor_set(
 	return set;
 }
 
+inline VkDescriptorSet vulkan_allocate_transient_descriptor_set(
+	VulkanContext* ctx,
+	VkDescriptorSetLayout in_layout)
+{
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	VkDescriptorSetAllocateInfo allocate_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = vulkan_current_frame(ctx).transient_descriptor_pool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &in_layout,
+	};
+	VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &set));
+	return set;
+}
+
+struct PerFrameDescriptorSets
+{
+	VkDescriptorSet sets[MAX_FRAMES_IN_FLIGHT] = {};
+
+	PerFrameDescriptorSets() = default;
+	PerFrameDescriptorSets(const PerFrameDescriptorSets&) = delete;
+	PerFrameDescriptorSets& operator=(const PerFrameDescriptorSets&) = delete;
+
+	void init_persistent(VulkanContext* ctx, VkDescriptorSetLayout in_layout)
+	{
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+		{
+			sets[frame_idx] = vulkan_allocate_persistent_descriptor_set(ctx, in_layout);
+		}
+	}
+
+	VkDescriptorSet& current(VulkanContext* ctx)
+	{
+		return sets[ctx->frame_index];
+	}
+
+	const VkDescriptorSet& current(const VulkanContext* ctx) const
+	{
+		return sets[ctx->frame_index];
+	}
+};
+
+inline VkDescriptorBufferInfo descriptor_buffer(
+	VkBuffer in_buffer,
+	VkDeviceSize in_range = VK_WHOLE_SIZE)
+{
+	return {
+		.buffer = in_buffer,
+		.offset = 0,
+		.range = in_range,
+	};
+}
+
+inline VkDescriptorImageInfo descriptor_sampled(VkSampler in_sampler, VkImageView in_view)
+{
+	return {
+		.sampler = in_sampler,
+		.imageView = in_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+}
+
+inline VkWriteDescriptorSet descriptor_write_buffer(
+	VkDescriptorSet in_set,
+	u32 in_binding,
+	VkDescriptorType in_type,
+	const VkDescriptorBufferInfo* in_info)
+{
+	return {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = in_set,
+		.dstBinding = in_binding,
+		.descriptorCount = 1,
+		.descriptorType = in_type,
+		.pBufferInfo = in_info,
+	};
+}
+
+inline VkWriteDescriptorSet descriptor_write_image(
+	VkDescriptorSet in_set,
+	u32 in_binding,
+	VkDescriptorType in_type,
+	const VkDescriptorImageInfo* in_info,
+	u32 in_count = 1)
+{
+	return {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = in_set,
+		.dstBinding = in_binding,
+		.descriptorCount = in_count,
+		.descriptorType = in_type,
+		.pImageInfo = in_info,
+	};
+}
+
 // Set by vulkan_context_init; used by GpuBuffer's lazy creation (the way
 // sokol's global context backs sg_make_buffer in game/)
 static VulkanContext* g_vulkan_context = nullptr;

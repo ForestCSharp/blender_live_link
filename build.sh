@@ -34,6 +34,38 @@ else
 fi
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 EXTENSION_ZIP_PATH="$SCRIPT_DIR/blend_src/$BASE_DIR.zip"
+EXTENSION_PACKAGE_EXCLUSIONS=(
+	"$BASE_DIR/flatbuffers/*"
+	"$BASE_DIR/.git/*"
+	"$BASE_DIR/.agents/*"
+	"$BASE_DIR/.codex/*"
+	"$BASE_DIR/.claude/*"
+	"$BASE_DIR/.github/*"
+	"$BASE_DIR/tools/*"
+	"$BASE_DIR/ci-artifacts/*"
+	"$BASE_DIR/game/*"
+	"$BASE_DIR/game_old/*"
+	"$BASE_DIR/blend_files/*"
+	"$BASE_DIR/screenshots/*"
+	"$BASE_DIR/blend_src/*"
+	"$BASE_DIR/blend_patches/*"
+	"$BASE_DIR/compiled_schemas/cpp/*"
+	"$BASE_DIR/docs/*"
+	"$BASE_DIR/__pycache__/*"
+	"*/__pycache__/*"
+	"$BASE_DIR/*.pyc"
+	"$BASE_DIR/build.sh"
+	"$BASE_DIR/screenshots.sh"
+	"$BASE_DIR/build_blend_src.sh"
+	"$BASE_DIR/clean_blend_src.sh"
+	"$BASE_DIR/test_live_link_parity.sh"
+	"$BASE_DIR/README.md"
+	"$BASE_DIR/TODO.txt"
+	"$BASE_DIR/.gitignore"
+	"$BASE_DIR/blender_live_link.fbs"
+	"$BASE_DIR/.DS_Store"
+	"*/.DS_Store"
+)
 PARALLEL_STATUS_DIR=""
 PARALLEL_LOG_DIR=""
 PARALLEL_BRANCH_NAMES=()
@@ -123,106 +155,29 @@ package_extension() {
 	cd "$SCRIPT_DIR/.." || return
 	rm -f "$EXTENSION_ZIP_PATH" || return
 
+	local package_exclusion
+	local seven_zip_exclusions=()
+	local zip_exclusions=()
+	local bsdtar_exclusions=()
+	for package_exclusion in "${EXTENSION_PACKAGE_EXCLUSIONS[@]}"; do
+		seven_zip_exclusions+=("-x!$package_exclusion")
+		zip_exclusions+=("-x" "$package_exclusion")
+		bsdtar_exclusions+=("--exclude" "$package_exclusion")
+	done
+
 	if [[ $OS = Windows ]]; then
 		if ! command -v 7z > /dev/null 2>&1; then
 			echo "Error: required packaging command '7z' was not found on PATH."
 			return 1
 		fi
-		7z a -tzip "$EXTENSION_ZIP_PATH" $BASE_DIR -w $BASE_DIR/ -r \
-			-x!"$BASE_DIR/flatbuffers/*" \
-			-x!"$BASE_DIR/.git/*" \
-			-x!"$BASE_DIR/.agents/*" \
-			-x!"$BASE_DIR/.codex/*" \
-			-x!"$BASE_DIR/.claude/*" \
-			-x!"$BASE_DIR/.github/*" \
-			-x!"$BASE_DIR/tools/*" \
-			-x!"$BASE_DIR/ci-artifacts/*" \
-			-x!"$BASE_DIR/game/*" \
-			-x!"$BASE_DIR/game_old/*" \
-			-x!"$BASE_DIR/blend_files/*" \
-			-x!"$BASE_DIR/screenshots/*" \
-			-x!"$BASE_DIR/blend_src/*" \
-			-x!"$BASE_DIR/blend_patches/*" \
-			-x!"$BASE_DIR/compiled_schemas/cpp/*" \
-			-x!"$BASE_DIR/docs/*" \
-			-x!"$BASE_DIR/__pycache__/*" \
-			-x!"*/__pycache__/*" \
-			-x!"$BASE_DIR/*.pyc" \
-			-x!"$BASE_DIR/build.sh" \
-			-x!"$BASE_DIR/screenshots.sh" \
-			-x!"$BASE_DIR/build_blend_src.sh" \
-			-x!"$BASE_DIR/clean_blend_src.sh" \
-			-x!"$BASE_DIR/test_live_link_parity.sh" \
-			-x!"$BASE_DIR/README.md" \
-			-x!"$BASE_DIR/TODO.txt" \
-			-x!"$BASE_DIR/.gitignore" \
-			-x!"$BASE_DIR/blender_live_link.fbs" \
-			-x!"$BASE_DIR/.DS_Store" \
-			-x!"*/.DS_Store" || return
+		7z a -tzip "$EXTENSION_ZIP_PATH" "$BASE_DIR" -w "$BASE_DIR/" -r \
+			"${seven_zip_exclusions[@]}" || return
 	elif command -v zip > /dev/null 2>&1; then
-		zip -r "$EXTENSION_ZIP_PATH" $BASE_DIR \
-			-x "$BASE_DIR/flatbuffers/*" \
-			-x "$BASE_DIR/.git/*" \
-			-x "$BASE_DIR/.agents/*" \
-			-x "$BASE_DIR/.codex/*" \
-			-x "$BASE_DIR/.claude/*" \
-			-x "$BASE_DIR/.github/*" \
-			-x "$BASE_DIR/tools/*" \
-			-x "$BASE_DIR/ci-artifacts/*" \
-			-x "$BASE_DIR/game/*"\
-			-x "$BASE_DIR/game_old/*"\
-			-x "$BASE_DIR/blend_files/*" \
-			-x "$BASE_DIR/screenshots/*" \
-			-x "$BASE_DIR/blend_src/*" \
-			-x "$BASE_DIR/blend_patches/*" \
-			-x "$BASE_DIR/compiled_schemas/cpp/*" \
-			-x "$BASE_DIR/docs/*" \
-			-x "$BASE_DIR/__pycache__/*" \
-			-x "*/__pycache__/*" \
-			-x "$BASE_DIR/*.pyc" \
-			-x "$BASE_DIR/build.sh" \
-			-x "$BASE_DIR/screenshots.sh" \
-			-x "$BASE_DIR/build_blend_src.sh" \
-			-x "$BASE_DIR/clean_blend_src.sh" \
-			-x "$BASE_DIR/test_live_link_parity.sh" \
-			-x "$BASE_DIR/README.md" \
-			-x "$BASE_DIR/TODO.txt" \
-			-x "$BASE_DIR/.gitignore" \
-			-x "$BASE_DIR/blender_live_link.fbs" \
-			-x "$BASE_DIR/.DS_Store" \
-			-x "*/.DS_Store" || return
+		zip -r "$EXTENSION_ZIP_PATH" "$BASE_DIR" \
+			"${zip_exclusions[@]}" || return
 	elif command -v bsdtar > /dev/null 2>&1; then
 		bsdtar -a -cf "$EXTENSION_ZIP_PATH" \
-			--exclude "$BASE_DIR/flatbuffers/*" \
-			--exclude "$BASE_DIR/.git/*" \
-			--exclude "$BASE_DIR/.agents/*" \
-			--exclude "$BASE_DIR/.codex/*" \
-			--exclude "$BASE_DIR/.claude/*" \
-			--exclude "$BASE_DIR/.github/*" \
-			--exclude "$BASE_DIR/tools/*" \
-			--exclude "$BASE_DIR/ci-artifacts/*" \
-			--exclude "$BASE_DIR/game/*" \
-			--exclude "$BASE_DIR/game_old/*" \
-			--exclude "$BASE_DIR/blend_files/*" \
-			--exclude "$BASE_DIR/screenshots/*" \
-			--exclude "$BASE_DIR/blend_src/*" \
-			--exclude "$BASE_DIR/blend_patches/*" \
-			--exclude "$BASE_DIR/compiled_schemas/cpp/*" \
-			--exclude "$BASE_DIR/docs/*" \
-			--exclude "$BASE_DIR/__pycache__/*" \
-			--exclude "*/__pycache__/*" \
-			--exclude "$BASE_DIR/*.pyc" \
-			--exclude "$BASE_DIR/build.sh" \
-			--exclude "$BASE_DIR/screenshots.sh" \
-			--exclude "$BASE_DIR/build_blend_src.sh" \
-			--exclude "$BASE_DIR/clean_blend_src.sh" \
-			--exclude "$BASE_DIR/test_live_link_parity.sh" \
-			--exclude "$BASE_DIR/README.md" \
-			--exclude "$BASE_DIR/TODO.txt" \
-			--exclude "$BASE_DIR/.gitignore" \
-			--exclude "$BASE_DIR/blender_live_link.fbs" \
-			--exclude "$BASE_DIR/.DS_Store" \
-			--exclude "*/.DS_Store" \
+			"${bsdtar_exclusions[@]}" \
 			"$BASE_DIR" || return
 	else
 		echo "Error: extension packaging requires either 'zip' or 'bsdtar' on $OS."

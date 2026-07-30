@@ -161,6 +161,7 @@ struct SceneUpdate
 
 	StretchyBuffer<i32> deleted_object_uids;
 	std::optional<Camera> editor_camera;
+	bool has_object_batch = false;
 	bool reset = false;
 };
 
@@ -324,14 +325,7 @@ struct State
 	// Batched per-object GPU data, rebuilt each frame and triple-buffered so
 	// the CPU never writes a buffer a frame in flight still reads
 	// (port of game/src/state/state.h:156-163)
-	struct RenderObjectSnapshotState
-	{
-		StretchyBuffer<ObjectData> items;
-		GpuBuffer<ObjectData> buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
-		i32 buffer_index = 0;
-		i32 buffer_capacity = 0;
-		bool valid = false;
-	} render_objects;
+	ResizableGpuStreamRing<ObjectData> render_objects;
 
 	// Registered materials (port of game/src/state/state.h:203-208). The GPU
 	// buffer is a fixed MAX_MATERIALS-slot stream buffer created at init and
@@ -360,14 +354,7 @@ struct State
 	// Triple-buffered ring like the render-object snapshot. Deviation from
 	// game_old/'s per-mesh stream buffers: game's mapped stream buffers would
 	// race the frame in flight; the ring is the same fix the snapshot uses.
-	struct SkinMatrixArenaState
-	{
-		StretchyBuffer<HMM_Mat4> items;
-		GpuBuffer<HMM_Mat4> buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
-		i32 buffer_index = 0;
-		i32 buffer_capacity = 0;
-		bool valid = false;
-	} skin_matrices;
+	ResizableGpuStreamRing<HMM_Mat4> skin_matrices;
 
 	// Packed light data for the lighting pass. CPU arrays rebuilt when
 	// needs_data_update; GPU side is a 3-ring per type uploaded every frame
@@ -647,7 +634,7 @@ void scene_rebuild_indexes(State& in_state)
 	ankerl::unordered_dense::map<i32, bool> catalog_armature_ids;
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
-		if (object.has_part && !object.is_runtime_instance && object.has_mesh &&
+		if (object.has_part && !object_is_runtime_instance(object) && object.has_mesh &&
 			object.mesh.has_skinned_vertices && object.mesh.armature_id >= 0)
 		{
 			catalog_armature_ids[object.mesh.armature_id] = true;
@@ -673,15 +660,15 @@ void scene_rebuild_indexes(State& in_state)
 			indexes.light_object_ids.add(unique_id);
 		}
 		if (object.has_armature &&
-			(object.is_runtime_instance || !catalog_armature_ids.contains(unique_id)))
+			(object_is_runtime_instance(object) || !catalog_armature_ids.contains(unique_id)))
 		{
 			indexes.armature_object_ids.add(unique_id);
 		}
-		if (object.has_part && !object.is_runtime_instance)
+		if (object.has_part && !object_is_runtime_instance(object))
 		{
 			indexes.part_object_ids.add(unique_id);
 		}
-		if (object.has_attachment_point && !object.is_runtime_instance)
+		if (object.has_attachment_point && !object_is_runtime_instance(object))
 		{
 			indexes.attachment_point_object_ids.add(unique_id);
 		}
@@ -704,34 +691,11 @@ void scene_ensure_indexes(State& in_state)
 // deletion queue, so this is safe while frames are in flight.
 void render_object_snapshot_ensure_capacity(State& in_state, i32 in_required_capacity)
 {
-	State::RenderObjectSnapshotState& render_objects = in_state.render_objects;
-	if (in_required_capacity <= render_objects.buffer_capacity)
-	{
-		return;
-	}
-
-	i32 new_capacity = MAX(RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY, render_objects.buffer_capacity);
-	while (new_capacity < in_required_capacity)
-	{
-		new_capacity *= 2;
-	}
-
-	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
-	{
-		render_objects.buffers[buffer_idx].destroy_gpu_buffer();
-		render_objects.buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<ObjectData>){
-			.data = nullptr,
-			.size = sizeof(ObjectData) * (u64) new_capacity,
-			.usage = {
-				.storage_buffer = true,
-				.stream_update = true,
-			},
-			.label = "State::render_objects",
-		});
-	}
-
-	render_objects.buffer_capacity = new_capacity;
-	render_objects.valid = false;
+	in_state.render_objects.configure(
+		"State::render_objects",
+		RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY
+	);
+	in_state.render_objects.ensure_capacity(in_required_capacity);
 }
 
 // Rebuilds the per-object GPU snapshot for this frame and advances the buffer
@@ -742,7 +706,7 @@ void build_render_object_snapshot(State& in_state)
 {
 	scene_ensure_indexes(in_state);
 
-	State::RenderObjectSnapshotState& render_objects = in_state.render_objects;
+	ResizableGpuStreamRing<ObjectData>& render_objects = in_state.render_objects;
 
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
@@ -768,25 +732,14 @@ void build_render_object_snapshot(State& in_state)
 		render_objects.items.add(object_make_render_data(object));
 	}
 
-	if (render_objects.items.length() == 0)
-	{
-		render_objects.valid = false;
-		return;
-	}
-
-	render_objects.buffer_index = (render_objects.buffer_index + 1) % RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT;
-	render_objects.buffers[render_objects.buffer_index].update_gpu_buffer(
-		render_objects.items.data(),
-		sizeof(ObjectData) * render_objects.items.length()
-	);
-	render_objects.valid = true;
+	render_objects.upload();
 }
 
 // The buffer descriptor writes bind every frame (always valid — capacity is
 // pre-created at init so empty scenes still have a buffer to bind)
 GpuBuffer<ObjectData>& get_render_object_snapshot_buffer(State& in_state)
 {
-	return in_state.render_objects.buffers[in_state.render_objects.buffer_index];
+	return in_state.render_objects.current();
 }
 
 // Fixed-size materials SSBO, created once (port of game/'s
@@ -823,65 +776,124 @@ void update_materials_buffer(State& in_state)
 // Grows the skin matrix arena ring (clone of the snapshot grower)
 void skin_matrix_arena_ensure_capacity(State& in_state, i32 in_required_capacity)
 {
-	State::SkinMatrixArenaState& arena = in_state.skin_matrices;
-	if (in_required_capacity <= arena.buffer_capacity)
-	{
-		return;
-	}
-
-	i32 new_capacity = MAX(RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY, arena.buffer_capacity);
-	while (new_capacity < in_required_capacity)
-	{
-		new_capacity *= 2;
-	}
-
-	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
-	{
-		arena.buffers[buffer_idx].destroy_gpu_buffer();
-		arena.buffers[buffer_idx] = GpuBuffer((GpuBufferDesc<HMM_Mat4>){
-			.data = nullptr,
-			.size = sizeof(HMM_Mat4) * (u64) new_capacity,
-			.usage = {
-				.storage_buffer = true,
-				.stream_update = true,
-			},
-			.label = "State::skin_matrices",
-		});
-	}
-
-	arena.buffer_capacity = new_capacity;
-	arena.valid = false;
+	in_state.skin_matrices.configure(
+		"State::skin_matrices",
+		RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY
+	);
+	in_state.skin_matrices.ensure_capacity(in_required_capacity);
 }
 
 // Advances the arena ring and uploads this frame's packed matrices. Runs
 // before begin_frame (same ring-depth safety argument as the snapshot).
 void skin_matrix_arena_upload(State& in_state)
 {
-	State::SkinMatrixArenaState& arena = in_state.skin_matrices;
-	if (arena.items.length() == 0)
-	{
-		arena.valid = false;
-		return;
-	}
-
-	skin_matrix_arena_ensure_capacity(in_state, (i32) arena.items.length());
-
-	arena.buffer_index = (arena.buffer_index + 1) % RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT;
-	arena.buffers[arena.buffer_index].update_gpu_buffer(
-		arena.items.data(),
-		sizeof(HMM_Mat4) * arena.items.length()
-	);
-	arena.valid = true;
+	in_state.skin_matrices.upload();
 }
 
 GpuBuffer<HMM_Mat4>& get_skin_matrix_arena_buffer(State& in_state)
 {
-	return in_state.skin_matrices.buffers[in_state.skin_matrices.buffer_index];
+	return in_state.skin_matrices.current();
 }
 
 void mark_lighting_dirty(State& in_state)
 {
 	in_state.lighting.needs_data_update = true;
+}
+
+void scene_invalidate_cached_object_ids(State& in_state, i32 in_unique_id)
+{
+	if (in_state.scene.camera_control_id == in_unique_id)
+	{
+		in_state.scene.camera_control_id.reset();
+	}
+	if (in_state.scene.player_character_id == in_unique_id)
+	{
+		in_state.scene.player_character_id.reset();
+	}
+	if (in_state.scene.primary_sun_id == in_unique_id)
+	{
+		in_state.scene.primary_sun_id.reset();
+	}
+	if (in_state.fog.active_fog_controller_id == in_unique_id)
+	{
+		in_state.fog.active_fog_controller_id.reset();
+		in_state.fog.active = false;
+	}
+}
+
+void scene_insert_or_replace_object(State& in_state, Object&& in_object)
+{
+	const i32 unique_id = in_object.unique_id;
+	bool lighting_changed = in_object.has_light;
+	bool gi_scene_geometry_changed = object_contributes_to_gi_scene(in_object);
+
+	auto found = in_state.scene.objects.find(unique_id);
+	if (found != in_state.scene.objects.end())
+	{
+		lighting_changed = lighting_changed || found->second.has_light;
+		gi_scene_geometry_changed =
+			gi_scene_geometry_changed || object_contributes_to_gi_scene(found->second);
+		scene_invalidate_cached_object_ids(in_state, unique_id);
+		object_cleanup(found->second);
+		found->second = std::move(in_object);
+	}
+	else
+	{
+		in_state.scene.objects[unique_id] = std::move(in_object);
+	}
+
+	scene_mark_indexes_dirty(in_state);
+	if (lighting_changed)
+	{
+		mark_lighting_dirty(in_state);
+	}
+	if (gi_scene_geometry_changed)
+	{
+		in_state.gi.layout_dirty = true;
+	}
+}
+
+bool scene_remove_object(State& in_state, i32 in_unique_id)
+{
+	auto found = in_state.scene.objects.find(in_unique_id);
+	if (found == in_state.scene.objects.end())
+	{
+		return false;
+	}
+
+	const bool lighting_changed = found->second.has_light;
+	const bool gi_scene_geometry_changed = object_contributes_to_gi_scene(found->second);
+	scene_invalidate_cached_object_ids(in_state, in_unique_id);
+	object_cleanup(found->second);
+	in_state.scene.objects.erase(found);
+	scene_mark_indexes_dirty(in_state);
+
+	if (lighting_changed)
+	{
+		mark_lighting_dirty(in_state);
+	}
+	if (gi_scene_geometry_changed)
+	{
+		in_state.gi.layout_dirty = true;
+	}
+	return true;
+}
+
+void scene_clear_objects(State& in_state)
+{
+	for (auto& [unique_id, object] : in_state.scene.objects)
+	{
+		object_cleanup(object);
+	}
+	in_state.scene.objects.clear();
+	in_state.scene.camera_control_id.reset();
+	in_state.scene.player_character_id.reset();
+	in_state.scene.primary_sun_id.reset();
+	in_state.fog.active_fog_controller_id.reset();
+	in_state.fog.active = false;
+	scene_reset_indexes(in_state);
+	mark_lighting_dirty(in_state);
+	in_state.gi.layout_dirty = true;
 }
 
 // Fixed-size light SSBO rings, created once at init (bindings must always

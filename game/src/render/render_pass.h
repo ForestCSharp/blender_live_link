@@ -18,11 +18,11 @@ using std::optional;
 // negative-height (Y-flip) viewport, and timing scopes. Pass files own
 // pipelines and record draws in the execute callback.
 //
-// Cross-pass wiring is imperative, like game/: a pass reads another pass's
-// output by fetching get_color_output(...) and transitioning it to
-// SHADER_READ_ONLY_OPTIMAL *before* calling execute (barriers are illegal
-// inside dynamic rendering). There is no dependency graph — passes run in
-// ERenderPass enum order.
+// Cross-pass wiring is imperative, like game/: execute_sampled handles the
+// common execute-then-sample operation for whole color outputs. Conditional
+// passes and specialized subresources keep explicit transitions (barriers are
+// illegal inside dynamic rendering). There is no dependency graph — passes
+// run in ERenderPass enum order.
 
 // Single/Swapchain (Phase 1), Array (Phase 3a shadows), Multi/Cubemap
 // (Phase 3c GI captures)
@@ -78,10 +78,6 @@ struct RenderPass
 	i32 current_width = -1;
 	i32 current_height = -1;
 
-	// Renders only the first N slices of an Array pass this frame
-	// (game/'s set_pass_count_override; -1 = all)
-	i32 pass_count_override = -1;
-
 	void validate_desc()
 	{
 		const bool has_any_output = desc.num_outputs > 0 || desc.depth_output.format != VK_FORMAT_UNDEFINED;
@@ -114,21 +110,6 @@ struct RenderPass
 		}
 		assert(false);
 		return 1;
-	}
-
-	i32 get_pass_count() const
-	{
-		const i32 natural_pass_count = get_natural_pass_count();
-		if (pass_count_override >= 0)
-		{
-			return MIN(pass_count_override, natural_pass_count);
-		}
-		return natural_pass_count;
-	}
-
-	void set_pass_count_override(i32 in_count)
-	{
-		pass_count_override = in_count;
 	}
 
 	void release_targets()
@@ -261,7 +242,10 @@ struct RenderPass
 	// attachments, sets the Y-flipped viewport + scissor, runs the callback,
 	// ends rendering. The callback binds its own pipeline/sets and draws.
 	// Array passes loop once per slice (callback receives the slice index).
-	void execute(VulkanContext* ctx, const std::function<void(i32)>& in_callback)
+	void execute(
+		VulkanContext* ctx,
+		const std::function<void(i32)>& in_callback,
+		i32 in_pass_count = -1)
 	{
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
@@ -277,7 +261,9 @@ struct RenderPass
 			? ctx->swapchain_extent
 			: (VkExtent2D) { (u32) current_width, (u32) current_height };
 
-		const i32 pass_count = get_pass_count();
+		const i32 natural_pass_count = get_natural_pass_count();
+		const i32 pass_count =
+			in_pass_count >= 0 ? MIN(in_pass_count, natural_pass_count) : natural_pass_count;
 		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
 		{
 			// Declare the exact attachment slices used by this rendering
@@ -415,6 +401,38 @@ struct RenderPass
 
 		gpu_timestamps_end_scope(ctx, gpu_timing_slot);
 		vulkan_end_debug_label(ctx);
+	}
+
+	void make_color_outputs_sampled(VulkanContext* ctx)
+	{
+		PassResourceUsage usage;
+		usage.images.reserve(color_outputs.length());
+		for (GpuImage& output : color_outputs)
+		{
+			usage.images.push_back({
+				.image = &output,
+				.range = {
+					.aspectMask = output.aspects,
+					.baseMipLevel = 0,
+					.levelCount = VK_REMAINING_MIP_LEVELS,
+					.baseArrayLayer = 0,
+					.layerCount = VK_REMAINING_ARRAY_LAYERS,
+				},
+				.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+				.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+				.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			});
+		}
+		vulkan_apply_pass_resource_usage(ctx, usage);
+	}
+
+	void execute_sampled(
+		VulkanContext* ctx,
+		const std::function<void(i32)>& in_callback,
+		i32 in_pass_count = -1)
+	{
+		execute(ctx, in_callback, in_pass_count);
+		make_color_outputs_sampled(ctx);
 	}
 
 	void cleanup()

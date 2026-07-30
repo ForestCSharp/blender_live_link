@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "core/stretchy_buffer.h"
 #include "render/vulkan_context.h"
 
 #include <cassert>
@@ -339,4 +340,129 @@ protected:
 
 	// Optional Label
 	optional<std::string> label;
+};
+
+template<typename T>
+struct PerFrameUniform
+{
+	GpuBuffer<T> buffers[MAX_FRAMES_IN_FLIGHT];
+
+	PerFrameUniform() = default;
+	PerFrameUniform(const PerFrameUniform&) = delete;
+	PerFrameUniform& operator=(const PerFrameUniform&) = delete;
+
+	void init(const char* in_label)
+	{
+		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
+		{
+			buffers[frame_idx] = GpuBuffer((GpuBufferDesc<T>) {
+				.data = nullptr,
+				.size = sizeof(T),
+				.usage = { .uniform_buffer = true, .stream_update = true },
+				.label = in_label,
+			});
+		}
+	}
+
+	GpuBuffer<T>& current(VulkanContext* ctx)
+	{
+		return buffers[ctx->frame_index];
+	}
+
+	VkBuffer update(VulkanContext* ctx, const T& in_value)
+	{
+		GpuBuffer<T>& buffer = current(ctx);
+		buffer.update_gpu_buffer(&in_value, sizeof(T));
+		return buffer.get_gpu_buffer();
+	}
+
+	void shutdown()
+	{
+		for (GpuBuffer<T>& buffer : buffers)
+		{
+			buffer.destroy_gpu_buffer();
+		}
+	}
+};
+
+template<typename T>
+struct ResizableGpuStreamRing
+{
+	static constexpr i32 SLOT_COUNT = 3;
+
+	StretchyBuffer<T> items;
+	GpuBuffer<T> buffers[SLOT_COUNT];
+	i32 buffer_index = 0;
+	i32 buffer_capacity = 0;
+	bool valid = false;
+
+	ResizableGpuStreamRing() = default;
+	ResizableGpuStreamRing(const ResizableGpuStreamRing&) = delete;
+	ResizableGpuStreamRing& operator=(const ResizableGpuStreamRing&) = delete;
+
+	void configure(const char* in_label, i32 in_initial_capacity)
+	{
+		label = in_label;
+		initial_capacity = in_initial_capacity;
+	}
+
+	void ensure_capacity(i32 in_required_capacity)
+	{
+		if (in_required_capacity <= buffer_capacity)
+		{
+			return;
+		}
+
+		i32 new_capacity = MAX(initial_capacity, buffer_capacity);
+		while (new_capacity < in_required_capacity)
+		{
+			new_capacity *= 2;
+		}
+
+		for (GpuBuffer<T>& buffer : buffers)
+		{
+			buffer.destroy_gpu_buffer();
+			buffer = GpuBuffer((GpuBufferDesc<T>) {
+				.data = nullptr,
+				.size = sizeof(T) * (u64) new_capacity,
+				.usage = { .storage_buffer = true, .stream_update = true },
+				.label = label,
+			});
+		}
+
+		buffer_capacity = new_capacity;
+		valid = false;
+	}
+
+	void upload()
+	{
+		if (items.length() == 0)
+		{
+			valid = false;
+			return;
+		}
+
+		ensure_capacity((i32) items.length());
+		buffer_index = (buffer_index + 1) % SLOT_COUNT;
+		buffers[buffer_index].update_gpu_buffer(items.data(), sizeof(T) * items.length());
+		valid = true;
+	}
+
+	GpuBuffer<T>& current()
+	{
+		return buffers[buffer_index];
+	}
+
+	void shutdown()
+	{
+		for (GpuBuffer<T>& buffer : buffers)
+		{
+			buffer.destroy_gpu_buffer();
+		}
+		valid = false;
+	}
+
+private:
+	const char* label = nullptr;
+	i32 initial_capacity = 1;
 };

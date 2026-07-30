@@ -21,6 +21,7 @@ import struct
 import traceback
 import time
 
+from contextlib import contextmanager, nullcontext
 from io import StringIO
 from mathutils import Vector
 
@@ -61,6 +62,79 @@ from .compiled_schemas.python.Blender.LiveLink import SunLight
 from .compiled_schemas.python.Blender.LiveLink import Update
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Vec4
+
+EXPORT_TIMING_KEYS = (
+    "mesh_eval",
+    "triangulation",
+    "vertex_dedupe",
+    "skin_weights",
+    "animation_sampling",
+    "materials",
+    "images",
+    "image_pixels_read",
+    "image_rgba8_convert",
+    "image_flatbuffer_pack",
+    "flatbuffer_finish",
+)
+
+
+class ExportStats(dict):
+    """Counters and coarse timings for one Python export."""
+
+    def __init__(self, sequence, reason, input_object_count, deleted_object_count, reset):
+        super().__init__(
+            sequence=sequence,
+            reason=reason,
+            input_object_count=input_object_count,
+            deleted_object_count=deleted_object_count,
+            exported_object_count=0,
+            mesh_count=0,
+            mesh_vertex_count=0,
+            mesh_index_count=0,
+            skinned_mesh_count=0,
+            light_count=0,
+            armature_count=0,
+            bone_count=0,
+            animation_count=0,
+            animation_matrix_count=0,
+            material_slot_count=0,
+            material_count=0,
+            image_count=0,
+            image_byte_count=0,
+            byte_count=0,
+            generation_seconds=0.0,
+            timings={key: 0.0 for key in EXPORT_TIMING_KEYS},
+            reset=reset,
+        )
+
+    def add_timing(self, key, elapsed_seconds):
+        self["timings"][key] += elapsed_seconds
+
+    @contextmanager
+    def measure(self, key):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.add_timing(key, time.perf_counter() - start)
+
+
+def build_offset_vector(builder, decoded_values, start_vector):
+    """Build an offset vector from values already arranged in decoded order."""
+    decoded_values = list(decoded_values)
+    start_vector(builder, len(decoded_values))
+    for value in reversed(decoded_values):
+        builder.PrependUOffsetTRelative(value)
+    return builder.EndVector()
+
+
+def build_int32_vector(builder, decoded_values, start_vector):
+    """Build an int32 vector from values already arranged in decoded order."""
+    decoded_values = list(decoded_values)
+    start_vector(builder, len(decoded_values))
+    for value in reversed(decoded_values):
+        builder.PrependInt32(value)
+    return builder.EndVector()
 
 # Overridden print that prints to blender console windows
 def print(*args, **kwargs):
@@ -258,7 +332,7 @@ class LiveLinkConnection():
 
     def add_export_timing(self, export_stats, key, elapsed_seconds):
         if export_stats is not None:
-            export_stats["timings"][key] += elapsed_seconds
+            export_stats.add_timing(key, elapsed_seconds)
 
     def mesh_needs_triangulation(self, mesh):
         return any(polygon.loop_total != 3 for polygon in mesh.polygons)
@@ -290,9 +364,8 @@ class LiveLinkConnection():
                     obj_evaluated.to_mesh_clear()
 
             self.add_export_timing(export_stats, "mesh_eval", time.perf_counter() - mesh_eval_start)
-            triangulation_start = time.perf_counter()
-            mesh.calc_loop_triangles()
-            self.add_export_timing(export_stats, "triangulation", time.perf_counter() - triangulation_start)
+            with export_stats.measure("triangulation") if export_stats is not None else nullcontext():
+                mesh.calc_loop_triangles()
             return mesh
         finally:
             for modifier in disabled_modifiers:
@@ -316,6 +389,41 @@ class LiveLinkConnection():
     
         # No armature found, return None
         return None
+
+    def collect_export_objects(self, changed_objects, scene_objects):
+        """Return the stable, UID-deduplicated mesh/armature export closure."""
+        objects_to_export = []
+        exported_object_ids = set()
+
+        def queue_export_object(blender_object):
+            if not blender_object:
+                return
+            object_id = blender_object.session_uid
+            if object_id in exported_object_ids:
+                return
+            exported_object_ids.add(object_id)
+            objects_to_export.append(blender_object)
+
+        def armature_is_referenced_by_live_linked_mesh(armature_object):
+            return any(
+                scene_object.type == 'MESH'
+                and scene_object.live_link_settings.enable_live_link
+                and self.get_mesh_armature(scene_object) == armature_object
+                for scene_object in scene_objects
+            )
+
+        for blender_object in changed_objects:
+            if blender_object.live_link_settings.enable_live_link:
+                queue_export_object(blender_object)
+                if blender_object.type == 'MESH':
+                    queue_export_object(self.get_mesh_armature(blender_object))
+            elif (
+                blender_object.type == 'ARMATURE'
+                and armature_is_referenced_by_live_linked_mesh(blender_object)
+            ):
+                queue_export_object(blender_object)
+
+        return objects_to_export
 
     def resolve_attachment_point(self, marker, attachment, dependency_graph):
         owner = attachment.owner_part
@@ -633,8 +741,11 @@ class LiveLinkConnection():
                     # Add to referenced material dict
                     if referenced_materials.get(material_id) is None:
                         referenced_materials[material_id] = material
-            material_ids = np.asarray(material_ids, dtype=np.int32)
-            material_ids_fb = builder.CreateNumpyVector(material_ids)
+            material_ids_fb = build_int32_vector(
+                builder,
+                material_ids,
+                Mesh.MeshStartMaterialIdsVector,
+            )
             if export_stats is not None:
                 export_stats["material_slot_count"] += int(len(material_ids))
 
@@ -691,10 +802,11 @@ class LiveLinkConnection():
                 bones_fb.append(Bone.End(builder))
 
             # Create flatbuffers vector of bones
-            Armature.ArmatureStartBonesVector(builder, len(bones_fb))   
-            for bone_fb in reversed(bones_fb):
-                builder.PrependUOffsetTRelative(bone_fb)
-            armature_bones_fb = builder.EndVector()
+            armature_bones_fb = build_offset_vector(
+                builder,
+                bones_fb,
+                Armature.ArmatureStartBonesVector,
+            )
 
             actions = self.get_armature_actions(obj)
             if actions:
@@ -706,10 +818,11 @@ class LiveLinkConnection():
             for action in actions:
                 animations_fb.append(self.make_flatbuffer_animation(builder, obj, action, obj.data.bones, export_stats))
 
-            Armature.ArmatureStartAnimationsVector(builder, len(animations_fb))
-            for animation_fb in reversed(animations_fb):
-                builder.PrependUOffsetTRelative(animation_fb)
-            armature_animations_fb = builder.EndVector()
+            armature_animations_fb = build_offset_vector(
+                builder,
+                animations_fb,
+                Armature.ArmatureStartAnimationsVector,
+            )
 
             # Add Bones to armature object when creating it
             Armature.Start(builder)
@@ -979,81 +1092,23 @@ class LiveLinkConnection():
 
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
-        export_stats = {
-            "sequence": sequence,
-            "reason": update_reason,
-            "input_object_count": len(in_object_list),
-            "deleted_object_count": len(in_deleted_object_uids),
-            "exported_object_count": 0,
-            "mesh_count": 0,
-            "mesh_vertex_count": 0,
-            "mesh_index_count": 0,
-            "skinned_mesh_count": 0,
-            "light_count": 0,
-            "armature_count": 0,
-            "bone_count": 0,
-            "animation_count": 0,
-            "animation_matrix_count": 0,
-            "material_slot_count": 0,
-            "material_count": 0,
-            "image_count": 0,
-            "image_byte_count": 0,
-            "byte_count": 0,
-            "generation_seconds": 0.0,
-            "timings": {
-                "mesh_eval": 0.0,
-                "triangulation": 0.0,
-                "vertex_dedupe": 0.0,
-                "skin_weights": 0.0,
-                "animation_sampling": 0.0,
-                "materials": 0.0,
-                "images": 0.0,
-                "image_pixels_read": 0.0,
-                "image_rgba8_convert": 0.0,
-                "image_flatbuffer_pack": 0.0,
-                "flatbuffer_finish": 0.0,
-            },
-            "reset": reset,
-        }
+        export_stats = ExportStats(
+            sequence=sequence,
+            reason=update_reason,
+            input_object_count=len(in_object_list),
+            deleted_object_count=len(in_deleted_object_uids),
+            reset=reset,
+        )
 
         # referenced materials, keyed by session_uid and updated in self.make_flatbuffer_object
         referenced_materials = {}
 
-        # Build up objects to be added to scene objects vector. A live-linked
-        # skinned mesh needs its armature data even when the armature object is
-        # hidden or not explicitly live-linked in Blender.
-        objects_to_export = []
-        exported_object_ids = set()
-
-        def queue_export_object(blender_object):
-            if not blender_object:
-                return
-            object_id = blender_object.session_uid
-            if object_id in exported_object_ids:
-                return
-            exported_object_ids.add(object_id)
-            objects_to_export.append(blender_object)
-
-        def armature_is_referenced_by_live_linked_mesh(armature_object):
-            for scene_object in bpy.context.scene.objects:
-                if scene_object.type != 'MESH':
-                    continue
-                if not scene_object.live_link_settings.enable_live_link:
-                    continue
-                if self.get_mesh_armature(scene_object) == armature_object:
-                    return True
-            return False
-
-        for blender_object in in_object_list: 
-            if blender_object.live_link_settings.enable_live_link:
-                queue_export_object(blender_object)
-
-                if blender_object.type == 'MESH':
-                    mesh_armature = self.get_mesh_armature(blender_object)
-                    if mesh_armature:
-                        queue_export_object(mesh_armature)
-            elif blender_object.type == 'ARMATURE' and armature_is_referenced_by_live_linked_mesh(blender_object):
-                queue_export_object(blender_object)
+        # A live-linked skinned mesh needs its armature even when the armature
+        # is hidden or was not explicitly included in the changed-object batch.
+        objects_to_export = self.collect_export_objects(
+            in_object_list,
+            bpy.context.scene.objects,
+        )
 
         live_link_objects = []
         export_stats["exported_object_count"] = len(objects_to_export)
@@ -1068,17 +1123,21 @@ class LiveLinkConnection():
                 )
             )
 
-        # actually create the scene objects vector
-        Update.UpdateStartObjectsVector(builder, len(live_link_objects))
-        for live_link_object in live_link_objects: 
-            builder.PrependUOffsetTRelative(live_link_object)
-        update_objects = builder.EndVector()
+        # The historical exporter decoded these two vectors in reverse input
+        # order. Pass that decoded order explicitly so this refactor preserves
+        # payload compatibility.
+        update_objects = build_offset_vector(
+            builder,
+            reversed(live_link_objects),
+            Update.UpdateStartObjectsVector,
+        )
 
         # create flatbuffers deleted objects
-        Update.UpdateStartDeletedObjectUidsVector(builder, len(in_deleted_object_uids))
-        for deleted_object_uid in in_deleted_object_uids:
-            builder.PrependInt32(deleted_object_uid)
-        update_deleted_object_uids = builder.EndVector()
+        update_deleted_object_uids = build_int32_vector(
+            builder,
+            reversed(in_deleted_object_uids),
+            Update.UpdateStartDeletedObjectUidsVector,
+        )
 
         # referenced images, keyed by session_uid and updated when building up material list below 
         referenced_images = {}
@@ -1189,10 +1248,11 @@ class LiveLinkConnection():
             flatbuffer_materials.append(flatbuffer_material)
 
         # Create the vector of materials for our top-level Update 
-        Update.UpdateStartMaterialsVector(builder, len(flatbuffer_materials))   
-        for material in reversed(flatbuffer_materials):
-            builder.PrependUOffsetTRelative(material)
-        update_materials = builder.EndVector()
+        update_materials = build_offset_vector(
+            builder,
+            flatbuffer_materials,
+            Update.UpdateStartMaterialsVector,
+        )
         self.add_export_timing(export_stats, "materials", time.perf_counter() - materials_start)
 
         images_start = time.perf_counter()
@@ -1224,9 +1284,8 @@ class LiveLinkConnection():
             export_stats["image_byte_count"] += int(pixels_rgba8.nbytes)
 
             # Now pass to FlatBuffers
-            image_pack_start = time.perf_counter()
-            flatbuffer_image_data = builder.CreateNumpyVector(pixels_rgba8)
-            self.add_export_timing(export_stats, "image_flatbuffer_pack", time.perf_counter() - image_pack_start)
+            with export_stats.measure("image_flatbuffer_pack"):
+                flatbuffer_image_data = builder.CreateNumpyVector(pixels_rgba8)
 
             # Build up flatbuffers image and add it to our list of images
             Image.Start(builder)
@@ -1238,10 +1297,11 @@ class LiveLinkConnection():
             flatbuffer_images.append(flatbuffer_image)
 
         # Create the vector of images for our top-level Update 
-        Update.UpdateStartImagesVector(builder, len(flatbuffer_images))   
-        for image in reversed(flatbuffer_images):
-            builder.PrependUOffsetTRelative(image)
-        update_images = builder.EndVector()            
+        update_images = build_offset_vector(
+            builder,
+            flatbuffer_images,
+            Update.UpdateStartImagesVector,
+        )
         self.add_export_timing(export_stats, "images", time.perf_counter() - images_start)
 
         flatbuffer_finish_start = time.perf_counter()
@@ -1338,6 +1398,22 @@ live_link_connection = []
 batched_updates = set()
 batched_deleted = set()
 
+@contextmanager
+def suspend_depsgraph_updates():
+    previous_enabled = depsgraph_update_post_callback.enabled
+    depsgraph_update_post_callback.enabled = False
+    try:
+        yield
+    finally:
+        depsgraph_update_post_callback.enabled = previous_enabled
+
+def queue_object_updates(objects, update_reason):
+    batched_updates.update(objects)
+    schedule_send(update_reason=update_reason)
+
+def queue_object_update(obj, update_reason):
+    queue_object_updates((obj,), update_reason)
+
 def clear_batched_depsgraph_updates(update_reason="unknown"):
     if bpy.app.timers.is_registered(send_updates_timer):
         bpy.app.timers.unregister(send_updates_timer)
@@ -1360,17 +1436,16 @@ def send_full_scene_update(update_reason="full_update"):
         f"scene_objects={len(bpy.context.scene.objects)}"
     )
 
-    depsgraph_update_post_callback.enabled = False
     sent = False
-    try:
-        sent = live_link_connection.send_object_list(
-            updated_objects=list(bpy.context.scene.objects),
-            deleted_object_uids=[],
-            update_reason=update_reason,
-        )
-    finally:
-        clear_batched_depsgraph_updates(update_reason=f"{update_reason}_after_send")
-        depsgraph_update_post_callback.enabled = True
+    with suspend_depsgraph_updates():
+        try:
+            sent = live_link_connection.send_object_list(
+                updated_objects=list(bpy.context.scene.objects),
+                deleted_object_uids=[],
+                update_reason=update_reason,
+            )
+        finally:
+            clear_batched_depsgraph_updates(update_reason=f"{update_reason}_after_send")
 
     if sent:
         automatic_initial_full_update_timer.pending = False
@@ -1436,15 +1511,12 @@ def send_updates_timer():
         update_reason = f"depsgraph_timer(updates={len(batched_updates)},deleted={len(batched_deleted)})"
         print(f"\nLive Link Timer Send: reason={update_reason}")
 
-        depsgraph_update_post_callback.enabled = False
-
-        live_link_connection.send_object_list(
-            updated_objects=list(batched_updates),
-            deleted_object_uids=list(batched_deleted),
-            update_reason=update_reason,
-        )
-
-        depsgraph_update_post_callback.enabled = True
+        with suspend_depsgraph_updates():
+            live_link_connection.send_object_list(
+                updated_objects=list(batched_updates),
+                deleted_object_uids=list(batched_deleted),
+                update_reason=update_reason,
+            )
 
         # Clear batch
         batched_updates.clear()
@@ -1482,8 +1554,6 @@ def depsgraph_update_post_callback(scene, depsgraph):
         clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
         return
 
-    updated_objects = []
-
     # Determine if any objects were deleted
     # Track the objects at the last update
     if hasattr(depsgraph_update_post_callback, "previous_objects"):
@@ -1497,14 +1567,14 @@ def depsgraph_update_post_callback(scene, depsgraph):
     depsgraph_update_post_callback.previous_objects = current_objects
 
     # Accumulate updated objects
+    updated_objects = []
     for update in depsgraph.updates:
         update_id = update.id
         if isinstance(update_id, bpy.types.Object):
             if update.is_updated_transform or update.is_updated_geometry:
-                batched_updates.add(scene.objects[update_id.name])
+                updated_objects.append(scene.objects[update_id.name])
 
-    # Start/refresh the timer
-    schedule_send(update_reason="depsgraph_update_post")
+    queue_object_updates(updated_objects, update_reason="depsgraph_update_post")
 
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
@@ -1538,15 +1608,13 @@ class OpLiveLinkCompareNativePythonExport(bpy.types.Operator):
             self.report({'ERROR'}, "Native Live Link export is not available")
             return {'CANCELLED'}
 
-        depsgraph_update_post_callback.enabled = False
         try:
-            matched, message = live_link_connection.compare_native_python_full_update()
+            with suspend_depsgraph_updates():
+                matched, message = live_link_connection.compare_native_python_full_update()
         except Exception as exc:
             print(traceback.format_exc())
             self.report({'ERROR'}, f"Native/Python compare failed: {exc}")
             return {'CANCELLED'}
-        finally:
-            depsgraph_update_post_callback.enabled = True
 
         if matched:
             self.report({'INFO'}, message)
@@ -1636,8 +1704,7 @@ def gameplay_component_property_update(self, _context):
         return
     source_object = getattr(self, "id_data", None)
     if isinstance(source_object, bpy.types.Object):
-        batched_updates.add(source_object)
-        schedule_send(update_reason="gameplay_component_property_update")
+        queue_object_update(source_object, update_reason="gameplay_component_property_update")
 
 class Component(PropertyGroup):
     # Blender UI Info
@@ -1765,22 +1832,26 @@ class Component_FogController(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentFogController
 
-PART_TYPE_ITEMS = [
-    ('BODY', 'Body', ''),
-    ('LEGS', 'Legs', ''),
-    ('LEFT_ARM', 'Left Arm', ''),
-    ('RIGHT_ARM', 'Right Arm', ''),
-    ('HEAD', 'Head', ''),
+PART_TYPE_SPECS = [
+    ('BODY', 'Body', PartType.PartType.Body, False),
+    ('LEGS', 'Legs', PartType.PartType.Legs, True),
+    ('LEFT_ARM', 'Left Arm', PartType.PartType.LeftArm, True),
+    ('RIGHT_ARM', 'Right Arm', PartType.PartType.RightArm, True),
+    ('HEAD', 'Head', PartType.PartType.Head, True),
 ]
 
-ATTACHMENT_PART_TYPE_ITEMS = PART_TYPE_ITEMS[1:]
-
+PART_TYPE_ITEMS = [
+    (identifier, label, '')
+    for identifier, label, _flatbuffer_enum, _attachment_eligible in PART_TYPE_SPECS
+]
+ATTACHMENT_PART_TYPE_ITEMS = [
+    (identifier, label, '')
+    for identifier, label, _flatbuffer_enum, attachment_eligible in PART_TYPE_SPECS
+    if attachment_eligible
+]
 PART_TYPE_TO_FLATBUFFER = {
-    'BODY': PartType.PartType.Body,
-    'LEGS': PartType.PartType.Legs,
-    'LEFT_ARM': PartType.PartType.LeftArm,
-    'RIGHT_ARM': PartType.PartType.RightArm,
-    'HEAD': PartType.PartType.Head,
+    identifier: flatbuffer_enum
+    for identifier, _label, flatbuffer_enum, _attachment_eligible in PART_TYPE_SPECS
 }
 
 class Component_Part(Component):
@@ -1837,20 +1908,19 @@ class Component_AttachmentPoint(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentAttachmentPoint
 
-gameplay_component_enum = [
-    Component_Character.enum_info(),
-    Component_CameraControl.enum_info(),
-    Component_FogController.enum_info(),
-    Component_Part.enum_info(),
-    Component_AttachmentPoint.enum_info(),
+COMPONENT_SPECS = [
+    (Component_Character, 'player'),
+    (Component_CameraControl, 'camera_control'),
+    (Component_FogController, 'fog_controller'),
+    (Component_Part, 'part'),
+    (Component_AttachmentPoint, 'attachment_point'),
 ]
 
+COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
+gameplay_component_enum = [component_class.enum_info() for component_class in COMPONENT_CLASSES]
 TYPE_TO_GROUP = {
-    Component_Character.type_name: 'player',
-    Component_CameraControl.type_name: 'camera_control',
-    Component_FogController.type_name: 'fog_controller',
-    Component_Part.type_name: 'part',
-    Component_AttachmentPoint.type_name: 'attachment_point',
+    component_class.type_name: group_name
+    for component_class, group_name in COMPONENT_SPECS
 }
 
 #GROUP_TO_TYPE = {v: k for k, v in TYPE_TO_GROUP.items()}
@@ -1908,10 +1978,11 @@ def builder_create_gameplay_components(builder, live_link_settings, source_objec
                 exporter=exporter,
             ))
 
-        Object.ObjectStartComponentsVector(builder, len(flatbuffer_components))
-        for flatbuffer_component in reversed(flatbuffer_components): 
-            builder.PrependUOffsetTRelative(flatbuffer_component)
-        out_flatbuffers_object = builder.EndVector()
+        out_flatbuffers_object = build_offset_vector(
+            builder,
+            flatbuffer_components,
+            Object.ObjectStartComponentsVector,
+        )
     
     return out_flatbuffers_object
 
@@ -1935,8 +2006,7 @@ class OBJECT_OT_add_custom_item(Operator):
         new_component = settings.components.add()
         new_component.type = settings.add_type
 
-        batched_updates.add(obj)
-        schedule_send(update_reason="gameplay_component_added")
+        queue_object_update(obj, update_reason="gameplay_component_added")
 
         return {'FINISHED'}
 
@@ -1952,8 +2022,7 @@ class OBJECT_OT_remove_custom_item(Operator):
 
         if 0 <= self.index < len(settings.components):
             settings.components.remove(self.index)
-            batched_updates.add(obj)
-            schedule_send(update_reason="gameplay_component_removed")
+            queue_object_update(obj, update_reason="gameplay_component_removed")
             return {'FINISHED'}
         else:
             self.report({'WARNING'}, "Invalid index")
@@ -2019,11 +2088,7 @@ classes_to_register = [
     LiveLinkView3DPanel,
 
     # Custom Property Group System
-    Component_Character,
-    Component_CameraControl,
-    Component_FogController,
-    Component_Part,
-    Component_AttachmentPoint,
+    *COMPONENT_CLASSES,
     ComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,

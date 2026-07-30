@@ -352,6 +352,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	// process objects from update
 	if (auto objects = update->objects())
 	{
+		scene_update.has_object_batch = true;
 		scene_update.stats.object_count = (i32) objects->size();
 		for (u32 idx = 0; idx < objects->size(); ++idx)
 		{
@@ -766,11 +767,9 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 								.initial_direction = initial_direction,
 								.follow_distance = cam_control_follow_distance,
 								.follow_speed = cam_control_follow_speed,
-							};
-							object_add_camera_control(game_object, cam_control_settings);
-
-							state.scene.camera_control_id = game_object.unique_id;
-							break;
+								};
+								object_add_camera_control(game_object, cam_control_settings);
+								break;
 						}
 						case Blender::LiveLink::GameplayComponent_GameplayComponentPart:
 						{
@@ -808,8 +807,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 			scene_update.objects.add(game_object);
 		}
 
-		state.runtime.blender_data_loaded = true;
-	}
+		}
 
 	if (auto deleted_object_uids = update->deleted_object_uids())
 	{
@@ -843,7 +841,7 @@ void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
 	}
 
 	// Send the whole update to the main thread
-	state.live_link.scene_updates.send(scene_update);
+	state.live_link.scene_updates.send(std::move(scene_update));
 }
 
 // Live Link Function. Runs on its own thread
@@ -1126,6 +1124,10 @@ void live_link_drain_channels()
 		state.data_oriented.last_import = import_stats;
 		state.data_oriented.import_history.add(import_stats);
 		state.data_oriented.selected_import_history_index = (i32) state.data_oriented.import_history.length() - 1;
+		if (scene_update.has_object_batch)
+		{
+			state.runtime.blender_data_loaded = true;
+		}
 
 		if (!state.debug_camera.live_link_initialization_complete)
 		{
@@ -1190,16 +1192,6 @@ void live_link_drain_channels()
 				resolve_mesh_material_indices(updated_object.mesh);
 			}
 
-			bool gi_scene_geometry_changed = object_contributes_to_gi_scene(updated_object);
-
-			// Cleanup old object
-			if (state.scene.objects.contains(updated_object_uid))
-			{
-				gi_scene_geometry_changed = gi_scene_geometry_changed
-					|| object_contributes_to_gi_scene(state.scene.objects[updated_object_uid]);
-				object_cleanup(state.scene.objects[updated_object_uid]);
-			}
-
 			// Create the Jolt body on the drained copy BEFORE the map insert
 			// (the JPH::Body* copies into the map — game/ main.cpp:2010)
 			if (updated_object.has_rigid_body)
@@ -1212,22 +1204,19 @@ void live_link_drain_channels()
 			if (updated_object.has_character)
 			{
 				updated_object.character = character_create(jolt_state, updated_object.character.settings);
-				if (updated_object.character.settings.player_controlled)
-				{
-					state.scene.player_character_id = updated_object_uid;
-				}
 			}
 
-			if (updated_object.has_light)
+			const bool selects_player =
+				updated_object.has_character && updated_object.character.settings.player_controlled;
+			const bool selects_camera = updated_object.has_camera_control;
+			scene_insert_or_replace_object(state, std::move(updated_object));
+			if (selects_player)
 			{
-				mark_lighting_dirty(state);
+				state.scene.player_character_id = updated_object_uid;
 			}
-
-			state.scene.objects[updated_object_uid] = updated_object;
-			scene_mark_indexes_dirty(state);
-			if (gi_scene_geometry_changed)
+			if (selects_camera)
 			{
-				state.gi.layout_dirty = true;
+				state.scene.camera_control_id = updated_object_uid;
 			}
 		}
 
@@ -1235,30 +1224,9 @@ void live_link_drain_channels()
 		for (i32 deleted_object_uid : scene_update.deleted_object_uids)
 		{
 			state.data_oriented.frame.live_link_deleted_objects += 1;
-			if (state.scene.objects.contains(deleted_object_uid))
+			if (scene_remove_object(state, deleted_object_uid))
 			{
 				printf("Removing object. UID: %i\n", deleted_object_uid);
-				if (state.scene.objects[deleted_object_uid].has_light)
-				{
-					mark_lighting_dirty(state);
-				}
-				const bool gi_scene_geometry_changed = object_contributes_to_gi_scene(state.scene.objects[deleted_object_uid]);
-				object_cleanup(state.scene.objects[deleted_object_uid]);
-				state.scene.objects.erase(deleted_object_uid);
-				scene_mark_indexes_dirty(state);
-				if (gi_scene_geometry_changed)
-				{
-					state.gi.layout_dirty = true;
-				}
-
-				if (state.scene.camera_control_id == deleted_object_uid)
-				{
-					state.scene.camera_control_id.reset();
-				}
-				if (state.scene.player_character_id == deleted_object_uid)
-				{
-					state.scene.player_character_id.reset();
-				}
 			}
 		}
 
@@ -1268,23 +1236,9 @@ void live_link_drain_channels()
 			state.data_oriented.frame.live_link_reset_count += 1;
 			state.runtime.blender_data_loaded = false;
 			mech_reset_all();
-
-			for (auto& [unique_id, object] : state.scene.objects)
-			{
-				object_cleanup(object);
-			}
-
-			state.scene.objects.clear();
-			state.scene.camera_control_id.reset();
-			state.scene.primary_sun_id.reset();
-			state.scene.player_character_id.reset();
-			state.fog.active_fog_controller_id.reset();
-			state.fog.active = false;
-			mark_lighting_dirty(state);
-			scene_reset_indexes(state);
+			scene_clear_objects(state);
 			reset_materials();
 			reset_images();
-			state.gi.layout_dirty = true;
 		}
 
 		if (!scene_update.reset)
@@ -2474,12 +2428,10 @@ void frame(f32 in_delta_time)
 	// lighting shader only samples it when shadow_map_enable is set.
 	if (shadow_map_updated)
 	{
-		shadow_render_pass.set_pass_count_override(ShadowDepthPass::get_active_cascade_count(state));
 		shadow_render_pass.execute(&state.vk, [&](i32 in_cascade_idx)
 		{
 			ShadowDepthPass::render_cascade(&state.vk, state, in_cascade_idx);
-		});
-		shadow_render_pass.set_pass_count_override(-1);
+		}, ShadowDepthPass::get_active_cascade_count(state));
 	}
 	gpu_image_transition(
 		vulkan_current_command_buffer(&state.vk),
@@ -2512,7 +2464,7 @@ void frame(f32 in_delta_time)
 		MAX(0, ShadowDepthPass::get_active_cascade_count(state) - 1)
 	);
 	RenderPass& shadow_debug_pass = get_render_pass(ERenderPass::ShadowCascadeDebug);
-	shadow_debug_pass.execute(&state.vk, [&](i32)
+	shadow_debug_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		ShadowCascadeDebugPass::render(
 			&state.vk,
@@ -2522,15 +2474,10 @@ void frame(f32 in_delta_time)
 			state.shadow.debug_view_mode
 		);
 	});
-	gpu_image_transition(
-		vulkan_current_command_buffer(&state.vk),
-		shadow_debug_pass.get_color_output(0),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	);
 
 	// Geometry: scene meshes -> G-buffer at render resolution, camera-frustum
 	// culled on the CPU (game/ parity; skinned meshes bypass the frustum test)
-	geometry_render_pass.execute(&state.vk, [&](i32)
+	geometry_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		geometry_pass_bind(&state.vk);
 
@@ -2565,28 +2512,12 @@ void frame(f32 in_delta_time)
 			sky_pass_draw_composite(&state.vk);
 		}
 	});
-
-	// Lighting reads the whole G-buffer (transitions before execute —
-	// barriers are illegal inside dynamic rendering)
-	for (i32 gbuffer_idx = 0; gbuffer_idx < Render::GBUFFER_OUTPUT_COUNT; ++gbuffer_idx)
-	{
-		gpu_image_transition(
-			vulkan_current_command_buffer(&state.vk),
-			geometry_render_pass.get_color_output(gbuffer_idx),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
-	}
 	// SSAO reads G-buffer position/normal (already SHADER_READ_ONLY), then
 	// its raw output is blurred; lighting samples the blurred result
-	ssao_render_pass.execute(&state.vk, [&](i32)
+	ssao_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		ssao_pass_draw(&state.vk);
 	});
-	gpu_image_transition(
-		vulkan_current_command_buffer(&state.vk),
-		ssao_render_pass.get_color_output(0),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	);
 	BlurPass::execute_separable(
 		&state.vk,
 		ssao_blur_entry,
@@ -2608,53 +2539,33 @@ void frame(f32 in_delta_time)
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
 
-	lighting_render_pass.execute(&state.vk, [&](i32)
+	lighting_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		lighting_pass_draw(&state.vk);
 	});
 
 	// Fog reads the lit scene + G-buffer position; tonemapping then reads the
 	// post-fog color (or the lighting output directly when fog is off)
-	gpu_image_transition(
-		vulkan_current_command_buffer(&state.vk),
-		lighting_render_pass.get_color_output(0),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	);
 	if (fog_render_active)
 	{
-		fog_render_pass.execute(&state.vk, [&](i32)
+		fog_render_pass.execute_sampled(&state.vk, [&](i32)
 		{
 			fog_pass_draw(&state.vk);
 		});
-		gpu_image_transition(
-			vulkan_current_command_buffer(&state.vk),
-			fog_render_pass.get_color_output(0),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
 	}
 	if (state.dof.enable)
 	{
-		dof_combine_render_pass.execute(&state.vk, [&](i32)
+		dof_combine_render_pass.execute_sampled(&state.vk, [&](i32)
 		{
 			dof_combine_pass_draw(&state.vk);
 		});
-		gpu_image_transition(
-			vulkan_current_command_buffer(&state.vk),
-			dof_combine_render_pass.get_color_output(0),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
 	}
 	if (state.wireframe.shaded_wireframe)
 	{
-		wire_overlay_render_pass.execute(&state.vk, [&](i32)
+		wire_overlay_render_pass.execute_sampled(&state.vk, [&](i32)
 		{
 			WireOverlayPass::draw(&state.vk, state, view_projection_matrix);
 		});
-		gpu_image_transition(
-			vulkan_current_command_buffer(&state.vk),
-			wire_overlay_render_pass.get_color_output(0),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
 	}
 
 	// TAA: both ping-pong sets get an unconditional transition so the bound
@@ -2674,46 +2585,28 @@ void frame(f32 in_delta_time)
 	if (state.temporal_aa.enable)
 	{
 		RenderPass& temporal_aa_target_pass = get_temporal_aa_pass(temporal_aa_output_index);
-		temporal_aa_target_pass.execute(&state.vk, [&](i32)
+		temporal_aa_target_pass.execute_sampled(&state.vk, [&](i32)
 		{
 			TemporalAAPass::draw(&state.vk);
 		});
-		for (i32 output_idx = 0; output_idx < 2; ++output_idx)
-		{
-			gpu_image_transition(
-				vulkan_current_command_buffer(&state.vk),
-				temporal_aa_target_pass.get_color_output(output_idx),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			);
-		}
 
 		state.temporal_aa.previous_view_projection = view_projection_matrix;
 		state.temporal_aa.history_valid = true;
 		state.temporal_aa.history_index = temporal_aa_previous_index;
 	}
 
-	tonemapping_render_pass.execute(&state.vk, [&](i32)
+	tonemapping_render_pass.execute_sampled(&state.vk, [&](i32)
 	{
 		tonemapping_pass_draw(&state.vk, state.tonemapping.exposure_bias);
 	});
 
 	// FXAA filters the tonemapped LDR target; copy presents whichever ran last
-	gpu_image_transition(
-		vulkan_current_command_buffer(&state.vk),
-		tonemapping_render_pass.get_color_output(0),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	);
 	if (fxaa_active)
 	{
-		fxaa_render_pass.execute(&state.vk, [&](i32)
+		fxaa_render_pass.execute_sampled(&state.vk, [&](i32)
 		{
 			FXAAPass::draw(&state.vk, HMM_V2((f32) state.window.render_width, (f32) state.window.render_height));
 		});
-		gpu_image_transition(
-			vulkan_current_command_buffer(&state.vk),
-			fxaa_render_pass.get_color_output(0),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
 	}
 	get_render_pass(ERenderPass::CopyToSwapchain).execute(&state.vk, [&](i32)
 	{
@@ -3259,22 +3152,15 @@ int main(int argc, char** argv)
 	gi_scene_cleanup(&state.vk, gi_scene);
 	mech_reset_all();
 
-	for (auto& [unique_id, object] : state.scene.objects)
-	{
-		object_cleanup(object);
-	}
-	state.scene.objects.clear();
+	scene_clear_objects(state);
 
 	for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
 	{
 		state.render_passes.passes[pass_index].cleanup();
 	}
 
-	for (i32 buffer_idx = 0; buffer_idx < RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT; ++buffer_idx)
-	{
-		state.render_objects.buffers[buffer_idx].destroy_gpu_buffer();
-		state.skin_matrices.buffers[buffer_idx].destroy_gpu_buffer();
-	}
+	state.render_objects.shutdown();
+	state.skin_matrices.shutdown();
 	state.materials.buffer.destroy_gpu_buffer();
 	reset_images();
 

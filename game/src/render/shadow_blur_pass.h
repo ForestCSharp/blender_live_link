@@ -230,21 +230,17 @@ namespace ShadowBlurPass
 		RenderPass& vertical_pass = in_entry.final_pass();
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-		horizontal_pass.set_pass_count_override(in_active_cascade_count);
 		horizontal_pass.execute(ctx, [&](i32 in_cascade_idx)
 		{
 			draw_blur_slice(ctx, horizontal_input_set, HMM_V2(1.0f, 0.0f), in_cascade_idx);
-		});
-		horizontal_pass.set_pass_count_override(-1);
+		}, in_active_cascade_count);
 
 		gpu_image_transition(command_buffer, horizontal_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-		vertical_pass.set_pass_count_override(in_active_cascade_count);
 		vertical_pass.execute(ctx, [&](i32 in_cascade_idx)
 		{
 			draw_blur_slice(ctx, vertical_input_set, HMM_V2(0.0f, 1.0f), in_cascade_idx);
-		});
-		vertical_pass.set_pass_count_override(-1);
+		}, in_active_cascade_count);
 	}
 
 	inline void shutdown(VulkanContext* ctx)
