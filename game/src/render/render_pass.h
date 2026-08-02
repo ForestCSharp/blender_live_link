@@ -5,7 +5,7 @@
 #include <optional>
 
 #include "core/types.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "render/vulkan_context.h"
 
@@ -72,8 +72,8 @@ struct RenderPass
 	// layered with per-layer attachment views). Multi: one image per output
 	// per pass instance, flat-indexed [image_idx * num_outputs + output_idx].
 	// depth_outputs mirrors the image-set count.
-	StretchyBuffer<GpuImage> color_outputs;
-	StretchyBuffer<GpuImage> depth_outputs;
+	DynamicArray<GpuImage> color_outputs;
+	DynamicArray<GpuImage> depth_outputs;
 
 	i32 current_width = -1;
 	i32 current_height = -1;
@@ -268,13 +268,13 @@ struct RenderPass
 		{
 			// Declare the exact attachment slices used by this rendering
 			// instance and apply all required barriers in one dependency.
-			std::vector<ImageUsage> attachment_usages;
+			DynamicArray<ImageUsage> attachment_usages;
 			if (!is_swapchain)
 			{
 				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
 				{
 					GpuImage& output = get_color_output(output_idx, is_multi ? pass_idx : 0);
-					attachment_usages.push_back({
+					attachment_usages.add({
 						.image = &output,
 						.range = {
 							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -292,7 +292,7 @@ struct RenderPass
 				if (has_depth())
 				{
 					GpuImage& depth = get_depth_output(is_multi ? pass_idx : 0);
-					attachment_usages.push_back({
+					attachment_usages.add({
 						.image = &depth,
 						.range = {
 							.aspectMask = depth.aspects,
@@ -312,7 +312,7 @@ struct RenderPass
 				gpu_image_apply_usages(
 					command_buffer,
 					attachment_usages.data(),
-					(u32)attachment_usages.size()
+					(u32)attachment_usages.length()
 				);
 			}
 
@@ -409,7 +409,7 @@ struct RenderPass
 		usage.images.reserve(color_outputs.length());
 		for (GpuImage& output : color_outputs)
 		{
-			usage.images.push_back({
+			usage.images.add({
 				.image = &output,
 				.range = {
 					.aspectMask = output.aspects,

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/types.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 #include "core/runtime_config.h"
 #include "render/vulkan_context.h"
 
@@ -390,7 +390,7 @@ struct ResizableGpuStreamRing
 {
 	static constexpr i32 SLOT_COUNT = 3;
 
-	StretchyBuffer<T> items;
+	DynamicArray<T> items;
 	GpuBuffer<T> buffers[SLOT_COUNT];
 	i32 buffer_index = 0;
 	i32 buffer_capacity = 0;

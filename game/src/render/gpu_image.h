@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/types.h"
-#include <vector>
+#include "core/dynamic_array.h"
 
 // Minimal VMA-backed image. Used for the depth buffer now; offscreen render
 // targets for future passes will reuse this.
@@ -28,10 +28,10 @@ struct GpuImage
 	VkImageView view = VK_NULL_HANDLE;
 
 	// Per-layer 2D views for rendering into individual slices (layered only)
-	StretchyBuffer<VkImageView> layer_views;
+	DynamicArray<VkImageView> layer_views;
 
 	// Per-mip views for rendering into an individual mip (mipped images only)
-	StretchyBuffer<VkImageView> mip_views;
+	DynamicArray<VkImageView> mip_views;
 
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkFormat format = VK_FORMAT_UNDEFINED;
@@ -48,7 +48,7 @@ struct GpuImage
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	};
 	// Color/depth/stencil each own mip_levels * array_layers entries.
-	std::vector<ImageSubresourceState> subresource_states;
+	DynamicArray<ImageSubresourceState> subresource_states;
 };
 
 struct ImageUsage
@@ -72,8 +72,8 @@ struct BufferUsage
 
 struct PassResourceUsage
 {
-	std::vector<ImageUsage> images;
-	std::vector<BufferUsage> buffers;
+	DynamicArray<ImageUsage> images;
+	DynamicArray<BufferUsage> buffers;
 };
 
 inline u64 gpu_image_next_generation()
@@ -173,7 +173,7 @@ void gpu_image_apply_usages(
 	const ImageUsage* in_usages,
 	u32 in_usage_count)
 {
-	std::vector<VkImageMemoryBarrier2> barriers;
+	DynamicArray<VkImageMemoryBarrier2> barriers;
 	for (u32 usage_index = 0; usage_index < in_usage_count; ++usage_index)
 	{
 		const ImageUsage& usage = in_usages[usage_index];
@@ -209,7 +209,7 @@ void gpu_image_apply_usages(
 						|| usage.discard;
 					if (needs_barrier)
 					{
-						barriers.push_back((VkImageMemoryBarrier2) {
+						barriers.add((VkImageMemoryBarrier2) {
 							.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 							.srcStageMask = state.stage,
 							.srcAccessMask = state.access,
@@ -245,7 +245,7 @@ void gpu_image_apply_usages(
 	if (barriers.empty()) return;
 	VkDependencyInfo dependency_info = {
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = (u32)barriers.size(),
+		.imageMemoryBarrierCount = (u32)barriers.length(),
 		.pImageMemoryBarriers = barriers.data(),
 	};
 	vkCmdPipelineBarrier2(in_command_buffer, &dependency_info);

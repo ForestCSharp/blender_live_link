@@ -60,14 +60,14 @@ struct SceneUpdate
 		i32 malformed_object_count = 0;
 		bool reset = false;
 	} stats;
-	StretchyBuffer<PendingImage> images;
-	StretchyBuffer<PendingMaterial> materials;
+	DynamicArray<PendingImage> images;
+	DynamicArray<PendingMaterial> materials;
 
 	// Note: each Object's mesh.material_indices still holds raw material IDS
 	// here; resolve_mesh_material_indices converts them at drain
-	StretchyBuffer<Object> objects;
+	DynamicArray<Object> objects;
 
-	StretchyBuffer<i32> deleted_object_uids;
+	DynamicArray<i32> deleted_object_uids;
 	std::optional<Camera> editor_camera;
 	bool has_object_batch = false;
 	bool reset = false;

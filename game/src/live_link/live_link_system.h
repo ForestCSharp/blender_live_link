@@ -10,7 +10,7 @@
 #include <thread>
 
 #include "blender_live_link_generated.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 #include "render/imgui_layer.h"
 #include "state/state.h"
 
@@ -105,7 +105,7 @@ namespace LiveLinkSystem
 	// described here (lazy GpuBuffer), never created.
 	// Parses the complete live-link payload used by game: content resources,
 	// objects/components, deletes, reset, and import statistics.
-	void parse_flatbuffer_data(StretchyBuffer<u8>& flatbuffer_data)
+	void parse_flatbuffer_data(DynamicArray<u8>& flatbuffer_data)
 	{
 		if (flatbuffer_data.length() == 0)
 		{
@@ -793,7 +793,7 @@ namespace LiveLinkSystem
 		// infinite recv loop
 		while (state.runtime.game_running)
 		{
-			StretchyBuffer<u8> flatbuffer_data;
+			DynamicArray<u8> flatbuffer_data;
 	
 			int current_bytes_read = 0;
 			int total_bytes_read = 0;
@@ -1142,7 +1142,7 @@ namespace LiveLinkSystem
 			rewind(file);
 			assert(file_size > 0);
 
-			StretchyBuffer<u8> flatbuffer_data;
+			DynamicArray<u8> flatbuffer_data;
 			flatbuffer_data.add_uninitialized(file_size);
 			const size_t bytes_read = fread(flatbuffer_data.data(), 1, file_size, file);
 			fclose(file);

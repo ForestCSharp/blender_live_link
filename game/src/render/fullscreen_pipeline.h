@@ -5,7 +5,6 @@
 #include "render/vulkan_context.h"
 
 #include <cassert>
-#include <vector>
 
 struct FullscreenPipelineDesc
 {
@@ -80,9 +79,10 @@ inline VkPipeline vulkan_create_fullscreen_pipeline(
 	VkPipelineDepthStencilStateCreateInfo depth_stencil = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 	};
-	std::vector<VkPipelineColorBlendAttachmentState> blend_attachments(
+	DynamicArray<VkPipelineColorBlendAttachmentState> blend_attachments;
+	blend_attachments.resize(
 		in_desc.color_format_count,
-		{
+		(VkPipelineColorBlendAttachmentState) {
 			.blendEnable = VK_FALSE,
 			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
 							| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,

@@ -6,7 +6,7 @@
 
 #include "ankerl/unordered_dense.h"
 #include "core/types.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 #include "game_object/game_object.h"
 #include "render/lighting_capture.h"
 
@@ -29,11 +29,11 @@ struct GI_SG9_Lobe
 
 struct GI_Scene
 {
-	StretchyBuffer<GI_OctreeNode> octree_nodes;
-	StretchyBuffer<GI_Cell> cells;
-	StretchyBuffer<GI_Probe> probes;
-	StretchyBuffer<HMM_Vec4> sh9_coefficients;
-	StretchyBuffer<GI_SG9_Lobe> sg9_lobes;
+	DynamicArray<GI_OctreeNode> octree_nodes;
+	DynamicArray<GI_Cell> cells;
+	DynamicArray<GI_Probe> probes;
+	DynamicArray<HMM_Vec4> sh9_coefficients;
+	DynamicArray<GI_SG9_Lobe> sg9_lobes;
 
 	GpuBuffer<GI_OctreeNode> octree_nodes_buffer;
 	GpuBuffer<GI_Probe> probes_buffer;
@@ -126,7 +126,7 @@ BoundingBox gi_scene_expand_bounds_to_cube(const BoundingBox& in_bounds)
 
 bool gi_scene_collect_visible_mesh_bounds(
 	const State& in_state,
-	StretchyBuffer<BoundingBox>& out_geometry_bounds,
+	DynamicArray<BoundingBox>& out_geometry_bounds,
 	BoundingBox& out_scene_bounds)
 {
 	out_geometry_bounds.reset();
@@ -246,7 +246,7 @@ bool gi_scene_bounds_intersect(const BoundingBox& in_a, const BoundingBox& in_b)
 		in_a.min.Z <= in_b.max.Z && in_a.max.Z >= in_b.min.Z;
 }
 
-bool gi_scene_bounds_intersect_any(const BoundingBox& in_bounds, const StretchyBuffer<BoundingBox>& in_geometry_bounds)
+bool gi_scene_bounds_intersect_any(const BoundingBox& in_bounds, const DynamicArray<BoundingBox>& in_geometry_bounds)
 {
 	for (const BoundingBox& geometry_bounds : in_geometry_bounds)
 	{
@@ -366,7 +366,7 @@ void gi_scene_init_empty_octree(GI_Scene& out_gi_scene)
 
 i32 gi_scene_build_sparse_octree_node(
 	GI_Scene& out_gi_scene,
-	const StretchyBuffer<BoundingBox>& in_geometry_bounds,
+	const DynamicArray<BoundingBox>& in_geometry_bounds,
 	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const BoundingBox& in_bounds,
 	const i32 in_depth,
@@ -478,7 +478,7 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 	out_gi_scene.octree_depth = std::clamp(in_state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
 	in_state.gi.octree_depth = out_gi_scene.octree_depth;
 	out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(out_gi_scene.octree_depth);
-	StretchyBuffer<BoundingBox> geometry_bounds;
+	DynamicArray<BoundingBox> geometry_bounds;
 	const bool has_visible_geometry = gi_scene_collect_visible_mesh_bounds(in_state, geometry_bounds, out_gi_scene.scene_bounds);
 	out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32) out_gi_scene.leaf_divisions;
 

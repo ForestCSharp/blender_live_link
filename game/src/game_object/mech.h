@@ -178,7 +178,7 @@ void mech_suspend_runtime_objects()
 
 	// Defensive cleanup for a partially-created instance that was not yet
 	// recorded in a descriptor.
-	StretchyBuffer<i32> orphan_uids;
+	DynamicArray<i32> orphan_uids;
 	for (auto& [object_uid, object] : state.scene.objects)
 	{
 		if (object_is_runtime_instance(object)) orphan_uids.add(object_uid);
@@ -316,7 +316,7 @@ void mech_reconcile_instances()
 {
 	mech_suspend_runtime_objects();
 
-	StretchyBuffer<i32> removed_mechs;
+	DynamicArray<i32> removed_mechs;
 	for (auto& [mech_id, mech] : state.mech.instances)
 	{
 		auto character_found = state.scene.objects.find(mech.character_uid);
@@ -331,7 +331,7 @@ void mech_reconcile_instances()
 	}
 	removed_mechs.reset();
 
-	StretchyBuffer<i32> stale_opt_outs;
+	DynamicArray<i32> stale_opt_outs;
 	for (auto& [character_uid, opted_out] : state.mech.auto_spawn_opt_outs)
 	{
 		auto character_found = state.scene.objects.find(character_uid);
@@ -347,7 +347,7 @@ void mech_reconcile_instances()
 	stale_opt_outs.reset();
 
 	state.scene.player_character_id.reset();
-	StretchyBuffer<i32> character_uids;
+	DynamicArray<i32> character_uids;
 	for (auto& [object_uid, object] : state.scene.objects)
 	{
 		if (!object.has_character || object_is_runtime_instance(object)) continue;

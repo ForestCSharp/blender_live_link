@@ -80,7 +80,7 @@ namespace Tessellation
 		const char* shader_path, u32 push_constant_size)
 	{
 		out.binding_count = binding_count;
-		StretchyBuffer<VkDescriptorSetLayoutBinding> bindings;
+		DynamicArray<VkDescriptorSetLayoutBinding> bindings;
 		for (u32 binding_idx = 0; binding_idx < binding_count; ++binding_idx)
 		{
 			bindings.add((VkDescriptorSetLayoutBinding) {

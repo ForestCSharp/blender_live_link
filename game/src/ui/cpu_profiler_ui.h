@@ -224,7 +224,7 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 	i32 max_depth = 0;
 	for (i32 display_frame_index = 0; display_frame_index < in_display_frame_count; ++display_frame_index)
 	{
-		const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_display_frame(state.debug_ui.freeze_profiler, display_frame_index);
+		const DynamicArray<CpuTimingEvent>& events = cpu_timings_get_display_frame(state.debug_ui.freeze_profiler, display_frame_index);
 		for (const CpuTimingEvent& event : events)
 		{
 			max_depth = std::max(max_depth, event.depth);
@@ -265,7 +265,7 @@ static void draw_cpu_profiler_flamegraph(i32 in_display_frame_count, f32 in_base
 	{
 		const i32 frame_source_index = in_display_frame_count - 1 - display_frame_index;
 		const i64 frame_id = cpu_timings_get_display_frame_index(state.debug_ui.freeze_profiler, frame_source_index);
-		const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_display_frame(state.debug_ui.freeze_profiler, frame_source_index);
+		const DynamicArray<CpuTimingEvent>& events = cpu_timings_get_display_frame(state.debug_ui.freeze_profiler, frame_source_index);
 		if (events.length() == 0)
 		{
 			continue;
@@ -632,7 +632,7 @@ static void gpu_profiler_build_event_details(const GpuTimingEvent& event, char* 
 	}
 }
 
-static i32 gpu_profiler_build_timeline_ranges(const GpuTimingFrame& gpu_frame, StretchyBuffer<GpuProfilerTimelineRange>& out_ranges)
+static i32 gpu_profiler_build_timeline_ranges(const GpuTimingFrame& gpu_frame, DynamicArray<GpuProfilerTimelineRange>& out_ranges)
 {
 	out_ranges.reset();
 	for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
@@ -644,7 +644,7 @@ static i32 gpu_profiler_build_timeline_ranges(const GpuTimingFrame& gpu_frame, S
 		out_ranges.add(range);
 	}
 
-	StretchyBuffer<i32> event_indices;
+	DynamicArray<i32> event_indices;
 	for (i32 event_index = 0; event_index < (i32)gpu_frame.events.length(); ++event_index)
 	{
 		const GpuTimingEvent& event = gpu_frame.events[event_index];
@@ -719,7 +719,7 @@ static i32 gpu_profiler_build_timeline_ranges(const GpuTimingFrame& gpu_frame, S
 		}
 	);
 
-	StretchyBuffer<f64> row_end_times;
+	DynamicArray<f64> row_end_times;
 	for (const i32 event_index : event_indices)
 	{
 		GpuProfilerTimelineRange& range = out_ranges[event_index];
@@ -771,7 +771,7 @@ static void draw_gpu_profiler_timeline(i32 in_display_frame_count, f32 in_base_f
 			continue;
 		}
 
-		StretchyBuffer<GpuProfilerTimelineRange> event_ranges;
+		DynamicArray<GpuProfilerTimelineRange> event_ranges;
 		max_row_count = std::max(max_row_count, gpu_profiler_build_timeline_ranges(gpu_frame, event_ranges));
 	}
 
@@ -814,7 +814,7 @@ static void draw_gpu_profiler_timeline(i32 in_display_frame_count, f32 in_base_f
 
 		GpuTimingFrame gpu_frame = {};
 		const bool has_gpu_frame = gpu_timings_copy_display_frame(state.debug_ui.freeze_profiler, frame_source_index, gpu_frame);
-		StretchyBuffer<GpuProfilerTimelineRange> event_ranges;
+		DynamicArray<GpuProfilerTimelineRange> event_ranges;
 		gpu_profiler_build_timeline_ranges(gpu_frame, event_ranges);
 
 		f64 gpu_frame_elapsed_ms = 0.0001;

@@ -1,14 +1,14 @@
 #pragma once
 
 #include "core/types.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 
 // CPU frustum culling.
 // Frustum/frustum_create/frustum_cull live in core/types.h.
 
 struct CullResult
 {
-	StretchyBuffer<i32> object_ids;
+	DynamicArray<i32> object_ids;
 	i32 candidate_count = 0;
 	i32 non_renderable_cull_count = 0;
 	i32 visibility_cull_count = 0;

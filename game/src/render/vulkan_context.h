@@ -10,11 +10,10 @@
 #include <fstream>
 #include <functional>
 #include <string>
-#include <unordered_map>
-#include <vector>
 
+#include "ankerl/unordered_dense.h"
 #include "core/types.h"
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "core/runtime_config.h"
 
@@ -61,7 +60,7 @@ struct RetiredResource
 	RetiredResourceType type = RetiredResourceType::Buffer;
 	VkBuffer buffer = VK_NULL_HANDLE;
 	VkImage image = VK_NULL_HANDLE;
-	std::vector<VkImageView> image_views;
+	DynamicArray<VkImageView> image_views;
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkSampler sampler = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
@@ -84,7 +83,7 @@ struct UploadChunk
 
 struct UploadArena
 {
-	std::vector<UploadChunk> chunks;
+	DynamicArray<UploadChunk> chunks;
 	u64 bytes_used = 0;
 	u64 peak_bytes = 0;
 };
@@ -106,7 +105,7 @@ struct FrameResources
 	GpuTimestampFrameState timestamp_state;
 	UploadArena staging;
 	VkDescriptorPool transient_descriptor_pool = VK_NULL_HANDLE;
-	std::vector<RetiredResource> retirement_list;
+	DynamicArray<RetiredResource> retirement_list;
 	u64 submission_serial = 0;
 	bool prepared = false;
 	bool recording = false;
@@ -210,8 +209,8 @@ struct VulkanContext
 	VkExtent2D swapchain_extent = {};
 	u32 swapchain_min_image_count = 2;
 	u32 swapchain_image_count = 0;
-	std::vector<VkImage> swapchain_images;
-	std::vector<VkImageView> swapchain_image_views;
+	DynamicArray<VkImage> swapchain_images;
+	DynamicArray<VkImageView> swapchain_image_views;
 
 	VkCommandPool command_pool = VK_NULL_HANDLE;
 	VkDescriptorPool persistent_descriptor_pool = VK_NULL_HANDLE;
@@ -219,7 +218,7 @@ struct VulkanContext
 	FrameResources frames[MAX_FRAMES_IN_FLIGHT];
 
 	// Per swapchain image (present can't wait on a per-frame semaphore safely)
-	std::vector<VkSemaphore> render_finished_semaphores;
+	DynamicArray<VkSemaphore> render_finished_semaphores;
 
 	u64 frame_number = 0;
 	u32 frame_index = 0;
@@ -228,8 +227,8 @@ struct VulkanContext
 	bool has_submitted_frame = false;
 	u32 last_submitted_frame_index = 0;
 	u64 next_submission_serial = 1;
-	std::unordered_map<u64, u64> descriptor_write_cache;
-	std::unordered_map<VkBuffer, BufferTrackedState> buffer_states;
+	ankerl::unordered_dense::map<u64, u64> descriptor_write_cache;
+	ankerl::unordered_dense::map<VkBuffer, BufferTrackedState> buffer_states;
 
 	// When set, end_frame dumps the frame to this path (between submit and
 	// present, while the swapchain image is still acquired) then clears it
@@ -263,17 +262,17 @@ inline void vulkan_apply_pass_resource_usage(VulkanContext* ctx, const PassResou
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 	if (!in_usage.images.empty())
 	{
-		gpu_image_apply_usages(command_buffer, in_usage.images.data(), (u32)in_usage.images.size());
+		gpu_image_apply_usages(command_buffer, in_usage.images.data(), (u32)in_usage.images.length());
 	}
 
-	std::vector<VkBufferMemoryBarrier2> barriers;
+	DynamicArray<VkBufferMemoryBarrier2> barriers;
 	for (const BufferUsage& usage : in_usage.buffers)
 	{
 		if (usage.buffer == VK_NULL_HANDLE) continue;
 		BufferTrackedState& state = ctx->buffer_states[usage.buffer];
 		if (gpu_access_has_write(state.access) || gpu_access_has_write(usage.access))
 		{
-			barriers.push_back({
+			barriers.add({
 				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
 				.srcStageMask = state.stage,
 				.srcAccessMask = state.access,
@@ -300,7 +299,7 @@ inline void vulkan_apply_pass_resource_usage(VulkanContext* ctx, const PassResou
 	{
 		VkDependencyInfo dependency = {
 			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-			.bufferMemoryBarrierCount = (u32)barriers.size(),
+			.bufferMemoryBarrierCount = (u32)barriers.length(),
 			.pBufferMemoryBarriers = barriers.data(),
 		};
 		vkCmdPipelineBarrier2(command_buffer, &dependency);
@@ -435,13 +434,13 @@ inline u64 vulkan_hash_bytes(u64 in_hash, const void* in_data, size_t in_size)
 u64 vulkan_shader_build_hash()
 {
 	u64 hash = 1469598103934665603ull;
-	std::vector<std::filesystem::path> shader_paths;
+	DynamicArray<std::filesystem::path> shader_paths;
 	std::error_code error;
 	for (const auto& entry : std::filesystem::directory_iterator("bin/shaders", error))
 	{
 		if (!error && entry.is_regular_file() && entry.path().extension() == ".spv")
 		{
-			shader_paths.push_back(entry.path());
+			shader_paths.add(entry.path());
 		}
 	}
 	std::sort(shader_paths.begin(), shader_paths.end());
@@ -501,7 +500,7 @@ void vulkan_update_descriptor_sets(
 	const VkCopyDescriptorSet* in_copies = nullptr,
 	bool in_allow_cache = true)
 {
-	std::vector<VkWriteDescriptorSet> filtered_writes;
+	DynamicArray<VkWriteDescriptorSet> filtered_writes;
 	filtered_writes.reserve(in_write_count);
 	auto hash_value = [](u64& io_hash, const void* in_data, size_t in_size)
 	{
@@ -549,19 +548,19 @@ void vulkan_update_descriptor_sets(
 			dirty = found == ctx->descriptor_write_cache.end() || found->second != value;
 			ctx->descriptor_write_cache[key] = value;
 		}
-		if (dirty) filtered_writes.push_back(write);
+		if (dirty) filtered_writes.add(write);
 	}
 
 	if (filtered_writes.empty() && in_copy_count == 0) return;
 	ctx->metrics.descriptor_update_calls += 1;
-	ctx->metrics.descriptor_writes += filtered_writes.size();
+	ctx->metrics.descriptor_writes += filtered_writes.length();
 	for (const VkWriteDescriptorSet& write : filtered_writes)
 	{
 		ctx->metrics.descriptors_written += write.descriptorCount;
 	}
 	vkUpdateDescriptorSets(
 		ctx->device,
-		(u32)filtered_writes.size(),
+		(u32)filtered_writes.length(),
 		filtered_writes.data(),
 		in_copy_count,
 		in_copies
@@ -661,7 +660,7 @@ VulkanMemoryStats vulkan_context_get_memory_stats(VulkanContext* ctx)
 	return result;
 }
 
-bool vulkan_has_extension(const std::vector<VkExtensionProperties>& in_extensions, const char* in_name)
+bool vulkan_has_extension(const DynamicArray<VkExtensionProperties>& in_extensions, const char* in_name)
 {
 	for (const VkExtensionProperties& extension : in_extensions)
 	{
@@ -756,14 +755,16 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 
 	u32 extension_count = 0;
 	vkEnumerateDeviceExtensionProperties(in_device, nullptr, &extension_count, nullptr);
-	std::vector<VkExtensionProperties> extensions(extension_count);
+	DynamicArray<VkExtensionProperties> extensions;
+	extensions.resize(extension_count);
 	vkEnumerateDeviceExtensionProperties(in_device, nullptr, &extension_count, extensions.data());
 	result.swapchain_extension = vulkan_has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 	result.portability_subset_extension = vulkan_has_extension(extensions, "VK_KHR_portability_subset");
 
 	u32 queue_count = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(in_device, &queue_count, nullptr);
-	std::vector<VkQueueFamilyProperties> queues(queue_count);
+	DynamicArray<VkQueueFamilyProperties> queues;
+	queues.resize(queue_count);
 	vkGetPhysicalDeviceQueueFamilyProperties(in_device, &queue_count, queues.data());
 	for (u32 queue_index = 0; queue_index < queue_count; ++queue_index)
 	{
@@ -783,10 +784,11 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 
 	u32 format_count = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(in_device, in_surface, &format_count, nullptr);
-	std::vector<VkSurfaceFormatKHR> surface_formats(format_count);
+	DynamicArray<VkSurfaceFormatKHR> surface_formats;
+	surface_formats.resize(format_count);
 	if (format_count > 0)
 		vkGetPhysicalDeviceSurfaceFormatsKHR(in_device, in_surface, &format_count, surface_formats.data());
-	if (surface_formats.size() == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
+	if (surface_formats.length() == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
 	{
 		result.surface_format = {
 			.format = VK_FORMAT_B8G8R8A8_SRGB,
@@ -814,7 +816,8 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 
 	u32 present_mode_count = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(in_device, in_surface, &present_mode_count, nullptr);
-	std::vector<VkPresentModeKHR> present_modes(present_mode_count);
+	DynamicArray<VkPresentModeKHR> present_modes;
+	present_modes.resize(present_mode_count);
 	if (present_mode_count > 0)
 		vkGetPhysicalDeviceSurfacePresentModesKHR(in_device, in_surface, &present_mode_count, present_modes.data());
 	const VkPresentModeKHR requested_present_mode = vulkan_requested_present_mode();
@@ -911,7 +914,7 @@ const char* vulkan_pipeline_cache_path()
 void vulkan_context_create_pipeline_cache(VulkanContext* ctx)
 {
 	ctx->shader_build_hash = vulkan_shader_build_hash();
-	std::vector<u8> initial_data;
+	DynamicArray<u8> initial_data;
 	std::ifstream input(vulkan_pipeline_cache_path(), std::ios::binary);
 	if (input)
 	{
@@ -929,14 +932,14 @@ void vulkan_context_create_pipeline_cache(VulkanContext* ctx)
 		if (compatible)
 		{
 			initial_data.resize((size_t)header.payload_size);
-			input.read((char*)initial_data.data(), (std::streamsize)initial_data.size());
+			input.read((char*)initial_data.data(), (std::streamsize)initial_data.length());
 			if (!input) initial_data.clear();
 		}
 	}
 
 	VkPipelineCacheCreateInfo create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
-		.initialDataSize = initial_data.size(),
+		.initialDataSize = initial_data.length(),
 		.pInitialData = initial_data.empty() ? nullptr : initial_data.data(),
 	};
 	VkResult create_result = vkCreatePipelineCache(ctx->device, &create_info, nullptr, &ctx->pipeline_cache);
@@ -952,7 +955,7 @@ void vulkan_context_create_pipeline_cache(VulkanContext* ctx)
 		VK_CHECK(create_result);
 	}
 	vulkan_set_object_name(ctx, VK_OBJECT_TYPE_PIPELINE_CACHE, (u64)ctx->pipeline_cache, "Persistent Pipeline Cache");
-	printf("Pipeline cache: %s (%zu cached bytes)\n", vulkan_pipeline_cache_path(), initial_data.size());
+	printf("Pipeline cache: %s (%zu cached bytes)\n", vulkan_pipeline_cache_path(), initial_data.length());
 }
 
 void vulkan_context_save_pipeline_cache(VulkanContext* ctx)
@@ -963,7 +966,8 @@ void vulkan_context_save_pipeline_cache(VulkanContext* ctx)
 	{
 		return;
 	}
-	std::vector<u8> payload(payload_size);
+	DynamicArray<u8> payload;
+	payload.resize(payload_size);
 	if (vkGetPipelineCacheData(ctx->device, ctx->pipeline_cache, &payload_size, payload.data()) != VK_SUCCESS)
 	{
 		return;
@@ -974,14 +978,14 @@ void vulkan_context_save_pipeline_cache(VulkanContext* ctx)
 		.device_id = ctx->physical_device_properties.deviceID,
 		.driver_version = ctx->physical_device_properties.driverVersion,
 		.shader_build_hash = ctx->shader_build_hash,
-		.payload_size = payload.size(),
+		.payload_size = payload.length(),
 	};
 	memcpy(header.pipeline_cache_uuid, ctx->physical_device_properties.pipelineCacheUUID, VK_UUID_SIZE);
 	std::ofstream output(vulkan_pipeline_cache_path(), std::ios::binary | std::ios::trunc);
 	if (output)
 	{
 		output.write((const char*)&header, sizeof(header));
-		output.write((const char*)payload.data(), (std::streamsize)payload.size());
+		output.write((const char*)payload.data(), (std::streamsize)payload.length());
 	}
 }
 
@@ -1191,7 +1195,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		{
 			u32 available_layer_count = 0;
 			vkEnumerateInstanceLayerProperties(&available_layer_count, nullptr);
-			std::vector<VkLayerProperties> available_layers(available_layer_count);
+			DynamicArray<VkLayerProperties> available_layers;
+			available_layers.resize(available_layer_count);
 			vkEnumerateInstanceLayerProperties(&available_layer_count, available_layers.data());
 			for (const VkLayerProperties& layer : available_layers)
 			{
@@ -1210,7 +1215,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 
 		u32 available_extension_count = 0;
 		VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &available_extension_count, nullptr));
-		std::vector<VkExtensionProperties> available_extensions(available_extension_count);
+		DynamicArray<VkExtensionProperties> available_extensions;
+		available_extensions.resize(available_extension_count);
 		VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &available_extension_count, available_extensions.data()));
 
 		// GLFW knows the required platform surface extensions.
@@ -1222,7 +1228,12 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			exit(1);
 		}
 
-		std::vector<const char*> instance_extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
+		DynamicArray<const char*> instance_extensions;
+		instance_extensions.reserve(glfw_extension_count + 2);
+		for (u32 extension_index = 0; extension_index < glfw_extension_count; ++extension_index)
+		{
+			instance_extensions.add(glfw_extensions[extension_index]);
+		}
 		for (const char* required_extension : instance_extensions)
 		{
 			if (!vulkan_has_extension(available_extensions, required_extension))
@@ -1234,12 +1245,12 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		ctx->portability_enumeration_enabled = vulkan_has_extension(available_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 		if (ctx->portability_enumeration_enabled)
 		{
-			instance_extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+			instance_extensions.add(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 			instance_create_flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 		}
 		ctx->debug_utils_enabled = vulkan_has_extension(available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 		g_vulkan_debug_utils_enabled = ctx->debug_utils_enabled;
-		if (ctx->debug_utils_enabled) instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		if (ctx->debug_utils_enabled) instance_extensions.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
 		VkInstanceCreateInfo instance_create_info = {
 			.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -1247,7 +1258,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.pApplicationInfo = &app_info,
 			.enabledLayerCount = enabled_layer_count,
 			.ppEnabledLayerNames = validation_layers,
-			.enabledExtensionCount = (u32) instance_extensions.size(),
+			.enabledExtensionCount = (u32) instance_extensions.length(),
 			.ppEnabledExtensionNames = instance_extensions.data(),
 		};
 
@@ -1281,7 +1292,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			printf("No Vulkan physical devices were found\n");
 			exit(1);
 		}
-		std::vector<VkPhysicalDevice> physical_devices(physical_device_count);
+		DynamicArray<VkPhysicalDevice> physical_devices;
+		physical_devices.resize(physical_device_count);
 		VK_CHECK(vkEnumeratePhysicalDevices(ctx->instance, &physical_device_count, physical_devices.data()));
 
 		for (VkPhysicalDevice candidate : physical_devices)
@@ -1341,9 +1353,10 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			queue_create_info_count = 2;
 		}
 
-		std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+		DynamicArray<const char*> device_extensions;
+		device_extensions.add(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 		if (ctx->capabilities.portability_subset_extension)
-			device_extensions.push_back("VK_KHR_portability_subset");
+			device_extensions.add("VK_KHR_portability_subset");
 
 		VkPhysicalDeviceVulkan12Features enabled_features_1_2 = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -1365,7 +1378,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.pNext = &enabled_features_1_3,
 			.queueCreateInfoCount = queue_create_info_count,
 			.pQueueCreateInfos = queue_create_infos,
-			.enabledExtensionCount = (u32)device_extensions.size(),
+			.enabledExtensionCount = (u32)device_extensions.length(),
 			.ppEnabledExtensionNames = device_extensions.data(),
 		};
 
@@ -1496,7 +1509,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 
 		u32 queue_family_count = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &queue_family_count, nullptr);
-		std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+		DynamicArray<VkQueueFamilyProperties> queue_families;
+		queue_families.resize(queue_family_count);
 		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &queue_family_count, queue_families.data());
 
 		const u32 timestamp_valid_bits = queue_families[ctx->graphics_queue_family_index].timestampValidBits;
@@ -1726,7 +1740,7 @@ UploadReservation vulkan_upload_reserve(VulkanContext* ctx, u64 in_size, u64 in_
 	u64 chunk_size = FRAME_STAGING_ARENA_SIZE;
 	while (chunk_size < in_size) chunk_size *= 2;
 	const bool is_spill = !arena.chunks.empty();
-	arena.chunks.push_back(vulkan_create_upload_chunk(
+	arena.chunks.add(vulkan_create_upload_chunk(
 		ctx,
 		chunk_size,
 		is_spill ? "Frame Upload Staging Spill" : "Frame Upload Staging Arena"
@@ -1980,7 +1994,7 @@ void vulkan_context_retire(VulkanContext* ctx, RetiredResource&& in_resource)
 
 	if (target)
 	{
-		target->retirement_list.push_back(std::move(in_resource));
+		target->retirement_list.add(std::move(in_resource));
 	}
 	else
 	{
@@ -1996,14 +2010,14 @@ void vulkan_context_retire_image(VulkanContext* ctx, GpuImage& in_image)
 		.image = in_image.image,
 		.allocation = in_image.allocation,
 	};
-	if (in_image.view != VK_NULL_HANDLE) retired.image_views.push_back(in_image.view);
+	if (in_image.view != VK_NULL_HANDLE) retired.image_views.add(in_image.view);
 	for (VkImageView layer_view : in_image.layer_views)
 	{
-		if (layer_view != VK_NULL_HANDLE) retired.image_views.push_back(layer_view);
+		if (layer_view != VK_NULL_HANDLE) retired.image_views.add(layer_view);
 	}
 	for (VkImageView mip_view : in_image.mip_views)
 	{
-		if (mip_view != VK_NULL_HANDLE) retired.image_views.push_back(mip_view);
+		if (mip_view != VK_NULL_HANDLE) retired.image_views.add(mip_view);
 	}
 	vulkan_context_retire(ctx, std::move(retired));
 	in_image.layer_views.reset();

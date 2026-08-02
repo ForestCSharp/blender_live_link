@@ -30,9 +30,7 @@ using std::optional;
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "handmade_math/HandmadeMath.h"
 
-// Simple Template Wrapper around stb_ds array
-#define STB_DS_IMPLEMENTATION
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 
 // Command line argument parsing
 #include "cxxopts/cxxopts.hpp"

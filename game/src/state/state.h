@@ -147,7 +147,7 @@ struct MechInstance
 	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 socket_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
-	StretchyBuffer<MechArmatureInstance> armature_instances;
+	DynamicArray<MechArmatureInstance> armature_instances;
 	std::string last_diagnostic_signature;
 };
 
@@ -246,12 +246,12 @@ struct State
 		struct IndexState
 		{
 			bool dirty = true;
-			StretchyBuffer<i32> mesh_object_ids;
-			StretchyBuffer<i32> light_object_ids;
-			StretchyBuffer<i32> armature_object_ids;
-			StretchyBuffer<i32> skinned_mesh_object_ids;
-			StretchyBuffer<i32> part_object_ids;
-			StretchyBuffer<i32> attachment_point_object_ids;
+			DynamicArray<i32> mesh_object_ids;
+			DynamicArray<i32> light_object_ids;
+			DynamicArray<i32> armature_object_ids;
+			DynamicArray<i32> skinned_mesh_object_ids;
+			DynamicArray<i32> part_object_ids;
+			DynamicArray<i32> attachment_point_object_ids;
 		} indexes;
 	} scene;
 
@@ -289,7 +289,7 @@ struct State
 	struct MaterialState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
-		StretchyBuffer<Material> items;
+		DynamicArray<Material> items;
 		GpuBuffer<Material> buffer;
 	} materials;
 
@@ -298,7 +298,7 @@ struct State
 	struct ImageState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
-		StretchyBuffer<GpuImage> items;
+		DynamicArray<GpuImage> items;
 		bool enable_debug_fullscreen = false;
 		i32 debug_index = 0;
 	} images;
@@ -319,9 +319,9 @@ struct State
 		bool direct_enable = true;
 		bool needs_data_update = true;
 
-		StretchyBuffer<PointLightData> point_lights;
-		StretchyBuffer<SpotLightData> spot_lights;
-		StretchyBuffer<SunLightData> sun_lights;
+		DynamicArray<PointLightData> point_lights;
+		DynamicArray<SpotLightData> spot_lights;
+		DynamicArray<SunLightData> sun_lights;
 
 		GpuBuffer<PointLightData> point_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
 		GpuBuffer<SpotLightData> spot_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
@@ -531,7 +531,7 @@ struct State
 
 		u64 frame_index = 0;
 		LiveLinkImportStats last_import;
-		StretchyBuffer<LiveLinkImportStats> import_history;
+		DynamicArray<LiveLinkImportStats> import_history;
 		i32 selected_import_history_index = -1;
 		FrameAccessStats frame;
 		FrameAccessStats previous_frame;

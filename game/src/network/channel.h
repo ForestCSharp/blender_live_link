@@ -1,8 +1,9 @@
 #pragma once
 
+#include "core/dynamic_array.h"
+
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <utility>
 
 template <typename T>
@@ -12,22 +13,28 @@ public:
 	void send(T&& data)
 	{
 		std::lock_guard<std::mutex> lock(queue_mutex);
-		data_queue.push(std::move(data));
+		data_queue.add(std::move(data));
 	}
 
 	std::optional<T> receive()
 	{
 		std::lock_guard<std::mutex> lock(queue_mutex);
-		if (!data_queue.empty())
+		if (read_index < data_queue.length())
 		{
-			std::optional<T> out_optional_value(std::move(data_queue.front()));
-			data_queue.pop();
+			std::optional<T> out_optional_value(std::move(data_queue[read_index]));
+			++read_index;
+			if (read_index == data_queue.length())
+			{
+				data_queue.clear();
+				read_index = 0;
+			}
 			return out_optional_value;
 		}
 		return std::nullopt;
 	}
 	
 protected:
-	std::queue<T> data_queue;
+	DynamicArray<T> data_queue;
+	size_t read_index = 0;
 	std::mutex queue_mutex;
 };

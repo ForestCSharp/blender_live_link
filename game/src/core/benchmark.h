@@ -4,15 +4,15 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
-#include <vector>
 
+#include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "render/vulkan_context.h"
 
 struct BenchmarkNamedSamples
 {
 	std::string name;
-	std::vector<f64> values;
+	DynamicArray<f64> values;
 };
 
 struct BenchmarkState
@@ -26,10 +26,10 @@ struct BenchmarkState
 	i64 last_cpu_frame_collected = -1;
 	i64 last_gpu_frame_collected = -1;
 	std::string output_path = "benchmark.json";
-	std::vector<f64> wall_frame_ms;
-	std::vector<f64> cpu_frame_ms;
-	std::vector<f64> gpu_frame_ms;
-	std::vector<BenchmarkNamedSamples> gpu_pass_ms;
+	DynamicArray<f64> wall_frame_ms;
+	DynamicArray<f64> cpu_frame_ms;
+	DynamicArray<f64> gpu_frame_ms;
+	DynamicArray<BenchmarkNamedSamples> gpu_pass_ms;
 	VulkanMetrics metrics_start = {};
 
 	void configure(u64 in_warmup_frames, u64 in_measured_frames, const std::string& in_output_path)
@@ -59,8 +59,8 @@ struct BenchmarkState
 		{
 			if (samples.name == in_name) return samples;
 		}
-		gpu_pass_ms.push_back({ .name = in_name ? in_name : "(unnamed)" });
-		return gpu_pass_ms.back();
+		gpu_pass_ms.add({ .name = in_name ? in_name : "(unnamed)" });
+		return gpu_pass_ms.last();
 	}
 
 	void after_frame(f64 in_wall_frame_ms, VulkanContext* ctx)
@@ -79,10 +79,10 @@ struct BenchmarkState
 
 		if (rendered_frames > warmup_frames && rendered_frames <= warmup_frames + measured_frames)
 		{
-			wall_frame_ms.push_back(in_wall_frame_ms);
+			wall_frame_ms.add(in_wall_frame_ms);
 			if (has_cpu_frame && latest_cpu_frame != last_cpu_frame_collected)
 			{
-				cpu_frame_ms.push_back(latest_cpu_ms);
+				cpu_frame_ms.add(latest_cpu_ms);
 				last_cpu_frame_collected = latest_cpu_frame;
 			}
 		}
@@ -97,7 +97,7 @@ struct BenchmarkState
 			latest_gpu_frame < first_measured_cpu_frame + (i64)measured_frames
 		)
 		{
-			gpu_frame_ms.push_back(latest_gpu_ms);
+			gpu_frame_ms.add(latest_gpu_ms);
 			last_gpu_frame_collected = latest_gpu_frame;
 			#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 			GpuTimingFrame frame;
@@ -107,7 +107,7 @@ struct BenchmarkState
 				{
 					if (event.valid && event.type != GpuTimingEventType::Frame && event.elapsed_ms >= 0.0)
 					{
-						pass_samples(event.name).values.push_back(event.elapsed_ms);
+						pass_samples(event.name).values.add(event.elapsed_ms);
 					}
 				}
 			}
@@ -121,14 +121,14 @@ struct BenchmarkState
 	}
 };
 
-inline f64 benchmark_percentile(const std::vector<f64>& in_values, f64 in_percentile)
+inline f64 benchmark_percentile(const DynamicArray<f64>& in_values, f64 in_percentile)
 {
 	if (in_values.empty()) return 0.0;
-	std::vector<f64> sorted = in_values;
+	DynamicArray<f64> sorted = in_values;
 	std::sort(sorted.begin(), sorted.end());
-	const f64 position = CLAMP(in_percentile, 0.0, 1.0) * (f64)(sorted.size() - 1);
+	const f64 position = CLAMP(in_percentile, 0.0, 1.0) * (f64)(sorted.length() - 1);
 	const size_t lower = (size_t)position;
-	const size_t upper = MIN(lower + 1, sorted.size() - 1);
+	const size_t upper = MIN(lower + 1, sorted.length() - 1);
 	const f64 fraction = position - (f64)lower;
 	return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
 }
@@ -144,10 +144,10 @@ inline void benchmark_write_json_string(FILE* in_file, const std::string& in_val
 	fputc('"', in_file);
 }
 
-inline void benchmark_write_summary(FILE* in_file, const char* in_name, const std::vector<f64>& in_values, bool in_trailing_comma)
+inline void benchmark_write_summary(FILE* in_file, const char* in_name, const DynamicArray<f64>& in_values, bool in_trailing_comma)
 {
 	fprintf(in_file, "    \"%s\": { \"samples\": %zu, \"median_ms\": %.6f, \"p95_ms\": %.6f }%s\n",
-		in_name, in_values.size(), benchmark_percentile(in_values, 0.5), benchmark_percentile(in_values, 0.95),
+		in_name, in_values.length(), benchmark_percentile(in_values, 0.5), benchmark_percentile(in_values, 0.95),
 		in_trailing_comma ? "," : "");
 }
 
@@ -174,13 +174,13 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 	benchmark_write_summary(output, "gpu_frame", state.gpu_frame_ms, false);
 	fprintf(output, "  },\n");
 	fprintf(output, "  \"gpu_passes\": {\n");
-	for (size_t pass_index = 0; pass_index < state.gpu_pass_ms.size(); ++pass_index)
+	for (size_t pass_index = 0; pass_index < state.gpu_pass_ms.length(); ++pass_index)
 	{
 		const BenchmarkNamedSamples& pass = state.gpu_pass_ms[pass_index];
 		fprintf(output, "    "); benchmark_write_json_string(output, pass.name);
 		fprintf(output, ": { \"samples\": %zu, \"median_ms\": %.6f, \"p95_ms\": %.6f }%s\n",
-			pass.values.size(), benchmark_percentile(pass.values, 0.5), benchmark_percentile(pass.values, 0.95),
-			pass_index + 1 < state.gpu_pass_ms.size() ? "," : "");
+			pass.values.length(), benchmark_percentile(pass.values, 0.5), benchmark_percentile(pass.values, 0.95),
+			pass_index + 1 < state.gpu_pass_ms.length() ? "," : "");
 	}
 	fprintf(output, "  },\n");
 	fprintf(output, "  \"commands\": { \"draws\": %llu, \"dispatches\": %llu, \"descriptor_update_calls\": %llu, \"descriptor_writes\": %llu, \"descriptors_written\": %llu },\n",

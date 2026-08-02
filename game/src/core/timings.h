@@ -14,7 +14,7 @@ static constexpr i32 GPU_TIMINGS_MAX_DEPENDENCY_TEXT_LENGTH = 256;
 #include <cstdio>
 #include <mutex>
 
-#include "core/stretchy_buffer.h"
+#include "core/dynamic_array.h"
 
 // Tick-based timing interface backed by std::chrono.
 // Ticks are nanoseconds.
@@ -57,17 +57,17 @@ void cpu_timing_event_set_name(CpuTimingEvent& event, const char* in_name)
 
 struct CpuTimings
 {
-	StretchyBuffer<CpuTimingEvent> current_frame;
-	StretchyBuffer<CpuTimingEvent> previous_frame;
-	StretchyBuffer<CpuTimingEvent> display_frame;
-	StretchyBuffer<CpuTimingEvent> previous_frames[CPU_TIMINGS_MAX_HISTORY_FRAMES];
-	StretchyBuffer<CpuTimingEvent> display_frames[CPU_TIMINGS_MAX_DISPLAY_FRAMES];
+	DynamicArray<CpuTimingEvent> current_frame;
+	DynamicArray<CpuTimingEvent> previous_frame;
+	DynamicArray<CpuTimingEvent> display_frame;
+	DynamicArray<CpuTimingEvent> previous_frames[CPU_TIMINGS_MAX_HISTORY_FRAMES];
+	DynamicArray<CpuTimingEvent> display_frames[CPU_TIMINGS_MAX_DISPLAY_FRAMES];
 	i64 previous_frame_index = -1;
 	i64 display_frame_index = -1;
 	i64 display_latest_frame_index = -1;
 	i64 previous_frame_indices[CPU_TIMINGS_MAX_HISTORY_FRAMES] = {};
 	i64 display_frame_indices[CPU_TIMINGS_MAX_DISPLAY_FRAMES] = {};
-	StretchyBuffer<i32> active_scope_stack;
+	DynamicArray<i32> active_scope_stack;
 	i64 current_frame_index = -1;
 	i64 next_frame_index = 0;
 	u64 previous_frame_generation = 0;
@@ -215,7 +215,7 @@ void cpu_timings_end_frame()
 	timings.frame_active = false;
 }
 
-const StretchyBuffer<CpuTimingEvent>& cpu_timings_get_previous_frame()
+const DynamicArray<CpuTimingEvent>& cpu_timings_get_previous_frame()
 {
 	return cpu_timings_get().previous_frame;
 }
@@ -277,7 +277,7 @@ i32 cpu_timings_get_display_frame_count(bool in_freeze)
 	return cpu_timings_get().display_frame_count;
 }
 
-const StretchyBuffer<CpuTimingEvent>& cpu_timings_get_display_frame(bool in_freeze, i32 in_frame_index = 0)
+const DynamicArray<CpuTimingEvent>& cpu_timings_get_display_frame(bool in_freeze, i32 in_frame_index = 0)
 {
 	cpu_timings_update_display_frames(in_freeze);
 	CpuTimings& timings = cpu_timings_get();
@@ -290,7 +290,7 @@ const StretchyBuffer<CpuTimingEvent>& cpu_timings_get_display_frame(bool in_free
 	return timings.display_frames[frame_index];
 }
 
-const StretchyBuffer<CpuTimingEvent>& cpu_timings_get_display_frame(bool in_freeze)
+const DynamicArray<CpuTimingEvent>& cpu_timings_get_display_frame(bool in_freeze)
 {
 	cpu_timings_update_display_frames(in_freeze);
 	CpuTimings& timings = cpu_timings_get();
@@ -335,7 +335,7 @@ i32 cpu_timings_get_display_frame_age(bool in_freeze, i32 in_frame_index = 0)
 
 bool cpu_timings_get_display_frame_total_ms(bool in_freeze, f64& out_ms)
 {
-	const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_display_frame(in_freeze, 0);
+	const DynamicArray<CpuTimingEvent>& events = cpu_timings_get_display_frame(in_freeze, 0);
 	for (const CpuTimingEvent& event : events)
 	{
 		if (event.parent_index == -1 && event.elapsed_ms > 0.0)
@@ -350,7 +350,7 @@ bool cpu_timings_get_display_frame_total_ms(bool in_freeze, f64& out_ms)
 
 bool cpu_timings_get_latest_frame_total_ms(f64& out_ms)
 {
-	const StretchyBuffer<CpuTimingEvent>& events = cpu_timings_get_previous_frame();
+	const DynamicArray<CpuTimingEvent>& events = cpu_timings_get_previous_frame();
 	for (const CpuTimingEvent& event : events)
 	{
 		if (event.parent_index == -1 && event.elapsed_ms > 0.0)
@@ -473,7 +473,7 @@ struct GpuTimingEvent
 struct GpuTimingFrame
 {
 	i64 frame_index = -1;
-	StretchyBuffer<GpuTimingEvent> events;
+	DynamicArray<GpuTimingEvent> events;
 	bool valid = false;
 };
 

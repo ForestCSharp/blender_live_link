@@ -66,7 +66,7 @@ static void draw_stats_ui(State& state)
 		ImGuiTableFlags_BordersInnerV |
 		ImGuiTableFlags_NoSavedSettings;
 
-	if (ImGui::CollapsingHeader("Update Stats", ImGuiTreeNodeFlags_DefaultOpen))
+	if (ImGui::CollapsingHeader("Update Stats"))
 	{
 		const i32 import_history_count = (i32)state.data_oriented.import_history.length();
 		if (import_history_count > 0)
@@ -184,7 +184,7 @@ static void draw_stats_ui(State& state)
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Scene Stats", ImGuiTreeNodeFlags_DefaultOpen))
+	if (ImGui::CollapsingHeader("Scene Stats"))
 	{
 		if (ImGui::BeginTable("##SceneIndexStats", 4, stats_table_flags))
 		{
@@ -236,7 +236,7 @@ static void draw_stats_ui(State& state)
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Vulkan / VMA", ImGuiTreeNodeFlags_DefaultOpen))
+	if (ImGui::CollapsingHeader("Vulkan / VMA"))
 	{
 		const VulkanMemoryStats memory = vulkan_context_get_memory_stats(&state.vk);
 		const VulkanMetrics& metrics = state.vk.metrics;
