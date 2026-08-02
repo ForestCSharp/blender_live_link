@@ -23,10 +23,11 @@ BLENDER_NATIVE_DEST_DIR="$BLENDER_SRC_DIR/source/blender/python/intern"
 BLENDER_PATCH_SENTINEL_DIR="$BLEND_SRC_DIR/.patches_applied"
 BLENDER_LIVE_LINK_SCHEMA_HEADER="$SCRIPT_DIR/compiled_schemas/cpp/blender_live_link_generated.h"
 BLENDER_LIVE_LINK_FLATBUFFERS_HEADER="$SCRIPT_DIR/flatbuffers/include/flatbuffers/flatbuffers.h"
+NATIVE_OPENSUBDIV_SMOKE_SCRIPT="$SCRIPT_DIR/tools/native_opensubdiv_smoke.py"
 SOURCE_INDEX_URL="${BLENDER_SOURCE_INDEX_URL:-https://download.blender.org/source/}"
 BLENDER_GIT_URL="${BLENDER_GIT_URL:-https://projects.blender.org/blender/blender.git}"
 DEFAULT_BLENDER_SOURCE_VERSION=5.1.2
-FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DCMAKE_INSTALL_PREFIX=$BLENDER_LITE_BUILD_DIR/bin -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
+FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DWITH_OPENSUBDIV=ON -DCMAKE_INSTALL_PREFIX=$BLENDER_LITE_BUILD_DIR/bin -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
 BLENDER_PATCHES_CHANGED=false
 BLENDER_SOURCE_MODE=version
 BLENDER_SOURCE_VERSION_EXPLICIT=false
@@ -557,6 +558,26 @@ ensure_precompiled_blender_dependencies() {
 	fi
 }
 
+native_blender_has_opensubdiv_configuration() {
+	local cmake_cache="$BLENDER_LITE_BUILD_DIR/CMakeCache.txt"
+	[[ -f "$cmake_cache" ]] && grep -q '^WITH_OPENSUBDIV:BOOL=ON$' "$cmake_cache"
+}
+
+verify_native_blender_opensubdiv() {
+	if ! native_blender_has_opensubdiv_configuration; then
+		echo "Error: native Blender CMake cache does not have WITH_OPENSUBDIV enabled."
+		exit 1
+	fi
+	if [[ ! -f "$NATIVE_OPENSUBDIV_SMOKE_SCRIPT" ]]; then
+		echo "Error: native OpenSubdiv smoke test was not found at $NATIVE_OPENSUBDIV_SMOKE_SCRIPT"
+		exit 1
+	fi
+
+	echo "Verifying native Blender OpenSubdiv support"
+	"$BLENDER_BINARY" --background --factory-startup --python-exit-code 1 \
+		--python "$NATIVE_OPENSUBDIV_SMOKE_SCRIPT"
+}
+
 mac_blender_build_complete() {
 	local resource_version="${REQUESTED_BLENDER_SOURCE_VERSION%.*}"
 	local resource_scripts="$BLENDER_LITE_BUILD_DIR/bin/Blender.app/Contents/Resources/$resource_version/scripts"
@@ -579,6 +600,8 @@ build_mac_blender() {
 		echo "Blender patches changed; running the app build so native changes are compiled."
 	elif [[ -x "$BLENDER_BINARY" && "$BLENDER_LIVE_LINK_SCHEMA_HEADER" -nt "$BLENDER_BINARY" ]]; then
 		echo "Generated Live Link C++ schema is newer than Blender; rebuilding native Blender."
+	elif ! native_blender_has_opensubdiv_configuration; then
+		echo "Native Blender build configuration is missing OpenSubdiv support; rebuilding."
 	elif mac_blender_build_complete; then
 		echo "Blender already built at $BLENDER_BINARY"
 		return
@@ -635,6 +658,8 @@ build_linux_blender() {
 		echo "Blender patches changed; running the app build so native changes are compiled."
 	elif [[ -x "$BLENDER_BINARY" && "$BLENDER_LIVE_LINK_SCHEMA_HEADER" -nt "$BLENDER_BINARY" ]]; then
 		echo "Generated Live Link C++ schema is newer than Blender; rebuilding native Blender."
+	elif ! native_blender_has_opensubdiv_configuration; then
+		echo "Native Blender build configuration is missing OpenSubdiv support; rebuilding."
 	elif [[ -x "$BLENDER_BINARY" ]]; then
 		echo "Blender already built at $BLENDER_BINARY"
 		return
@@ -706,3 +731,5 @@ case "$CURRENT_OS" in
 		echo "Warning: skipping Blender source compilation on unsupported OS $CURRENT_OS."
 		;;
 esac
+
+verify_native_blender_opensubdiv

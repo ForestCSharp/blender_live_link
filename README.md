@@ -63,13 +63,15 @@ For a deeper protocol and runtime ownership contract, see
   engine libraries, and the game build script.
 - `blend_files/`: sample Blender files for development and testing.
 - `docs/`: protocol notes and rendering/engine explanations.
+- `tools/native_opensubdiv_smoke.py`: automatic native Blender OpenSubdiv
+  runtime and geometry validation.
 - `test_live_link_parity.sh`: native-vs-Python export parity test runner.
 
 ## Platform Notes
 
 - Apple Silicon macOS and x86-64 Linux support native Blender builds with the
-  lightweight Blender configuration. Intel Macs can use the Python extension
-  path with `./build.sh -python`.
+  lightweight Blender configuration and OpenSubdiv explicitly enabled. Intel
+  Macs can use the Python extension path with `./build.sh -python`.
 - Windows is supported by the main build script for the game and Python
   extension path. Use `./build.sh -python` from a shell environment capable of
   running `bash` scripts, such as Git Bash.
@@ -135,6 +137,9 @@ FlatBuffers schemas are generated, the Blender-side build/install/launch branch
 and the C++ game build/run branch execute in parallel. In this mode the
 extension calls the native
 `bpy.app.live_link_make_update` hook, so FlatBuffer creation happens in C++.
+The native build also runs a background OpenSubdiv smoke test before Blender is
+launched. Existing native build caches without OpenSubdiv are reconfigured and
+rebuilt automatically.
 
 ### Python Serialization Path
 
@@ -235,6 +240,10 @@ directly to `screenshots/`, so `./screenshots.sh experiments/step1` writes to
 gitignored.
 
 ## Testing
+
+Every native build invocation checks that Blender reports OpenSubdiv support
+and can evaluate a synthetic quad through a Subdivision Surface modifier. A
+failure stops the build before the interactive Blender process is launched.
 
 Run the native/Python exporter parity check with a sample file:
 
