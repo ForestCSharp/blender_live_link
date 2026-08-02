@@ -117,12 +117,15 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - The game uses a unity build: only `src/main.cpp` compiles; everything else is
   headers. `main.cpp` is intentionally limited to application configuration,
   simulation ordering, benchmarking, and the outer lifecycle loop.
-- Runtime orchestration is split into four header systems:
+- Runtime orchestration is split into focused header systems:
   `live_link/live_link_system.h` owns FlatBuffer parsing, socket transport, and
   main-thread import draining; `input/input_system.h` owns GLFW callbacks and
   camera/player controls; `animation/animation_system.h` owns CPU animation
   playback and skin-matrix packing; and `render/render_system.h` owns renderer
   initialization, resizing, GI state, pass execution, and shutdown.
+  `scene/scene_system.h` refreshes scene-derived sun and fog-controller
+  selections, while `ui/debug_ui_system.h` samples and aggregates the frame
+  timings presented by the debug UI.
 - Runtime environment variables are read and parsed once by
   `core/runtime_config.h`. `core/runtime_state_overrides.h` maps the
   application-level values onto `State`; screenshot, buffer, and Vulkan code

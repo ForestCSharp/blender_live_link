@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <limits>
 #include <optional>
 
 using std::optional;
@@ -88,6 +87,8 @@ using std::optional;
 #include "input/input_system.h"
 #include "live_link/live_link_system.h"
 #include "render/render_system.h"
+#include "scene/scene_system.h"
+#include "ui/debug_ui_system.h"
 
 static AutomatedScreenshot automated_screenshot;
 
@@ -103,157 +104,11 @@ void update_physics_backed_object_transforms()
 	}
 }
 
-// Picks the active fog controller: the lowest-uid enabled and visible
-// controller supplies the fog render pass parameters.
-// Selection is refreshed after live-link updates.
-void refresh_active_fog_controller()
-{
-	const std::optional<i32> previous_id = state.fog.active_fog_controller_id;
-
-	state.fog.active_fog_controller_id.reset();
-	state.fog.active = false;
-
-	i32 selected_uid = std::numeric_limits<i32>::max();
-	for (auto& [unique_id, object] : state.scene.objects)
-	{
-		if (!object.has_fog_controller || !object.fog_controller.enabled || !object.visibility)
-		{
-			continue;
-		}
-
-		if (unique_id < selected_uid)
-		{
-			selected_uid = unique_id;
-			state.fog.active_fog_controller_id = unique_id;
-			state.fog.active = true;
-		}
-	}
-
-	if (state.fog.active_fog_controller_id != previous_id)
-	{
-		if (state.fog.active_fog_controller_id)
-		{
-			printf("Active fog controller: UID %i\n", *state.fog.active_fog_controller_id);
-		}
-		else
-		{
-			printf("Active fog controller: none\n");
-		}
-	}
-}
-
-// Keeps state.scene.primary_sun_id pointing at a valid sun object, rescanning
-// the light index when the cached id goes stale.
-void refresh_primary_sun_id()
-{
-	if (state.scene.primary_sun_id)
-	{
-		auto found = state.scene.objects.find(*state.scene.primary_sun_id);
-		if (found != state.scene.objects.end() && object_is_sun_light(found->second))
-		{
-			return;
-		}
-		state.scene.primary_sun_id.reset();
-	}
-
-	scene_ensure_indexes(state);
-	i32 selected_uid = std::numeric_limits<i32>::max();
-	for (i32 light_object_id : state.scene.indexes.light_object_ids)
-	{
-		auto found = state.scene.objects.find(light_object_id);
-		if (found != state.scene.objects.end() && object_is_sun_light(found->second))
-		{
-			selected_uid = MIN(selected_uid, light_object_id);
-		}
-	}
-	if (selected_uid != std::numeric_limits<i32>::max())
-	{
-		state.scene.primary_sun_id = selected_uid;
-	}
-}
-
 void frame(f32 in_delta_time)
 {
 	CPU_TIMING_FRAME("Frame");
 	data_oriented_begin_frame(state);
-
-	state.debug_ui.immediate_frame_time_ms = in_delta_time * 1000.0f;
-	state.debug_ui.immediate_fps = in_delta_time > 0.0f ? 1.0f / in_delta_time : 0.0f;
-
-	f64 immediate_cpu_time_ms = 0.0;
-	state.debug_ui.immediate_cpu_time_valid = cpu_timings_get_latest_frame_total_ms(immediate_cpu_time_ms);
-	if (state.debug_ui.immediate_cpu_time_valid)
-	{
-		state.debug_ui.immediate_cpu_time_ms = (f32) immediate_cpu_time_ms;
-		state.debug_ui.cpu_time_sample_sum_ms += immediate_cpu_time_ms;
-		state.debug_ui.cpu_time_sample_count += 1;
-		if (!state.debug_ui.cpu_time_valid)
-		{
-			state.debug_ui.cpu_time_ms = (f32) immediate_cpu_time_ms;
-			state.debug_ui.cpu_time_valid = true;
-		}
-	}
-
-	f64 immediate_gpu_time_ms = 0.0;
-	bool immediate_gpu_time_pending = false;
-	state.debug_ui.immediate_gpu_time_valid = gpu_timings_get_latest_completed_frame_total_ms(immediate_gpu_time_ms, immediate_gpu_time_pending);
-	state.debug_ui.immediate_gpu_time_pending = !state.debug_ui.immediate_gpu_time_valid && immediate_gpu_time_pending;
-	if (state.debug_ui.immediate_gpu_time_valid)
-	{
-		state.debug_ui.immediate_gpu_time_ms = (f32) immediate_gpu_time_ms;
-		state.debug_ui.gpu_time_sample_sum_ms += immediate_gpu_time_ms;
-		state.debug_ui.gpu_time_sample_count += 1;
-		if (!state.debug_ui.gpu_time_valid)
-		{
-			state.debug_ui.gpu_time_ms = (f32) immediate_gpu_time_ms;
-			state.debug_ui.gpu_time_valid = true;
-			state.debug_ui.gpu_time_pending = false;
-		}
-	}
-	else if (state.debug_ui.immediate_gpu_time_pending)
-	{
-		state.debug_ui.gpu_time_pending = !state.debug_ui.gpu_time_valid;
-	}
-	else
-	{
-		state.debug_ui.gpu_time_valid = false;
-		state.debug_ui.gpu_time_pending = false;
-	}
-
-	state.debug_ui.stats_sample_elapsed += in_delta_time;
-	state.debug_ui.stats_sample_count += 1;
-	if (state.debug_ui.fps == 0.0f && in_delta_time > 0.0f)
-	{
-		state.debug_ui.frame_time_ms = in_delta_time * 1000.0f;
-		state.debug_ui.fps = 1.0f / in_delta_time;
-	}
-	if (state.debug_ui.stats_sample_elapsed >= 0.25)
-	{
-		const f64 average_delta_time = state.debug_ui.stats_sample_elapsed / state.debug_ui.stats_sample_count;
-		state.debug_ui.frame_time_ms = (f32) (average_delta_time * 1000.0);
-		state.debug_ui.fps = (f32) (state.debug_ui.stats_sample_count / state.debug_ui.stats_sample_elapsed);
-		if (state.debug_ui.cpu_time_sample_count > 0)
-		{
-			state.debug_ui.cpu_time_ms = (f32) (state.debug_ui.cpu_time_sample_sum_ms / state.debug_ui.cpu_time_sample_count);
-			state.debug_ui.cpu_time_valid = true;
-		}
-		if (state.debug_ui.gpu_time_sample_count > 0)
-		{
-			state.debug_ui.gpu_time_ms = (f32) (state.debug_ui.gpu_time_sample_sum_ms / state.debug_ui.gpu_time_sample_count);
-			state.debug_ui.gpu_time_valid = true;
-			state.debug_ui.gpu_time_pending = false;
-		}
-		else if (!state.debug_ui.gpu_time_valid)
-		{
-			state.debug_ui.gpu_time_pending = state.debug_ui.immediate_gpu_time_pending;
-		}
-		state.debug_ui.stats_sample_elapsed = 0.0;
-		state.debug_ui.stats_sample_count = 0;
-		state.debug_ui.cpu_time_sample_sum_ms = 0.0;
-		state.debug_ui.cpu_time_sample_count = 0;
-		state.debug_ui.gpu_time_sample_sum_ms = 0.0;
-		state.debug_ui.gpu_time_sample_count = 0;
-	}
+	DebugUiSystem::update_frame_stats(state, in_delta_time);
 
 	if (!RenderSystem::begin_frame(state))
 	{
@@ -294,9 +149,7 @@ void frame(f32 in_delta_time)
 		CPU_TIMING_SCOPE("Object Transforms");
 		update_physics_backed_object_transforms();
 		update_mech_transforms();
-		scene_ensure_indexes(state);
-		refresh_primary_sun_id();
-		refresh_active_fog_controller();
+		SceneSystem::refresh_derived_state(state);
 		build_render_object_snapshot(state);
 		pack_lights(state);
 		upload_lights(state);
