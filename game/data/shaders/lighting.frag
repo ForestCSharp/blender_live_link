@@ -41,6 +41,8 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	float screen_space_shadow_intensity;
 	vec2 shadow_map_texel_size;
 	vec4 shadow_cascade_distances;
+	vec3 shadow_cascade_view_position;
+	vec3 shadow_cascade_view_forward;
 	mat4 shadow_view_projections[4];
 };
 
@@ -409,7 +411,13 @@ int select_shadow_cascade(vec3 in_surface_position)
 		return -1;
 	}
 
-	float receiver_camera_distance = dot(in_surface_position - view_position, normalize(view_forward));
+	// Use the camera basis captured with the cascade matrices. The active view
+	// continues moving while shadow depth is frozen, but cascade classification
+	// must remain consistent with the stale map.
+	float receiver_camera_distance = dot(
+		in_surface_position - shadow_cascade_view_position,
+		normalize(shadow_cascade_view_forward)
+	);
 	for (int cascade_idx = 0; cascade_idx < shadow_num_cascades; ++cascade_idx)
 	{
 		if (receiver_camera_distance <= shadow_cascade_distances[cascade_idx])

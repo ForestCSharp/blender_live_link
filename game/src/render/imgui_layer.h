@@ -227,7 +227,7 @@ namespace ImGuiLayer
 				ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
 				ImGui::Text("Max Factor: %d", state.tessellation.max_factor_seen);
 				ImGui::Text("Readback: %s  Age: %d", state.tessellation.readback_supported ? "Supported" : "Unsupported", state.tessellation.readback_age);
-				if (changed) { if (!state.shadow.depth_freeze) ShadowDepthPass::has_valid_shadow_map = false; state.gi.is_updating = true; }
+				if (changed && !state.shadow.depth_freeze) ShadowDepthPass::has_valid_shadow_map = false;
 			}
 			if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
 			{

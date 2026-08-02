@@ -56,9 +56,13 @@ struct LightingFsParams
 	f32 _pad1;
 	HMM_Vec2 shadow_map_texel_size;
 	HMM_Vec4 shadow_cascade_distances;
+	HMM_Vec3 shadow_cascade_view_position;
+	f32 _pad2;
+	HMM_Vec3 shadow_cascade_view_forward;
+	f32 _pad3;
 	HMM_Mat4 shadow_view_projections[4];
 };
-static_assert(sizeof(LightingFsParams) == 416, "Must match lighting.frag's std140 layout");
+static_assert(sizeof(LightingFsParams) == 448, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {

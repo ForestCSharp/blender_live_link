@@ -26,6 +26,8 @@ namespace ShadowDepthPass
 	inline bool has_valid_shadow_map = false;
 	inline HMM_Mat4 shadow_view_projections[MAX_SHADOW_CASCADES] = {};
 	inline f32 cascade_distances[MAX_SHADOW_CASCADES] = {};
+	inline HMM_Vec3 cascade_view_position = {};
+	inline HMM_Vec3 cascade_view_forward = HMM_V3(0.0f, 1.0f, 0.0f);
 
 	struct PushConstants
 	{
@@ -304,6 +306,12 @@ namespace ShadowDepthPass
 		{
 			return false;
 		}
+
+		// Frustum cascade selection must use the same camera basis that produced
+		// the captured matrices. These values remain unchanged while a valid map
+		// is frozen and update again on an explicit recapture.
+		cascade_view_position = in_camera.location;
+		cascade_view_forward = HMM_NormV3(in_camera.forward);
 
 		Transform transform = sun_object->current_transform;
 		HMM_Vec3 sun_dir = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0, 0, -1), transform.rotation));

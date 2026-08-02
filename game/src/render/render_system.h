@@ -759,6 +759,8 @@ namespace RenderSystem
 					ShadowDepthPass::cascade_distances[2],
 					ShadowDepthPass::cascade_distances[3]
 				);
+				lighting_fs_params.shadow_cascade_view_position = ShadowDepthPass::cascade_view_position;
+				lighting_fs_params.shadow_cascade_view_forward = ShadowDepthPass::cascade_view_forward;
 				for (i32 cascade_idx = 0; cascade_idx < MAX_SHADOW_CASCADES; ++cascade_idx)
 				{
 					lighting_fs_params.shadow_view_projections[cascade_idx] = ShadowDepthPass::shadow_view_projections[cascade_idx];
@@ -1085,4 +1087,3 @@ namespace RenderSystem
 		vulkan_context_shutdown(&in_state.vk);
 	}
 }
-
