@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 import re
 import sys
 import tempfile
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -324,7 +326,138 @@ def source_files() -> set[str]:
     return files
 
 
+class WalkthroughStructureParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.section_depth = 0
+        self.div_depth = 0
+        self.panel_depth: int | None = None
+        self.code_depth: int | None = None
+        self.current_panel: str | None = None
+        self.panels: dict[str, dict[str, int]] = {}
+        self.line_ids: set[str] = set()
+        self.duplicate_line_ids: set[str] = set()
+        self.note_anchors: list[str] = []
+        self.errors: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs_list: list[tuple[str, str | None]]) -> None:
+        attrs = dict(attrs_list)
+        classes = set((attrs.get("class") or "").split())
+        if tag == "section":
+            self.section_depth += 1
+            data_path = attrs.get("data-file")
+            if "panel" in classes and data_path and data_path != "overview":
+                if self.current_panel is not None:
+                    self.errors.append(f"nested source panel: {data_path}")
+                if data_path in self.panels:
+                    self.errors.append(f"duplicate source panel: {data_path}")
+                self.current_panel = data_path
+                self.panel_depth = self.section_depth
+                self.panels[data_path] = {"code_blocks": 0, "tables": 0, "rows": 0}
+        elif tag == "div":
+            self.div_depth += 1
+            if self.current_panel and "source-code" in classes:
+                self.panels[self.current_panel]["code_blocks"] += 1
+                self.code_depth = self.div_depth
+        elif tag == "table" and self.current_panel and self.code_depth is not None:
+            self.panels[self.current_panel]["tables"] += 1
+        elif tag == "tr" and attrs.get("data-path") and attrs.get("data-line"):
+            data_path = attrs["data-path"]
+            row_id = attrs.get("id")
+            if self.current_panel != data_path:
+                self.errors.append(
+                    f"row {data_path}:{attrs['data-line']} is outside its source panel"
+                )
+            if self.current_panel:
+                self.panels[self.current_panel]["rows"] += 1
+            if not row_id:
+                self.errors.append(f"source row lacks an id: {data_path}:{attrs['data-line']}")
+            elif row_id in self.line_ids:
+                self.duplicate_line_ids.add(row_id)
+            else:
+                self.line_ids.add(row_id)
+        elif tag == "article" and self.current_panel and "note" in classes:
+            anchor = attrs.get("data-anchor")
+            if anchor:
+                self.note_anchors.append(anchor)
+            else:
+                self.errors.append(f"note in {self.current_panel} lacks data-anchor")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div":
+            if self.code_depth == self.div_depth:
+                self.code_depth = None
+            self.div_depth -= 1
+        elif tag == "section":
+            if self.panel_depth == self.section_depth:
+                self.current_panel = None
+                self.panel_depth = None
+                self.code_depth = None
+            self.section_depth -= 1
+
+
+def validate_structure(document: str) -> None:
+    parser = WalkthroughStructureParser()
+    parser.feed(document)
+    errors = list(parser.errors)
+    expected_files = source_files()
+    seen_files = set(parser.panels)
+    if seen_files != expected_files:
+        missing = sorted(expected_files - seen_files)
+        extra = sorted(seen_files - expected_files)
+        if missing:
+            errors.append("missing source panels: " + ", ".join(missing))
+        if extra:
+            errors.append("unexpected source panels: " + ", ".join(extra))
+    for data_path, counts in parser.panels.items():
+        if counts["code_blocks"] != 1 or counts["tables"] != 1:
+            errors.append(
+                f"{data_path} must contain exactly one source code table; "
+                f"found {counts['code_blocks']} blocks and {counts['tables']} tables"
+            )
+        if counts["rows"] == 0:
+            errors.append(f"{data_path} contains no source rows")
+    if parser.duplicate_line_ids:
+        errors.append("duplicate line ids: " + ", ".join(sorted(parser.duplicate_line_ids)))
+    missing_note_anchors = sorted(set(parser.note_anchors) - parser.line_ids)
+    if missing_note_anchors:
+        errors.append("invalid note anchors: " + ", ".join(missing_note_anchors))
+    if 'class="block"' in document or "Current implementation · part" in document:
+        errors.append("legacy walkthrough blocks or generated part headings remain")
+
+    outline_match = re.search(
+        r'<script type="application/json" id="outline-data">(.*?)</script>',
+        document,
+        re.DOTALL,
+    )
+    if not outline_match:
+        errors.append("outline data is missing")
+    else:
+        try:
+            outlines = json.loads(outline_match.group(1))
+        except json.JSONDecodeError as error:
+            errors.append(f"invalid outline data: {error}")
+        else:
+            missing_outline_files = sorted(expected_files - set(outlines))
+            if missing_outline_files:
+                errors.append("missing file outlines: " + ", ".join(missing_outline_files))
+            invalid_outline_anchors = sorted(
+                {
+                    item.get("id", "")
+                    for data_path, items in outlines.items()
+                    if data_path != "overview"
+                    for item in items
+                    if item.get("id") not in parser.line_ids
+                }
+            )
+            if invalid_outline_anchors:
+                errors.append("invalid outline anchors: " + ", ".join(invalid_outline_anchors))
+    if errors:
+        raise WalkthroughError("structural validation failed; " + "; ".join(errors))
+
+
 def build_highlighted_html(document: str) -> tuple[str, int, int]:
+    validate_structure(document)
     states: dict[str, LexerState] = {}
     source_lines: dict[str, list[str]] = {}
     next_lines: dict[str, int] = {}
