@@ -8,6 +8,7 @@
 #include "imgui/backends/imgui_impl_vulkan.h"
 #include "ui/stats_ui.h"
 #include "ui/cpu_profiler_ui.h"
+#include "input/input_api.h"
 
 namespace ImGuiLayer
 {
@@ -147,7 +148,7 @@ namespace ImGuiLayer
 			if (ImGui::SliderInt("Resolution Percentage", &state.window.resolution_percentage,
 				MIN_RENDER_RESOLUTION_PERCENTAGE, MAX_RENDER_RESOLUTION_PERCENTAGE, "%d%%"))
 			{
-				handle_resize(true);
+				state.window.render_resolution_dirty = true;
 			}
 			const bool immediate = state.debug_ui.show_immediate_timings;
 			if (ImGui::BeginTable("##TimingStats", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings))
@@ -174,7 +175,7 @@ namespace ImGuiLayer
 		{
 			if (ImGui::Button("Play")) state.animation.is_playing = true;
 			ImGui::SameLine(); if (ImGui::Button("Pause")) state.animation.is_playing = false;
-			ImGui::SameLine(); if (ImGui::Button("Rewind")) rewind_skinned_animations();
+			ImGui::SameLine(); if (ImGui::Button("Rewind")) AnimationSystem::rewind(state);
 			ImGui::SetNextItemWidth(160.0f);
 			ImGui::DragFloat("Playback Rate", &state.animation.playback_rate, 0.01f, 0.0f, 4.0f, "%.2fx");
 			ImGui::Checkbox("Skinning Debug View", &state.animation.skinning_debug_view);
@@ -401,7 +402,7 @@ namespace ImGuiLayer
 					if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes)) state.gi.is_updating = true;
 					ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
 					ImGui::Checkbox("Show Probes", &state.gi.show_probes);
-					if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable)) { if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; set_mouse_locked(false); } else state.gi.isolated_probe_index = -1; }
+					if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable)) { if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; InputSystem::set_mouse_locked(state, false); } else state.gi.isolated_probe_index = -1; }
 					if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; ImGui::SameLine(); if (ImGui::SmallButton("Clear")) state.gi.isolated_probe_index = -1; ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None"); }
 					ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
 					if (ImGui::Button("Update GI Probes") && !state.gi.is_updating) state.gi.is_updating = true;

@@ -7,6 +7,7 @@
 
 #include "GLFW/glfw3.h"
 
+#include "core/runtime_config.h"
 #include "render/gi.h"
 #include "state/state.h"
 
@@ -15,17 +16,16 @@ class AutomatedScreenshot
 public:
 	bool configure(State& in_state)
 	{
-		const char* screenshot_path = getenv("GAME2_SCREENSHOT");
-		if (screenshot_path != nullptr)
+		const RuntimeConfig::Config& config = RuntimeConfig::get();
+		if (config.screenshot_path)
 		{
 			fixed_frame_configured = true;
-			fixed_frame_output_path = screenshot_path;
+			fixed_frame_output_path = *config.screenshot_path;
 		}
 
-		const char* screenshot_frame_text = getenv("GAME2_SCREENSHOT_FRAME");
-		fixed_frame = screenshot_frame_text ? strtoull(screenshot_frame_text, nullptr, 10) : 60;
+		fixed_frame = config.screenshot_frame;
 
-		if (getenv("GAME2_SCREENSHOT_WAIT_FOR_GI") == nullptr)
+		if (!config.screenshot_wait_for_gi)
 		{
 			return true;
 		}
@@ -36,11 +36,13 @@ public:
 			return false;
 		}
 
-		const char* timeout_text = getenv("GAME2_SCREENSHOT_TIMEOUT_SECONDS");
-		const f64 configured_timeout_seconds = timeout_text ? strtod(timeout_text, nullptr) : 600.0;
+		const f64 configured_timeout_seconds = config.screenshot_timeout_seconds;
 		if (!std::isfinite(configured_timeout_seconds) || configured_timeout_seconds <= 0.0)
 		{
-			printf("Invalid GAME2_SCREENSHOT_TIMEOUT_SECONDS: %s\n", timeout_text ? timeout_text : "");
+			printf(
+				"Invalid GAME2_SCREENSHOT_TIMEOUT_SECONDS: %s\n",
+				config.screenshot_timeout_text ? config.screenshot_timeout_text->c_str() : ""
+			);
 			return false;
 		}
 

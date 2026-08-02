@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
+#include "core/runtime_config.h"
 #include "render/vulkan_context.h"
 
 #include <cassert>
@@ -29,9 +30,8 @@ struct GpuBufferUsage
 // there; GAME2_FORCE_DEVICE_LOCAL=1 exercises the staging path anyway.
 inline bool gpu_buffer_default_device_local()
 {
-	static const bool force_device_local = getenv("GAME2_FORCE_DEVICE_LOCAL") != nullptr;
 #if defined(__APPLE__)
-	return force_device_local;
+	return RuntimeConfig::get().force_device_local;
 #else
 	return true;
 #endif

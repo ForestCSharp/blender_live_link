@@ -114,72 +114,7 @@ enum class ERenderPass : i32
 	COUNT,
 };
 
-// ---- Live link messages ----
-// Images and materials must not be registered on the live-link thread: GPU
-// image creation submits to the graphics queue, and the id->index maps are
-// read by the main thread. Instead the parse thread packages one
-// SceneUpdate per flatbuffer Update and ALL registration happens at drain
-// on the main thread in this order:
-// images -> materials -> objects -> deleted -> reset.
-
-struct PendingImage
-{
-	i32 unique_id = 0;
-	i32 width = 0;
-	i32 height = 0;
-	u8* pixels = nullptr;	// malloc'd RGBA8, width*height*4, validated at parse
-};
-
-struct PendingMaterial
-{
-	i32 unique_id = 0;
-	HMM_Vec4 base_color = HMM_V4(1.0f, 1.0f, 1.0f, 1.0f);
-	HMM_Vec4 emission_color = HMM_V4(0.0f, 0.0f, 0.0f, 1.0f);
-	f32 metallic = 0.0f;
-	f32 roughness = 0.5f;
-	f32 emission_strength = 0.0f;
-
-	// Raw flatbuffer image ids (0 = none); resolved to indices at drain
-	i32 base_color_image_id = 0;
-	i32 emission_color_image_id = 0;
-	i32 metallic_image_id = 0;
-	i32 roughness_image_id = 0;
-};
-
-struct SceneUpdate
-{
-	struct ImportStats
-	{
-		u64 byte_count = 0;
-		f64 generation_seconds = 0.0;
-		i32 object_count = 0;
-		i32 deleted_object_count = 0;
-		i32 material_count = 0;
-		i32 image_count = 0;
-		u64 image_byte_count = 0;
-		i32 mesh_count = 0;
-		i32 mesh_vertex_count = 0;
-		i32 mesh_index_count = 0;
-		i32 skinned_mesh_count = 0;
-		i32 light_count = 0;
-		i32 armature_count = 0;
-		i32 animation_count = 0;
-		i32 animation_matrix_count = 0;
-		i32 malformed_object_count = 0;
-		bool reset = false;
-	} stats;
-	StretchyBuffer<PendingImage> images;
-	StretchyBuffer<PendingMaterial> materials;
-
-	// Note: each Object's mesh.material_indices still holds raw material IDS
-	// here; resolve_mesh_material_indices converts them at drain
-	StretchyBuffer<Object> objects;
-
-	StretchyBuffer<i32> deleted_object_uids;
-	std::optional<Camera> editor_camera;
-	bool has_object_batch = false;
-	bool reset = false;
-};
+#include "live_link/live_link_types.h"
 
 enum class MechLoadoutSelectionType : u8
 {
@@ -281,6 +216,7 @@ struct State
 		i32 resolution_percentage = DEFAULT_RENDER_RESOLUTION_PERCENTAGE;
 		i32 render_width = 1920;
 		i32 render_height = 1080;
+		bool render_resolution_dirty = false;
 	} window;
 
 	struct RenderPassState
@@ -294,6 +230,8 @@ struct State
 		HMM_Vec2 mouse_position = HMM_V2(0.0f, 0.0f);
 		HMM_Vec2 mouse_delta = HMM_V2(0.0f, 0.0f);
 		bool is_mouse_locked = false;
+		bool action_latches[4] = {};
+		bool gi_probe_pick_requested = false;
 	} input;
 
 	struct SceneState
@@ -1048,34 +986,4 @@ void upload_lights(State& in_state)
 		lighting.sun_buffers[lighting.buffer_index].update_gpu_buffer(
 			lighting.sun_lights.data(), sizeof(SunLightData) * lighting.sun_lights.length());
 	}
-}
-
-bool is_key_pressed(i32 in_keycode)
-{
-	return state.input.keycodes[in_keycode];
-}
-
-HMM_Vec2 get_mouse_delta()
-{
-	return state.input.mouse_delta;
-}
-
-void reset_mouse_delta()
-{
-	state.input.mouse_delta = HMM_V2(0.0f, 0.0f);
-}
-
-bool is_mouse_locked()
-{
-	return state.input.is_mouse_locked;
-}
-
-void set_mouse_locked(bool in_locked)
-{
-	state.input.is_mouse_locked = in_locked;
-	glfwSetInputMode(
-		state.window.handle,
-		GLFW_CURSOR,
-		in_locked ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL
-	);
 }

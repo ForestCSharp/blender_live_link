@@ -16,6 +16,7 @@
 #include "core/types.h"
 #include "core/stretchy_buffer.h"
 #include "core/timings.h"
+#include "core/runtime_config.h"
 
 #define VK_CHECK(f)                                                                 \
 {                                                                                   \
@@ -693,8 +694,8 @@ bool vulkan_format_is_rgba8(VkFormat in_format)
 
 VkPresentModeKHR vulkan_requested_present_mode()
 {
-	const char* requested = getenv("GAME_PRESENT_MODE");
-	if (!requested) requested = getenv("GAME2_PRESENT_MODE");
+	const std::optional<std::string>& requested_config = RuntimeConfig::get().present_mode;
+	const char* requested = requested_config ? requested_config->c_str() : nullptr;
 	if (!requested || strcmp(requested, "fifo") == 0 || strcmp(requested, "vsync") == 0)
 		return VK_PRESENT_MODE_FIFO_KHR;
 	if (strcmp(requested, "mailbox") == 0)
@@ -903,9 +904,8 @@ struct PipelineCacheFileHeader
 
 const char* vulkan_pipeline_cache_path()
 {
-	const char* override_path = getenv("GAME_PIPELINE_CACHE");
-	if (!override_path) override_path = getenv("GAME2_PIPELINE_CACHE");
-	return override_path ? override_path : "bin/pipeline_cache.bin";
+	const std::optional<std::string>& configured_path = RuntimeConfig::get().pipeline_cache_path;
+	return configured_path ? configured_path->c_str() : "bin/pipeline_cache.bin";
 }
 
 void vulkan_context_create_pipeline_cache(VulkanContext* ctx)
@@ -1641,7 +1641,7 @@ void gpu_timestamps_harvest(VulkanContext* ctx)
 	gpu_timings_record_completed_frame_events(frame_state.cpu_frame_index, events, 1 + frame_state.scope_count);
 
 	// Periodic debug print; the ImGui profiler is the interactive consumer.
-	static const bool print_timings = getenv("GAME2_PRINT_GPU_TIMINGS") != nullptr;
+	static const bool print_timings = RuntimeConfig::get().print_gpu_timings;
 	if (print_timings && (ctx->frame_number % 120) == 0)
 	{
 		printf("GPU Frame %.3fms", frame_event.elapsed_ms);
