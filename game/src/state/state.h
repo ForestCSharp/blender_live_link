@@ -341,6 +341,15 @@ struct State
 		bool local_contrast_boost = false;
 	} tonemapping;
 
+	struct BloomState
+	{
+		bool enable = true;
+		f32 threshold = 1.0f;
+		f32 soft_knee = 0.5f;
+		f32 intensity = 0.35f;
+		i32 requested_mip_count = 6;
+	} bloom;
+
 	struct GiState
 	{
 		bool enable = true;

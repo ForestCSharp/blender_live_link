@@ -207,153 +207,241 @@ namespace ImGuiLayer
 		if (ImGui::CollapsingHeader("Rendering Features", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			ImGui::Indent();
-			if (ImGui::CollapsingHeader("Tessellation", ImGuiTreeNodeFlags_DefaultOpen))
+			const auto draw_tessellation_controls = [&]()
 			{
-				bool changed = false;
-				changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
-				changed |= ImGui::Combo("Mode", (i32*) &state.tessellation.mode, ETessellationModeNames, (i32) ETessellationMode::MAX);
-				changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
-				changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32) Tessellation::MAX_FACTOR);
-				changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
-				changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
-				changed |= ImGui::Checkbox("Virtual Patches", &state.tessellation.virtual_patches_enabled);
-				changed |= ImGui::SliderInt("Virtual Patch Depth", &state.tessellation.virtual_patch_max_depth, 0, 4);
-				changed |= ImGui::DragInt("Max Patches", &state.tessellation.max_generated_patches, 256.0f, 1, 1024 * 1024);
-				changed |= ImGui::DragInt("Max Vertices", &state.tessellation.max_generated_vertices, 1024.0f, 3, 64 * 1024 * 1024);
-				changed |= ImGui::DragInt("Max Indices", &state.tessellation.max_generated_indices, 1024.0f, 3, 128 * 1024 * 1024);
-				changed |= ImGui::SliderFloat("Bounds Padding", &state.tessellation.bounds_padding, 0.0f, 10.0f, "%.2f");
-				ImGui::Text("Meshes: %d  Overflow: %d", state.tessellation.mesh_count, state.tessellation.overflowed_mesh_count);
-				ImGui::Text("Source Tris: %d  Patches: %d", state.tessellation.source_triangle_count, state.tessellation.patch_count);
-				ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
-				ImGui::Text("Max Factor: %d", state.tessellation.max_factor_seen);
-				ImGui::Text("Readback: %s  Age: %d", state.tessellation.readback_supported ? "Supported" : "Unsupported", state.tessellation.readback_age);
-				if (changed && !state.shadow.depth_freeze) ShadowDepthPass::has_valid_shadow_map = false;
-			}
-			if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
-			{
-				if (ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe)) TemporalAAPass::invalidate_history(state);
-				ImGui::SliderFloat("Wire Width", &state.wireframe.width, 0.5f, 4.0f, "%.2f px");
-				ImGui::SliderFloat("Wire Softness", &state.wireframe.softness, 0.25f, 3.0f, "%.2f px");
-				ImGui::SliderFloat("Wire Opacity", &state.wireframe.opacity, 0.0f, 1.0f, "%.2f");
-				ImGui::ColorEdit3("Wire Color", &state.wireframe.color.X);
-			}
-			ImGui::Separator();
-			if (ImGui::CollapsingHeader("Image Effects", ImGuiTreeNodeFlags_DefaultOpen))
-			{
-				ImGui::Combo(
-					"Tonemapping",
-					(i32*)&state.tonemapping.mode,
-					ETonemappingModeNames,
-					(i32)ETonemappingMode::MAX);
-				ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
-				if (state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+				if (ImGui::CollapsingHeader("Tessellation", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					ImGui::Indent();
-					ImGui::SliderFloat(
-						"Shadow Recovery",
-						&state.tonemapping.local_shadow_recovery,
-						0.0f, 4.0f, "%.2f EV");
-					ImGui::SliderFloat(
-						"Highlight Recovery",
-						&state.tonemapping.local_highlight_recovery,
-						0.0f, 4.0f, "%.2f EV");
-					ImGui::SliderFloat(
-						"Exposure Preference Sigma",
-						&state.tonemapping.local_exposure_preference_sigma,
-						0.0f, 10.0f, "%.2f");
+					bool changed = false;
+					changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
+					changed |= ImGui::Combo("Mode", (i32*)&state.tessellation.mode, ETessellationModeNames, (i32)ETessellationMode::MAX);
+					changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
+					changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32)Tessellation::MAX_FACTOR);
+					changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
+					changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
+					changed |= ImGui::Checkbox("Virtual Patches", &state.tessellation.virtual_patches_enabled);
+					changed |= ImGui::SliderInt("Virtual Patch Depth", &state.tessellation.virtual_patch_max_depth, 0, 4);
+					changed |= ImGui::DragInt("Max Patches", &state.tessellation.max_generated_patches, 256.0f, 1, 1024 * 1024);
+					changed |= ImGui::DragInt("Max Vertices", &state.tessellation.max_generated_vertices, 1024.0f, 3, 64 * 1024 * 1024);
+					changed |= ImGui::DragInt("Max Indices", &state.tessellation.max_generated_indices, 1024.0f, 3, 128 * 1024 * 1024);
+					changed |= ImGui::SliderFloat("Bounds Padding", &state.tessellation.bounds_padding, 0.0f, 10.0f, "%.2f");
+					ImGui::Text("Meshes: %d  Overflow: %d", state.tessellation.mesh_count, state.tessellation.overflowed_mesh_count);
+					ImGui::Text("Source Tris: %d  Patches: %d", state.tessellation.source_triangle_count, state.tessellation.patch_count);
+					ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
+					ImGui::Text("Max Factor: %d", state.tessellation.max_factor_seen);
+					ImGui::Text("Readback: %s  Age: %d", state.tessellation.readback_supported ? "Supported" : "Unsupported", state.tessellation.readback_age);
+					if (changed && !state.shadow.depth_freeze)
+						ShadowDepthPass::has_valid_shadow_map = false;
+				}
+			};
+			const auto draw_wireframe_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					if (ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe))
+						TemporalAAPass::invalidate_history(state);
+					ImGui::SliderFloat("Wire Width", &state.wireframe.width, 0.5f, 4.0f, "%.2f px");
+					ImGui::SliderFloat("Wire Softness", &state.wireframe.softness, 0.25f, 3.0f, "%.2f px");
+					ImGui::SliderFloat("Wire Opacity", &state.wireframe.opacity, 0.0f, 1.0f, "%.2f");
+					ImGui::ColorEdit3("Wire Color", &state.wireframe.color.X);
+				}
+			};
+			const auto draw_tonemapping_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Tonemapping", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Combo(
+						"Mode##Tonemapping",
+						(i32*)&state.tonemapping.mode,
+						ETonemappingModeNames,
+						(i32)ETonemappingMode::MAX);
+					ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
+					if (state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+					{
+						ImGui::Indent();
+						ImGui::SliderFloat(
+							"Shadow Recovery",
+							&state.tonemapping.local_shadow_recovery,
+							0.0f, 4.0f, "%.2f EV");
+						ImGui::SliderFloat(
+							"Highlight Recovery",
+							&state.tonemapping.local_highlight_recovery,
+							0.0f, 4.0f, "%.2f EV");
+						ImGui::SliderFloat(
+							"Exposure Preference Sigma",
+							&state.tonemapping.local_exposure_preference_sigma,
+							0.0f, 10.0f, "%.2f");
 
-					const i32 max_mip = tonemapping_pass_get_max_full_resolution_mip();
-					const i32 minimum_reconstruction_mip = MIN(2, max_mip);
-					state.tonemapping.local_reconstruction_mip = CLAMP(
-						state.tonemapping.local_reconstruction_mip,
-						minimum_reconstruction_mip,
-						max_mip);
-					state.tonemapping.local_coarsest_mip = CLAMP(
-						state.tonemapping.local_coarsest_mip,
-						state.tonemapping.local_reconstruction_mip,
-						max_mip);
+						const i32 max_mip = tonemapping_pass_get_max_full_resolution_mip();
+						const i32 minimum_reconstruction_mip = MIN(2, max_mip);
+						state.tonemapping.local_reconstruction_mip = CLAMP(
+							state.tonemapping.local_reconstruction_mip,
+							minimum_reconstruction_mip,
+							max_mip);
+						state.tonemapping.local_coarsest_mip = CLAMP(
+							state.tonemapping.local_coarsest_mip,
+							state.tonemapping.local_reconstruction_mip,
+							max_mip);
+						ImGui::SliderInt(
+							"Coarsest Mip",
+							&state.tonemapping.local_coarsest_mip,
+							state.tonemapping.local_reconstruction_mip,
+							max_mip,
+							"%d",
+							ImGuiSliderFlags_ClampOnInput);
+						if (ImGui::SliderInt(
+								"Reconstruction Mip",
+								&state.tonemapping.local_reconstruction_mip,
+								minimum_reconstruction_mip,
+								state.tonemapping.local_coarsest_mip,
+								"%d",
+								ImGuiSliderFlags_ClampOnInput))
+						{
+							state.tonemapping.local_coarsest_mip = MAX(
+								state.tonemapping.local_coarsest_mip,
+								state.tonemapping.local_reconstruction_mip);
+						}
+						ImGui::Checkbox(
+							"Boost Local Contrast",
+							&state.tonemapping.local_contrast_boost);
+						if (ImGui::Button("Reset Local Defaults"))
+						{
+							state.tonemapping.local_shadow_recovery = 1.5f;
+							state.tonemapping.local_highlight_recovery = 2.0f;
+							state.tonemapping.local_exposure_preference_sigma = 5.0f;
+							state.tonemapping.local_coarsest_mip = MIN(6, max_mip);
+							state.tonemapping.local_reconstruction_mip =
+								MIN(2, state.tonemapping.local_coarsest_mip);
+							state.tonemapping.local_contrast_boost = false;
+						}
+						ImGui::TextDisabled(
+							"Effective mip range: %d -> %d (available through %d)",
+							state.tonemapping.local_coarsest_mip,
+							state.tonemapping.local_reconstruction_mip,
+							max_mip);
+						ImGui::Unindent();
+					}
+				}
+			};
+			const auto draw_bloom_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enable Bloom", &state.bloom.enable);
+					ImGui::BeginDisabled(!state.bloom.enable);
+					ImGui::SliderFloat("Bloom Threshold", &state.bloom.threshold, 0.0f, 10.0f, "%.2f");
+					ImGui::SliderFloat("Bloom Soft Knee", &state.bloom.soft_knee, 0.0f, 1.0f, "%.2f");
+					ImGui::SliderFloat("Bloom Intensity", &state.bloom.intensity, 0.0f, 1.0f, "%.3f");
+					const i32 available_bloom_mips = BloomPass::get_available_mip_count();
+					state.bloom.requested_mip_count = CLAMP(
+						state.bloom.requested_mip_count, 1, available_bloom_mips);
 					ImGui::SliderInt(
-						"Coarsest Mip",
-						&state.tonemapping.local_coarsest_mip,
-						state.tonemapping.local_reconstruction_mip,
-						max_mip,
+						"Bloom Mip Count",
+						&state.bloom.requested_mip_count,
+						1,
+						available_bloom_mips,
 						"%d",
 						ImGuiSliderFlags_ClampOnInput);
-					if (ImGui::SliderInt(
-						"Reconstruction Mip",
-						&state.tonemapping.local_reconstruction_mip,
-						minimum_reconstruction_mip,
-						state.tonemapping.local_coarsest_mip,
-						"%d",
-						ImGuiSliderFlags_ClampOnInput))
+					if (ImGui::Button("Reset Bloom Defaults"))
 					{
-						state.tonemapping.local_coarsest_mip = MAX(
-							state.tonemapping.local_coarsest_mip,
-							state.tonemapping.local_reconstruction_mip);
+						state.bloom.threshold = 1.0f;
+						state.bloom.soft_knee = 0.5f;
+						state.bloom.intensity = 0.05f;
+						state.bloom.requested_mip_count = MIN(6, available_bloom_mips);
 					}
-					ImGui::Checkbox(
-						"Boost Local Contrast",
-						&state.tonemapping.local_contrast_boost);
-					if (ImGui::Button("Reset Local Defaults"))
-					{
-						state.tonemapping.local_shadow_recovery = 1.5f;
-						state.tonemapping.local_highlight_recovery = 2.0f;
-						state.tonemapping.local_exposure_preference_sigma = 5.0f;
-						state.tonemapping.local_coarsest_mip = MIN(6, max_mip);
-						state.tonemapping.local_reconstruction_mip =
-							MIN(2, state.tonemapping.local_coarsest_mip);
-						state.tonemapping.local_contrast_boost = false;
-					}
+					GpuImage& bloom_pyramid = BloomPass::get_pyramid();
 					ImGui::TextDisabled(
-						"Effective mip range: %d -> %d (available through %d)",
-						state.tonemapping.local_coarsest_mip,
-						state.tonemapping.local_reconstruction_mip,
-						max_mip);
-					ImGui::Unindent();
+						"Half-res pyramid: %u x %u, %d / %d mips",
+						bloom_pyramid.extent.width,
+						bloom_pyramid.extent.height,
+						state.bloom.requested_mip_count,
+						available_bloom_mips);
+					ImGui::EndDisabled();
 				}
-				ImGui::Checkbox("SSAO", &state.ssao.enable); ImGui::Checkbox("Fog", &state.fog.debug_active);
-				if (ImGui::CollapsingHeader("Antialiasing", ImGuiTreeNodeFlags_DefaultOpen))
+			};
+			const auto draw_ssao_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("SSAO", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					bool changed = ImGui::Checkbox("Temporal AA", &state.temporal_aa.enable);
-					ImGui::Checkbox("FXAA", &state.temporal_aa.enable_fxaa);
+					ImGui::Checkbox("Enable SSAO", &state.ssao.enable);
+				}
+			};
+			const auto draw_fog_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enable Fog", &state.fog.debug_active);
+				}
+			};
+			const auto draw_temporal_aa_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Temporal AA", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					bool changed = ImGui::Checkbox("Enable Temporal AA", &state.temporal_aa.enable);
 					ImGui::BeginDisabled(!state.temporal_aa.enable);
 					changed |= ImGui::SliderFloat("TAA History Blend", &state.temporal_aa.blend_alpha, 0.0f, 1.0f, "%.2f");
 					changed |= ImGui::SliderFloat("TAA Sharpen", &state.temporal_aa.sharpen_strength, 0.0f, 0.5f, "%.3f");
 					changed |= ImGui::SliderFloat("TAA Rejection", &state.temporal_aa.rejection_threshold, 0.0f, 1.0f, "%.3f");
 					changed |= ImGui::Combo("TAA Debug", &state.temporal_aa.debug_mode, "Off\0History Acceptance\0Previous UV\0");
-					ImGui::EndDisabled(); if (changed) TemporalAAPass::invalidate_history(state);
+					ImGui::EndDisabled();
+					if (changed)
+						TemporalAAPass::invalidate_history(state);
 				}
+			};
+			const auto draw_fxaa_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("FXAA", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enable FXAA", &state.temporal_aa.enable_fxaa);
+				}
+			};
+			const auto draw_dof_controls = [&]()
+			{
 				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					if (ImGui::Checkbox("Enable DoF", &state.dof.enable)) TemporalAAPass::invalidate_history(state);
+					if (ImGui::Checkbox("Enable DoF", &state.dof.enable))
+						TemporalAAPass::invalidate_history(state);
 					ImGui::BeginDisabled(!state.dof.enable);
 					ImGui::SliderFloat("Focus Distance", &state.dof.focus_distance, 0.1f, 500.0f, "%.1f");
 					ImGui::SliderFloat("Focus Range", &state.dof.focus_range, 0.1f, 200.0f, "%.1f");
 					ImGui::SliderFloat("Max CoC Radius", &state.dof.max_coc_radius, 0.0f, 32.0f, "%.1f px");
 					ImGui::SliderFloat("Foreground Scale", &state.dof.foreground_blur_scale, 0.0f, 4.0f, "%.2f");
 					ImGui::SliderFloat("Background Scale", &state.dof.background_blur_scale, 0.0f, 4.0f, "%.2f");
-					ImGui::Checkbox("Show CoC Debug", &state.dof.debug_show_coc); ImGui::EndDisabled();
-				}
-			}
-			ImGui::Unindent(); ImGui::Separator(); ImGui::Indent();
-			if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
-			{
-				ImGui::Checkbox("Shadow Rendering", &state.shadow.rendering_enable); ImGui::Checkbox("Shadow Blur", &state.shadow.blur_enable);
-				ImGui::Checkbox("Freeze Shadow Depth", &state.shadow.depth_freeze);
-				if (ImGui::Button("Recapture Shadow Depth")) { state.shadow.force_recapture = true; ShadowDepthPass::has_valid_shadow_map = false; }
-				bool changed = ImGui::SliderInt("Num Cascades", &state.shadow.num_cascades, 1, MAX_SHADOW_CASCADES);
-				f32& distance_scale = state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares ? state.shadow.centered_square_cascade_distance_scale : state.shadow.frustum_cascade_distance_scale;
-				changed |= ImGui::SliderFloat("Cascade Distance Scale", &distance_scale, 0.25f, 4.0f, "%.2f");
-				changed |= ImGui::Combo("Cascade Placement", (i32*) &state.shadow.cascade_placement_mode, "Frustum\0Centered Squares\0");
-				if (changed && !state.shadow.depth_freeze) ShadowDepthPass::has_valid_shadow_map = false;
-				if (state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
-				{
-					if (ImGui::SliderFloat("Centered Square Lookahead", &state.shadow.centered_square_lookahead_distance, 0.0f, 1000.0f, "%.2f") && !state.shadow.depth_freeze) ShadowDepthPass::has_valid_shadow_map = false;
-					ImGui::BeginDisabled(!state.shadow.depth_freeze);
-					if (ImGui::DragFloat3("Centered Square Center", &state.shadow.centered_square_center.X, 0.25f, -10000.0f, 10000.0f, "%.2f")) ShadowDepthPass::has_valid_shadow_map = false;
+					ImGui::Checkbox("Show CoC Debug", &state.dof.debug_show_coc);
 					ImGui::EndDisabled();
 				}
-				ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
+			};
+			const auto draw_shadow_map_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Shadow Maps", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Shadow Rendering", &state.shadow.rendering_enable);
+					ImGui::Checkbox("Shadow Blur", &state.shadow.blur_enable);
+					ImGui::Checkbox("Freeze Shadow Depth", &state.shadow.depth_freeze);
+					if (ImGui::Button("Recapture Shadow Depth"))
+					{
+						state.shadow.force_recapture = true;
+						ShadowDepthPass::has_valid_shadow_map = false;
+					}
+					bool changed = ImGui::SliderInt("Num Cascades", &state.shadow.num_cascades, 1, MAX_SHADOW_CASCADES);
+					f32& distance_scale = state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares ? state.shadow.centered_square_cascade_distance_scale : state.shadow.frustum_cascade_distance_scale;
+					changed |= ImGui::SliderFloat("Cascade Distance Scale", &distance_scale, 0.25f, 4.0f, "%.2f");
+					changed |= ImGui::Combo("Cascade Placement", (i32*)&state.shadow.cascade_placement_mode, "Frustum\0Centered Squares\0");
+					if (changed && !state.shadow.depth_freeze)
+						ShadowDepthPass::has_valid_shadow_map = false;
+					if (state.shadow.cascade_placement_mode == EShadowCascadePlacementMode::CenteredSquares)
+					{
+						if (ImGui::SliderFloat("Centered Square Lookahead", &state.shadow.centered_square_lookahead_distance, 0.0f, 1000.0f, "%.2f") && !state.shadow.depth_freeze)
+							ShadowDepthPass::has_valid_shadow_map = false;
+						ImGui::BeginDisabled(!state.shadow.depth_freeze);
+						if (ImGui::DragFloat3("Centered Square Center", &state.shadow.centered_square_center.X, 0.25f, -10000.0f, 10000.0f, "%.2f"))
+							ShadowDepthPass::has_valid_shadow_map = false;
+						ImGui::EndDisabled();
+					}
+					ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
+				}
+			};
+			const auto draw_screen_space_shadow_controls = [&]()
+			{
 				if (ImGui::CollapsingHeader("Screen Space Shadows", ImGuiTreeNodeFlags_DefaultOpen))
 				{
 					ImGui::Checkbox("Enable Screen Space Shadows", &state.shadow.screen_space.enable);
@@ -364,55 +452,107 @@ namespace ImGuiLayer
 					ImGui::SliderFloat("Intensity", &state.shadow.screen_space.intensity, 0.0f, 1.0f, "%.2f");
 					ImGui::SliderInt("Filter Radius", &state.shadow.screen_space.filter_radius, 0, 2);
 					ImGui::Checkbox("Show Screen Space Shadow Mask", &state.shadow.screen_space.debug_show_mask);
-					if (state.shadow.screen_space.debug_show_mask) ImGui::Image(texture(frame_data.linear_sampler, get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0).view), image_size(get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0), 256.0f));
+					if (state.shadow.screen_space.debug_show_mask)
+						ImGui::Image(texture(frame_data.linear_sampler, get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0).view), image_size(get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0), 256.0f));
 				}
-			}
-			ImGui::Unindent(); ImGui::Separator(); ImGui::Indent();
-			if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
+			};
+			const auto draw_lighting_controls = [&]()
 			{
-				ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable); ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
-				ImGui::Separator(); ImGui::Indent();
-				if (ImGui::CollapsingHeader("Global Illumination", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
 				{
-					ImGui::Checkbox("GI", &state.gi.enable); ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
-					if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth)) { state.gi.layout_dirty = true; state.gi.is_updating = true; }
-					ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
-					ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
-					u64 specular_pixels = 0;
-					for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
+					ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable);
+					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
+					ImGui::Separator();
+					ImGui::Indent();
+					if (ImGui::CollapsingHeader("Global Illumination", ImGuiTreeNodeFlags_DefaultOpen))
 					{
-						const u64 dimension = (u64)gi_scene.lighting_capture.specular_atlas_total_size >> mip;
-						specular_pixels += dimension * dimension;
+						ImGui::Checkbox("GI", &state.gi.enable);
+						ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
+						if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
+						{
+							state.gi.layout_dirty = true;
+							state.gi.is_updating = true;
+						}
+						ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
+						ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
+						u64 specular_pixels = 0;
+						for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
+						{
+							const u64 dimension = (u64)gi_scene.lighting_capture.specular_atlas_total_size >> mip;
+							specular_pixels += dimension * dimension;
+						}
+						const u64 specular_bytes_per_pixel =
+							gi_scene.lighting_capture.specular_atlas.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 16;
+						ImGui::Text(
+							"Specular Atlas: %d x %d, tile %d, %d mips, %.1f MiB",
+							gi_scene.lighting_capture.specular_atlas_total_size,
+							gi_scene.lighting_capture.specular_atlas_total_size,
+							gi_scene.lighting_capture.desc.specular_entry_size,
+							gi_scene.lighting_capture.desc.specular_mip_count,
+							(f64)(specular_pixels * specular_bytes_per_pixel) / (1024.0 * 1024.0));
+						ImGui::Text("Bounds Min: %.2f %.2f %.2f", gi_scene.scene_bounds.min.X, gi_scene.scene_bounds.min.Y, gi_scene.scene_bounds.min.Z);
+						ImGui::Text("Bounds Max: %.2f %.2f %.2f", gi_scene.scene_bounds.max.X, gi_scene.scene_bounds.max.Y, gi_scene.scene_bounds.max.Z);
+						ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", gi_scene.min_occupied_cell_extent, gi_scene.max_occupied_cell_extent, gi_scene.max_radial_depth);
+						if (ImGui::Combo("Probe Radiance Mode", (i32*)&state.gi.probe_radiance_mode, "Octahedral\0SH9\0SG9\0"))
+							state.gi.is_updating = true;
+						if (ImGui::Combo("Probe Occlusion Mode", (i32*)&state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0"))
+							state.gi.is_updating = true;
+						if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes))
+							state.gi.is_updating = true;
+						ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
+						ImGui::Checkbox("Show Probes", &state.gi.show_probes);
+						if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable))
+						{
+							if (state.gi.probe_isolation_enable)
+							{
+								state.gi.show_probes = true;
+								InputSystem::set_mouse_locked(state, false);
+							}
+							else
+								state.gi.isolated_probe_index = -1;
+						}
+						if (state.gi.probe_isolation_enable)
+						{
+							state.gi.show_probes = true;
+							ImGui::SameLine();
+							if (ImGui::SmallButton("Clear"))
+								state.gi.isolated_probe_index = -1;
+							ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None");
+						}
+						ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
+						if (ImGui::Button("Update GI Probes") && !state.gi.is_updating)
+							state.gi.is_updating = true;
+						ImGui::SameLine();
+						ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance);
+						if (state.gi.is_updating)
+						{
+							ImGui::SameLine();
+							ImGui::Text("Updating...");
+						}
+						if (ImGui::Combo("Probe Vis Mode", (i32*)&state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0") && (state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance))
+							state.gi.is_updating = true;
+						if (state.gi.probe_vis_mode == EProbeVisMode::Specular)
+							ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
+						if (ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes))
+							state.gi.is_updating = true;
 					}
-					const u64 specular_bytes_per_pixel =
-						gi_scene.lighting_capture.specular_atlas.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 16;
-					ImGui::Text(
-						"Specular Atlas: %d x %d, tile %d, %d mips, %.1f MiB",
-						gi_scene.lighting_capture.specular_atlas_total_size,
-						gi_scene.lighting_capture.specular_atlas_total_size,
-						gi_scene.lighting_capture.desc.specular_entry_size,
-						gi_scene.lighting_capture.desc.specular_mip_count,
-						(f64)(specular_pixels * specular_bytes_per_pixel) / (1024.0 * 1024.0)
-					);
-					ImGui::Text("Bounds Min: %.2f %.2f %.2f", gi_scene.scene_bounds.min.X, gi_scene.scene_bounds.min.Y, gi_scene.scene_bounds.min.Z);
-					ImGui::Text("Bounds Max: %.2f %.2f %.2f", gi_scene.scene_bounds.max.X, gi_scene.scene_bounds.max.Y, gi_scene.scene_bounds.max.Z);
-					ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", gi_scene.min_occupied_cell_extent, gi_scene.max_occupied_cell_extent, gi_scene.max_radial_depth);
-					if (ImGui::Combo("Probe Radiance Mode", (i32*) &state.gi.probe_radiance_mode, "Octahedral\0SH9\0SG9\0")) state.gi.is_updating = true;
-					if (ImGui::Combo("Probe Occlusion Mode", (i32*) &state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0")) state.gi.is_updating = true;
-					if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes)) state.gi.is_updating = true;
-					ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
-					ImGui::Checkbox("Show Probes", &state.gi.show_probes);
-					if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable)) { if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; InputSystem::set_mouse_locked(state, false); } else state.gi.isolated_probe_index = -1; }
-					if (state.gi.probe_isolation_enable) { state.gi.show_probes = true; ImGui::SameLine(); if (ImGui::SmallButton("Clear")) state.gi.isolated_probe_index = -1; ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None"); }
-					ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
-					if (ImGui::Button("Update GI Probes") && !state.gi.is_updating) state.gi.is_updating = true;
-					ImGui::SameLine(); ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance); if (state.gi.is_updating) { ImGui::SameLine(); ImGui::Text("Updating..."); }
-					if (ImGui::Combo("Probe Vis Mode", (i32*) &state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0") && (state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance || state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance)) state.gi.is_updating = true;
-					if (state.gi.probe_vis_mode == EProbeVisMode::Specular) ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
-					if (ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes)) state.gi.is_updating = true;
+					ImGui::Unindent();
 				}
-				ImGui::Unindent();
-			}
+			};
+
+			// Keep the controls in the same order as their frame passes.
+			draw_tessellation_controls();
+			draw_shadow_map_controls();
+			draw_ssao_controls();
+			draw_screen_space_shadow_controls();
+			draw_lighting_controls();
+			draw_fog_controls();
+			draw_dof_controls();
+			draw_wireframe_controls();
+			draw_temporal_aa_controls();
+			draw_bloom_controls();
+			draw_tonemapping_controls();
+			draw_fxaa_controls();
 			ImGui::Unindent();
 		}
 
@@ -453,6 +593,27 @@ namespace ImGuiLayer
 			}
 			draw_texture(frame_data.linear_sampler, "Split-Sum BRDF LUT", gi_scene.lighting_capture.brdf_lut, 256.0f);
 			draw_texture(frame_data.linear_sampler, "Baked Sky", sky_pass.bake_render_pass.get_color_output(0), 256.0f);
+			if (state.bloom.enable && state.bloom.intensity > 0.0f)
+			{
+				GpuImage& bloom_pyramid = BloomPass::get_pyramid();
+				for (i32 mip = 0; mip < BloomPass::get_effective_mip_count(); ++mip)
+				{
+					char label[96];
+					snprintf(
+						label,
+						sizeof(label),
+						"Bloom Mip %d: %u x %u",
+						mip,
+						BloomPass::mip_extent(bloom_pyramid.extent.width, (u32)mip),
+						BloomPass::mip_extent(bloom_pyramid.extent.height, (u32)mip));
+					draw_texture(
+						frame_data.linear_sampler,
+						label,
+						bloom_pyramid,
+						256.0f,
+						BloomPass::mip_view(mip));
+				}
+			}
 		}
 		if (state.images.items.length() > 0 && ImGui::CollapsingHeader("Debug Image Viewer"))
 		{

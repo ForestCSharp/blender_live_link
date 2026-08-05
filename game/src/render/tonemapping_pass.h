@@ -15,8 +15,9 @@ struct TonemappingFinalPushConstants
 	i32 mode;
 	f32 exposure_bias;
 	HMM_Vec2 guide_pixel_size;
+	f32 bloom_intensity;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 16);
+static_assert(sizeof(TonemappingFinalPushConstants) == 20);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -156,7 +157,7 @@ inline VkPipelineLayout tonemapping_create_pipeline_layout(
 
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	tonemapping_create_sampled_layout(ctx, 3, &tonemapping_pass.final_set_layout);
+	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.final_set_layout);
 	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
 
@@ -409,6 +410,8 @@ inline void tonemapping_draw_local_stage(
 void tonemapping_pass_update(
 	VulkanContext* ctx,
 	VkImageView in_scene_color_view,
+	VkImageView in_bloom_view,
+	f32 in_bloom_intensity,
 	VkSampler in_sampler)
 {
 	tonemapping_pass.scene_color_view = in_scene_color_view;
@@ -417,18 +420,21 @@ void tonemapping_pass_update(
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
 	VkDescriptorSet& set = tonemapping_pass.final_sets.current(ctx);
-	VkDescriptorImageInfo infos[3] = {
+	VkDescriptorImageInfo infos[4] = {
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
+		descriptor_sampled(
+			in_sampler,
+			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
 	};
-	VkWriteDescriptorSet writes[3] = {};
-	for (u32 binding = 0; binding < 3; ++binding)
+	VkWriteDescriptorSet writes[4] = {};
+	for (u32 binding = 0; binding < 4; ++binding)
 	{
 		writes[binding] = descriptor_write_image(
 			set, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[binding]);
 	}
-	vulkan_update_descriptor_sets(ctx, 3, writes);
+	vulkan_update_descriptor_sets(ctx, 4, writes);
 }
 
 void tonemapping_pass_prepare_local(
@@ -667,7 +673,8 @@ void tonemapping_pass_prepare_local(
 
 void tonemapping_pass_draw(
 	VulkanContext* ctx,
-	const State::TonemappingState& in_state)
+	const State::TonemappingState& in_state,
+	f32 in_bloom_intensity)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 	const i32 reconstruction_mip = MAX(
@@ -682,6 +689,7 @@ void tonemapping_pass_draw(
 		.guide_pixel_size = HMM_V2(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
+		.bloom_intensity = CLAMP(in_bloom_intensity, 0.0f, 1.0f),
 	};
 
 	vkCmdBindPipeline(

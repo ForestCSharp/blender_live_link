@@ -74,6 +74,7 @@ using std::optional;
 #include "render/gi.h"
 #include "render/gi_debug_pass.h"
 #include "render/lighting_pass.h"
+#include "render/bloom_pass.h"
 #include "render/tonemapping_pass.h"
 #include "render/sky_pass.h"
 #include "render/copy_to_swapchain_pass.h"

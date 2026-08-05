@@ -98,6 +98,11 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   (the copy pass upsamples to the window)
 - `GAME2_TONEMAP_MODE=local|agx|aces|reinhard` — choose the exposure-fusion
   local default or one of the global tonemapping comparisons
+- `GAME2_BLOOM=0|1` — disable or enable the default HDR bloom pass
+- `GAME2_BLOOM_THRESHOLD=<0..10>` / `GAME2_BLOOM_SOFT_KNEE=<0..1>` — tune
+  the exposure-aware highlight selection
+- `GAME2_BLOOM_INTENSITY=<0..1>` / `GAME2_BLOOM_MIPS=<1..8>` — tune bloom
+  strength and the active half-resolution pyramid depth
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
   frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
@@ -167,7 +172,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   screen-space contact shadows (trace + edge-aware filter) → cook-torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
-  ping-pong history) → tonemapping (exposure-fusion local by default, with
+  ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
+  downsample pyramid + additive tent reconstruction) → tonemapping
+  (exposure-fusion local by default, with
   AgX/ACES/Reinhard global comparisons) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
   sun live in a per-frame UBO; per-object transforms in a triple-buffered
@@ -188,9 +195,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   skinned inputs, and shared render views across geometry/shadows/GI/wires.
 - Dear ImGui uses the official GLFW + Vulkan backends with Vulkan 1.3 dynamic
   rendering. Ctrl+I exposes live-import stats, CPU/GPU timings, render and
-  simulation controls, tonemapping selection and local exposure-fusion tuning,
+  simulation controls, tonemapping selection, local exposure-fusion and bloom tuning,
   GI/tessellation controls, probe picking, render-target viewers, and overlay
   status text. The `GAME2_*` toggles remain available for automated/headless
   verification.
 
-See [TODO.md](TODO.md) for the full catalog of known implementation work.
+See [TODO.md](../TODO.md) for the full catalog of known implementation work.

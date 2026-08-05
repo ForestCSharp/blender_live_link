@@ -21,6 +21,11 @@ namespace RuntimeConfig
 		std::optional<bool> taa;
 		std::optional<bool> fxaa;
 		std::optional<std::string> tonemap_mode;
+		std::optional<bool> bloom;
+		std::optional<double> bloom_threshold;
+		std::optional<double> bloom_soft_knee;
+		std::optional<double> bloom_intensity;
+		std::optional<long> bloom_mips;
 		std::optional<bool> tessellation;
 		std::optional<long> tessellation_mode;
 		std::optional<long> tessellation_factor;
@@ -96,6 +101,11 @@ namespace RuntimeConfig
 		config.taa = boolean_value("GAME2_TAA");
 		config.fxaa = boolean_value("GAME2_FXAA");
 		config.tonemap_mode = string_value("GAME2_TONEMAP_MODE");
+		config.bloom = boolean_value("GAME2_BLOOM");
+		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
+		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");
+		config.bloom_intensity = float_value("GAME2_BLOOM_INTENSITY");
+		config.bloom_mips = integer_value("GAME2_BLOOM_MIPS");
 		config.tessellation = boolean_value("GAME2_TESSELLATION");
 		config.tessellation_mode = integer_value("GAME2_TESSELLATION_MODE");
 		config.tessellation_factor = integer_value("GAME2_TESSELLATION_FACTOR");

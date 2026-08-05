@@ -36,6 +36,23 @@ namespace RuntimeStateOverrides
 			else if (*config.tonemap_mode == "reinhard") { in_state.tonemapping.mode = ETonemappingMode::Reinhard; }
 			else { in_state.tonemapping.mode = ETonemappingMode::ExposureFusionLocal; }
 		}
+		if (config.bloom) { in_state.bloom.enable = *config.bloom; }
+		if (config.bloom_threshold)
+		{
+			in_state.bloom.threshold = CLAMP((f32)*config.bloom_threshold, 0.0f, 10.0f);
+		}
+		if (config.bloom_soft_knee)
+		{
+			in_state.bloom.soft_knee = CLAMP((f32)*config.bloom_soft_knee, 0.0f, 1.0f);
+		}
+		if (config.bloom_intensity)
+		{
+			in_state.bloom.intensity = CLAMP((f32)*config.bloom_intensity, 0.0f, 1.0f);
+		}
+		if (config.bloom_mips)
+		{
+			in_state.bloom.requested_mip_count = CLAMP((i32)*config.bloom_mips, 1, 8);
+		}
 		if (config.tessellation) { in_state.tessellation.enabled = *config.tessellation; }
 		if (config.tessellation_mode)
 		{

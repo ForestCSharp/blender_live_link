@@ -3,6 +3,7 @@
 #include <limits>
 
 #include "input/input_system.h"
+#include "render/bloom_pass.h"
 #include "render/blur_pass.h"
 #include "render/copy_to_swapchain_pass.h"
 #include "render/dof_combine_pass.h"
@@ -89,6 +90,10 @@ namespace RenderSystem
 			}
 		}
 		tonemapping_pass_handle_resize(
+			&in_state.vk,
+			in_state.window.render_width,
+			in_state.window.render_height);
+		BloomPass::handle_resize(
 			&in_state.vk,
 			in_state.window.render_width,
 			in_state.window.render_height);
@@ -192,6 +197,7 @@ namespace RenderSystem
 			GpuSkinning::init(&in_state.vk);
 			Tessellation::init(&in_state.vk);
 			lighting_pass_init(&in_state.vk, frame_data.linear_sampler);
+			BloomPass::init(&in_state.vk, frame_data.linear_sampler);
 			tonemapping_pass_init(&in_state.vk);
 			sky_pass_init(&in_state.vk);
 			copy_to_swapchain_pass_init(&in_state.vk);
@@ -672,7 +678,16 @@ namespace RenderSystem
 			VkImageView pre_tonemap_scene_color_view = in_state.temporal_aa.enable
 				? get_temporal_aa_pass(temporal_aa_output_index).get_color_output(0).view
 				: post_wire_scene_color_view;
-			tonemapping_pass_update(&in_state.vk, pre_tonemap_scene_color_view, frame_data.linear_sampler);
+			const bool bloom_active = in_state.bloom.enable && in_state.bloom.intensity > 0.0f;
+			const f32 bloom_intensity = bloom_active
+				? CLAMP(in_state.bloom.intensity, 0.0f, 1.0f)
+				: 0.0f;
+			tonemapping_pass_update(
+				&in_state.vk,
+				pre_tonemap_scene_color_view,
+				BloomPass::mip_view(0),
+				bloom_intensity,
+				frame_data.linear_sampler);
 		
 			// FXAA reads the tonemapped LDR target; the copy pass presents whichever
 			// ran last
@@ -1014,6 +1029,18 @@ namespace RenderSystem
 				in_state.temporal_aa.history_valid = true;
 				in_state.temporal_aa.history_index = temporal_aa_previous_index;
 			}
+
+			// Bloom reconstructs an exposure-aware HDR pyramid after the temporal
+			// resolve. Local tonemapping still derives its guide from the original
+			// scene so the glow cannot suppress itself through local adaptation.
+			if (bloom_active)
+			{
+				BloomPass::execute(
+					&in_state.vk,
+					pre_tonemap_scene_color_view,
+					in_state.bloom,
+					in_state.tonemapping.exposure_bias);
+			}
 		
 			if (in_state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
 			{
@@ -1021,7 +1048,8 @@ namespace RenderSystem
 			}
 			tonemapping_render_pass.execute_sampled(&in_state.vk, [&](i32)
 			{
-				tonemapping_pass_draw(&in_state.vk, in_state.tonemapping);
+				tonemapping_pass_draw(
+					&in_state.vk, in_state.tonemapping, bloom_intensity);
 			});
 		
 			// FXAA filters the tonemapped LDR target; copy presents whichever ran last
@@ -1068,6 +1096,7 @@ namespace RenderSystem
 		copy_to_swapchain_pass_shutdown(&in_state.vk);
 		sky_pass_shutdown(&in_state.vk);
 		tonemapping_pass_shutdown(&in_state.vk);
+		BloomPass::shutdown(&in_state.vk);
 		Tessellation::shutdown(&in_state.vk);
 		GpuSkinning::shutdown(&in_state.vk);
 		FXAAPass::shutdown(&in_state.vk);
