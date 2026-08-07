@@ -31,11 +31,26 @@ namespace RuntimeStateOverrides
 		if (config.fxaa) { in_state.temporal_aa.enable_fxaa = *config.fxaa; }
 		if (config.tonemap_mode)
 		{
-			if (*config.tonemap_mode == "agx") { in_state.tonemapping.mode = ETonemappingMode::AgX; }
-			else if (*config.tonemap_mode == "aces") { in_state.tonemapping.mode = ETonemappingMode::AcesFitted; }
-			else if (*config.tonemap_mode == "reinhard") { in_state.tonemapping.mode = ETonemappingMode::Reinhard; }
-			else { in_state.tonemapping.mode = ETonemappingMode::ExposureFusionLocal; }
+			// Preserve the historical environment interface: named methods were
+			// global, while "local" selected the old GT7-backed local default.
+			in_state.tonemapping.local_enabled = false;
+			if (*config.tonemap_mode == "gt7") { in_state.tonemapping.method = ETonemappingMethod::GT7; }
+			else if (*config.tonemap_mode == "agx") { in_state.tonemapping.method = ETonemappingMethod::AgX; }
+			else if (*config.tonemap_mode == "aces") { in_state.tonemapping.method = ETonemappingMethod::AcesFitted; }
+			else if (*config.tonemap_mode == "neutral") { in_state.tonemapping.method = ETonemappingMethod::NeutralHDR; }
+			else
+			{
+				in_state.tonemapping.method = ETonemappingMethod::GT7;
+				in_state.tonemapping.local_enabled = true;
+			}
 		}
+		// The explicit independent control always wins over the legacy mode's
+		// implied global/local state.
+		if (config.local_tonemap)
+			in_state.tonemapping.local_enabled = *config.local_tonemap;
+		printf("Tonemapping: method %s, local %s\n",
+			ETonemappingMethodNames[(i32)in_state.tonemapping.method],
+			in_state.tonemapping.local_enabled ? "enabled" : "disabled");
 		if (config.bloom) { in_state.bloom.enable = *config.bloom; }
 		if (config.bloom_threshold)
 		{

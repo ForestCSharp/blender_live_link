@@ -17,6 +17,12 @@
 
 #define MAX_MATERIALS 1024
 
+// Shared numeric contract for the copy-to-swapchain push constant. Keep these
+// as preprocessor constants so the same definitions compile as C++ and GLSL.
+#define DISPLAY_OUTPUT_MODE_SDR 0
+#define DISPLAY_OUTPUT_MODE_EDR 1
+#define DISPLAY_OUTPUT_MODE_HDR10 2
+
 // Capped by MoltenVK's non-update-after-bind limits
 // (maxPerStageDescriptorSampledImages = 256, maxPerStageResources = 287).
 // Raising this beyond ~250 requires UPDATE_AFTER_BIND on the texture array

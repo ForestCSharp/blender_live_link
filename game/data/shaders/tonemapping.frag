@@ -6,13 +6,15 @@ layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2D local_guide;
 layout(set = 0, binding = 2) uniform sampler2D local_fused_lightness;
 layout(set = 0, binding = 3) uniform sampler2D bloom_color;
+layout(set = 0, binding = 4) uniform sampler2DArray gt7_lut;
 
 layout(push_constant) uniform PushConstants
 {
-	int mode;
+	int method;
+	int local_enabled;
 	float exposure_bias;
-	vec2 guide_pixel_size;
 	float bloom_intensity;
+	vec2 guide_pixel_size;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -31,7 +33,7 @@ void main()
 	}
 	vec3 tonemapped_color;
 
-	if (pc.mode == 0)
+	if (pc.local_enabled != 0)
 	{
 		// Guided upsampling transfers the reconstructed quarter-resolution
 		// lightness back to the full-resolution image.
@@ -63,26 +65,19 @@ void main()
 			(max(mean_x2 - mean_x * mean_x, 0.0) + 1e-5);
 		float intercept = mean_y - slope * mean_x;
 
-		float source_lightness = tonemap_perceptual_lightness(tonemap_agx(exposed_color));
+		float source_lightness = tonemap_perceptual_lightness(
+			tonemap_apply(pc.method, gt7_lut, exposed_color));
 		float target_lightness = max(slope * source_lightness + intercept, 0.0);
 		float local_multiplier = target_lightness / max(source_lightness, 1e-5);
 		const float low_light_threshold = 0.007;
 		float low_light_fade = clamp(source_lightness / low_light_threshold, 0.0, 1.0);
 		local_multiplier = mix(1.0, local_multiplier, low_light_fade * low_light_fade);
-		tonemapped_color = tonemap_agx(
+		tonemapped_color = tonemap_apply(pc.method, gt7_lut,
 			exposed_color * max(local_multiplier, 0.0) + exposed_bloom);
-	}
-	else if (pc.mode == 1)
-	{
-		tonemapped_color = tonemap_agx(exposed_color + exposed_bloom);
-	}
-	else if (pc.mode == 2)
-	{
-		tonemapped_color = tonemap_aces_fitted(exposed_color + exposed_bloom);
 	}
 	else
 	{
-		tonemapped_color = tonemap_reinhard(exposed_color + exposed_bloom);
+		tonemapped_color = tonemap_apply(pc.method, gt7_lut, exposed_color + exposed_bloom);
 	}
 
 	frag_color = vec4(tonemapped_color, 1.0);

@@ -144,6 +144,21 @@ namespace ImGuiLayer
 		{
 			ImGui::Text("Window Resolution: %d x %d", state.window.width, state.window.height);
 			ImGui::Text("Render Resolution: %d x %d", state.window.render_width, state.window.render_height);
+			ImGui::Text("Display Output: requested %s, active %s",
+				vulkan_output_mode_name(state.vk.requested_output_mode),
+				vulkan_output_mode_name(state.vk.active_output_mode));
+			ImGui::Text("Surface: %s + %s",
+				vulkan_format_name(state.vk.surface_format.format),
+				vulkan_color_space_name(state.vk.surface_format.colorSpace));
+			ImGui::Text("HDR Metadata: %s", state.vk.hdr_metadata_enabled ? "enabled" : "unavailable");
+			if (state.vk.output_fallback_reason[0])
+			{
+				ImGui::TextWrapped("Output fallback: %s", state.vk.output_fallback_reason);
+			}
+			if (state.vk.active_output_mode != EDisplayOutputMode::SDR)
+			{
+				ImGui::TextDisabled("Experimental display-boundary chart is active");
+			}
 			ImGui::SetNextItemWidth(220.0f);
 			if (ImGui::SliderInt("Resolution Percentage", &state.window.resolution_percentage,
 				MIN_RENDER_RESOLUTION_PERCENTAGE, MAX_RENDER_RESOLUTION_PERCENTAGE, "%d%%"))
@@ -250,12 +265,13 @@ namespace ImGuiLayer
 				if (ImGui::CollapsingHeader("Tonemapping", ImGuiTreeNodeFlags_DefaultOpen))
 				{
 					ImGui::Combo(
-						"Mode##Tonemapping",
-						(i32*)&state.tonemapping.mode,
-						ETonemappingModeNames,
-						(i32)ETonemappingMode::MAX);
+						"Method##Tonemapping",
+						(i32*)&state.tonemapping.method,
+						ETonemappingMethodNames,
+						(i32)ETonemappingMethod::MAX);
+					ImGui::Checkbox("Local Tonemapping", &state.tonemapping.local_enabled);
 					ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
-					if (state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+					if (state.tonemapping.local_enabled)
 					{
 						ImGui::Indent();
 						ImGui::SliderFloat(

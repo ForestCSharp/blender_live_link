@@ -71,12 +71,12 @@ enum class ETessellationMode : i32
 	MAX,
 };
 
-enum class ETonemappingMode : i32
+enum class ETonemappingMethod : i32
 {
-	ExposureFusionLocal = 0,
+	GT7 = 0,
 	AgX = 1,
 	AcesFitted = 2,
-	Reinhard = 3,
+	NeutralHDR = 3,
 	MAX,
 };
 
@@ -86,11 +86,11 @@ inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
 	"Adaptive Angular (Per Triangle)",
 };
 
-inline const char* ETonemappingModeNames[(i32) ETonemappingMode::MAX] = {
-	"Exposure Fusion (Local)",
+inline const char* ETonemappingMethodNames[(i32) ETonemappingMethod::MAX] = {
+	"GT7",
 	"AgX",
 	"ACES Fitted",
-	"Reinhard (Legacy)",
+	"Neutral HDR",
 };
 
 enum class ERenderPass : i32
@@ -332,11 +332,12 @@ struct State
 	struct TonemappingState
 	{
 		f32 exposure_bias = 0.0f;	// Default scene exposure bias.
-		ETonemappingMode mode = ETonemappingMode::ExposureFusionLocal;
+		ETonemappingMethod method = ETonemappingMethod::GT7;
+		bool local_enabled = true;
 		f32 local_shadow_recovery = 1.5f;
 		f32 local_highlight_recovery = 2.0f;
 		f32 local_exposure_preference_sigma = 5.0f;
-		i32 local_coarsest_mip = 6;
+		i32 local_coarsest_mip = 9;
 		i32 local_reconstruction_mip = 2;
 		bool local_contrast_boost = false;
 	} tonemapping;

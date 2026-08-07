@@ -4,5 +4,3 @@
 2. **Hybrid screen-space reflections with parallax-corrected probe fallback**  
    Use screen-space reflections for visible nearby geometry and box-projected GI probes when rays leave the screen or miss. Roughness-aware tracing and temporal accumulation would produce more convincing reflective floors, walls, and metallic objects.
 
-3. [x] **HDR bloom for emissive materials and intense highlights**  
-   Add a soft-knee bright pass followed by a multi-resolution downsample/upsample blur, composited before tonemapping. This would give lights, screens, energy effects, and bright sun highlights a natural glow.

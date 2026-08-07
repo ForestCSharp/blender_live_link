@@ -5,6 +5,7 @@
 #include "render/render_types.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/frame_data.h"
+#include "render/gt7_tonemapping.h"
 
 // Global operators remain one fullscreen draw. Exposure Fusion Local adds a
 // half-resolution proxy pyramid, reconstructs down to quarter resolution, and
@@ -12,12 +13,13 @@
 
 struct TonemappingFinalPushConstants
 {
-	i32 mode;
+	i32 method;
+	i32 local_enabled;
 	f32 exposure_bias;
-	HMM_Vec2 guide_pixel_size;
 	f32 bloom_intensity;
+	HMM_Vec2 guide_pixel_size;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 20);
+static_assert(sizeof(TonemappingFinalPushConstants) == 24);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -26,8 +28,9 @@ struct TonemappingLocalProxyPushConstants
 	f32 shadow_recovery;
 	f32 highlight_recovery;
 	f32 preference_sigma;
+	i32 method;
 };
-static_assert(sizeof(TonemappingLocalProxyPushConstants) == 24);
+static_assert(sizeof(TonemappingLocalProxyPushConstants) == 28);
 
 struct TonemappingLocalDownsamplePushConstants
 {
@@ -58,6 +61,7 @@ struct TonemappingPass
 	GpuImage local_exposure_pyramid;
 	GpuImage local_weight_pyramid;
 	GpuImage local_reconstruction_pyramid;
+	GpuImage gt7_lut;
 	u32 local_base_width = 0;
 	u32 local_base_height = 0;
 	u32 local_mip_count = 0;
@@ -114,8 +118,8 @@ inline void tonemapping_create_sampled_layout(
 	u32 in_binding_count,
 	VkDescriptorSetLayout* out_layout)
 {
-	VkDescriptorSetLayoutBinding bindings[4] = {};
-	assert(in_binding_count <= 4);
+	VkDescriptorSetLayoutBinding bindings[5] = {};
+	assert(in_binding_count <= 5);
 	for (u32 binding_idx = 0; binding_idx < in_binding_count; ++binding_idx)
 	{
 		bindings[binding_idx] = {
@@ -157,9 +161,20 @@ inline VkPipelineLayout tonemapping_create_pipeline_layout(
 
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.final_set_layout);
+	tonemapping_create_sampled_layout(ctx, 5, &tonemapping_pass.final_set_layout);
 	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
+
+	DynamicArray<u16> gt7_lut_pixels = GT7Tonemapping::generate_sdr_lut();
+	tonemapping_pass.gt7_lut = gpu_image_create_from_data(
+		ctx,
+		GT7Tonemapping::LUT_RESOLUTION,
+		GT7Tonemapping::LUT_RESOLUTION,
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		gt7_lut_pixels.data(),
+		gt7_lut_pixels.length() * sizeof(u16),
+		GT7Tonemapping::LUT_RESOLUTION,
+		"GT7 SDR Tone Mapping LUT");
 
 	tonemapping_pass.final_pipeline_layout = tonemapping_create_pipeline_layout(
 		ctx, tonemapping_pass.final_set_layout, sizeof(TonemappingFinalPushConstants));
@@ -420,21 +435,22 @@ void tonemapping_pass_update(
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
 	VkDescriptorSet& set = tonemapping_pass.final_sets.current(ctx);
-	VkDescriptorImageInfo infos[4] = {
+	VkDescriptorImageInfo infos[5] = {
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(
 			in_sampler,
 			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
+		descriptor_sampled(in_sampler, tonemapping_pass.gt7_lut.view),
 	};
-	VkWriteDescriptorSet writes[4] = {};
-	for (u32 binding = 0; binding < 4; ++binding)
+	VkWriteDescriptorSet writes[5] = {};
+	for (u32 binding = 0; binding < 5; ++binding)
 	{
 		writes[binding] = descriptor_write_image(
 			set, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[binding]);
 	}
-	vulkan_update_descriptor_sets(ctx, 4, writes);
+	vulkan_update_descriptor_sets(ctx, 5, writes);
 }
 
 void tonemapping_pass_prepare_local(
@@ -468,8 +484,11 @@ void tonemapping_pass_prepare_local(
 			gpu_timestamps_begin_scope(ctx, "Tonemapping Local Proxy");
 		vulkan_begin_debug_label(ctx, "Tonemapping Local Proxy");
 
-		VkImageView views[] = {tonemapping_pass.scene_color_view};
-		VkDescriptorSet set = tonemapping_local_descriptor_set(ctx, views, 1);
+		VkImageView views[] = {
+			tonemapping_pass.scene_color_view,
+			tonemapping_pass.gt7_lut.view,
+		};
+		VkDescriptorSet set = tonemapping_local_descriptor_set(ctx, views, 2);
 		GpuImage* outputs[] = {
 			&tonemapping_pass.local_exposure_pyramid,
 			&tonemapping_pass.local_weight_pyramid,
@@ -483,6 +502,7 @@ void tonemapping_pass_prepare_local(
 			.shadow_recovery = in_state.local_shadow_recovery,
 			.highlight_recovery = in_state.local_highlight_recovery,
 			.preference_sigma = in_state.local_exposure_preference_sigma,
+			.method = (i32)in_state.method,
 		};
 		tonemapping_draw_local_stage(
 			ctx,
@@ -684,12 +704,13 @@ void tonemapping_pass_draw(
 	const u32 guide_height = tonemapping_local_mip_extent(
 		tonemapping_pass.local_base_height, (u32)reconstruction_mip);
 	TonemappingFinalPushConstants constants = {
-		.mode = (i32)in_state.mode,
+		.method = (i32)in_state.method,
+		.local_enabled = in_state.local_enabled ? 1 : 0,
 		.exposure_bias = in_state.exposure_bias,
+		.bloom_intensity = CLAMP(in_bloom_intensity, 0.0f, 1.0f),
 		.guide_pixel_size = HMM_V2(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
-		.bloom_intensity = CLAMP(in_bloom_intensity, 0.0f, 1.0f),
 	};
 
 	vkCmdBindPipeline(
@@ -712,6 +733,7 @@ void tonemapping_pass_draw(
 
 void tonemapping_pass_shutdown(VulkanContext* ctx)
 {
+	gpu_image_destroy(ctx->allocator, ctx->device, tonemapping_pass.gt7_lut);
 	gpu_image_destroy(
 		ctx->allocator, ctx->device, tonemapping_pass.local_exposure_pyramid);
 	gpu_image_destroy(

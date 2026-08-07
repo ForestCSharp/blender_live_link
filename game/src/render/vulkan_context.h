@@ -16,6 +16,7 @@
 #include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "core/runtime_config.h"
+#include "shader_common.h"
 
 #define VK_CHECK(f)                                                                 \
 {                                                                                   \
@@ -149,6 +150,16 @@ struct QueueSelection
 	bool shared_family() const { return complete() && graphics_family == present_family; }
 };
 
+enum class EDisplayOutputMode : i32
+{
+	SDR = DISPLAY_OUTPUT_MODE_SDR,
+	EDR = DISPLAY_OUTPUT_MODE_EDR,
+	HDR10 = DISPLAY_OUTPUT_MODE_HDR10,
+};
+static_assert((i32)EDisplayOutputMode::SDR == DISPLAY_OUTPUT_MODE_SDR);
+static_assert((i32)EDisplayOutputMode::EDR == DISPLAY_OUTPUT_MODE_EDR);
+static_assert((i32)EDisplayOutputMode::HDR10 == DISPLAY_OUTPUT_MODE_HDR10);
+
 struct VulkanCapabilities
 {
 	VkPhysicalDeviceProperties properties = {};
@@ -161,9 +172,12 @@ struct VulkanCapabilities
 	QueueSelection queues;
 	bool swapchain_extension = false;
 	bool portability_subset_extension = false;
+	bool hdr_metadata_extension = false;
 	bool compatible = false;
 	i32 score = -1;
 	VkSurfaceFormatKHR surface_format = {};
+	EDisplayOutputMode output_mode = EDisplayOutputMode::SDR;
+	char output_fallback_reason[256] = {};
 	VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
 	VkFormat scene_color_format = VK_FORMAT_UNDEFINED;
 	VkFormat scene_depth_format = VK_FORMAT_UNDEFINED;
@@ -203,7 +217,12 @@ struct VulkanContext
 	u64 shader_build_hash = 0;
 	bool debug_utils_enabled = false;
 	bool portability_enumeration_enabled = false;
+	bool swapchain_colorspace_enabled = false;
+	bool hdr_metadata_enabled = false;
 	bool screenshot_supported = false;
+	EDisplayOutputMode requested_output_mode = EDisplayOutputMode::SDR;
+	EDisplayOutputMode active_output_mode = EDisplayOutputMode::SDR;
+	char output_fallback_reason[256] = {};
 
 	VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 	VkExtent2D swapchain_extent = {};
@@ -681,6 +700,76 @@ const char* vulkan_present_mode_name(VkPresentModeKHR in_mode)
 	}
 }
 
+const char* vulkan_output_mode_name(EDisplayOutputMode in_mode)
+{
+	switch (in_mode)
+	{
+		case EDisplayOutputMode::EDR: return "edr";
+		case EDisplayOutputMode::HDR10: return "hdr10";
+		case EDisplayOutputMode::SDR:
+		default: return "sdr";
+	}
+}
+
+EDisplayOutputMode vulkan_requested_output_mode()
+{
+	const std::optional<std::string>& configured = RuntimeConfig::get().output_mode;
+	if (!configured || *configured == "sdr" || *configured == "auto")
+		return EDisplayOutputMode::SDR;
+	if (*configured == "edr") return EDisplayOutputMode::EDR;
+	if (*configured == "hdr10") return EDisplayOutputMode::HDR10;
+	printf("Unknown GAME2_OUTPUT_MODE '%s'; using sdr\n", configured->c_str());
+	return EDisplayOutputMode::SDR;
+}
+
+const char* vulkan_format_name(VkFormat in_format)
+{
+	switch (in_format)
+	{
+		case VK_FORMAT_R16G16B16A16_SFLOAT: return "R16G16B16A16_SFLOAT";
+		case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "A2B10G10R10_UNORM";
+		case VK_FORMAT_A2R10G10B10_UNORM_PACK32: return "A2R10G10B10_UNORM";
+		case VK_FORMAT_B8G8R8A8_SRGB: return "B8G8R8A8_SRGB";
+		case VK_FORMAT_R8G8B8A8_SRGB: return "R8G8B8A8_SRGB";
+		case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+		case VK_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+		default: return "other";
+	}
+}
+
+const char* vulkan_color_space_name(VkColorSpaceKHR in_color_space)
+{
+	switch (in_color_space)
+	{
+		case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return "SRGB_NONLINEAR";
+		case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: return "EXTENDED_SRGB_LINEAR";
+		case VK_COLOR_SPACE_HDR10_ST2084_EXT: return "HDR10_ST2084";
+		default: return "other";
+	}
+}
+
+bool vulkan_find_surface_format(
+	const DynamicArray<VkSurfaceFormatKHR>& in_formats,
+	const VkFormat* in_preferred_formats,
+	u32 in_preferred_format_count,
+	VkColorSpaceKHR in_color_space,
+	VkSurfaceFormatKHR* out_format)
+{
+	for (u32 preferred_index = 0; preferred_index < in_preferred_format_count; ++preferred_index)
+	{
+		for (const VkSurfaceFormatKHR& available : in_formats)
+		{
+			if (available.format == in_preferred_formats[preferred_index]
+				&& available.colorSpace == in_color_space)
+			{
+				*out_format = available;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 bool vulkan_format_is_bgra8(VkFormat in_format)
 {
 	return in_format == VK_FORMAT_B8G8R8A8_SRGB || in_format == VK_FORMAT_B8G8R8A8_UNORM;
@@ -760,6 +849,7 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	vkEnumerateDeviceExtensionProperties(in_device, nullptr, &extension_count, extensions.data());
 	result.swapchain_extension = vulkan_has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 	result.portability_subset_extension = vulkan_has_extension(extensions, "VK_KHR_portability_subset");
+	result.hdr_metadata_extension = vulkan_has_extension(extensions, VK_EXT_HDR_METADATA_EXTENSION_NAME);
 
 	u32 queue_count = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(in_device, &queue_count, nullptr);
@@ -788,7 +878,45 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	surface_formats.resize(format_count);
 	if (format_count > 0)
 		vkGetPhysicalDeviceSurfaceFormatsKHR(in_device, in_surface, &format_count, surface_formats.data());
-	if (surface_formats.length() == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
+	const EDisplayOutputMode requested_output_mode = vulkan_requested_output_mode();
+	result.output_mode = EDisplayOutputMode::SDR;
+	if (requested_output_mode == EDisplayOutputMode::EDR)
+	{
+		const VkFormat edr_formats[] = { VK_FORMAT_R16G16B16A16_SFLOAT };
+		if (vulkan_find_surface_format(
+				surface_formats, edr_formats, 1,
+				VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &result.surface_format))
+		{
+			result.output_mode = EDisplayOutputMode::EDR;
+		}
+		else
+		{
+			snprintf(result.output_fallback_reason, sizeof(result.output_fallback_reason),
+				"R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR was not advertised");
+		}
+	}
+	else if (requested_output_mode == EDisplayOutputMode::HDR10)
+	{
+		const VkFormat hdr10_formats[] = {
+			VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+			VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
+		};
+		if (vulkan_find_surface_format(
+				surface_formats, hdr10_formats, 3,
+				VK_COLOR_SPACE_HDR10_ST2084_EXT, &result.surface_format))
+		{
+			result.output_mode = EDisplayOutputMode::HDR10;
+		}
+		else
+		{
+			snprintf(result.output_fallback_reason, sizeof(result.output_fallback_reason),
+				"no supported HDR10_ST2084 surface pair was advertised");
+		}
+	}
+
+	if (result.output_mode == EDisplayOutputMode::SDR
+		&& surface_formats.length() == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
 	{
 		result.surface_format = {
 			.format = VK_FORMAT_B8G8R8A8_SRGB,
@@ -799,20 +927,37 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 		VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
 		VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
 	};
-	for (VkFormat preferred_format : surface_format_preferences)
+	if (result.output_mode == EDisplayOutputMode::SDR
+		&& result.surface_format.format == VK_FORMAT_UNDEFINED)
 	{
+		for (VkFormat preferred_format : surface_format_preferences)
+		{
+			for (const VkSurfaceFormatKHR& format : surface_formats)
+			{
+				if (format.format == preferred_format && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+				{
+					result.surface_format = format;
+					break;
+				}
+			}
+			if (result.surface_format.format != VK_FORMAT_UNDEFINED) break;
+		}
+	}
+	if (result.output_mode == EDisplayOutputMode::SDR
+		&& result.surface_format.format == VK_FORMAT_UNDEFINED)
+	{
+		// A fallback is only SDR when the surface explicitly advertises the SDR
+		// nonlinear color space. Never feed SDR values into an arbitrary HDR pair.
 		for (const VkSurfaceFormatKHR& format : surface_formats)
 		{
-			if (format.format == preferred_format && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			if (format.format != VK_FORMAT_UNDEFINED
+				&& format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
 			{
 				result.surface_format = format;
 				break;
 			}
 		}
-		if (result.surface_format.format != VK_FORMAT_UNDEFINED) break;
 	}
-	if (result.surface_format.format == VK_FORMAT_UNDEFINED && !surface_formats.empty() && surface_formats[0].format != VK_FORMAT_UNDEFINED)
-		result.surface_format = surface_formats[0];
 
 	u32 present_mode_count = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(in_device, in_surface, &present_mode_count, nullptr);
@@ -869,6 +1014,9 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	if (!vulkan_format_supports(in_device, VK_FORMAT_R32G32B32A32_SFLOAT,
 		VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA32F SSAO noise texture unsupported");
+	if (!vulkan_format_supports(in_device, VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
+		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA16F GT7 LUT unsupported");
 
 	result.compatible = result.rejection_reason[0] == '\0';
 	if (result.compatible)
@@ -877,6 +1025,9 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 			: result.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1000 : 100;
 		result.score += (i32)MIN(result.properties.limits.maxImageDimension2D / 1024, 100u);
 		if (result.queues.shared_family()) result.score += 50;
+		if (requested_output_mode != EDisplayOutputMode::SDR
+			&& result.output_mode == requested_output_mode)
+			result.score += 5000;
 	}
 	result.features_1_3.pNext = nullptr;
 	result.features_1_2.pNext = nullptr;
@@ -1067,6 +1218,24 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 	};
 
 	VK_CHECK(vkCreateSwapchainKHR(ctx->device, &swapchain_create_info, nullptr, &ctx->swapchain));
+	if (ctx->active_output_mode == EDisplayOutputMode::HDR10 && ctx->hdr_metadata_enabled)
+	{
+		// BT.2020 primaries, D65 white, and the same 1000-nit boundary used by
+		// the deterministic HDR10 validation chart. This describes the signal;
+		// it does not claim that the connected display is physically calibrated.
+		const VkHdrMetadataEXT hdr_metadata = {
+			.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+			.displayPrimaryRed = { 0.708f, 0.292f },
+			.displayPrimaryGreen = { 0.170f, 0.797f },
+			.displayPrimaryBlue = { 0.131f, 0.046f },
+			.whitePoint = { 0.3127f, 0.3290f },
+			.maxLuminance = 1000.0f,
+			.minLuminance = 0.0001f,
+			.maxContentLightLevel = 1000.0f,
+			.maxFrameAverageLightLevel = 400.0f,
+		};
+		vkSetHdrMetadataEXT(ctx->device, 1, &ctx->swapchain, &hdr_metadata);
+	}
 	printf("Swapchain: %ux%u, %u requested images, %s, screenshots %s\n",
 		extent.width, extent.height, desired_image_count, vulkan_present_mode_name(ctx->present_mode),
 		ctx->screenshot_supported ? "enabled" : "unsupported by surface");
@@ -1229,7 +1398,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		}
 
 		DynamicArray<const char*> instance_extensions;
-		instance_extensions.reserve(glfw_extension_count + 2);
+		instance_extensions.reserve(glfw_extension_count + 3);
 		for (u32 extension_index = 0; extension_index < glfw_extension_count; ++extension_index)
 		{
 			instance_extensions.add(glfw_extensions[extension_index]);
@@ -1248,6 +1417,10 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			instance_extensions.add(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 			instance_create_flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 		}
+		ctx->swapchain_colorspace_enabled = vulkan_has_extension(
+			available_extensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+		if (ctx->swapchain_colorspace_enabled)
+			instance_extensions.add(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
 		ctx->debug_utils_enabled = vulkan_has_extension(available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 		g_vulkan_debug_utils_enabled = ctx->debug_utils_enabled;
 		if (ctx->debug_utils_enabled) instance_extensions.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -1318,6 +1491,10 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		}
 		ctx->physical_device_properties = ctx->capabilities.properties;
 		ctx->surface_format = ctx->capabilities.surface_format;
+		ctx->requested_output_mode = vulkan_requested_output_mode();
+		ctx->active_output_mode = ctx->capabilities.output_mode;
+		snprintf(ctx->output_fallback_reason, sizeof(ctx->output_fallback_reason), "%s",
+			ctx->capabilities.output_fallback_reason);
 		ctx->present_mode = ctx->capabilities.present_mode;
 		ctx->graphics_queue_family_index = ctx->capabilities.queues.graphics_family;
 		ctx->present_queue_family_index = ctx->capabilities.queues.present_family;
@@ -1330,6 +1507,28 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		printf("GPU: %s | graphics queue %u | present queue %u | present mode %s\n",
 			ctx->physical_device_properties.deviceName, ctx->graphics_queue_family_index,
 			ctx->present_queue_family_index, vulkan_present_mode_name(ctx->present_mode));
+		u32 surface_format_count = 0;
+		VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+			ctx->physical_device, ctx->surface, &surface_format_count, nullptr));
+		DynamicArray<VkSurfaceFormatKHR> advertised_surface_formats;
+		advertised_surface_formats.resize(surface_format_count);
+		if (surface_format_count > 0)
+			VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+				ctx->physical_device, ctx->surface, &surface_format_count, advertised_surface_formats.data()));
+		printf("Advertised surface format/color-space pairs (%u):\n", surface_format_count);
+		for (const VkSurfaceFormatKHR& advertised : advertised_surface_formats)
+		{
+			printf("  %s (%i) + %s (%i)\n",
+				vulkan_format_name(advertised.format), (i32)advertised.format,
+				vulkan_color_space_name(advertised.colorSpace), (i32)advertised.colorSpace);
+		}
+		printf("Display output: requested %s, active %s, selected %s (%i) + %s (%i)\n",
+			vulkan_output_mode_name(ctx->requested_output_mode),
+			vulkan_output_mode_name(ctx->active_output_mode),
+			vulkan_format_name(ctx->surface_format.format), (i32)ctx->surface_format.format,
+			vulkan_color_space_name(ctx->surface_format.colorSpace), (i32)ctx->surface_format.colorSpace);
+		if (ctx->output_fallback_reason[0])
+			printf("Display output fallback: %s\n", ctx->output_fallback_reason);
 	}
 
 	// Logical device + queue
@@ -1357,6 +1556,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		device_extensions.add(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 		if (ctx->capabilities.portability_subset_extension)
 			device_extensions.add("VK_KHR_portability_subset");
+		if (ctx->capabilities.hdr_metadata_extension)
+			device_extensions.add(VK_EXT_HDR_METADATA_EXTENSION_NAME);
 
 		VkPhysicalDeviceVulkan12Features enabled_features_1_2 = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -1384,6 +1585,8 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 
 		VK_CHECK(vkCreateDevice(ctx->physical_device, &device_create_info, nullptr, &ctx->device));
 		volkLoadDevice(ctx->device);
+		ctx->hdr_metadata_enabled = ctx->capabilities.hdr_metadata_extension && vkSetHdrMetadataEXT != nullptr;
+		printf("HDR metadata: %s\n", ctx->hdr_metadata_enabled ? "VK_EXT_hdr_metadata enabled" : "unavailable");
 		vkGetDeviceQueue(ctx->device, ctx->graphics_queue_family_index, 0, &ctx->graphics_queue);
 		vkGetDeviceQueue(ctx->device, ctx->present_queue_family_index, 0, &ctx->present_queue);
 		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_QUEUE, (u64)ctx->graphics_queue, "Graphics Queue");
@@ -1854,7 +2057,9 @@ GpuImage gpu_image_create_from_data(
 	u32 in_height,
 	VkFormat in_format,
 	const void* in_pixels,
-	u64 in_byte_count
+	u64 in_byte_count,
+	u32 in_array_layers = 1,
+	const char* in_label = "Uploaded Scene Image"
 )
 {
 	GpuImage image = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
@@ -1863,7 +2068,8 @@ GpuImage gpu_image_create_from_data(
 		.format = in_format,
 		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-		.label = "Uploaded Scene Image",
+		.array_layers = MAX(in_array_layers, 1u),
+		.label = in_label,
 	});
 
 	auto record_copy = [&](VkCommandBuffer in_command_buffer, VkBuffer in_staging_buffer, u64 in_staging_offset)
@@ -1876,7 +2082,7 @@ GpuImage gpu_image_create_from_data(
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 				.mipLevel = 0,
 				.baseArrayLayer = 0,
-				.layerCount = 1,
+				.layerCount = MAX(in_array_layers, 1u),
 			},
 			.imageOffset = { 0, 0, 0 },
 			.imageExtent = { in_width, in_height, 1 },

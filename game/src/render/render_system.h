@@ -1042,7 +1042,7 @@ namespace RenderSystem
 					in_state.tonemapping.exposure_bias);
 			}
 		
-			if (in_state.tonemapping.mode == ETonemappingMode::ExposureFusionLocal)
+			if (in_state.tonemapping.local_enabled)
 			{
 				tonemapping_pass_prepare_local(&in_state.vk, in_state.tonemapping);
 			}

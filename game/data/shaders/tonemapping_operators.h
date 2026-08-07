@@ -3,10 +3,58 @@
 
 const vec3 TONEMAP_LUMINANCE_WEIGHTS = vec3(0.2126, 0.7152, 0.0722);
 
-vec3 tonemap_reinhard(vec3 color)
+const int TONEMAP_METHOD_GT7 = 0;
+const int TONEMAP_METHOD_AGX = 1;
+const int TONEMAP_METHOD_ACES_FITTED = 2;
+const int TONEMAP_METHOD_NEUTRAL_HDR = 3;
+
+const float GT7_LUT_RESOLUTION = 64.0;
+const float GT7_LUT_INPUT_MAX = 64.0;
+// The renderer's scene units are not photometrically calibrated. This fixed
+// integration exposure matches 18% gray to the previous AgX-backed default.
+const float GT7_INTEGRATION_SCALE = 2.978276;
+
+vec3 tonemap_gt7(sampler2DArray gt7_lut, vec3 color)
+{
+	vec3 calibrated = clamp(max(color, vec3(0.0)) * GT7_INTEGRATION_SCALE,
+		vec3(0.0), vec3(GT7_LUT_INPUT_MAX));
+	vec3 shaped = pow(calibrated / GT7_LUT_INPUT_MAX, vec3(0.25));
+	vec3 lut_position = shaped * (GT7_LUT_RESOLUTION - 1.0);
+	vec2 lut_uv = (lut_position.xy + vec2(0.5)) / GT7_LUT_RESOLUTION;
+	float low_layer = floor(lut_position.z);
+	float high_layer = min(low_layer + 1.0, GT7_LUT_RESOLUTION - 1.0);
+	vec3 low = texture(gt7_lut, vec3(lut_uv, low_layer)).rgb;
+	vec3 high = texture(gt7_lut, vec3(lut_uv, high_layer)).rgb;
+	return clamp(mix(low, high, lut_position.z - low_layer), 0.0, 1.0);
+}
+
+vec3 tonemap_neutral_hdr(vec3 color)
 {
 	color = max(color, vec3(0.0));
-	return color / (color + vec3(1.0));
+	float input_peak = max(color.r, max(color.g, color.b));
+	if (input_peak <= 1e-8)
+		return vec3(0.0);
+	// Normalizing first avoids overflow while evaluating luminance for extreme
+	// but still finite scene values.
+	float luminance = input_peak
+		* dot(color / input_peak, TONEMAP_LUMINANCE_WEIGHTS);
+	if (luminance <= 1e-8)
+		return vec3(0.0);
+
+	// Calibrated so neutral 18% gray maps to the GT7/AgX integration target
+	// of approximately 0.214519. Applying one multiplier to all channels keeps
+	// the input RGB ratios intact through the luminance shoulder.
+	const float exposure_scale = 1.5172523;
+	float exposed_luminance = luminance * exposure_scale;
+	float mapped_luminance = 1.0 - 1.0 / (1.0 + exposed_luminance);
+	vec3 mapped = color * (mapped_luminance / luminance);
+
+	// A common peak normalization keeps saturated HDR colors bounded without
+	// introducing per-channel clipping or hue shifts.
+	float peak = max(mapped.r, max(mapped.g, mapped.b));
+	if (peak > 1.0)
+		mapped /= peak;
+	return clamp(mapped, 0.0, 1.0);
 }
 
 vec3 tonemap_aces_fitted(vec3 color)
@@ -66,6 +114,17 @@ vec3 tonemap_agx(vec3 color)
 	value = outset * value;
 	value = pow(max(value, vec3(0.0)), vec3(2.2));
 	return clamp(rec2020_to_srgb * value, 0.0, 1.0);
+}
+
+vec3 tonemap_apply(int method, sampler2DArray gt7_lut, vec3 color)
+{
+	if (method == TONEMAP_METHOD_AGX)
+		return tonemap_agx(color);
+	if (method == TONEMAP_METHOD_ACES_FITTED)
+		return tonemap_aces_fitted(color);
+	if (method == TONEMAP_METHOD_NEUTRAL_HDR)
+		return tonemap_neutral_hdr(color);
+	return tonemap_gt7(gt7_lut, color);
 }
 
 float tonemap_perceptual_lightness(vec3 tonemapped_color)

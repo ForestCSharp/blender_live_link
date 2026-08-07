@@ -21,6 +21,8 @@ namespace RuntimeConfig
 		std::optional<bool> taa;
 		std::optional<bool> fxaa;
 		std::optional<std::string> tonemap_mode;
+		std::optional<bool> local_tonemap;
+		std::optional<std::string> output_mode;
 		std::optional<bool> bloom;
 		std::optional<double> bloom_threshold;
 		std::optional<double> bloom_soft_knee;
@@ -101,6 +103,8 @@ namespace RuntimeConfig
 		config.taa = boolean_value("GAME2_TAA");
 		config.fxaa = boolean_value("GAME2_FXAA");
 		config.tonemap_mode = string_value("GAME2_TONEMAP_MODE");
+		config.local_tonemap = boolean_value("GAME2_LOCAL_TONEMAP");
+		config.output_mode = string_value("GAME2_OUTPUT_MODE");
 		config.bloom = boolean_value("GAME2_BLOOM");
 		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
 		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");

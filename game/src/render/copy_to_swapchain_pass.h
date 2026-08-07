@@ -16,6 +16,12 @@ struct CopyToSwapchainPass
 	VkPipeline pipeline = VK_NULL_HANDLE;
 };
 
+struct CopyToSwapchainPushConstants
+{
+	i32 output_mode; // DISPLAY_OUTPUT_MODE_* / EDisplayOutputMode.
+};
+static_assert(sizeof(CopyToSwapchainPushConstants) == sizeof(i32));
+
 static CopyToSwapchainPass copy_to_swapchain_pass;
 
 void copy_to_swapchain_pass_init(VulkanContext* ctx)
@@ -100,10 +106,17 @@ void copy_to_swapchain_pass_init(VulkanContext* ctx)
 		.pAttachments = &color_blend_attachment,
 	};
 
+	VkPushConstantRange push_constant_range = {
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset = 0,
+		.size = sizeof(CopyToSwapchainPushConstants),
+	};
 	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1,
 		.pSetLayouts = &frame_data.sampled_input_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &push_constant_range,
 	};
 
 	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &copy_to_swapchain_pass.pipeline_layout));
@@ -153,6 +166,12 @@ void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 		0, 1, &frame_data.copy_input_sets[ctx->frame_index],
 		0, nullptr
 	);
+	const CopyToSwapchainPushConstants constants = {
+		.output_mode = (i32)ctx->active_output_mode,
+	};
+	vkCmdPushConstants(
+		command_buffer, copy_to_swapchain_pass.pipeline_layout,
+		VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
 
 	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }

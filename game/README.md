@@ -28,6 +28,17 @@ Each phase is announced before it starts. The shader step also reports how many
 shader sources it scanned and compiled, making cache misses visible without
 additional flags.
 
+The standalone GT7 reference/LUT test can be run without launching a window:
+
+```sh
+clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
+  -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
+```
+
+It checks the published SDR vectors, LUT interpolation error and boundaries,
+finite/bounded output, neutral monotonicity, high-input clamping, and highlight
+hue stability.
+
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
   MoltenVK ICD at `/usr/local/share/vulkan/icd.d/MoltenVK_icd.json`)
@@ -96,8 +107,18 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the copy pass upsamples to the window)
-- `GAME2_TONEMAP_MODE=local|agx|aces|reinhard` — choose the exposure-fusion
-  local default or one of the global tonemapping comparisons
+- `GAME2_TONEMAP_MODE=local|gt7|agx|aces|neutral` — choose the tone method.
+  The legacy `local` value means GT7 with local tonemapping enabled; named
+  methods retain their historical global behavior unless explicitly overridden.
+- `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
+  local tonemapping for the selected method. This explicit setting takes
+  precedence over the behavior implied by `GAME2_TONEMAP_MODE`.
+- `GAME2_OUTPUT_MODE=sdr|edr|hdr10` — experimental display-presentation spike;
+  `sdr` is the production default. `edr` requires an advertised
+  `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR` surface and displays an
+  extended-linear Apple EDR chart. `hdr10` requires an advertised
+  `HDR10_ST2084` pair and displays a BT.2020/PQ chart. Unsupported requests
+  fall back to SDR and log the reason; no format/color-space pair is invented.
 - `GAME2_BLOOM=0|1` — disable or enable the default HDR bloom pass
 - `GAME2_BLOOM_THRESHOLD=<0..10>` / `GAME2_BLOOM_SOFT_KNEE=<0..1>` — tune
   the exposure-aware highlight selection
@@ -173,9 +194,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
   ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
-  downsample pyramid + additive tent reconstruction) → tonemapping
-  (exposure-fusion local by default, with
-  AgX/ACES/Reinhard global comparisons) → FXAA →
+  downsample pyramid + additive tent reconstruction) → selected GT7/AgX/ACES/
+  Neutral HDR method with optional exposure-fusion local tonemapping (GT7 + local
+  is the default) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
   sun live in a per-frame UBO; per-object transforms in a triple-buffered
   ObjectData SSBO indexed by a push-constant `object_index`. GPU timestamps feed
@@ -195,9 +216,44 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   skinned inputs, and shared render views across geometry/shadows/GI/wires.
 - Dear ImGui uses the official GLFW + Vulkan backends with Vulkan 1.3 dynamic
   rendering. Ctrl+I exposes live-import stats, CPU/GPU timings, render and
-  simulation controls, tonemapping selection, local exposure-fusion and bloom tuning,
+  simulation controls, independent tone-method selection, local exposure-fusion
+  and bloom tuning,
   GI/tessellation controls, probe picking, render-target viewers, and overlay
   status text. The `GAME2_*` toggles remain available for automated/headless
   verification.
+
+### GT7 SDR and macOS HDR feasibility
+
+The GT7 SDR operator is baked once at startup into a 64×64×64
+`R16G16B16A16_SFLOAT` 2D-array LUT. Its power-of-four input shaper covers
+scene-linear `[0,64]`; hardware bilinear filtering handles red/green and the
+shader manually interpolates adjacent blue layers. The LUT contains the full
+linear-sRGB → Rec.2020 → GT7/ICtCp → linear-sRGB transform and clamps only
+after returning to the SDR gamut. A fixed 1.575 EV integration calibration
+matches the renderer's EV-0 18% gray to the former AgX-backed local path; it is
+not a claim that scene units are physical nits. The port retains Polyphony
+Digital's MIT notice in `src/render/gt7_tonemapping.h`.
+
+Tone-method selection and exposure fusion are independent. When local
+tonemapping is enabled, the selected method evaluates the three synthetic
+exposures, defines their perceptual-lightness weights, and produces the final
+guided reconstruction. Disabling local tonemapping skips the proxy pyramid and
+applies the same selected method globally.
+
+Non-SDR output modes are intentionally presentation-only diagnostics: they
+replace the normal renderer at the final copy with deterministic neutral,
+near-black, primary/secondary, saturated-highlight, and luminance charts.
+EDR sends extended-linear sRGB values above `1.0`; HDR10 sends ST-2084 PQ in
+BT.2020 with 100, 203, 400, and 1000-nit patches. When available,
+`VK_EXT_hdr_metadata` submits BT.2020/D65, a 1000-nit mastering peak, 1000-nit
+MaxCLL, and 400-nit MaxFALL on every swapchain creation. Startup logs and the
+Stats UI report requested/active modes, the selected pair, metadata support,
+and fallback reason. These modes evaluate presentation correctness only;
+physical luminance certification still requires a colorimeter.
+
+For the cleanest chart, hide the debug window with Ctrl+I. Test windowed and
+fullscreen presentation, resizing, and movement between displays manually on
+the target Mac. HDR screenshots and automatic display switching are outside
+this spike.
 
 See [TODO.md](../TODO.md) for the full catalog of known implementation work.
