@@ -20,11 +20,6 @@ float gradient_noise(in vec2 noise_uv)
 	return fract(52.9829189 * fract(dot(noise_uv, vec2(0.06711056, 0.00583715))));
 }
 
-vec4 dither_noise()
-{
-	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
-}
-
 void main()
 {
 	const vec3 camera_position = vec3(0, 0, 0);
@@ -43,5 +38,5 @@ void main()
 		light_color,
 		out_transmittance
 	);
-	out_color = vec4(sky_color, 1.0) + dither_noise();
+	out_color = vec4(sky_color, 1.0);
 }
