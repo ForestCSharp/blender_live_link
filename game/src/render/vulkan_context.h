@@ -923,7 +923,7 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA32F SSAO noise texture unsupported");
 	if (!vulkan_format_supports(in_device, VK_FORMAT_R16G16B16A16_SFLOAT,
 		VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
-		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA16F GT7 LUT unsupported");
+		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA16F tonemapping LUT unsupported");
 
 	result.compatible = result.rejection_reason[0] == '\0';
 	if (result.compatible)

@@ -1,0 +1,9 @@
+ACES Project current-source attribution
+Source: https://github.com/aces-aswf/aces
+SPDX-License-Identifier: Apache-2.0
+
+The ACES project currently distributes its source under the Apache License,
+Version 2.0. A complete copy of the Apache-2.0 terms is already included in
+this directory in Khronos-ToneMapping-Apache-2.0.txt. The pinned ACES
+v2.0.0+2025.04.04 release used for the LUT provenance retained the earlier
+Academy license; its exact terms are reproduced in ACES-v2.0.0-License.txt.

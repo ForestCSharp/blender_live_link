@@ -3,7 +3,7 @@
 #include "tonemapping_operators.h"
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
-layout(set = 0, binding = 1) uniform sampler2DArray gt7_lut;
+layout(set = 0, binding = 1) uniform sampler2DArray tonemapping_lut;
 
 layout(push_constant) uniform PushConstants
 {
@@ -13,7 +13,7 @@ layout(push_constant) uniform PushConstants
 	float highlight_recovery;
 	float preference_sigma;
 	int method;
-	float gt7_integration_scale;
+	float lut_integration_scale;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -41,11 +41,12 @@ void main()
 {
 	vec3 exposed = downsample_hdr_2x(uv) * exp2(pc.exposure_bias);
 	vec3 lightness = vec3(
-		tonemap_perceptual_lightness(tonemap_apply(
-			pc.method, gt7_lut, exposed * exp2(-pc.highlight_recovery), pc.gt7_integration_scale)),
-		tonemap_perceptual_lightness(tonemap_apply(pc.method, gt7_lut, exposed, pc.gt7_integration_scale)),
-		tonemap_perceptual_lightness(tonemap_apply(
-			pc.method, gt7_lut, exposed * exp2(pc.shadow_recovery), pc.gt7_integration_scale))
+		tonemap_perceptual_lightness(pc.method, tonemap_apply(
+			pc.method, tonemapping_lut, exposed * exp2(-pc.highlight_recovery), pc.lut_integration_scale)),
+		tonemap_perceptual_lightness(pc.method, tonemap_apply(
+			pc.method, tonemapping_lut, exposed, pc.lut_integration_scale)),
+		tonemap_perceptual_lightness(pc.method, tonemap_apply(
+			pc.method, tonemapping_lut, exposed * exp2(pc.shadow_recovery), pc.lut_integration_scale))
 	);
 
 	vec3 distance_from_middle_gray = lightness - vec3(0.5);

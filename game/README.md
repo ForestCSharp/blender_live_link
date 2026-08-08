@@ -28,11 +28,14 @@ Each phase is announced before it starts. The shader step also reports how many
 shader sources it scanned and compiled, making cache misses visible without
 additional flags.
 
-The standalone GT7 reference/LUT test can be run without launching a window:
+The standalone tonemapping and display-output tests can be run without launching
+a window:
 
 ```sh
 clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
+clang++ -std=c++20 -O2 tests/aces2_tonemapping_tests.cpp -I src -I extern \
+  -o /tmp/aces2_tonemapping_tests && /tmp/aces2_tonemapping_tests
 clang++ -std=c++20 -O2 tests/pbr_neutral_tonemapping_tests.cpp \
   -o /tmp/pbr_neutral_tonemapping_tests && /tmp/pbr_neutral_tonemapping_tests
 clang++ -std=c++20 -O2 tests/display_encoding_tests.cpp \
@@ -41,10 +44,10 @@ clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/inc
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-These check the published GT7 vectors, SDR/HDR LUT interpolation and invariants,
-Khronos PBR Neutral reference behavior, the 203/1000-nit HDR calibration,
-Rec.2020/PQ encoding anchors, EDR scaling, and synthetic output-format
-negotiation.
+These check the published GT7 vectors, ACES 2 asset headers and CRCs, SDR/EDR/
+HDR10 LUT reference vectors and interpolation invariants, Khronos PBR Neutral
+reference behavior, the 203/1000-nit HDR calibration, Rec.2020/PQ encoding
+anchors, EDR scaling, and synthetic output-format negotiation.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -52,7 +55,8 @@ Prerequisites:
 - Linux: Clang, `ar`, X11 development headers, and a Vulkan loader/driver
 - `../compiled_schemas/cpp/blender_live_link_generated.h` generated — run the
   repo root `./build.sh` once first
-- Run the binary from this directory (`bin/shaders/*.spv` paths are relative)
+- Run the binary from this directory (`bin/shaders/*.spv` and
+  `data/tonemapping/*.lutbin` paths are relative)
 
 Third-party source dependencies are vendored under `extern/`, separate from
 the first-party code in `src/`. The game owns a complete ImGui core and backend
@@ -114,7 +118,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the float presentation composite upsamples to the window before UI)
-- `GAME2_TONEMAP_MODE=local|gt7|agx|aces|neutral` — choose the tone method.
+- `GAME2_TONEMAP_MODE=local|gt7|agx|aces|neutral` — choose the tone method;
+  `aces` selects ACES 2.0.
   The legacy `local` value means GT7 with local tonemapping enabled; named
   methods retain their historical global behavior unless explicitly overridden.
 - `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
@@ -201,7 +206,7 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
   ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
-  downsample pyramid + additive tent reconstruction) → selected GT7/AgX/ACES/
+  downsample pyramid + additive tent reconstruction) → selected GT7/AgX/ACES 2.0/
   Khronos PBR Neutral method with optional exposure-fusion local tonemapping
   (GT7 + local is the default) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
@@ -229,17 +234,44 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   status text. The `GAME2_*` toggles remain available for automated/headless
   verification.
 
-### GT7 SDR and macOS HDR feasibility
+### Tonemapping and macOS HDR output
 
-The GT7 SDR operator is baked once at startup into a 64×64×64
-`R16G16B16A16_SFLOAT` 2D-array LUT. Its power-of-four input shaper covers
-scene-linear `[0,64]`; hardware bilinear filtering handles red/green and the
-shader manually interpolates adjacent blue layers. The LUT contains the full
-linear-sRGB → Rec.2020 → GT7/ICtCp → linear-sRGB transform and clamps only
-after returning to the SDR gamut. A fixed 1.575 EV integration calibration
-matches the renderer's EV-0 18% gray to the former AgX-backed local path; it is
-not a claim that scene units are physical nits. The port retains Polyphony
-Digital's MIT notice in `src/render/gt7_tonemapping.h`.
+The selected GT7 profile is baked once at startup into the first 64 layers of a
+128-layer `R16G16B16A16_SFLOAT` 2D-array LUT. Its power-of-four input shaper
+covers scene-linear `[0,64]`; hardware bilinear filtering handles red/green and
+the shader manually interpolates adjacent blue layers. GT7 contains the full
+linear-sRGB → Rec.2020 → GT7/ICtCp → linear-sRGB transform. A fixed 1.575 EV
+SDR integration calibration matches the renderer's EV-0 18% gray to the former
+AgX-backed local path; it is not a claim that scene units are physical nits.
+The port retains Polyphony Digital's MIT notice in
+`src/render/gt7_tonemapping.h`.
+
+ACES 2.0 replaces the former fitted approximation at method index 2. Its
+checked-in 64³ RGBA16F LUT occupies packed array layers 64–127 and uses a
+normalized ACEScct shaper over scene-linear `[0,64]`. The assets bake
+linear-sRGB → ACES2065-1 → ACES 2 output rendering → normalized target-linear
+color for Rec.709-D65/100-nit SDR, Rec.709-D65/1000-nit EDR, and
+Rec.2100-D65/1000-nit HDR10. Deterministic integration scales `2.0548065` for
+SDR and `10.9398375` for EDR/HDR10 map EV-0 18% gray to approximately
+`0.214519` and `0.203`, respectively. Runtime loading validates a versioned
+little-endian header, target, payload size, and CRC32 before the packed image is
+uploaded; a missing or corrupt active asset fails startup with its path and a
+regeneration command.
+
+The LUTs are pinned to ACES `v2.0.0+2025.04.04` and OpenColorIO 2.5.0's
+official ACES 2 fixed function. Normal builds have no OpenColorIO dependency.
+To regenerate all three assets and `data/tonemapping/aces2_manifest.json`, use
+a Python environment containing NumPy and exactly PyOpenColorIO 2.5.0:
+
+```sh
+python3 tools/generate_aces2_luts.py
+```
+
+The manifest records the ACES release/core/output commits, OCIO configuration,
+target parameters, integration scales, checksums, reference vectors, and sampled
+error metrics. See `LICENSES/ACES-v2.0.0-License.txt`,
+`LICENSES/ACES-Apache-2.0.txt`, and
+`LICENSES/OpenColorIO-BSD-3-Clause.txt` for attribution.
 
 Tone-method selection and exposure fusion are independent. When local
 tonemapping is enabled, the selected method evaluates the three synthetic
@@ -266,8 +298,10 @@ to 203 nits. SDR keeps its original LUT and calibration. Tonemapped scene color
 is upscaled into a full-output-resolution float composite, where ImGui white is
 placed at 203 nits for HDR or 1.0 for SDR. The final copy is the only display
 encoding boundary: SDR gets code-space 8-bit dithering, EDR receives extended
-linear sRGB, and HDR10 receives linear-sRGB-to-Rec.2020 conversion followed by
-ST-2084 PQ. HDR/EDR are undithered.
+linear sRGB, and HDR10 converts the possibly extended linear-sRGB composite to
+Rec.2020 before gamut clamping and ST-2084 PQ encoding. This lets ACES preserve
+wide-gamut intermediates through bloom, FXAA, and ImGui compositing. HDR/EDR are
+undithered.
 
 When available, `VK_EXT_hdr_metadata` submits BT.2020/D65, a 1000-nit mastering
 peak, 1000-nit MaxCLL, and 400-nit MaxFALL on every HDR10 swapchain creation.

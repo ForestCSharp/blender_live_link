@@ -93,8 +93,9 @@ void main()
 	}
 
 	// HDR10 stores nonlinear PQ code values in a Rec.2020 container.
-	vec3 rec2020_nits = max(
-		linear_srgb_to_rec2020(max(scene, vec3(0.0))), vec3(0.0)) * 1000.0;
+	// Convert before clamping: a valid Rec.2020 color may require negative or
+	// extended channels while represented in the linear-sRGB composite basis.
+	vec3 rec2020_nits = max(linear_srgb_to_rec2020(scene), vec3(0.0)) * 1000.0;
 	out_color = vec4(
 		st2084_from_nits(rec2020_nits.r),
 		st2084_from_nits(rec2020_nits.g),

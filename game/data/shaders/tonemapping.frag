@@ -6,7 +6,7 @@ layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2D local_guide;
 layout(set = 0, binding = 2) uniform sampler2D local_fused_lightness;
 layout(set = 0, binding = 3) uniform sampler2D bloom_color;
-layout(set = 0, binding = 4) uniform sampler2DArray gt7_lut;
+layout(set = 0, binding = 4) uniform sampler2DArray tonemapping_lut;
 
 layout(push_constant) uniform PushConstants
 {
@@ -15,7 +15,7 @@ layout(push_constant) uniform PushConstants
 	float exposure_bias;
 	float bloom_intensity;
 	vec2 guide_pixel_size;
-	float gt7_integration_scale;
+	float lut_integration_scale;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -66,21 +66,21 @@ void main()
 			(max(mean_x2 - mean_x * mean_x, 0.0) + 1e-5);
 		float intercept = mean_y - slope * mean_x;
 
-		float source_lightness = tonemap_perceptual_lightness(
-			tonemap_apply(pc.method, gt7_lut, exposed_color, pc.gt7_integration_scale));
+		float source_lightness = tonemap_perceptual_lightness(pc.method,
+			tonemap_apply(pc.method, tonemapping_lut, exposed_color, pc.lut_integration_scale));
 		float target_lightness = max(slope * source_lightness + intercept, 0.0);
 		float local_multiplier = target_lightness / max(source_lightness, 1e-5);
 		const float low_light_threshold = 0.007;
 		float low_light_fade = clamp(source_lightness / low_light_threshold, 0.0, 1.0);
 		local_multiplier = mix(1.0, local_multiplier, low_light_fade * low_light_fade);
-		tonemapped_color = tonemap_apply(pc.method, gt7_lut,
+		tonemapped_color = tonemap_apply(pc.method, tonemapping_lut,
 			exposed_color * max(local_multiplier, 0.0) + exposed_bloom,
-			pc.gt7_integration_scale);
+			pc.lut_integration_scale);
 	}
 	else
 	{
 		tonemapped_color = tonemap_apply(
-			pc.method, gt7_lut, exposed_color + exposed_bloom, pc.gt7_integration_scale);
+			pc.method, tonemapping_lut, exposed_color + exposed_bloom, pc.lut_integration_scale);
 	}
 
 	frag_color = vec4(tonemapped_color, 1.0);

@@ -6,6 +6,7 @@
 #include "render/fullscreen_pipeline.h"
 #include "render/frame_data.h"
 #include "render/gt7_tonemapping.h"
+#include "render/aces2_tonemapping.h"
 
 // Global operators remain one fullscreen draw. Exposure Fusion Local adds a
 // half-resolution proxy pyramid, reconstructs down to quarter resolution, and
@@ -18,7 +19,7 @@ struct TonemappingFinalPushConstants
 	f32 exposure_bias;
 	f32 bloom_intensity;
 	HMM_Vec2 guide_pixel_size;
-	f32 gt7_integration_scale;
+	f32 lut_integration_scale;
 };
 static_assert(sizeof(TonemappingFinalPushConstants) == 28);
 
@@ -30,7 +31,7 @@ struct TonemappingLocalProxyPushConstants
 	f32 highlight_recovery;
 	f32 preference_sigma;
 	i32 method;
-	f32 gt7_integration_scale;
+	f32 lut_integration_scale;
 };
 static_assert(sizeof(TonemappingLocalProxyPushConstants) == 32);
 
@@ -63,7 +64,7 @@ struct TonemappingPass
 	GpuImage local_exposure_pyramid;
 	GpuImage local_weight_pyramid;
 	GpuImage local_reconstruction_pyramid;
-	GpuImage gt7_lut;
+	GpuImage tonemapping_lut;
 	u32 local_base_width = 0;
 	u32 local_base_height = 0;
 	u32 local_mip_count = 0;
@@ -75,6 +76,16 @@ struct TonemappingPass
 };
 
 static TonemappingPass tonemapping_pass;
+
+inline f32 tonemapping_lut_integration_scale(
+	const VulkanContext* ctx,
+	ETonemappingMethod method)
+{
+	const bool sdr = ctx->active_output_mode == EDisplayOutputMode::SDR;
+	if (method == ETonemappingMethod::Aces2)
+		return sdr ? ACES2Tonemapping::SDR_INTEGRATION_SCALE : ACES2Tonemapping::HDR_INTEGRATION_SCALE;
+	return sdr ? GT7Tonemapping::SDR_INTEGRATION_SCALE : GT7Tonemapping::HDR_INTEGRATION_SCALE;
+}
 
 inline u32 tonemapping_local_mip_extent(u32 in_base_extent, u32 in_mip)
 {
@@ -174,15 +185,36 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	DynamicArray<u16> gt7_lut_pixels = hdr_output
 		? GT7Tonemapping::generate_hdr_lut()
 		: GT7Tonemapping::generate_sdr_lut();
-	tonemapping_pass.gt7_lut = gpu_image_create_from_data(
+	ACES2Tonemapping::LoadedLUT aces2_lut;
+	std::string aces2_error;
+	if (!ACES2Tonemapping::load_lut((i32)ctx->active_output_mode, &aces2_lut, &aces2_error))
+	{
+		printf("ACES 2.0 LUT load failed: %s\n", aces2_error.c_str());
+		exit(1);
+	}
+	assert(gt7_lut_pixels.length() == ACES2Tonemapping::LUT_PAYLOAD_SIZE / sizeof(u16));
+	assert(aces2_lut.pixels.length() == gt7_lut_pixels.length());
+	assert(ctx->physical_device_properties.limits.maxImageArrayLayers
+		>= ACES2Tonemapping::COMBINED_LUT_LAYER_COUNT);
+	DynamicArray<u16> combined_lut_pixels;
+	combined_lut_pixels.resize(gt7_lut_pixels.length() + aces2_lut.pixels.length());
+	memcpy(combined_lut_pixels.data(), gt7_lut_pixels.data(),
+		gt7_lut_pixels.length() * sizeof(u16));
+	memcpy(combined_lut_pixels.data() + gt7_lut_pixels.length(), aces2_lut.pixels.data(),
+		aces2_lut.pixels.length() * sizeof(u16));
+	printf("ACES 2.0 profile: %s, integration scale %.7f, LUT CRC32 %08x\n",
+		ACES2Tonemapping::target_name((i32)ctx->active_output_mode),
+		hdr_output ? ACES2Tonemapping::HDR_INTEGRATION_SCALE : ACES2Tonemapping::SDR_INTEGRATION_SCALE,
+		aces2_lut.crc32);
+	tonemapping_pass.tonemapping_lut = gpu_image_create_from_data(
 		ctx,
 		GT7Tonemapping::LUT_RESOLUTION,
 		GT7Tonemapping::LUT_RESOLUTION,
 		VK_FORMAT_R16G16B16A16_SFLOAT,
-		gt7_lut_pixels.data(),
-		gt7_lut_pixels.length() * sizeof(u16),
-		GT7Tonemapping::LUT_RESOLUTION,
-		hdr_output ? "GT7 HDR 1000-nit Tone Mapping LUT" : "GT7 SDR Tone Mapping LUT");
+		combined_lut_pixels.data(),
+		combined_lut_pixels.length() * sizeof(u16),
+		ACES2Tonemapping::COMBINED_LUT_LAYER_COUNT,
+		hdr_output ? "GT7 + ACES 2 HDR Tone Mapping LUTs" : "GT7 + ACES 2 SDR Tone Mapping LUTs");
 
 	tonemapping_pass.final_pipeline_layout = tonemapping_create_pipeline_layout(
 		ctx, tonemapping_pass.final_set_layout, sizeof(TonemappingFinalPushConstants));
@@ -450,7 +482,7 @@ void tonemapping_pass_update(
 		descriptor_sampled(
 			in_sampler,
 			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
-		descriptor_sampled(in_sampler, tonemapping_pass.gt7_lut.view),
+		descriptor_sampled(in_sampler, tonemapping_pass.tonemapping_lut.view),
 	};
 	VkWriteDescriptorSet writes[5] = {};
 	for (u32 binding = 0; binding < 5; ++binding)
@@ -494,7 +526,7 @@ void tonemapping_pass_prepare_local(
 
 		VkImageView views[] = {
 			tonemapping_pass.scene_color_view,
-			tonemapping_pass.gt7_lut.view,
+			tonemapping_pass.tonemapping_lut.view,
 		};
 		VkDescriptorSet set = tonemapping_local_descriptor_set(ctx, views, 2);
 		GpuImage* outputs[] = {
@@ -511,9 +543,7 @@ void tonemapping_pass_prepare_local(
 			.highlight_recovery = in_state.local_highlight_recovery,
 			.preference_sigma = in_state.local_exposure_preference_sigma,
 			.method = (i32)in_state.method,
-			.gt7_integration_scale = ctx->active_output_mode == EDisplayOutputMode::SDR
-				? GT7Tonemapping::SDR_INTEGRATION_SCALE
-				: GT7Tonemapping::HDR_INTEGRATION_SCALE,
+			.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
 		};
 		tonemapping_draw_local_stage(
 			ctx,
@@ -722,9 +752,7 @@ void tonemapping_pass_draw(
 		.guide_pixel_size = HMM_V2(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
-		.gt7_integration_scale = ctx->active_output_mode == EDisplayOutputMode::SDR
-			? GT7Tonemapping::SDR_INTEGRATION_SCALE
-			: GT7Tonemapping::HDR_INTEGRATION_SCALE,
+		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
 	};
 
 	vkCmdBindPipeline(
@@ -747,7 +775,7 @@ void tonemapping_pass_draw(
 
 void tonemapping_pass_shutdown(VulkanContext* ctx)
 {
-	gpu_image_destroy(ctx->allocator, ctx->device, tonemapping_pass.gt7_lut);
+	gpu_image_destroy(ctx->allocator, ctx->device, tonemapping_pass.tonemapping_lut);
 	gpu_image_destroy(
 		ctx->allocator, ctx->device, tonemapping_pass.local_exposure_pyramid);
 	gpu_image_destroy(

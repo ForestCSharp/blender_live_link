@@ -75,7 +75,7 @@ enum class ETonemappingMethod : i32
 {
 	GT7 = 0,
 	AgX = 1,
-	AcesFitted = 2,
+	Aces2 = 2,
 	KhronosPBRNeutral = 3,
 	MAX,
 };
@@ -89,7 +89,7 @@ inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
 inline const char* ETonemappingMethodNames[(i32) ETonemappingMethod::MAX] = {
 	"GT7",
 	"AgX",
-	"ACES Fitted",
+	"ACES 2.0",
 	"Khronos PBR Neutral",
 };
 
