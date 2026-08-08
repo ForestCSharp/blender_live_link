@@ -7,8 +7,8 @@
 #include "render/frame_data.h"
 
 // Presents the offscreen scene color to the swapchain via a fullscreen
-// triangle (linear fetch; sRGB encoding happens on the swapchain-view
-// write). Upsamples when render scale < 100%.
+// triangle. The fragment shader owns SDR encoding/dither at this display
+// boundary and upsamples when render scale < 100%.
 
 struct CopyToSwapchainPass
 {
@@ -19,8 +19,9 @@ struct CopyToSwapchainPass
 struct CopyToSwapchainPushConstants
 {
 	i32 output_mode; // DISPLAY_OUTPUT_MODE_* / EDisplayOutputMode.
+	i32 sdr_attachment_is_srgb;
 };
-static_assert(sizeof(CopyToSwapchainPushConstants) == sizeof(i32));
+static_assert(sizeof(CopyToSwapchainPushConstants) == sizeof(i32) * 2);
 
 static CopyToSwapchainPass copy_to_swapchain_pass;
 
@@ -168,6 +169,9 @@ void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 	);
 	const CopyToSwapchainPushConstants constants = {
 		.output_mode = (i32)ctx->active_output_mode,
+		.sdr_attachment_is_srgb = (
+			ctx->surface_format.format == VK_FORMAT_B8G8R8A8_SRGB
+			|| ctx->surface_format.format == VK_FORMAT_R8G8B8A8_SRGB) ? 1 : 0,
 	};
 	vkCmdPushConstants(
 		command_buffer, copy_to_swapchain_pass.pipeline_layout,

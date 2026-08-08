@@ -45,12 +45,13 @@ namespace FXAAPass
 		};
 		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &pipeline_layout));
 
-		// Same LDR format as the tonemapping target it filters
+		// Keep post-tonemap filtering in float; the copy pass owns the only
+		// conversion to the display format.
 		pipeline = vulkan_create_fullscreen_pipeline(ctx, {
 			.vertex_shader_path = "bin/shaders/fxaa.vert.spv",
 			.fragment_shader_path = "bin/shaders/fxaa.frag.spv",
 			.pipeline_layout = pipeline_layout,
-			.color_formats = &ctx->surface_format.format,
+			.color_formats = &Render::SCENE_COLOR_FORMAT,
 			.color_format_count = 1,
 		});
 	}

@@ -15,11 +15,6 @@ layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 out_color;
 
-float gradient_noise(in vec2 noise_uv)
-{
-	return fract(52.9829189 * fract(dot(noise_uv, vec2(0.06711056, 0.00583715))));
-}
-
 void main()
 {
 	const vec3 camera_position = vec3(0, 0, 0);

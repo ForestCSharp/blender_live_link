@@ -124,18 +124,6 @@ float cosine_angle(vec3 a, vec3 b)
 	return dot(normalize(a), normalize(b));
 }
 
-// Gradient noise from Jorge Jimenez's presentation:
-// http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare
-float gradient_noise(in vec2 noise_uv)
-{
-	return fract(52.9829189 * fract(dot(noise_uv, vec2(0.06711056, 0.00583715))));
-}
-
-vec4 dither_noise()
-{
-	return vec4(vec3((1.0 / 255.0) * gradient_noise(gl_FragCoord.xy) - (0.5 / 255.0)), 0.0);
-}
-
 // ---- analytic light sampling ----
 
 vec3 sample_point_light(
@@ -716,8 +704,6 @@ void main()
 			final_color *= ambient_occlusion;
 		}
 	}
-
-	final_color += dither_noise();
 
 	frag_color = final_color;
 }

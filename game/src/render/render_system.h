@@ -439,7 +439,7 @@ namespace RenderSystem
 				.num_outputs = 1,
 				.outputs = {
 					{
-						.format = in_state.vk.surface_format.format,
+						.format = Render::SCENE_COLOR_FORMAT,
 						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 					},
@@ -452,7 +452,7 @@ namespace RenderSystem
 				.num_outputs = 1,
 				.outputs = {
 					{
-						.format = in_state.vk.surface_format.format,
+						.format = Render::SCENE_COLOR_FORMAT,
 						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 					},

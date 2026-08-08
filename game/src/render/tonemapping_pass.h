@@ -185,7 +185,7 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping.frag.spv",
 		.pipeline_layout = tonemapping_pass.final_pipeline_layout,
-		.color_formats = &ctx->surface_format.format,
+		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
 
