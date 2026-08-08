@@ -76,7 +76,7 @@ enum class ETonemappingMethod : i32
 	GT7 = 0,
 	AgX = 1,
 	AcesFitted = 2,
-	NeutralHDR = 3,
+	KhronosPBRNeutral = 3,
 	MAX,
 };
 
@@ -90,7 +90,7 @@ inline const char* ETonemappingMethodNames[(i32) ETonemappingMethod::MAX] = {
 	"GT7",
 	"AgX",
 	"ACES Fitted",
-	"Neutral HDR",
+	"Khronos PBR Neutral",
 };
 
 enum class ERenderPass : i32

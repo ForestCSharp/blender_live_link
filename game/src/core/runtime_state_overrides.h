@@ -37,7 +37,7 @@ namespace RuntimeStateOverrides
 			if (*config.tonemap_mode == "gt7") { in_state.tonemapping.method = ETonemappingMethod::GT7; }
 			else if (*config.tonemap_mode == "agx") { in_state.tonemapping.method = ETonemappingMethod::AgX; }
 			else if (*config.tonemap_mode == "aces") { in_state.tonemapping.method = ETonemappingMethod::AcesFitted; }
-			else if (*config.tonemap_mode == "neutral") { in_state.tonemapping.method = ETonemappingMethod::NeutralHDR; }
+			else if (*config.tonemap_mode == "neutral") { in_state.tonemapping.method = ETonemappingMethod::KhronosPBRNeutral; }
 			else
 			{
 				in_state.tonemapping.method = ETonemappingMethod::GT7;

@@ -246,7 +246,7 @@ namespace ImGuiLayer
 			ImGui::Indent();
 			const auto draw_tessellation_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Tessellation", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Tessellation"))
 				{
 					bool changed = false;
 					changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
@@ -272,7 +272,7 @@ namespace ImGuiLayer
 			};
 			const auto draw_wireframe_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Wireframe", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Wireframe"))
 				{
 					if (ImGui::Checkbox("Shaded Wireframe", &state.wireframe.shaded_wireframe))
 						TemporalAAPass::invalidate_history(state);
@@ -284,7 +284,7 @@ namespace ImGuiLayer
 			};
 			const auto draw_tonemapping_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Tonemapping", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Tonemapping"))
 				{
 					ImGui::Combo(
 						"Method##Tonemapping",
@@ -293,9 +293,9 @@ namespace ImGuiLayer
 						(i32)ETonemappingMethod::MAX);
 					ImGui::Checkbox("Local Tonemapping", &state.tonemapping.local_enabled);
 					ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
-					if (state.tonemapping.local_enabled)
+					ImGui::Indent();
+					ImGui::BeginDisabled(!state.tonemapping.local_enabled);
 					{
-						ImGui::Indent();
 						ImGui::SliderFloat(
 							"Shadow Recovery",
 							&state.tonemapping.local_shadow_recovery,
@@ -356,13 +356,14 @@ namespace ImGuiLayer
 							state.tonemapping.local_coarsest_mip,
 							state.tonemapping.local_reconstruction_mip,
 							max_mip);
-						ImGui::Unindent();
 					}
+					ImGui::EndDisabled();
+					ImGui::Unindent();
 				}
 			};
 			const auto draw_bloom_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Bloom"))
 				{
 					ImGui::Checkbox("Enable Bloom", &state.bloom.enable);
 					ImGui::BeginDisabled(!state.bloom.enable);
@@ -398,21 +399,21 @@ namespace ImGuiLayer
 			};
 			const auto draw_ssao_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("SSAO", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("SSAO"))
 				{
 					ImGui::Checkbox("Enable SSAO", &state.ssao.enable);
 				}
 			};
 			const auto draw_fog_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Fog"))
 				{
 					ImGui::Checkbox("Enable Fog", &state.fog.debug_active);
 				}
 			};
 			const auto draw_temporal_aa_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Temporal AA", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Temporal AA"))
 				{
 					bool changed = ImGui::Checkbox("Enable Temporal AA", &state.temporal_aa.enable);
 					ImGui::BeginDisabled(!state.temporal_aa.enable);
@@ -427,14 +428,14 @@ namespace ImGuiLayer
 			};
 			const auto draw_fxaa_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("FXAA", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("FXAA"))
 				{
 					ImGui::Checkbox("Enable FXAA", &state.temporal_aa.enable_fxaa);
 				}
 			};
 			const auto draw_dof_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Depth-of-Field", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Depth-of-Field"))
 				{
 					if (ImGui::Checkbox("Enable DoF", &state.dof.enable))
 						TemporalAAPass::invalidate_history(state);
@@ -450,7 +451,7 @@ namespace ImGuiLayer
 			};
 			const auto draw_shadow_map_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Shadow Maps", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Shadow Maps"))
 				{
 					ImGui::Checkbox("Shadow Rendering", &state.shadow.rendering_enable);
 					ImGui::Checkbox("Shadow Blur", &state.shadow.blur_enable);
@@ -480,7 +481,7 @@ namespace ImGuiLayer
 			};
 			const auto draw_screen_space_shadow_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Screen Space Shadows", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Screen Space Shadows"))
 				{
 					ImGui::Checkbox("Enable Screen Space Shadows", &state.shadow.screen_space.enable);
 					ImGui::SliderFloat("Contact Ray Length", &state.shadow.screen_space.ray_length, 0.0f, 10.0f, "%.2f");
@@ -496,13 +497,13 @@ namespace ImGuiLayer
 			};
 			const auto draw_lighting_controls = [&]()
 			{
-				if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
+				if (ImGui::CollapsingHeader("Lighting"))
 				{
 					ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable);
 					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
 					ImGui::Separator();
 					ImGui::Indent();
-					if (ImGui::CollapsingHeader("Global Illumination", ImGuiTreeNodeFlags_DefaultOpen))
+					if (ImGui::CollapsingHeader("Global Illumination"))
 					{
 						ImGui::Checkbox("GI", &state.gi.enable);
 						ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);

@@ -33,15 +33,18 @@ The standalone GT7 reference/LUT test can be run without launching a window:
 ```sh
 clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
+clang++ -std=c++20 -O2 tests/pbr_neutral_tonemapping_tests.cpp \
+  -o /tmp/pbr_neutral_tonemapping_tests && /tmp/pbr_neutral_tonemapping_tests
 clang++ -std=c++20 -O2 tests/display_encoding_tests.cpp \
   -o /tmp/display_encoding_tests && /tmp/display_encoding_tests
 clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/include \
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-These check the published SDR vectors, SDR/HDR LUT interpolation and invariants,
-the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling,
-and synthetic output-format negotiation.
+These check the published GT7 vectors, SDR/HDR LUT interpolation and invariants,
+Khronos PBR Neutral reference behavior, the 203/1000-nit HDR calibration,
+Rec.2020/PQ encoding anchors, EDR scaling, and synthetic output-format
+negotiation.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -199,8 +202,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
   ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
   downsample pyramid + additive tent reconstruction) → selected GT7/AgX/ACES/
-  Neutral HDR method with optional exposure-fusion local tonemapping (GT7 + local
-  is the default) → FXAA →
+  Khronos PBR Neutral method with optional exposure-fusion local tonemapping
+  (GT7 + local is the default) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +
   sun live in a per-frame UBO; per-object transforms in a triple-buffered
   ObjectData SSBO indexed by a push-constant `object_index`. GPU timestamps feed
@@ -243,6 +246,19 @@ tonemapping is enabled, the selected method evaluates the three synthetic
 exposures, defines their perceptual-lightness weights, and produces the final
 guided reconstruction. Disabling local tonemapping skips the proxy pyramid and
 applies the same selected method globally.
+
+Khronos PBR Neutral is the pinned Apache-2.0 reference implementation for
+non-negative linear Rec.709 input. It preserves well-exposed diffuse PBR colors,
+starts smooth highlight compression at `0.76`, and gradually desaturates only
+the compressed highlights. Exact Khronos exposure behavior is the default;
+building affected shaders with
+`PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY=1` applies a `1.4139944` integration
+scale so neutral 18% gray maps from `0.14` to approximately `0.214519`. The
+official transform targets sRGB output. Its use with the normalized EDR/HDR10
+display paths is an engine-specific experimental interpretation, not Khronos
+HDR conformance. Enable the optional path with
+`SHADER_OPT_FLAGS="-O -g -DPBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY=1"` when
+building. See `LICENSES/Khronos-ToneMapping-Apache-2.0.txt`.
 
 HDR10 and EDR use a dedicated GT7 profile with a 1000-nit peak, 203-nit
 diffuse white, and an integration scale of `11.2777778`, mapping EV-0 18% gray

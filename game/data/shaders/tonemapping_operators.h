@@ -6,7 +6,11 @@ const vec3 TONEMAP_LUMINANCE_WEIGHTS = vec3(0.2126, 0.7152, 0.0722);
 const int TONEMAP_METHOD_GT7 = 0;
 const int TONEMAP_METHOD_AGX = 1;
 const int TONEMAP_METHOD_ACES_FITTED = 2;
-const int TONEMAP_METHOD_NEUTRAL_HDR = 3;
+const int TONEMAP_METHOD_KHRONOS_PBR_NEUTRAL = 3;
+
+#ifndef PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY
+#define PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY 0
+#endif
 
 const float GT7_LUT_RESOLUTION = 64.0;
 const float GT7_LUT_INPUT_MAX = 64.0;
@@ -24,33 +28,39 @@ vec3 tonemap_gt7(sampler2DArray gt7_lut, vec3 color, float integration_scale)
 	return clamp(mix(low, high, lut_position.z - low_layer), 0.0, 1.0);
 }
 
-vec3 tonemap_neutral_hdr(vec3 color)
+// Khronos PBR Neutral Tone Mapper, pinned to reference commit
+// f5dc101149fc5c85c0f9852fe2ba438853e8a7d1 and adapted to clamp negative
+// renderer input and support an optional integration exposure. Copyright 2024
+// The Khronos Group, Inc.; licensed under Apache-2.0. See
+// LICENSES/Khronos-ToneMapping-Apache-2.0.txt.
+// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
+vec3 tonemap_khronos_pbr_neutral(vec3 color)
 {
 	color = max(color, vec3(0.0));
-	float input_peak = max(color.r, max(color.g, color.b));
-	if (input_peak <= 1e-8)
-		return vec3(0.0);
-	// Normalizing first avoids overflow while evaluating luminance for extreme
-	// but still finite scene values.
-	float luminance = input_peak
-		* dot(color / input_peak, TONEMAP_LUMINANCE_WEIGHTS);
-	if (luminance <= 1e-8)
-		return vec3(0.0);
+#if PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY
+	// Opt-in integration calibration: exact Khronos behavior remains the
+	// default, while this maps neutral 18% gray from 0.14 to approximately
+	// the existing GT7/AgX target of 0.214519.
+	color = min(color, vec3(2.4065324e38)) * 1.4139944;
+#endif
 
-	// Calibrated so neutral 18% gray maps to the GT7/AgX integration target
-	// of approximately 0.214519. Applying one multiplier to all channels keeps
-	// the input RGB ratios intact through the luminance shoulder.
-	const float exposure_scale = 1.5172523;
-	float exposed_luminance = luminance * exposure_scale;
-	float mapped_luminance = 1.0 - 1.0 / (1.0 + exposed_luminance);
-	vec3 mapped = color * (mapped_luminance / luminance);
+	const float start_compression = 0.8 - 0.04;
+	const float desaturation = 0.15;
 
-	// A common peak normalization keeps saturated HDR colors bounded without
-	// introducing per-channel clipping or hue shifts.
-	float peak = max(mapped.r, max(mapped.g, mapped.b));
-	if (peak > 1.0)
-		mapped /= peak;
-	return clamp(mapped, 0.0, 1.0);
+	float x = min(color.r, min(color.g, color.b));
+	float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+	color -= offset;
+
+	float peak = max(color.r, max(color.g, color.b));
+	if (peak < start_compression)
+		return color;
+
+	const float d = 1.0 - start_compression;
+	float new_peak = 1.0 - d * d / (peak + d - start_compression);
+	color *= new_peak / peak;
+
+	float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+	return mix(color, new_peak * vec3(1.0), g);
 }
 
 vec3 tonemap_aces_fitted(vec3 color)
@@ -118,8 +128,8 @@ vec3 tonemap_apply(int method, sampler2DArray gt7_lut, vec3 color, float gt7_int
 		return tonemap_agx(color);
 	if (method == TONEMAP_METHOD_ACES_FITTED)
 		return tonemap_aces_fitted(color);
-	if (method == TONEMAP_METHOD_NEUTRAL_HDR)
-		return tonemap_neutral_hdr(color);
+	if (method == TONEMAP_METHOD_KHRONOS_PBR_NEUTRAL)
+		return tonemap_khronos_pbr_neutral(color);
 	return tonemap_gt7(gt7_lut, color, gt7_integration_scale);
 }
 
