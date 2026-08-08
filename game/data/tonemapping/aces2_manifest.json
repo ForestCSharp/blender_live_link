@@ -10,6 +10,7 @@
   "input_max": 64.0,
   "shaper": "normalized ACEScct",
   "pixel_format": "RGBA16F little-endian",
+  "reference_sample_count": 100000,
   "targets": [
     {
       "name": "sdr",
@@ -31,9 +32,9 @@
       "middle_gray_target": 0.214519,
       "payload_bytes": 2097152,
       "crc32": "9f558855",
-      "mean_absolute_rgb_error": 0.00031322252470999956,
-      "p99_absolute_rgb_error": 0.0031121671199798584,
-      "max_absolute_rgb_error": 0.028709113597869873,
+      "mean_absolute_rgb_error": 0.0003121514164377004,
+      "p99_absolute_rgb_error": 0.00318358838558197,
+      "max_absolute_rgb_error": 0.029592573642730713,
       "middle_gray_output": [
         0.2150520235300064,
         0.2150479257106781,
@@ -134,9 +135,9 @@
       "middle_gray_target": 0.203,
       "payload_bytes": 2097152,
       "crc32": "992383ab",
-      "mean_absolute_rgb_error": 0.0003844813909381628,
-      "p99_absolute_rgb_error": 0.0033269179984927177,
-      "max_absolute_rgb_error": 0.021851778030395508,
+      "mean_absolute_rgb_error": 0.00038630780181847513,
+      "p99_absolute_rgb_error": 0.0033430010080337524,
+      "max_absolute_rgb_error": 0.022173523902893066,
       "middle_gray_output": [
         0.2031635344028473,
         0.20321540534496307,
@@ -237,9 +238,9 @@
       "middle_gray_target": 0.203,
       "payload_bytes": 2097152,
       "crc32": "4cf941e0",
-      "mean_absolute_rgb_error": 0.00041110956226475537,
-      "p99_absolute_rgb_error": 0.0034702601842582226,
-      "max_absolute_rgb_error": 0.029506325721740723,
+      "mean_absolute_rgb_error": 0.0004136123170610517,
+      "p99_absolute_rgb_error": 0.0034462064504623413,
+      "max_absolute_rgb_error": 0.029917359352111816,
       "middle_gray_output": [
         0.2031635344028473,
         0.20321540534496307,

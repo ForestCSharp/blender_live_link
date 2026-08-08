@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -2546,6 +2547,151 @@ bool vulkan_context_dump_frame(VulkanContext* ctx, const char* in_path)
 
 	vmaDestroyBuffer(ctx->allocator, readback_buffer, readback_allocation);
 	return true;
+}
+
+inline f32 vulkan_validation_half_to_float(u16 value)
+{
+	const u32 sign = (u32)(value & 0x8000u) << 16;
+	u32 exponent = (value >> 10) & 0x1fu;
+	u32 mantissa = value & 0x03ffu;
+	u32 bits = 0;
+	if (exponent == 0)
+	{
+		if (mantissa == 0) bits = sign;
+		else
+		{
+			i32 unbiased = -14;
+			while ((mantissa & 0x0400u) == 0) { mantissa <<= 1; --unbiased; }
+			mantissa &= 0x03ffu;
+			bits = sign | (u32)(unbiased + 127) << 23 | mantissa << 13;
+		}
+	}
+	else if (exponent == 31)
+		bits = sign | 0x7f800000u | mantissa << 13;
+	else
+		bits = sign | (exponent + 112u) << 23 | mantissa << 13;
+	return std::bit_cast<f32>(bits);
+}
+
+// Validation-only float capture. PFM preserves negative and extended values
+// from the R16G16B16A16 tonemapping/composite targets without display encoding.
+bool vulkan_context_dump_image_pfm(
+	VulkanContext* ctx,
+	GpuImage* in_image,
+	const char* in_path)
+{
+	if (!in_image || in_image->image == VK_NULL_HANDLE
+		|| in_image->format != VK_FORMAT_R16G16B16A16_SFLOAT
+		|| in_image->array_layers != 1 || in_image->mip_levels != 1)
+	{
+		printf("PFM validation capture requires a single-layer RGBA16F image\n");
+		return false;
+	}
+	VK_CHECK(vulkan_device_wait_idle(ctx));
+	const u32 width = in_image->extent.width;
+	const u32 height = in_image->extent.height;
+	const u64 buffer_size = (u64)width * height * 4 * sizeof(u16);
+	VkBufferCreateInfo buffer_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = buffer_size,
+		.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	};
+	VmaAllocationCreateInfo allocation_info = {
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+	VmaAllocationInfo mapped_info = {};
+	VK_CHECK(vmaCreateBuffer(ctx->allocator, &buffer_info, &allocation_info,
+		&buffer, &allocation, &mapped_info));
+
+	VkCommandBufferAllocateInfo command_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = ctx->command_pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+	VK_CHECK(vkAllocateCommandBuffers(ctx->device, &command_info, &command_buffer));
+	VkCommandBufferBeginInfo begin = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin));
+	const GpuImage::ImageSubresourceState previous =
+		in_image->subresource_states[gpu_image_state_index(
+			*in_image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0)];
+	ImageUsage transfer_usage = {
+		.image = in_image,
+		.range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		.access = VK_ACCESS_2_TRANSFER_READ_BIT,
+		.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	};
+	gpu_image_apply_usages(command_buffer, &transfer_usage, 1);
+	VkBufferImageCopy copy = {
+		.bufferOffset = 0,
+		.bufferRowLength = 0,
+		.bufferImageHeight = 0,
+		.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		.imageOffset = {0, 0, 0},
+		.imageExtent = {width, height, 1},
+	};
+	vkCmdCopyImageToBuffer(command_buffer, in_image->image,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+	ImageUsage restore_usage = {
+		.image = in_image,
+		.range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		.stage = previous.stage,
+		.access = previous.access,
+		.layout = previous.layout,
+	};
+	gpu_image_apply_usages(command_buffer, &restore_usage, 1);
+	VK_CHECK(vkEndCommandBuffer(command_buffer));
+	VkSubmitInfo submit = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &command_buffer,
+	};
+	VK_CHECK(vkQueueSubmit(ctx->graphics_queue, 1, &submit, VK_NULL_HANDLE));
+	VK_CHECK(vulkan_queue_wait_idle(ctx));
+	vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &command_buffer);
+	VK_CHECK(vmaInvalidateAllocation(ctx->allocator, allocation, 0, VK_WHOLE_SIZE));
+
+	const std::string temporary_path = std::string(in_path) + ".tmp";
+	std::remove(temporary_path.c_str());
+	FILE* file = fopen(temporary_path.c_str(), "wb");
+	bool succeeded = file && fprintf(file, "PF\n%u %u\n-1.0\n", width, height) > 0;
+	const u16* pixels = (const u16*)mapped_info.pMappedData;
+	if (file)
+	{
+		for (i32 y = (i32)height - 1; y >= 0 && succeeded; --y)
+			for (u32 x = 0; x < width && succeeded; ++x)
+			{
+				const u16* pixel = &pixels[((u64)y * width + x) * 4];
+				const f32 rgb[3] = {
+					vulkan_validation_half_to_float(pixel[0]),
+					vulkan_validation_half_to_float(pixel[1]),
+					vulkan_validation_half_to_float(pixel[2]),
+				};
+				succeeded = fwrite(rgb, sizeof(f32), 3, file) == 3;
+			}
+		succeeded = fclose(file) == 0 && succeeded;
+	}
+	if (succeeded)
+	{
+		#if defined(_WIN32)
+		std::remove(in_path);
+		#endif
+		succeeded = std::rename(temporary_path.c_str(), in_path) == 0;
+	}
+	if (!succeeded) std::remove(temporary_path.c_str());
+	vmaDestroyBuffer(ctx->allocator, buffer, allocation);
+	printf("%s PFM validation capture %s\n", succeeded ? "Wrote" : "Failed",
+		in_path);
+	return succeeded;
 }
 
 void vulkan_context_shutdown(VulkanContext* ctx)

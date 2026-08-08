@@ -37,6 +37,18 @@ namespace RenderSystem
 		return g_gi_scene;
 	}
 
+	inline bool dump_tonemapping_validation(State& in_state, const std::string& prefix)
+	{
+		GpuImage& tonemapped =
+			get_render_pass(ERenderPass::Tonemapping).get_color_output(0);
+		GpuImage& composite =
+			get_render_pass(ERenderPass::PresentationComposite).get_color_output(0);
+		return vulkan_context_dump_image_pfm(
+			&in_state.vk, &tonemapped, (prefix + ".tonemapped.pfm").c_str())
+			&& vulkan_context_dump_image_pfm(
+				&in_state.vk, &composite, (prefix + ".composite.pfm").c_str());
+	}
+
 	// Derives the internal render size from the window size and resolution
 	// percentage.
 	void update_render_resolution(State& in_state)

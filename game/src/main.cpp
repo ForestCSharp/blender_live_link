@@ -90,6 +90,9 @@ using std::optional;
 #include "ui/debug_ui_system.h"
 
 static AutomatedScreenshot automated_screenshot;
+static bool tonemapping_validation_capture_finished = false;
+static bool tonemapping_validation_capture_failed = false;
+static i32 tonemapping_validation_capture_count = 0;
 
 // Copies Jolt body transforms back into object transforms every frame.
 // This is a no-op while paused because bodies do not move.
@@ -164,6 +167,20 @@ void frame(f32 in_delta_time)
 
 	RenderSystem::end_frame(state);
 	automated_screenshot.after_frame(state);
+	const RuntimeConfig::Config& runtime_config = RuntimeConfig::get();
+	if (runtime_config.tonemap_validation_capture
+		&& !tonemapping_validation_capture_finished
+		&& state.vk.frame_number >= runtime_config.screenshot_frame
+			+ (u64)tonemapping_validation_capture_count * 2)
+	{
+		const std::string capture_prefix = *runtime_config.tonemap_validation_capture
+			+ ".repeat" + std::to_string(tonemapping_validation_capture_count);
+		tonemapping_validation_capture_failed = !RenderSystem::dump_tonemapping_validation(
+			state, capture_prefix);
+		tonemapping_validation_capture_count += 1;
+		tonemapping_validation_capture_finished =
+			tonemapping_validation_capture_failed || tonemapping_validation_capture_count == 2;
+	}
 
 	InputSystem::reset_mouse_delta(state);
 }
@@ -220,7 +237,18 @@ int main(int argc, char** argv)
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	GLFWwindow* window = glfwCreateWindow(state.window.width, state.window.height, "Blender Game", nullptr, nullptr);
+	const bool tonemapping_validation = RuntimeConfig::get().tonemap_validation_chart != 0;
+	if (tonemapping_validation)
+	{
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+		#if defined(__APPLE__)
+		glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
+		#endif
+	}
+	GLFWwindow* window = glfwCreateWindow(
+		tonemapping_validation ? 768 : state.window.width,
+		tonemapping_validation ? 512 : state.window.height,
+		"Blender Game", nullptr, nullptr);
 	if (!window)
 	{
 		printf("Failed to create GLFW window\n");
@@ -278,6 +306,10 @@ int main(int argc, char** argv)
 		{
 			glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}
+		if (tonemapping_validation_capture_finished)
+		{
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
 	}
 	if (automated_screenshot.enabled() && !automated_screenshot.finished())
 	{
@@ -304,5 +336,5 @@ int main(int argc, char** argv)
 
 	glfwDestroyWindow(window);
 	glfwTerminate();
-	return automated_screenshot.failed() ? 1 : 0;
+	return automated_screenshot.failed() || tonemapping_validation_capture_failed ? 1 : 0;
 }

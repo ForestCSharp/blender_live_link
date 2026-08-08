@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <string>
 
@@ -23,6 +24,9 @@ namespace RuntimeConfig
 		std::optional<std::string> tonemap_mode;
 		std::optional<bool> local_tonemap;
 		std::optional<std::string> output_mode;
+		int tonemap_validation_chart = 0;
+		std::optional<std::string> tonemap_validation_output_mode;
+		std::optional<std::string> tonemap_validation_capture;
 		std::optional<bool> bloom;
 		std::optional<double> bloom_threshold;
 		std::optional<double> bloom_soft_knee;
@@ -105,6 +109,10 @@ namespace RuntimeConfig
 		config.tonemap_mode = string_value("GAME2_TONEMAP_MODE");
 		config.local_tonemap = boolean_value("GAME2_LOCAL_TONEMAP");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
+		if (const char* chart = environment_value("GAME2_TONEMAP_VALIDATION_CHART"))
+			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2 : 1;
+		config.tonemap_validation_output_mode = string_value("GAME2_TONEMAP_VALIDATION_OUTPUT_MODE");
+		config.tonemap_validation_capture = string_value("GAME2_TONEMAP_VALIDATION_CAPTURE");
 		config.bloom = boolean_value("GAME2_BLOOM");
 		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
 		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");

@@ -1,6 +1,7 @@
 #version 450
 
 #include "tonemapping_operators.h"
+#include "tonemapping_validation_chart.h"
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2DArray tonemapping_lut;
@@ -14,6 +15,7 @@ layout(push_constant) uniform PushConstants
 	float preference_sigma;
 	int method;
 	float lut_integration_scale;
+	int validation_chart;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -26,14 +28,19 @@ vec3 downsample_hdr_2x(vec2 sample_uv)
 	// Eight-bilinear-tap 2x downsampling filter from Bart Wronski. The
 	// negative cross lobes suppress frequencies that would alias under motion.
 	vec3 color = vec3(0.0);
-	color += 0.37487566 * texture(scene_color, sample_uv + vec2(-0.75777, -0.75777) * pc.source_pixel_size).rgb;
-	color += 0.37487566 * texture(scene_color, sample_uv + vec2( 0.75777, -0.75777) * pc.source_pixel_size).rgb;
-	color += 0.37487566 * texture(scene_color, sample_uv + vec2( 0.75777,  0.75777) * pc.source_pixel_size).rgb;
-	color += 0.37487566 * texture(scene_color, sample_uv + vec2(-0.75777,  0.75777) * pc.source_pixel_size).rgb;
-	color -= 0.12487566 * texture(scene_color, sample_uv + vec2(-2.907, 0.0) * pc.source_pixel_size).rgb;
-	color -= 0.12487566 * texture(scene_color, sample_uv + vec2( 2.907, 0.0) * pc.source_pixel_size).rgb;
-	color -= 0.12487566 * texture(scene_color, sample_uv + vec2(0.0, -2.907) * pc.source_pixel_size).rgb;
-	color -= 0.12487566 * texture(scene_color, sample_uv + vec2(0.0,  2.907) * pc.source_pixel_size).rgb;
+	vec2 offsets[8] = vec2[8](
+		vec2(-0.75777, -0.75777), vec2( 0.75777, -0.75777),
+		vec2( 0.75777,  0.75777), vec2(-0.75777,  0.75777),
+		vec2(-2.907, 0.0), vec2(2.907, 0.0),
+		vec2(0.0, -2.907), vec2(0.0, 2.907));
+	for (int tap = 0; tap < 8; ++tap)
+	{
+		vec2 tap_uv = sample_uv + offsets[tap] * pc.source_pixel_size;
+		vec3 tap_color = pc.validation_chart == 2 ? vec3(0.18)
+			: pc.validation_chart == 1 ? tonemapping_validation_chart(tap_uv)
+			: texture(scene_color, tap_uv).rgb;
+		color += (tap < 4 ? 0.37487566 : -0.12487566) * tap_color;
+	}
 	return max(color, vec3(0.0));
 }
 

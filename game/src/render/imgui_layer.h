@@ -343,13 +343,7 @@ namespace ImGuiLayer
 							&state.tonemapping.local_contrast_boost);
 						if (ImGui::Button("Reset Local Defaults"))
 						{
-							state.tonemapping.local_shadow_recovery = 1.5f;
-							state.tonemapping.local_highlight_recovery = 2.0f;
-							state.tonemapping.local_exposure_preference_sigma = 5.0f;
-							state.tonemapping.local_coarsest_mip = MIN(6, max_mip);
-							state.tonemapping.local_reconstruction_mip =
-								MIN(2, state.tonemapping.local_coarsest_mip);
-							state.tonemapping.local_contrast_boost = false;
+							state.tonemapping.reset_local_defaults(max_mip);
 						}
 						ImGui::TextDisabled(
 							"Effective mip range: %d -> %d (available through %d)",

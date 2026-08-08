@@ -16,6 +16,7 @@
 
 // ObjectData (shared with shaders)
 #include "shader_common.h"
+#include "tonemapping_shared.h"
 
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT = 3;
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY = 64;
@@ -73,11 +74,11 @@ enum class ETessellationMode : i32
 
 enum class ETonemappingMethod : i32
 {
-	GT7 = 0,
-	AgX = 1,
-	Aces2 = 2,
-	KhronosPBRNeutral = 3,
-	MAX,
+	GT7 = TONEMAP_METHOD_GT7,
+	AgX = TONEMAP_METHOD_AGX,
+	Aces2 = TONEMAP_METHOD_ACES_2,
+	KhronosPBRNeutral = TONEMAP_METHOD_KHRONOS_PBR_NEUTRAL,
+	MAX = TONEMAP_METHOD_COUNT,
 };
 
 inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
@@ -332,15 +333,44 @@ struct State
 
 	struct TonemappingState
 	{
+		struct LocalDefaults
+		{
+			f32 shadow_recovery;
+			f32 highlight_recovery;
+			f32 exposure_preference_sigma;
+			i32 coarsest_mip;
+			i32 reconstruction_mip;
+			bool contrast_boost;
+		};
+
+		inline static constexpr LocalDefaults LOCAL_DEFAULTS = {
+			.shadow_recovery = 1.5f,
+			.highlight_recovery = 2.0f,
+			.exposure_preference_sigma = 5.0f,
+			.coarsest_mip = 9,
+			.reconstruction_mip = 2,
+			.contrast_boost = false,
+		};
+
 		f32 exposure_bias = 0.0f;	// Default scene exposure bias.
 		ETonemappingMethod method = ETonemappingMethod::GT7;
 		bool local_enabled = true;
-		f32 local_shadow_recovery = 1.5f;
-		f32 local_highlight_recovery = 2.0f;
-		f32 local_exposure_preference_sigma = 5.0f;
-		i32 local_coarsest_mip = 9;
-		i32 local_reconstruction_mip = 2;
-		bool local_contrast_boost = false;
+		f32 local_shadow_recovery = LOCAL_DEFAULTS.shadow_recovery;
+		f32 local_highlight_recovery = LOCAL_DEFAULTS.highlight_recovery;
+		f32 local_exposure_preference_sigma = LOCAL_DEFAULTS.exposure_preference_sigma;
+		i32 local_coarsest_mip = LOCAL_DEFAULTS.coarsest_mip;
+		i32 local_reconstruction_mip = LOCAL_DEFAULTS.reconstruction_mip;
+		bool local_contrast_boost = LOCAL_DEFAULTS.contrast_boost;
+
+		void reset_local_defaults(i32 max_mip)
+		{
+			local_shadow_recovery = LOCAL_DEFAULTS.shadow_recovery;
+			local_highlight_recovery = LOCAL_DEFAULTS.highlight_recovery;
+			local_exposure_preference_sigma = LOCAL_DEFAULTS.exposure_preference_sigma;
+			local_coarsest_mip = MIN(LOCAL_DEFAULTS.coarsest_mip, max_mip);
+			local_reconstruction_mip = MIN(LOCAL_DEFAULTS.reconstruction_mip, local_coarsest_mip);
+			local_contrast_boost = LOCAL_DEFAULTS.contrast_boost;
+		}
 	} tonemapping;
 
 	struct BloomState

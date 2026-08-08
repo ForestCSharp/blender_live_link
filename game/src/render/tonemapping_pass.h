@@ -21,8 +21,9 @@ struct TonemappingFinalPushConstants
 	f32 bloom_intensity;
 	HMM_Vec2 guide_pixel_size;
 	f32 lut_integration_scale;
+	i32 validation_chart;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 28);
+static_assert(sizeof(TonemappingFinalPushConstants) == 32);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -33,8 +34,9 @@ struct TonemappingLocalProxyPushConstants
 	f32 preference_sigma;
 	i32 method;
 	f32 lut_integration_scale;
+	i32 validation_chart;
 };
-static_assert(sizeof(TonemappingLocalProxyPushConstants) == 32);
+static_assert(sizeof(TonemappingLocalProxyPushConstants) == 36);
 
 struct TonemappingLocalDownsamplePushConstants
 {
@@ -78,11 +80,23 @@ struct TonemappingPass
 
 static TonemappingPass tonemapping_pass;
 
+inline EDisplayOutputMode tonemapping_profile_output_mode(const VulkanContext* ctx)
+{
+	const RuntimeConfig::Config& config = RuntimeConfig::get();
+	if (config.tonemap_validation_chart != 0 && config.tonemap_validation_output_mode)
+	{
+		if (*config.tonemap_validation_output_mode == "edr") return EDisplayOutputMode::EDR;
+		if (*config.tonemap_validation_output_mode == "hdr10") return EDisplayOutputMode::HDR10;
+		return EDisplayOutputMode::SDR;
+	}
+	return ctx->active_output_mode;
+}
+
 inline f32 tonemapping_lut_integration_scale(
 	const VulkanContext* ctx,
 	ETonemappingMethod method)
 {
-	const bool sdr = ctx->active_output_mode == EDisplayOutputMode::SDR;
+	const bool sdr = tonemapping_profile_output_mode(ctx) == EDisplayOutputMode::SDR;
 	if (method == ETonemappingMethod::AgX)
 		return sdr ? AgXTonemapping::SDR_INTEGRATION_SCALE : AgXTonemapping::HDR_INTEGRATION_SCALE;
 	if (method == ETonemappingMethod::Aces2)
@@ -181,7 +195,8 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
 
-	const bool hdr_output = ctx->active_output_mode != EDisplayOutputMode::SDR;
+	const EDisplayOutputMode profile_output_mode = tonemapping_profile_output_mode(ctx);
+	const bool hdr_output = profile_output_mode != EDisplayOutputMode::SDR;
 	printf("GT7 profile: %s, integration scale %.7f\n",
 		hdr_output ? "HDR 1000-nit peak / 203-nit diffuse white" : "SDR",
 		hdr_output ? GT7Tonemapping::HDR_INTEGRATION_SCALE : GT7Tonemapping::SDR_INTEGRATION_SCALE);
@@ -190,14 +205,14 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		: GT7Tonemapping::generate_sdr_lut();
 	ACES2Tonemapping::LoadedLUT aces2_lut;
 	std::string aces2_error;
-	if (!ACES2Tonemapping::load_lut((i32)ctx->active_output_mode, &aces2_lut, &aces2_error))
+	if (!ACES2Tonemapping::load_lut((i32)profile_output_mode, &aces2_lut, &aces2_error))
 	{
 		printf("ACES 2.0 LUT load failed: %s\n", aces2_error.c_str());
 		exit(1);
 	}
 	AgXTonemapping::LoadedLUT agx_lut;
 	std::string agx_error;
-	if (!AgXTonemapping::load_lut((i32)ctx->active_output_mode, &agx_lut, &agx_error))
+	if (!AgXTonemapping::load_lut((i32)profile_output_mode, &agx_lut, &agx_error))
 	{
 		printf("AgX LUT load failed: %s\n", agx_error.c_str());
 		exit(1);
@@ -217,7 +232,7 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	memcpy(combined_lut_pixels.data() + gt7_lut_pixels.length() + aces2_lut.pixels.length(),
 		agx_lut.pixels.data(), agx_lut.pixels.length() * sizeof(u16));
 	printf("ACES 2.0 profile: %s, integration scale %.7f, LUT CRC32 %08x\n",
-		ACES2Tonemapping::target_name((i32)ctx->active_output_mode),
+		ACES2Tonemapping::target_name((i32)profile_output_mode),
 		hdr_output ? ACES2Tonemapping::HDR_INTEGRATION_SCALE : ACES2Tonemapping::SDR_INTEGRATION_SCALE,
 		aces2_lut.crc32);
 	printf("AgX profile: %s / Medium High Contrast, integration scale %.7f, LUT CRC32 %08x\n",
@@ -562,6 +577,7 @@ void tonemapping_pass_prepare_local(
 			.preference_sigma = in_state.local_exposure_preference_sigma,
 			.method = (i32)in_state.method,
 			.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
+			.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
 		};
 		tonemapping_draw_local_stage(
 			ctx,
@@ -771,6 +787,7 @@ void tonemapping_pass_draw(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
 		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
+		.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
 	};
 
 	vkCmdBindPipeline(

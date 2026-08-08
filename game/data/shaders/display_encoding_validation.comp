@@ -1,0 +1,35 @@
+#version 450
+
+#include "display_encoding.h"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ValidationInputs
+{
+	vec4 input_colors[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer ValidationOutputs
+{
+	vec4 output_colors[];
+};
+
+layout(push_constant) uniform PushConstants
+{
+	int output_mode;
+	int sample_count;
+	int sdr_attachment_is_srgb;
+	int _padding;
+} pc;
+
+void main()
+{
+	uint index = gl_GlobalInvocationID.x;
+	if (index >= uint(pc.sample_count)) return;
+	vec2 pixel_coordinate = vec2(float(index % 1024u), float(index / 1024u));
+	output_colors[index] = vec4(display_encode(
+		input_colors[index].rgb,
+		pc.output_mode,
+		pc.sdr_attachment_is_srgb,
+		pixel_coordinate), 1.0);
+}

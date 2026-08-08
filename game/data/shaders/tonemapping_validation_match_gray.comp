@@ -1,0 +1,37 @@
+#version 450
+
+#define PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY 1
+#include "tonemapping_operators.h"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ValidationInputs
+{
+	vec4 input_colors[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer ValidationOutputs
+{
+	vec4 output_colors[];
+};
+
+layout(set = 0, binding = 2) uniform sampler2DArray tonemapping_lut;
+
+layout(push_constant) uniform PushConstants
+{
+	int method;
+	int sample_count;
+	float lut_integration_scale;
+	int _padding;
+} pc;
+
+void main()
+{
+	uint index = gl_GlobalInvocationID.x;
+	if (index >= uint(pc.sample_count)) return;
+	output_colors[index] = vec4(tonemap_apply(
+		pc.method,
+		tonemapping_lut,
+		input_colors[index].rgb,
+		pc.lut_integration_scale), 1.0);
+}

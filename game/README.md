@@ -51,6 +51,30 @@ CRCs, SDR/EDR/HDR10 LUT reference vectors and interpolation invariants, Khronos
 PBR Neutral reference behavior, the 203/1000-nit HDR calibration, Rec.2020/PQ
 encoding anchors, EDR scaling, and synthetic output-format negotiation.
 
+The formal suite adds a 110,604-sample deterministic corpus, upstream OCIO
+regeneration checks, direct production-GLSL compute readback, all 24
+method/local/output renderer combinations, isolated constant-field checks, and
+an HTML visual-review report:
+
+```sh
+./validate_tonemapping.sh
+```
+
+The wrapper selects Python 3.12 when available, creates the reusable ignored
+environment `bin/tonemapping-validation-venv`, and installs the pinned NumPy
+and PyOpenColorIO dependencies without modifying the system Python. Set
+`GAME2_TONEMAP_VALIDATION_PYTHON` to select another Python 3.9–3.12
+interpreter. The initial setup requires network access; later runs reuse the
+environment. Arguments are forwarded to `tools/validate_tonemapping.py`, which
+may still be invoked directly for advanced or dependency-free narrow runs.
+
+The full command requires a Vulkan device for GPU/pipeline validation. Reports
+and previews default to `bin/validation/tonemapping/`. Use `--skip-ocio`,
+`--skip-gpu`, or `--skip-pipeline` only when deliberately running a narrower
+tier. CPU and GPU results are hard conformance gates; chart images, clipping
+metrics, neutral-axis error, and global/local luminance SSIM are review
+artifacts rather than goldens.
+
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
   MoltenVK ICD at `/usr/local/share/vulkan/icd.d/MoltenVK_icd.json`)
@@ -127,6 +151,11 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
   local tonemapping for the selected method. This explicit setting takes
   precedence over the behavior implied by `GAME2_TONEMAP_MODE`.
+- `GAME2_TONEMAP_VALIDATION_CHART=1|constant`,
+  `GAME2_TONEMAP_VALIDATION_OUTPUT_MODE=sdr|edr|hdr10`, and
+  `GAME2_TONEMAP_VALIDATION_CAPTURE=<prefix>` — validation-only controls used
+  by `tools/validate_tonemapping.py`; they exercise HDR profiles through an
+  SDR-compatible surface and write deterministic pre-presentation PFM captures.
 - `GAME2_OUTPUT_MODE=auto|sdr|edr|hdr10` — unset or `auto` prefers HDR10 and
   safely falls back to SDR. Explicit `sdr` is the compatibility/testing path;
   `edr` requires `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR`, and `hdr10`
@@ -315,6 +344,14 @@ display paths is an engine-specific experimental interpretation, not Khronos
 HDR conformance. Enable the optional path with
 `SHADER_OPT_FLAGS="-O -g -DPBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY=1"` when
 building. See `LICENSES/Khronos-ToneMapping-Apache-2.0.txt`.
+
+Formal conformance preserves each operator's intended identity rather than
+forcing them to resemble one another: GT7 retains its ICtCp highlight-chroma
+behavior, AgX includes Blender's Medium High Contrast look, ACES 2 uses its
+target-specific rendering gamut, and PBR Neutral retains its dielectric offset
+and deliberate highlight desaturation. A conformant result can still be a
+subjective mismatch for a particular scene; the generated visual report keeps
+that approval separate from numerical correctness.
 
 HDR10 and EDR use a dedicated GT7 profile with a 1000-nit peak, 203-nit
 diffuse white, and an integration scale of `11.2777778`, mapping EV-0 18% gray

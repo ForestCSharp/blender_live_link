@@ -32,6 +32,7 @@ LUT_INPUT_MAX = 64.0
 LUT_SHAPER_ACESCCT = 1
 LUT_PIXEL_FORMAT_RGBA16F = 1
 LUT_HEADER = struct.Struct("<8s8I")
+REFERENCE_SAMPLE_COUNT = 100000
 
 ACES2_SDR_INTEGRATION_SCALE = 2.0548065
 ACES2_HDR_INTEGRATION_SCALE = 10.9398375
@@ -185,7 +186,7 @@ def sample_lut(output: np.ndarray, inputs: np.ndarray) -> np.ndarray:
 def verify_lut(target: dict, quantized_output: np.ndarray) -> dict:
     rng = np.random.default_rng(0xACE520)
     random_inputs = LUT_INPUT_MAX * np.power(
-        rng.random((20000, 3), dtype=np.float32), 4.0)
+        rng.random((REFERENCE_SAMPLE_COUNT, 3), dtype=np.float32), 4.0)
     directed = np.array([
         [0.0, 0.0, 0.0], [0.18, 0.18, 0.18], [1.0, 1.0, 1.0],
         [64.0, 64.0, 64.0], [4.0, 2.0, 0.5], [12.0, 0.25, 2.0],
@@ -200,9 +201,10 @@ def verify_lut(target: dict, quantized_output: np.ndarray) -> dict:
     max_error = float(np.max(errors))
     if not np.all(np.isfinite(sampled)):
         raise RuntimeError(f"{target['name']}: LUT produced non-finite values")
-    if mean_error >= 0.005 or p99_error >= 0.02:
+    if mean_error >= 0.005 or p99_error >= 0.02 or max_error >= 0.04:
         raise RuntimeError(
-            f"{target['name']}: LUT error exceeds limits: mean={mean_error}, p99={p99_error}")
+            f"{target['name']}: LUT error exceeds limits: "
+            f"mean={mean_error}, p99={p99_error}, max={max_error}")
 
     scale = target["integration_scale"]
     gray_input = np.array([[0.18 * scale] * 3], dtype=np.float32)
@@ -290,6 +292,7 @@ def main() -> int:
         "input_max": LUT_INPUT_MAX,
         "shaper": "normalized ACEScct",
         "pixel_format": "RGBA16F little-endian",
+        "reference_sample_count": REFERENCE_SAMPLE_COUNT,
         "targets": targets,
     }
     manifest_path = args.output_dir / "aces2_manifest.json"
