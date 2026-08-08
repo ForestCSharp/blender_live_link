@@ -160,6 +160,8 @@ static_assert((i32)EDisplayOutputMode::SDR == DISPLAY_OUTPUT_MODE_SDR);
 static_assert((i32)EDisplayOutputMode::EDR == DISPLAY_OUTPUT_MODE_EDR);
 static_assert((i32)EDisplayOutputMode::HDR10 == DISPLAY_OUTPUT_MODE_HDR10);
 
+static constexpr u32 TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS = 192;
+
 #include "render/output_selection.inl"
 
 struct VulkanCapabilities
@@ -924,6 +926,8 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	if (!vulkan_format_supports(in_device, VK_FORMAT_R16G16B16A16_SFLOAT,
 		VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA16F tonemapping LUT unsupported");
+	if (result.properties.limits.maxImageArrayLayers < TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS)
+		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "192-layer tonemapping LUT unsupported");
 
 	result.compatible = result.rejection_reason[0] == '\0';
 	if (result.compatible)

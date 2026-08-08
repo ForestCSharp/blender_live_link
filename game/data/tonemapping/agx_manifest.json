@@ -1,0 +1,211 @@
+{
+  "format": "game2-agx-lut-manifest-v1",
+  "blender_version": "v5.2.0",
+  "blender_commit": "fbe6228777e7d9afefcd61a413844e790ae75db7",
+  "opencolorio_version": "2.5.0",
+  "source_sha256": {
+    "config.ocio": "47a7d83e79c1d21f49ba6c505efe311da723471688c614b5c366e1da7eb8ea3a",
+    "luts/AgX_Base_sRGB.cube": "e707a36f3e90ee79bc342332febf91334c02ce3974cac700ece00ca9d4507491",
+    "luts/AgX_Rec2100-HLG_p3_lim.cube": "4422eb9a8d3ecc16836d241287b171758e2f2db202934d9ff51865543dd360c0"
+  },
+  "resolution": 64,
+  "input_max": 64.0,
+  "shaper": "normalized ACEScct",
+  "pixel_format": "RGBA16F little-endian",
+  "targets": [
+    {
+      "name": "sdr",
+      "file": "agx_sdr.lutbin",
+      "target_id": 0,
+      "display": "sRGB",
+      "view": "AgX",
+      "look": "AgX - Medium High Contrast",
+      "peak_nits": 100.0,
+      "integration_scale": 1.1601751,
+      "root_solved_integration_scale": 1.1601751463280756,
+      "analytic_root_solved_integration_scale": 1.160211819741459,
+      "middle_gray_target": 0.214519,
+      "payload_bytes": 2097152,
+      "crc32": "140773c7",
+      "mean_absolute_rgb_error": 0.00022047778475098312,
+      "p99_absolute_rgb_error": 0.00223912438377738,
+      "max_absolute_rgb_error": 0.010559678077697754,
+      "middle_gray_output": [
+        0.21443282067775726,
+        0.21451136469841003,
+        0.21461279690265656
+      ],
+      "reference_vectors": [
+        {
+          "input": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "output": [
+            8.367296517187888e-17,
+            0.0,
+            1.632132200658082e-14
+          ]
+        },
+        {
+          "input": [
+            0.18000000715255737,
+            0.18000000715255737,
+            0.18000000715255737
+          ],
+          "output": [
+            0.17996633052825928,
+            0.1799646019935608,
+            0.17999489605426788
+          ]
+        },
+        {
+          "input": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "output": [
+            0.6274431347846985,
+            0.6274421215057373,
+            0.6274756193161011
+          ]
+        },
+        {
+          "input": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "output": [
+            0.948649525642395,
+            0.7497816681861877,
+            0.5815993547439575
+          ]
+        },
+        {
+          "input": [
+            12.0,
+            0.25,
+            2.0
+          ],
+          "output": [
+            1.0,
+            0.7303921580314636,
+            0.7953750491142273
+          ]
+        },
+        {
+          "input": [
+            64.0,
+            64.0,
+            64.0
+          ],
+          "output": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hdr1000",
+      "file": "agx_hdr1000.lutbin",
+      "target_id": 1,
+      "display": "Rec.2100-PQ",
+      "view": "AgX - HDR 1000 nits",
+      "look": "AgX - Medium High Contrast",
+      "peak_nits": 1000.0,
+      "integration_scale": 5.1099494,
+      "root_solved_integration_scale": 5.109949409961715,
+      "analytic_root_solved_integration_scale": 5.180406404866105,
+      "middle_gray_target": 0.203,
+      "payload_bytes": 2097152,
+      "crc32": "4fde2344",
+      "mean_absolute_rgb_error": 0.0004195567744318396,
+      "p99_absolute_rgb_error": 0.003547622822225094,
+      "max_absolute_rgb_error": 0.013676047325134277,
+      "middle_gray_output": [
+        0.20300893485546112,
+        0.20303919911384583,
+        0.20295187830924988
+      ],
+      "reference_vectors": [
+        {
+          "input": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "output": [
+            1.233676627521163e-08,
+            1.0238158765218941e-08,
+            3.848799678962678e-08
+          ]
+        },
+        {
+          "input": [
+            0.18000000715255737,
+            0.18000000715255737,
+            0.18000000715255737
+          ],
+          "output": [
+            0.01810223050415516,
+            0.01810230128467083,
+            0.01810508593916893
+          ]
+        },
+        {
+          "input": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "output": [
+            0.224394753575325,
+            0.22439610958099365,
+            0.2244194895029068
+          ]
+        },
+        {
+          "input": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "output": [
+            0.7824970483779907,
+            0.5207464098930359,
+            0.3004327416419983
+          ]
+        },
+        {
+          "input": [
+            12.0,
+            0.25,
+            2.0
+          ],
+          "output": [
+            1.1492393016815186,
+            0.5942379236221313,
+            0.6885361671447754
+          ]
+        },
+        {
+          "input": [
+            64.0,
+            64.0,
+            64.0
+          ],
+          "output": [
+            0.9999897480010986,
+            0.9999897480010986,
+            0.9999897480010986
+          ]
+        }
+      ]
+    }
+  ]
+}

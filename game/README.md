@@ -36,6 +36,8 @@ clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
 clang++ -std=c++20 -O2 tests/aces2_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/aces2_tonemapping_tests && /tmp/aces2_tonemapping_tests
+clang++ -std=c++20 -O2 tests/agx_tonemapping_tests.cpp -I src -I extern \
+  -o /tmp/agx_tonemapping_tests && /tmp/agx_tonemapping_tests
 clang++ -std=c++20 -O2 tests/pbr_neutral_tonemapping_tests.cpp \
   -o /tmp/pbr_neutral_tonemapping_tests && /tmp/pbr_neutral_tonemapping_tests
 clang++ -std=c++20 -O2 tests/display_encoding_tests.cpp \
@@ -44,10 +46,10 @@ clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/inc
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-These check the published GT7 vectors, ACES 2 asset headers and CRCs, SDR/EDR/
-HDR10 LUT reference vectors and interpolation invariants, Khronos PBR Neutral
-reference behavior, the 203/1000-nit HDR calibration, Rec.2020/PQ encoding
-anchors, EDR scaling, and synthetic output-format negotiation.
+These check the published GT7 vectors, ACES 2 and Blender AgX asset headers and
+CRCs, SDR/EDR/HDR10 LUT reference vectors and interpolation invariants, Khronos
+PBR Neutral reference behavior, the 203/1000-nit HDR calibration, Rec.2020/PQ
+encoding anchors, EDR scaling, and synthetic output-format negotiation.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -237,7 +239,7 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 ### Tonemapping and macOS HDR output
 
 The selected GT7 profile is baked once at startup into the first 64 layers of a
-128-layer `R16G16B16A16_SFLOAT` 2D-array LUT. Its power-of-four input shaper
+192-layer `R16G16B16A16_SFLOAT` 2D-array LUT. Its power-of-four input shaper
 covers scene-linear `[0,64]`; hardware bilinear filtering handles red/green and
 the shader manually interpolates adjacent blue layers. GT7 contains the full
 linear-sRGB → Rec.2020 → GT7/ICtCp → linear-sRGB transform. A fixed 1.575 EV
@@ -245,6 +247,28 @@ SDR integration calibration matches the renderer's EV-0 18% gray to the former
 AgX-backed local path; it is not a claim that scene units are physical nits.
 The port retains Polyphony Digital's MIT notice in
 `src/render/gt7_tonemapping.h`.
+
+AgX uses the official Blender 5.2 view transforms instead of the former compact
+GLSL approximation. The checked-in SDR asset bakes `AgX Base Rec.1886`; EDR and
+HDR10 share the `AgX Rec.2100-HLG - HDR 1000 nits (P3 D65)` formation. Both
+include Blender's `AgX - Medium High Contrast` look. The normalized-ACEScct
+64³ LUT occupies layers 128–191, stores SDR in bounded linear Rec.709, and
+stores HDR as P3-limited color in the extended linear-sRGB composite basis.
+Integration scales `1.1601751` and `5.1099494` map EV-0 18% gray to
+approximately `0.214519` for SDR and `0.203` (203 nits) for HDR.
+
+AgX generation is pinned to Blender `v5.2.0` commit
+`fbe6228777e7d9afefcd61a413844e790ae75db7` and PyOpenColorIO 2.5.0. The
+generator downloads the pinned OCIO configuration and source LUTs into a
+temporary cache, verifies their SHA-256 hashes, and writes both production
+assets plus `data/tonemapping/agx_manifest.json`:
+
+```sh
+python3 tools/generate_agx_luts.py
+```
+
+Normal builds have no OCIO or network dependency. See
+`LICENSES/Blender-AgX-GPL-2.0-or-later.txt` for source attribution and terms.
 
 ACES 2.0 replaces the former fitted approximation at method index 2. Its
 checked-in 64³ RGBA16F LUT occupies packed array layers 64–127 and uses a
@@ -300,8 +324,8 @@ placed at 203 nits for HDR or 1.0 for SDR. The final copy is the only display
 encoding boundary: SDR gets code-space 8-bit dithering, EDR receives extended
 linear sRGB, and HDR10 converts the possibly extended linear-sRGB composite to
 Rec.2020 before gamut clamping and ST-2084 PQ encoding. This lets ACES preserve
-wide-gamut intermediates through bloom, FXAA, and ImGui compositing. HDR/EDR are
-undithered.
+wide-gamut intermediates through bloom, FXAA, and ImGui compositing; AgX HDR
+uses the same representation for its P3-limited result. HDR/EDR are undithered.
 
 When available, `VK_EXT_hdr_metadata` submits BT.2020/D65, a 1000-nit mastering
 peak, 1000-nit MaxCLL, and 400-nit MaxFALL on every HDR10 swapchain creation.

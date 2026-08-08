@@ -208,7 +208,7 @@ namespace ImGuiLayer
 			draw_stats_ui(state);
 		}
 
-		if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("Animation"))
 		{
 			if (ImGui::Button("Play")) state.animation.is_playing = true;
 			ImGui::SameLine(); if (ImGui::Button("Pause")) state.animation.is_playing = false;

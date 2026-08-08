@@ -1,0 +1,27 @@
+Blender 5.2 AgX color-management attribution and license notice
+
+Generated LUT assets in data/tonemapping/agx_*.lutbin are derived from the
+Blender v5.2.0 color-management configuration and AgX LUTs at commit:
+
+fbe6228777e7d9afefcd61a413844e790ae75db7
+https://github.com/blender/blender/tree/v5.2.0/release/datafiles/colormanagement
+
+The configuration identifies the original AgX work by Troy Sobotka and further
+development by Zijun Eary Zhou, Mark Faderbauer, and Sakari Kapanen:
+https://github.com/sobotka/AgX
+https://github.com/EaryChow/AgX
+
+Blender uses the GNU General Public License version 2 or, at your option, any
+later version. Blender's COPYING notice and full license are available at:
+
+https://github.com/blender/blender/blob/v5.2.0/COPYING
+https://github.com/blender/blender/blob/v5.2.0/doc/license/GPL-license.txt
+
+This program is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation; either version 2 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.

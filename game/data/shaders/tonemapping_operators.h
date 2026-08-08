@@ -17,6 +17,9 @@ const float GT7_LUT_INPUT_MAX = 64.0;
 const float ACES2_LUT_RESOLUTION = 64.0;
 const float ACES2_LUT_INPUT_MAX = 64.0;
 const float ACES2_LUT_LAYER_OFFSET = 64.0;
+const float AGX_LUT_RESOLUTION = 64.0;
+const float AGX_LUT_INPUT_MAX = 64.0;
+const float AGX_LUT_LAYER_OFFSET = 128.0;
 
 vec3 sample_tonemapping_lut(
 	sampler2DArray tonemapping_lut,
@@ -61,10 +64,26 @@ vec3 tonemap_aces2(sampler2DArray tonemapping_lut, vec3 color, float integration
 		aces2_linear_to_acescct(calibrated.b));
 	shaped = (shaped - shaper_min) / (shaper_max - shaper_min);
 	vec3 lut_position = shaped * (ACES2_LUT_RESOLUTION - 1.0);
-	// HDR10 LUT values are stored in the linear-sRGB composite basis and may
+	// Wide-gamut LUT values are stored in the linear-sRGB composite basis and may
 	// be negative or exceed one while still lying inside the Rec.2020 target.
 	return sample_tonemapping_lut(
 		tonemapping_lut, lut_position, ACES2_LUT_RESOLUTION, ACES2_LUT_LAYER_OFFSET);
+}
+
+vec3 tonemap_agx(sampler2DArray tonemapping_lut, vec3 color, float integration_scale)
+{
+	vec3 calibrated = clamp(max(color, vec3(0.0)) * integration_scale,
+		vec3(0.0), vec3(AGX_LUT_INPUT_MAX));
+	const float shaper_min = 0.0729055341958355;
+	const float shaper_max = (log2(AGX_LUT_INPUT_MAX) + 9.72) / 17.52;
+	vec3 shaped = vec3(
+		aces2_linear_to_acescct(calibrated.r),
+		aces2_linear_to_acescct(calibrated.g),
+		aces2_linear_to_acescct(calibrated.b));
+	shaped = (shaped - shaper_min) / (shaper_max - shaper_min);
+	vec3 lut_position = shaped * (AGX_LUT_RESOLUTION - 1.0);
+	return sample_tonemapping_lut(
+		tonemapping_lut, lut_position, AGX_LUT_RESOLUTION, AGX_LUT_LAYER_OFFSET);
 }
 
 // Khronos PBR Neutral Tone Mapper, pinned to reference commit
@@ -102,58 +121,10 @@ vec3 tonemap_khronos_pbr_neutral(vec3 color)
 	return mix(color, new_peak * vec3(1.0), g);
 }
 
-vec3 agx_default_contrast(vec3 x)
-{
-	vec3 x2 = x * x;
-	vec3 x4 = x2 * x2;
-	return 15.5 * x4 * x2
-		- 40.14 * x4 * x
-		+ 31.96 * x4
-		- 6.868 * x2 * x
-		+ 0.4298 * x2
-		+ 0.1191 * x
-		- 0.00232;
-}
-
-vec3 tonemap_agx(vec3 color)
-{
-	// Linear sRGB -> linear Rec.2020.
-	const mat3 srgb_to_rec2020 = mat3(
-		vec3(0.6274, 0.0691, 0.0164),
-		vec3(0.3293, 0.9195, 0.0880),
-		vec3(0.0433, 0.0113, 0.8956)
-	);
-	const mat3 rec2020_to_srgb = mat3(
-		vec3(1.6605, -0.1246, -0.0182),
-		vec3(-0.5876, 1.1329, -0.1006),
-		vec3(-0.0728, -0.0083, 1.1187)
-	);
-	const mat3 inset = mat3(
-		vec3(0.856627153315983, 0.137318972929847, 0.111898212999950),
-		vec3(0.095121240538159, 0.761241990602591, 0.076799418603190),
-		vec3(0.048251606145858, 0.101439036467562, 0.811302368396859)
-	);
-	const mat3 outset = mat3(
-		vec3(1.127100581814437, -0.141329763498438, -0.141329763498438),
-		vec3(-0.110606643096603, 1.157823702216272, -0.110606643096603),
-		vec3(-0.016493938717835, -0.016493938717834, 1.251936406595041)
-	);
-
-	vec3 value = inset * (srgb_to_rec2020 * max(color, vec3(0.0)));
-	value = log2(max(value, vec3(1e-10)));
-	const float min_ev = -12.47393;
-	const float max_ev = 4.026069;
-	value = clamp((value - min_ev) / (max_ev - min_ev), 0.0, 1.0);
-	value = agx_default_contrast(value);
-	value = outset * value;
-	value = pow(max(value, vec3(0.0)), vec3(2.2));
-	return clamp(rec2020_to_srgb * value, 0.0, 1.0);
-}
-
 vec3 tonemap_apply(int method, sampler2DArray tonemapping_lut, vec3 color, float lut_integration_scale)
 {
 	if (method == TONEMAP_METHOD_AGX)
-		return tonemap_agx(color);
+		return tonemap_agx(tonemapping_lut, color, lut_integration_scale);
 	if (method == TONEMAP_METHOD_ACES_2)
 		return tonemap_aces2(tonemapping_lut, color, lut_integration_scale);
 	if (method == TONEMAP_METHOD_KHRONOS_PBR_NEUTRAL)
@@ -163,7 +134,7 @@ vec3 tonemap_apply(int method, sampler2DArray tonemapping_lut, vec3 color, float
 
 float tonemap_perceptual_lightness(int method, vec3 tonemapped_color)
 {
-	float luminance = method == TONEMAP_METHOD_ACES_2
+	float luminance = method == TONEMAP_METHOD_ACES_2 || method == TONEMAP_METHOD_AGX
 		? clamp(dot(tonemapped_color, TONEMAP_LUMINANCE_WEIGHTS), 0.0, 1.0)
 		: dot(clamp(tonemapped_color, 0.0, 1.0), TONEMAP_LUMINANCE_WEIGHTS);
 	return sqrt(max(luminance, 0.0));

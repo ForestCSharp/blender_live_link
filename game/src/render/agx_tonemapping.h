@@ -1,10 +1,10 @@
 #pragma once
 
-// ACES 2.0 LUT asset loading and CPU reference sampling.
+// Blender 5.2 AgX SDR/HDR LUT asset loading and CPU reference sampling.
 //
-// Assets are generated from ACES v2.0.0+2025.04.04 with OpenColorIO 2.5.0.
-// See LICENSES/ACES-v2.0.0-License.txt, LICENSES/ACES-Apache-2.0.txt, and
-// LICENSES/OpenColorIO-BSD-3-Clause.txt for upstream attribution and terms.
+// Assets are generated from Blender v5.2.0 commit
+// fbe6228777e7d9afefcd61a413844e790ae75db7 with OpenColorIO 2.5.0.
+// See LICENSES/Blender-AgX-GPL-2.0-or-later.txt for upstream terms and attribution.
 
 #include "core/dynamic_array.h"
 #include "render/gt7_tonemapping.h"
@@ -15,13 +15,16 @@
 #include <cstring>
 #include <string>
 
-namespace ACES2Tonemapping
+namespace AgXTonemapping
 {
 	static constexpr u32 LUT_RESOLUTION = 64;
 	static constexpr f32 LUT_INPUT_MAX = 64.0f;
-	static constexpr u32 LUT_LAYER_OFFSET = 64;
-	static constexpr f32 SDR_INTEGRATION_SCALE = 2.0548065f;
-	static constexpr f32 HDR_INTEGRATION_SCALE = 10.9398375f;
+	static constexpr u32 LUT_LAYER_OFFSET = 128;
+	static constexpr u32 SDR_TARGET = 0;
+	static constexpr u32 HDR_1000_TARGET = 1;
+	// Filled from the deterministic root solve performed by generate_agx_luts.py.
+	static constexpr f32 SDR_INTEGRATION_SCALE = 1.1601751f;
+	static constexpr f32 HDR_INTEGRATION_SCALE = 5.1099494f;
 
 	static constexpr u32 LUT_FILE_VERSION = 1;
 	static constexpr u32 LUT_SHAPER_ACESCCT = 1;
@@ -30,9 +33,9 @@ namespace ACES2Tonemapping
 	static constexpr size_t LUT_TEXEL_COUNT =
 		(size_t)LUT_RESOLUTION * LUT_RESOLUTION * LUT_RESOLUTION;
 	static constexpr size_t LUT_PAYLOAD_SIZE = LUT_TEXEL_COUNT * 4 * sizeof(u16);
-	static constexpr u8 LUT_MAGIC[8] = {'G', '2', 'A', '2', 'L', 'U', 'T', 0};
+	static constexpr u8 LUT_MAGIC[8] = {'G', '2', 'A', 'G', 'X', 'L', 'U', 'T'};
 	static_assert(std::endian::native == std::endian::little,
-		"ACES 2 LUT payloads are serialized as little-endian RGBA16F");
+		"AgX LUT payloads are serialized as little-endian RGBA16F");
 
 	struct LoadedLUT
 	{
@@ -61,25 +64,30 @@ namespace ACES2Tonemapping
 		return crc ^ 0xffffffffu;
 	}
 
-	inline const char* target_name(i32 output_mode)
+	inline u32 target_for_output_mode(i32 output_mode)
 	{
-		switch (output_mode)
+		return output_mode == 0 ? SDR_TARGET : HDR_1000_TARGET;
+	}
+
+	inline const char* target_name(u32 target)
+	{
+		switch (target)
 		{
-			case 0: return "sdr";
-			case 1: return "edr";
-			case 2: return "hdr10";
+			case SDR_TARGET: return "sdr";
+			case HDR_1000_TARGET: return "hdr1000";
 			default: return nullptr;
 		}
 	}
 
 	inline std::string asset_path(i32 output_mode)
 	{
-		const char* name = target_name(output_mode);
-		return name ? std::string("data/tonemapping/aces2_") + name + ".lutbin" : std::string();
+		const char* name = target_name(target_for_output_mode(output_mode));
+		return name ? std::string("data/tonemapping/agx_") + name + ".lutbin" : std::string();
 	}
 
 	inline bool load_lut(i32 output_mode, LoadedLUT* out_lut, std::string* out_error)
 	{
+		const u32 expected_target = target_for_output_mode(output_mode);
 		const std::string path = asset_path(output_mode);
 		if (path.empty())
 		{
@@ -91,7 +99,7 @@ namespace ACES2Tonemapping
 		if (!file)
 		{
 			if (out_error) *out_error = "could not open " + path
-				+ " (run from the game directory or regenerate with python3 tools/generate_aces2_luts.py)";
+				+ " (run from the game directory or regenerate with python3 tools/generate_agx_luts.py)";
 			return false;
 		}
 		fseek(file, 0, SEEK_END);
@@ -101,7 +109,7 @@ namespace ACES2Tonemapping
 		{
 			fclose(file);
 			if (out_error) *out_error = path
-				+ " has an invalid byte size; regenerate with python3 tools/generate_aces2_luts.py";
+				+ " has an invalid byte size; regenerate with python3 tools/generate_agx_luts.py";
 			return false;
 		}
 
@@ -123,7 +131,7 @@ namespace ACES2Tonemapping
 		if (memcmp(header, LUT_MAGIC, sizeof(LUT_MAGIC)) != 0
 			|| version != LUT_FILE_VERSION
 			|| resolution != LUT_RESOLUTION
-			|| target != (u32)output_mode
+			|| target != expected_target
 			|| shaper != LUT_SHAPER_ACESCCT
 			|| pixel_format != LUT_PIXEL_FORMAT_RGBA16F
 			|| payload_size != LUT_PAYLOAD_SIZE
@@ -131,7 +139,7 @@ namespace ACES2Tonemapping
 		{
 			fclose(file);
 			if (out_error) *out_error = path
-				+ " has an incompatible header; regenerate with python3 tools/generate_aces2_luts.py";
+				+ " has an incompatible header; regenerate with python3 tools/generate_agx_luts.py";
 			return false;
 		}
 
@@ -147,11 +155,12 @@ namespace ACES2Tonemapping
 		if (actual_crc != expected_crc)
 		{
 			if (out_error) *out_error = path
-				+ " failed CRC32 validation; regenerate with python3 tools/generate_aces2_luts.py";
+				+ " failed CRC32 validation; regenerate with python3 tools/generate_agx_luts.py";
 			return false;
 		}
 		out_lut->target = target;
 		out_lut->crc32 = actual_crc;
+		if (out_error) out_error->clear();
 		return true;
 	}
 
