@@ -10,13 +10,9 @@ const int TONEMAP_METHOD_NEUTRAL_HDR = 3;
 
 const float GT7_LUT_RESOLUTION = 64.0;
 const float GT7_LUT_INPUT_MAX = 64.0;
-// The renderer's scene units are not photometrically calibrated. This fixed
-// integration exposure matches 18% gray to the previous AgX-backed default.
-const float GT7_INTEGRATION_SCALE = 2.978276;
-
-vec3 tonemap_gt7(sampler2DArray gt7_lut, vec3 color)
+vec3 tonemap_gt7(sampler2DArray gt7_lut, vec3 color, float integration_scale)
 {
-	vec3 calibrated = clamp(max(color, vec3(0.0)) * GT7_INTEGRATION_SCALE,
+	vec3 calibrated = clamp(max(color, vec3(0.0)) * integration_scale,
 		vec3(0.0), vec3(GT7_LUT_INPUT_MAX));
 	vec3 shaped = pow(calibrated / GT7_LUT_INPUT_MAX, vec3(0.25));
 	vec3 lut_position = shaped * (GT7_LUT_RESOLUTION - 1.0);
@@ -116,7 +112,7 @@ vec3 tonemap_agx(vec3 color)
 	return clamp(rec2020_to_srgb * value, 0.0, 1.0);
 }
 
-vec3 tonemap_apply(int method, sampler2DArray gt7_lut, vec3 color)
+vec3 tonemap_apply(int method, sampler2DArray gt7_lut, vec3 color, float gt7_integration_scale)
 {
 	if (method == TONEMAP_METHOD_AGX)
 		return tonemap_agx(color);
@@ -124,7 +120,7 @@ vec3 tonemap_apply(int method, sampler2DArray gt7_lut, vec3 color)
 		return tonemap_aces_fitted(color);
 	if (method == TONEMAP_METHOD_NEUTRAL_HDR)
 		return tonemap_neutral_hdr(color);
-	return tonemap_gt7(gt7_lut, color);
+	return tonemap_gt7(gt7_lut, color, gt7_integration_scale);
 }
 
 float tonemap_perceptual_lightness(vec3 tonemapped_color)

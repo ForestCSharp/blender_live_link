@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_vulkan.h"
+#include "render/gt7_tonemapping.h"
 #include "ui/stats_ui.h"
 #include "ui/cpu_profiler_ui.h"
 #include "input/input_api.h"
@@ -41,11 +42,32 @@ namespace ImGuiLayer
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 		ImGui::StyleColorsDark();
+		if (ctx->active_output_mode != EDisplayOutputMode::SDR)
+		{
+			// Partially transparent SDR panels leak proportionally more light when
+			// composited over a scene that can reach 1000 nits. Remap only window
+			// surfaces so their apparent opacity remains close to SDR; text and
+			// texture alpha must remain untouched for correct antialiasing.
+			constexpr f32 paper_white_scale =
+				GT7Tonemapping::HDR_PAPER_WHITE_NITS / GT7Tonemapping::HDR_PEAK_NITS;
+			constexpr ImGuiCol background_colors[] = {
+				ImGuiCol_WindowBg,
+				ImGuiCol_ChildBg,
+				ImGuiCol_PopupBg,
+			};
+			ImGuiStyle& style = ImGui::GetStyle();
+			for (ImGuiCol color : background_colors)
+			{
+				f32& alpha = style.Colors[color].w;
+				if (alpha > 0.0f)
+					alpha = 1.0f - (1.0f - alpha) * paper_white_scale;
+			}
+		}
 		ImGuiIO& io = ImGui::GetIO();
 		io.IniFilename = "bin/imgui.ini";
 		ImGui_ImplGlfw_InitForVulkan(ctx->window, false);
 
-		VkFormat color_format = ctx->surface_format.format;
+		VkFormat color_format = Render::SCENE_COLOR_FORMAT;
 		VkPipelineRenderingCreateInfo rendering_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 			.colorAttachmentCount = 1,
@@ -155,10 +177,10 @@ namespace ImGuiLayer
 			{
 				ImGui::TextWrapped("Output fallback: %s", state.vk.output_fallback_reason);
 			}
-			if (state.vk.active_output_mode != EDisplayOutputMode::SDR)
-			{
-				ImGui::TextDisabled("Experimental display-boundary chart is active");
-			}
+			if (state.vk.active_output_mode == EDisplayOutputMode::SDR)
+				ImGui::Text("UI white: 1.000 normalized SDR");
+			else
+				ImGui::Text("UI white: 203 nits (0.203 normalized HDR)");
 			ImGui::SetNextItemWidth(220.0f);
 			if (ImGui::SliderInt("Resolution Percentage", &state.window.resolution_percentage,
 				MIN_RENDER_RESOLUTION_PERCENTAGE, MAX_RENDER_RESOLUTION_PERCENTAGE, "%d%%"))
@@ -649,13 +671,13 @@ namespace ImGuiLayer
 		if (!state.runtime.is_simulating) { foreground->AddText(pos, IM_COL32_WHITE, "Simulation Paused"); }
 	}
 
-	inline void render(VulkanContext* ctx)
+	inline void render(VulkanContext* ctx, f32 in_paper_white_scale)
 	{
 		ImGui::Render();
 
 		// ImGui style colors are authored in display-space sRGB. Convert the
-		// packed vertex tint to linear before the Vulkan backend uploads it so
-		// the swapchain's sRGB attachment encoding produces the intended color.
+		// packed vertex tint to linear before the Vulkan backend uploads it, then
+		// place UI white at the active output's paper-white level.
 		// Texture RGB remains untouched (image vertices normally use a white
 		// tint), and alpha stays linear for correct attachment blending.
 		ImDrawData* draw_data = ImGui::GetDrawData();
@@ -663,13 +685,13 @@ namespace ImGuiLayer
 		{
 			for (ImDrawVert& vertex : draw_list->VtxBuffer)
 			{
-				const auto linearize_channel = [](u32 in_channel) -> u32
+				const auto linearize_channel = [in_paper_white_scale](u32 in_channel) -> u32
 				{
 					const f32 srgb = (f32) in_channel / 255.0f;
 					const f32 linear = srgb <= 0.04045f
 						? srgb / 12.92f
 						: powf((srgb + 0.055f) / 1.055f, 2.4f);
-					return (u32) (linear * 255.0f + 0.5f);
+					return (u32) (CLAMP(linear * in_paper_white_scale, 0.0f, 1.0f) * 255.0f + 0.5f);
 				};
 
 				const u32 color = vertex.col;
@@ -684,24 +706,8 @@ namespace ImGuiLayer
 			}
 		}
 
-		VkRenderingAttachmentInfo color_attachment = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
-			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-		};
-		VkRenderingInfo rendering_info = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-			.renderArea = { .offset = {0, 0}, .extent = ctx->swapchain_extent },
-			.layerCount = 1,
-			.colorAttachmentCount = 1,
-			.pColorAttachments = &color_attachment,
-		};
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		vkCmdBeginRendering(command_buffer, &rendering_info);
 		ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
-		vkCmdEndRendering(command_buffer);
 	}
 
 	inline void shutdown()
@@ -726,7 +732,7 @@ namespace ImGuiLayer
 	inline void unregister_texture(VkImageView) {}
 	inline void begin_frame() {}
 	inline void draw_controls(State&, GI_Scene&) {}
-	inline void render(VulkanContext*) {}
+	inline void render(VulkanContext*, f32) {}
 	inline void shutdown() {}
 }
 

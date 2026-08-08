@@ -109,6 +109,7 @@ enum class ERenderPass : i32
 	TemporalAA,
 	Tonemapping,
 	FXAA,
+	PresentationComposite,
 	CopyToSwapchain,
 
 	COUNT,

@@ -33,11 +33,15 @@ The standalone GT7 reference/LUT test can be run without launching a window:
 ```sh
 clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
+clang++ -std=c++20 -O2 tests/display_encoding_tests.cpp \
+  -o /tmp/display_encoding_tests && /tmp/display_encoding_tests
+clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/include \
+  -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-It checks the published SDR vectors, LUT interpolation error and boundaries,
-finite/bounded output, neutral monotonicity, high-input clamping, and highlight
-hue stability.
+These check the published SDR vectors, SDR/HDR LUT interpolation and invariants,
+the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling,
+and synthetic output-format negotiation.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -106,19 +110,19 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_TEST_RESIZE=1` — programmatically resize at frame 30 to exercise
   swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
-  (the copy pass upsamples to the window)
+  (the float presentation composite upsamples to the window before UI)
 - `GAME2_TONEMAP_MODE=local|gt7|agx|aces|neutral` — choose the tone method.
   The legacy `local` value means GT7 with local tonemapping enabled; named
   methods retain their historical global behavior unless explicitly overridden.
 - `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
   local tonemapping for the selected method. This explicit setting takes
   precedence over the behavior implied by `GAME2_TONEMAP_MODE`.
-- `GAME2_OUTPUT_MODE=sdr|edr|hdr10` — experimental display-presentation spike;
-  `sdr` is the production default. `edr` requires an advertised
-  `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR` surface and displays an
-  extended-linear Apple EDR chart. `hdr10` requires an advertised
-  `HDR10_ST2084` pair and displays a BT.2020/PQ chart. Unsupported requests
-  fall back to SDR and log the reason; no format/color-space pair is invented.
+- `GAME2_OUTPUT_MODE=auto|sdr|edr|hdr10` — unset or `auto` prefers HDR10 and
+  safely falls back to SDR. Explicit `sdr` is the compatibility/testing path;
+  `edr` requires `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR`, and `hdr10`
+  requires an advertised `HDR10_ST2084` pair. All modes present the normal
+  scene. Unsupported requests fall back to SDR and log the reason; unknown
+  values use SDR, and no format/color-space pair is invented.
 - `GAME2_BLOOM=0|1` — disable or enable the default HDR bloom pass
 - `GAME2_BLOOM_THRESHOLD=<0..10>` / `GAME2_BLOOM_SOFT_KNEE=<0..1>` — tune
   the exposure-aware highlight selection
@@ -240,20 +244,20 @@ exposures, defines their perceptual-lightness weights, and produces the final
 guided reconstruction. Disabling local tonemapping skips the proxy pyramid and
 applies the same selected method globally.
 
-Non-SDR output modes are intentionally presentation-only diagnostics: they
-replace the normal renderer at the final copy with deterministic neutral,
-near-black, primary/secondary, saturated-highlight, and luminance charts.
-EDR sends extended-linear sRGB values above `1.0`; HDR10 sends ST-2084 PQ in
-BT.2020 with 100, 203, 400, and 1000-nit patches. When available,
-`VK_EXT_hdr_metadata` submits BT.2020/D65, a 1000-nit mastering peak, 1000-nit
-MaxCLL, and 400-nit MaxFALL on every swapchain creation. Startup logs and the
-Stats UI report requested/active modes, the selected pair, metadata support,
-and fallback reason. These modes evaluate presentation correctness only;
-physical luminance certification still requires a colorimeter.
+HDR10 and EDR use a dedicated GT7 profile with a 1000-nit peak, 203-nit
+diffuse white, and an integration scale of `11.2777778`, mapping EV-0 18% gray
+to 203 nits. SDR keeps its original LUT and calibration. Tonemapped scene color
+is upscaled into a full-output-resolution float composite, where ImGui white is
+placed at 203 nits for HDR or 1.0 for SDR. The final copy is the only display
+encoding boundary: SDR gets code-space 8-bit dithering, EDR receives extended
+linear sRGB, and HDR10 receives linear-sRGB-to-Rec.2020 conversion followed by
+ST-2084 PQ. HDR/EDR are undithered.
 
-For the cleanest chart, hide the debug window with Ctrl+I. Test windowed and
-fullscreen presentation, resizing, and movement between displays manually on
-the target Mac. HDR screenshots and automatic display switching are outside
-this spike.
+When available, `VK_EXT_hdr_metadata` submits BT.2020/D65, a 1000-nit mastering
+peak, 1000-nit MaxCLL, and 400-nit MaxFALL on every HDR10 swapchain creation.
+Startup logs and the Stats UI report requested/active modes, the selected pair,
+metadata support, paper white, and fallback reason. Test windowed/fullscreen,
+resizing, render scale, FXAA, and movement between displays manually on the
+target Mac. HDR screenshots and automatic display switching remain unsupported.
 
 See [TODO.md](../TODO.md) for the full catalog of known implementation work.

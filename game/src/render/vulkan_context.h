@@ -160,6 +160,8 @@ static_assert((i32)EDisplayOutputMode::SDR == DISPLAY_OUTPUT_MODE_SDR);
 static_assert((i32)EDisplayOutputMode::EDR == DISPLAY_OUTPUT_MODE_EDR);
 static_assert((i32)EDisplayOutputMode::HDR10 == DISPLAY_OUTPUT_MODE_HDR10);
 
+#include "render/output_selection.inl"
+
 struct VulkanCapabilities
 {
 	VkPhysicalDeviceProperties properties = {};
@@ -714,8 +716,8 @@ const char* vulkan_output_mode_name(EDisplayOutputMode in_mode)
 EDisplayOutputMode vulkan_requested_output_mode()
 {
 	const std::optional<std::string>& configured = RuntimeConfig::get().output_mode;
-	if (!configured || *configured == "sdr" || *configured == "auto")
-		return EDisplayOutputMode::SDR;
+	if (!configured || *configured == "auto") return EDisplayOutputMode::HDR10;
+	if (*configured == "sdr") return EDisplayOutputMode::SDR;
 	if (*configured == "edr") return EDisplayOutputMode::EDR;
 	if (*configured == "hdr10") return EDisplayOutputMode::HDR10;
 	printf("Unknown GAME2_OUTPUT_MODE '%s'; using sdr\n", configured->c_str());
@@ -746,28 +748,6 @@ const char* vulkan_color_space_name(VkColorSpaceKHR in_color_space)
 		case VK_COLOR_SPACE_HDR10_ST2084_EXT: return "HDR10_ST2084";
 		default: return "other";
 	}
-}
-
-bool vulkan_find_surface_format(
-	const DynamicArray<VkSurfaceFormatKHR>& in_formats,
-	const VkFormat* in_preferred_formats,
-	u32 in_preferred_format_count,
-	VkColorSpaceKHR in_color_space,
-	VkSurfaceFormatKHR* out_format)
-{
-	for (u32 preferred_index = 0; preferred_index < in_preferred_format_count; ++preferred_index)
-	{
-		for (const VkSurfaceFormatKHR& available : in_formats)
-		{
-			if (available.format == in_preferred_formats[preferred_index]
-				&& available.colorSpace == in_color_space)
-			{
-				*out_format = available;
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 bool vulkan_format_is_bgra8(VkFormat in_format)
@@ -879,85 +859,12 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	if (format_count > 0)
 		vkGetPhysicalDeviceSurfaceFormatsKHR(in_device, in_surface, &format_count, surface_formats.data());
 	const EDisplayOutputMode requested_output_mode = vulkan_requested_output_mode();
-	result.output_mode = EDisplayOutputMode::SDR;
-	if (requested_output_mode == EDisplayOutputMode::EDR)
-	{
-		const VkFormat edr_formats[] = { VK_FORMAT_R16G16B16A16_SFLOAT };
-		if (vulkan_find_surface_format(
-				surface_formats, edr_formats, 1,
-				VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &result.surface_format))
-		{
-			result.output_mode = EDisplayOutputMode::EDR;
-		}
-		else
-		{
-			snprintf(result.output_fallback_reason, sizeof(result.output_fallback_reason),
-				"R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR was not advertised");
-		}
-	}
-	else if (requested_output_mode == EDisplayOutputMode::HDR10)
-	{
-		const VkFormat hdr10_formats[] = {
-			VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-			VK_FORMAT_A2R10G10B10_UNORM_PACK32,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-		};
-		if (vulkan_find_surface_format(
-				surface_formats, hdr10_formats, 3,
-				VK_COLOR_SPACE_HDR10_ST2084_EXT, &result.surface_format))
-		{
-			result.output_mode = EDisplayOutputMode::HDR10;
-		}
-		else
-		{
-			snprintf(result.output_fallback_reason, sizeof(result.output_fallback_reason),
-				"no supported HDR10_ST2084 surface pair was advertised");
-		}
-	}
-
-	if (result.output_mode == EDisplayOutputMode::SDR
-		&& surface_formats.length() == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
-	{
-		result.surface_format = {
-			.format = VK_FORMAT_B8G8R8A8_SRGB,
-			.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-		};
-	}
-	const VkFormat surface_format_preferences[] = {
-		VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
-		VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-	};
-	if (result.output_mode == EDisplayOutputMode::SDR
-		&& result.surface_format.format == VK_FORMAT_UNDEFINED)
-	{
-		for (VkFormat preferred_format : surface_format_preferences)
-		{
-			for (const VkSurfaceFormatKHR& format : surface_formats)
-			{
-				if (format.format == preferred_format && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-				{
-					result.surface_format = format;
-					break;
-				}
-			}
-			if (result.surface_format.format != VK_FORMAT_UNDEFINED) break;
-		}
-	}
-	if (result.output_mode == EDisplayOutputMode::SDR
-		&& result.surface_format.format == VK_FORMAT_UNDEFINED)
-	{
-		// A fallback is only SDR when the surface explicitly advertises the SDR
-		// nonlinear color space. Never feed SDR values into an arbitrary HDR pair.
-		for (const VkSurfaceFormatKHR& format : surface_formats)
-		{
-			if (format.format != VK_FORMAT_UNDEFINED
-				&& format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-			{
-				result.surface_format = format;
-				break;
-			}
-		}
-	}
+	const DisplayOutputSelection output_selection = select_display_output(
+		surface_formats.data(), surface_formats.length(), requested_output_mode);
+	result.output_mode = output_selection.output_mode;
+	result.surface_format = output_selection.surface_format;
+	snprintf(result.output_fallback_reason, sizeof(result.output_fallback_reason),
+		"%s", output_selection.fallback_reason);
 
 	u32 present_mode_count = 0;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(in_device, in_surface, &present_mode_count, nullptr);
@@ -1220,8 +1127,8 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 	VK_CHECK(vkCreateSwapchainKHR(ctx->device, &swapchain_create_info, nullptr, &ctx->swapchain));
 	if (ctx->active_output_mode == EDisplayOutputMode::HDR10 && ctx->hdr_metadata_enabled)
 	{
-		// BT.2020 primaries, D65 white, and the same 1000-nit boundary used by
-		// the deterministic HDR10 validation chart. This describes the signal;
+		// BT.2020 primaries, D65 white, and the renderer's 1000-nit boundary.
+		// This describes the signal;
 		// it does not claim that the connected display is physically calibrated.
 		const VkHdrMetadataEXT hdr_metadata = {
 			.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,

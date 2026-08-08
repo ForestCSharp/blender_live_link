@@ -35,9 +35,12 @@ namespace GT7Tonemapping
 	static constexpr u32 LUT_RESOLUTION = 64;
 	static constexpr f32 LUT_INPUT_MAX = 64.0f;
 	static constexpr f32 SDR_PAPER_WHITE_NITS = 250.0f;
+	static constexpr f32 HDR_PEAK_NITS = 1000.0f;
+	static constexpr f32 HDR_PAPER_WHITE_NITS = 203.0f;
 	static constexpr f32 REFERENCE_LUMINANCE_NITS = 100.0f;
 	static constexpr f32 SDR_INTEGRATION_EXPOSURE_EV = 1.575f;
 	static constexpr f32 SDR_INTEGRATION_SCALE = 2.978276f;
+	static constexpr f32 HDR_INTEGRATION_SCALE = 11.2777778f;
 
 	struct RGB
 	{
@@ -178,9 +181,9 @@ namespace GT7Tonemapping
 		};
 	}
 
-	inline RGB apply_sdr_rec2020(RGB rgb)
+	inline RGB apply_rec2020(RGB rgb, f32 peak_nits)
 	{
-		const f32 target = physical_to_framebuffer(SDR_PAPER_WHITE_NITS);
+		const f32 target = physical_to_framebuffer(peak_nits);
 		Curve curve;
 		curve.initialize(target);
 		const RGB original_ucs = rgb_to_ictcp(rgb);
@@ -207,9 +210,28 @@ namespace GT7Tonemapping
 		};
 	}
 
+	inline RGB apply_sdr_rec2020(RGB rgb)
+	{
+		return apply_rec2020(rgb, SDR_PAPER_WHITE_NITS);
+	}
+
 	inline RGB apply_sdr_linear_srgb(RGB rgb)
 	{
 		RGB result = rec2020_to_linear_srgb(apply_sdr_rec2020(linear_srgb_to_rec2020(rgb)));
+		result.r = CLAMP(result.r, 0.0f, 1.0f);
+		result.g = CLAMP(result.g, 0.0f, 1.0f);
+		result.b = CLAMP(result.b, 0.0f, 1.0f);
+		return result;
+	}
+
+	inline RGB apply_hdr_rec2020(RGB rgb)
+	{
+		return apply_rec2020(rgb, HDR_PEAK_NITS);
+	}
+
+	inline RGB apply_hdr_linear_srgb(RGB rgb)
+	{
+		RGB result = rec2020_to_linear_srgb(apply_hdr_rec2020(linear_srgb_to_rec2020(rgb)));
 		result.r = CLAMP(result.r, 0.0f, 1.0f);
 		result.g = CLAMP(result.g, 0.0f, 1.0f);
 		result.b = CLAMP(result.b, 0.0f, 1.0f);
@@ -261,7 +283,7 @@ namespace GT7Tonemapping
 		return std::bit_cast<f32>(bits);
 	}
 
-	inline DynamicArray<u16> generate_sdr_lut()
+	inline DynamicArray<u16> generate_lut(bool in_hdr)
 	{
 		DynamicArray<u16> pixels;
 		pixels.resize((size_t)LUT_RESOLUTION * LUT_RESOLUTION * LUT_RESOLUTION * 4);
@@ -280,7 +302,9 @@ namespace GT7Tonemapping
 						LUT_INPUT_MAX * shaped_g * shaped_g * shaped_g * shaped_g,
 						LUT_INPUT_MAX * shaped_b * shaped_b * shaped_b * shaped_b,
 					};
-					const RGB output = apply_sdr_linear_srgb(input);
+					const RGB output = in_hdr
+						? apply_hdr_linear_srgb(input)
+						: apply_sdr_linear_srgb(input);
 					const size_t index = (((size_t)b * LUT_RESOLUTION + g) * LUT_RESOLUTION + r) * 4;
 					pixels[index + 0] = float_to_half(output.r);
 					pixels[index + 1] = float_to_half(output.g);
@@ -290,6 +314,16 @@ namespace GT7Tonemapping
 			}
 		}
 		return pixels;
+	}
+
+	inline DynamicArray<u16> generate_sdr_lut()
+	{
+		return generate_lut(false);
+	}
+
+	inline DynamicArray<u16> generate_hdr_lut()
+	{
+		return generate_lut(true);
 	}
 
 	inline RGB lut_texel(const DynamicArray<u16>& lut, u32 r, u32 g, u32 b)
@@ -302,9 +336,13 @@ namespace GT7Tonemapping
 		};
 	}
 
-	inline RGB sample_sdr_lut(const DynamicArray<u16>& lut, RGB input, bool apply_integration_scale = true)
+	inline RGB sample_lut(
+		const DynamicArray<u16>& lut,
+		RGB input,
+		f32 integration_scale,
+		bool apply_integration_scale)
 	{
-		const f32 scale = apply_integration_scale ? SDR_INTEGRATION_SCALE : 1.0f;
+		const f32 scale = apply_integration_scale ? integration_scale : 1.0f;
 		const RGB calibrated = {
 			CLAMP(input.r * scale, 0.0f, LUT_INPUT_MAX),
 			CLAMP(input.g * scale, 0.0f, LUT_INPUT_MAX),
@@ -330,5 +368,21 @@ namespace GT7Tonemapping
 		const RGB c01 = lerp(lut_texel(lut, r0, g0, b1), lut_texel(lut, r1, g0, b1), fr);
 		const RGB c11 = lerp(lut_texel(lut, r0, g1, b1), lut_texel(lut, r1, g1, b1), fr);
 		return lerp(lerp(c00, c10, fg), lerp(c01, c11, fg), fb);
+	}
+
+	inline RGB sample_sdr_lut(
+		const DynamicArray<u16>& lut,
+		RGB input,
+		bool apply_integration_scale = true)
+	{
+		return sample_lut(lut, input, SDR_INTEGRATION_SCALE, apply_integration_scale);
+	}
+
+	inline RGB sample_hdr_lut(
+		const DynamicArray<u16>& lut,
+		RGB input,
+		bool apply_integration_scale = true)
+	{
+		return sample_lut(lut, input, HDR_INTEGRATION_SCALE, apply_integration_scale);
 	}
 }

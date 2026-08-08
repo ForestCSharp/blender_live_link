@@ -49,67 +49,28 @@ float st2084_from_nits(float nits)
 	return pow((c1 + c2 * lm) / (1.0 + c3 * lm), m2);
 }
 
-vec3 encode_boundary_value(vec3 value, bool hdr10)
+vec3 linear_srgb_to_rec2020(vec3 color)
 {
-	if (!hdr10)
-		return value; // Extended-linear sRGB, where 1.0 is SDR white.
 	return vec3(
-		st2084_from_nits(value.r),
-		st2084_from_nits(value.g),
-		st2084_from_nits(value.b));
-}
-
-vec3 chart_primary(int index)
-{
-	if (index == 0) return vec3(1.0, 0.0, 0.0);
-	if (index == 1) return vec3(0.0, 1.0, 0.0);
-	if (index == 2) return vec3(0.0, 0.0, 1.0);
-	if (index == 3) return vec3(1.0, 1.0, 0.0);
-	if (index == 4) return vec3(0.0, 1.0, 1.0);
-	return vec3(1.0, 0.0, 1.0);
-}
-
-vec3 display_boundary_chart(vec2 uv, bool hdr10)
-{
-	// In HDR10 mode the values below are BT.2020-primary nits. In EDR mode
-	// they are extended-linear sRGB multiples of SDR white.
-	if (uv.y < 0.22)
-	{
-		float peak = hdr10 ? 1000.0 : 8.0;
-		return encode_boundary_value(vec3(uv.x * peak), hdr10);
-	}
-	if (uv.y < 0.38)
-	{
-		float step_index = floor(clamp(uv.x, 0.0, 0.99999) * 16.0);
-		float near_black = step_index / 15.0 * (hdr10 ? 5.0 : 0.05);
-		return encode_boundary_value(vec3(near_black), hdr10);
-	}
-	int primary_index = int(floor(clamp(uv.x, 0.0, 0.99999) * 6.0));
-	float within_patch = fract(uv.x * 6.0);
-	if (uv.y < 0.65)
-	{
-		float peak = hdr10 ? 400.0 : 4.0;
-		return encode_boundary_value(chart_primary(primary_index) * within_patch * peak, hdr10);
-	}
-	if (uv.y < 0.82)
-	{
-		float peak = hdr10 ? 1000.0 : 8.0;
-		return encode_boundary_value(chart_primary(primary_index) * peak, hdr10);
-	}
-
-	const float levels[4] = float[4](100.0, 203.0, 400.0, 1000.0);
-	int level_index = int(floor(clamp(uv.x, 0.0, 0.99999) * 4.0));
-	float value = hdr10 ? levels[level_index] : levels[level_index] / 100.0;
-	return encode_boundary_value(vec3(value), hdr10);
+		dot(color, vec3(0.6274039, 0.3292830, 0.0433131)),
+		dot(color, vec3(0.0690973, 0.9195404, 0.0113623)),
+		dot(color, vec3(0.0163914, 0.0880133, 0.8955953)));
 }
 
 void main()
 {
+	vec3 scene = texture(scene_color, in_uv).rgb;
+	if (pc.output_mode == DISPLAY_OUTPUT_MODE_PRESENTATION)
+	{
+		out_color = vec4(scene, 1.0);
+		return;
+	}
+
 	if (pc.output_mode == DISPLAY_OUTPUT_MODE_SDR)
 	{
 		// Dither once at the 8-bit display boundary. Work in sRGB code space so
 		// the noise spans one stored code regardless of scene brightness.
-		vec3 encoded_color = linear_to_srgb(texture(scene_color, in_uv).rgb);
+		vec3 encoded_color = linear_to_srgb(scene);
 		encoded_color = clamp(
 			encoded_color + vec3((gradient_noise(gl_FragCoord.xy) - 0.5) / 255.0),
 			vec3(0.0), vec3(1.0));
@@ -123,10 +84,20 @@ void main()
 		return;
 	}
 
-	// Experimental modes deliberately replace the normal renderer at the
-	// display boundary. This isolates surface/colorspace correctness from the
-	// production SDR renderer and GT7 operator.
+	if (pc.output_mode == DISPLAY_OUTPUT_MODE_EDR)
+	{
+		// Extended-linear sRGB defines 1.0 as diffuse white. The composite uses
+		// 1.0 as 1000 nits, so scale it relative to the 203-nit paper white.
+		out_color = vec4(max(scene, vec3(0.0)) * (1000.0 / 203.0), 1.0);
+		return;
+	}
+
+	// HDR10 stores nonlinear PQ code values in a Rec.2020 container.
+	vec3 rec2020_nits = max(
+		linear_srgb_to_rec2020(max(scene, vec3(0.0))), vec3(0.0)) * 1000.0;
 	out_color = vec4(
-		display_boundary_chart(in_uv, pc.output_mode == DISPLAY_OUTPUT_MODE_HDR10),
+		st2084_from_nits(rec2020_nits.r),
+		st2084_from_nits(rec2020_nits.g),
+		st2084_from_nits(rec2020_nits.b),
 		1.0);
 }

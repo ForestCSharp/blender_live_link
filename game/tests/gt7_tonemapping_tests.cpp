@@ -180,9 +180,81 @@ static void test_lut_accuracy_and_invariants()
 	assert(hue_delta < 0.12f);
 }
 
+static void test_hdr_lut_accuracy_and_invariants()
+{
+	const DynamicArray<u16> lut = GT7Tonemapping::generate_hdr_lut();
+	assert(lut.length() ==
+		(size_t)GT7Tonemapping::LUT_RESOLUTION * GT7Tonemapping::LUT_RESOLUTION
+		* GT7Tonemapping::LUT_RESOLUTION * 4);
+
+	const RGB middle_gray = GT7Tonemapping::apply_hdr_linear_srgb({
+		0.18f * GT7Tonemapping::HDR_INTEGRATION_SCALE,
+		0.18f * GT7Tonemapping::HDR_INTEGRATION_SCALE,
+		0.18f * GT7Tonemapping::HDR_INTEGRATION_SCALE,
+	});
+	expect_near(middle_gray.r, 0.203f, 2e-5f);
+	expect_near(middle_gray.g, 0.203f, 2e-5f);
+	expect_near(middle_gray.b, 0.203f, 2e-5f);
+	expect_near(middle_gray.r * GT7Tonemapping::HDR_PEAK_NITS,
+		GT7Tonemapping::HDR_PAPER_WHITE_NITS, 0.02f);
+
+	std::vector<f32> errors;
+	errors.reserve(30000);
+	for (u32 index = 0; index < 10000; ++index)
+	{
+		const RGB input = {
+			GT7Tonemapping::LUT_INPUT_MAX * std::pow(random_unit(), 4.0f),
+			GT7Tonemapping::LUT_INPUT_MAX * std::pow(random_unit(), 4.0f),
+			GT7Tonemapping::LUT_INPUT_MAX * std::pow(random_unit(), 4.0f),
+		};
+		add_rgb_errors(errors,
+			GT7Tonemapping::sample_hdr_lut(lut, input, false),
+			GT7Tonemapping::apply_hdr_linear_srgb(input));
+	}
+	std::sort(errors.begin(), errors.end());
+	f64 sum = 0.0;
+	for (f32 error : errors) sum += error;
+	const f64 mean = sum / (f64)errors.size();
+	const f32 percentile_99 = errors[(size_t)(errors.size() * 0.99)];
+	std::printf("GT7 HDR LUT error: mean %.7f, p99 %.7f, max %.7f\n",
+		mean, percentile_99, errors.back());
+	assert(mean < 0.005);
+	assert(percentile_99 < 0.02f);
+
+	f32 previous = -1.0f;
+	for (u32 step = 0; step <= 1024; ++step)
+	{
+		const f32 input = 8.0f * (f32)step / 1024.0f;
+		const RGB output = GT7Tonemapping::sample_hdr_lut(lut, {input, input, input});
+		assert(std::isfinite(output.r));
+		assert(output.r + 1e-4f >= previous);
+		assert(output.r >= 0.0f && output.r <= 1.0f);
+		previous = output.r;
+	}
+
+	const RGB clamped = GT7Tonemapping::sample_hdr_lut(lut, {64.0f, 0.5f, 0.5f}, false);
+	const RGB extreme = GT7Tonemapping::sample_hdr_lut(lut, {4096.0f, 0.5f, 0.5f}, false);
+	expect_near(clamped.r, extreme.r, 1e-6f);
+	expect_near(clamped.g, extreme.g, 1e-6f);
+	expect_near(clamped.b, extreme.b, 1e-6f);
+
+	const RGB highlight = {4.0f, 1.5f, 0.5f};
+	const RGB highlight_output = GT7Tonemapping::apply_hdr_linear_srgb(highlight);
+	const RGB input_ucs = GT7Tonemapping::rgb_to_ictcp(
+		GT7Tonemapping::linear_srgb_to_rec2020(highlight));
+	const RGB output_ucs = GT7Tonemapping::rgb_to_ictcp(
+		GT7Tonemapping::linear_srgb_to_rec2020(highlight_output));
+	const f32 input_hue = std::atan2(input_ucs.b, input_ucs.g);
+	const f32 output_hue = std::atan2(output_ucs.b, output_ucs.g);
+	f32 hue_delta = std::abs(input_hue - output_hue);
+	if (hue_delta > 3.14159265f) hue_delta = 6.28318530f - hue_delta;
+	assert(hue_delta < 0.12f);
+}
+
 int main()
 {
 	test_reference_vectors();
 	test_lut_accuracy_and_invariants();
+	test_hdr_lut_accuracy_and_invariants();
 	return 0;
 }

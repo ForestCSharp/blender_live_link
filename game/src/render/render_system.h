@@ -56,8 +56,8 @@ namespace RenderSystem
 	}
 	
 	// Resizes all pass targets when the framebuffer size changes.
-	// Swapchain-type passes track the window;
-	// everything else tracks the scaled render resolution.
+	// Swapchain and explicitly full-output passes track the window; everything
+	// else tracks the scaled render resolution.
 	void resize(State& in_state, bool in_force = false)
 	{
 		const i32 framebuffer_width = (i32) in_state.vk.swapchain_extent.width;
@@ -80,7 +80,8 @@ namespace RenderSystem
 		for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
 		{
 			RenderPassEntry& entry = in_state.render_passes.passes[pass_index];
-			if (entry.final_pass().desc.type == ERenderPassType::Swapchain)
+			if (entry.final_pass().desc.type == ERenderPassType::Swapchain
+				|| entry.final_pass().desc.use_output_resolution)
 			{
 				entry.handle_resize(in_state.window.width, in_state.window.height);
 			}
@@ -460,6 +461,20 @@ namespace RenderSystem
 				.type = ERenderPassType::Single,
 				.debug_label = "FXAA",
 			});
+
+			get_render_pass_entry(ERenderPass::PresentationComposite).init_final((RenderPassDesc) {
+				.num_outputs = 1,
+				.outputs = {
+					{
+						.format = Render::SCENE_COLOR_FORMAT,
+						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+					},
+				},
+				.use_output_resolution = true,
+				.type = ERenderPassType::Single,
+				.debug_label = "Presentation Composite",
+			});
 		
 			get_render_pass_entry(ERenderPass::CopyToSwapchain).init_final((RenderPassDesc) {
 				.type = ERenderPassType::Swapchain,
@@ -689,22 +704,24 @@ namespace RenderSystem
 				bloom_intensity,
 				frame_data.linear_sampler);
 		
-			// FXAA reads the tonemapped LDR target; the copy pass presents whichever
-			// ran last
+			// FXAA reads the tonemapped target. Presentation composite upscales the
+			// selected result at output resolution before UI and display encoding.
 			RenderPass& fxaa_render_pass = get_render_pass(ERenderPass::FXAA);
 			const bool fxaa_active = in_state.temporal_aa.enable_fxaa;
 			if (fxaa_active)
 			{
 				FXAAPass::update(&in_state.vk, tonemapping_render_pass.get_color_output(0).view);
 			}
-			frame_data_write_copy_input(
-				&in_state.vk,
+			const VkImageView presentation_input =
 				in_state.images.enable_debug_fullscreen && in_state.images.items.length() > 0
 					? in_state.images.items[CLAMP(in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)].view
 					: (fxaa_active
 						? fxaa_render_pass.get_color_output(0).view
-						: tonemapping_render_pass.get_color_output(0).view)
-			);
+						: tonemapping_render_pass.get_color_output(0).view);
+			copy_to_swapchain_pass_update_presentation_input(&in_state.vk, presentation_input);
+			frame_data_write_copy_input(
+				&in_state.vk,
+				get_render_pass(ERenderPass::PresentationComposite).get_color_output(0).view);
 			sky_pass_update(&in_state.vk);
 		
 			// Re-bake the octahedral sky when the sun moved (records before the
@@ -1052,7 +1069,8 @@ namespace RenderSystem
 					&in_state.vk, in_state.tonemapping, bloom_intensity);
 			});
 		
-			// FXAA filters the tonemapped LDR target; copy presents whichever ran last
+			// FXAA filters at render resolution. Presentation composite performs the
+			// one upscale and places UI into the same normalized float target.
 			if (fxaa_active)
 			{
 				fxaa_render_pass.execute_sampled(&in_state.vk, [&](i32)
@@ -1060,11 +1078,18 @@ namespace RenderSystem
 					FXAAPass::draw(&in_state.vk, HMM_V2((f32) in_state.window.render_width, (f32) in_state.window.render_height));
 				});
 			}
+			get_render_pass(ERenderPass::PresentationComposite).execute_sampled(&in_state.vk, [&](i32)
+			{
+				copy_to_swapchain_pass_draw_presentation(&in_state.vk);
+				const f32 paper_white_scale = in_state.vk.active_output_mode == EDisplayOutputMode::SDR
+					? 1.0f
+					: GT7Tonemapping::HDR_PAPER_WHITE_NITS / GT7Tonemapping::HDR_PEAK_NITS;
+				ImGuiLayer::render(&in_state.vk, paper_white_scale);
+			});
 			get_render_pass(ERenderPass::CopyToSwapchain).execute(&in_state.vk, [&](i32)
 			{
 				copy_to_swapchain_pass_draw(&in_state.vk);
 			});
-			ImGuiLayer::render(&in_state.vk);
 	}
 
 	inline void end_frame(State& in_state)

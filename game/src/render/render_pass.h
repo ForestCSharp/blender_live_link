@@ -60,6 +60,7 @@ struct RenderPassDesc
 	f32 width_scale = 1.0f;
 	f32 height_scale = 1.0f;
 	bool resize_with_window = true;
+	bool use_output_resolution = false;
 	ERenderPassType type = ERenderPassType::Single;
 	const char* debug_label = nullptr;
 };

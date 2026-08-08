@@ -15,6 +15,7 @@ layout(push_constant) uniform PushConstants
 	float exposure_bias;
 	float bloom_intensity;
 	vec2 guide_pixel_size;
+	float gt7_integration_scale;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -66,18 +67,20 @@ void main()
 		float intercept = mean_y - slope * mean_x;
 
 		float source_lightness = tonemap_perceptual_lightness(
-			tonemap_apply(pc.method, gt7_lut, exposed_color));
+			tonemap_apply(pc.method, gt7_lut, exposed_color, pc.gt7_integration_scale));
 		float target_lightness = max(slope * source_lightness + intercept, 0.0);
 		float local_multiplier = target_lightness / max(source_lightness, 1e-5);
 		const float low_light_threshold = 0.007;
 		float low_light_fade = clamp(source_lightness / low_light_threshold, 0.0, 1.0);
 		local_multiplier = mix(1.0, local_multiplier, low_light_fade * low_light_fade);
 		tonemapped_color = tonemap_apply(pc.method, gt7_lut,
-			exposed_color * max(local_multiplier, 0.0) + exposed_bloom);
+			exposed_color * max(local_multiplier, 0.0) + exposed_bloom,
+			pc.gt7_integration_scale);
 	}
 	else
 	{
-		tonemapped_color = tonemap_apply(pc.method, gt7_lut, exposed_color + exposed_bloom);
+		tonemapped_color = tonemap_apply(
+			pc.method, gt7_lut, exposed_color + exposed_bloom, pc.gt7_integration_scale);
 	}
 
 	frag_color = vec4(tonemapped_color, 1.0);

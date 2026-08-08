@@ -6,14 +6,15 @@
 #include "render/shader_module.h"
 #include "render/frame_data.h"
 
-// Presents the offscreen scene color to the swapchain via a fullscreen
-// triangle. The fragment shader owns SDR encoding/dither at this display
-// boundary and upsamples when render scale < 100%.
+// First upscales scene color into a full-resolution float composite target,
+// then performs the sole display encoding step into the swapchain.
 
 struct CopyToSwapchainPass
 {
 	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkPipeline presentation_pipeline = VK_NULL_HANDLE;
+	VkPipeline swapchain_pipeline = VK_NULL_HANDLE;
+	PerFrameDescriptorSets presentation_input_sets;
 };
 
 struct CopyToSwapchainPushConstants
@@ -121,11 +122,13 @@ void copy_to_swapchain_pass_init(VulkanContext* ctx)
 	};
 
 	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &copy_to_swapchain_pass.pipeline_layout));
+	copy_to_swapchain_pass.presentation_input_sets.init_persistent(ctx, frame_data.sampled_input_layout);
 
+	VkFormat output_format = Render::SCENE_COLOR_FORMAT;
 	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &ctx->surface_format.format,
+		.pColorAttachmentFormats = &output_format,
 	};
 
 	VkGraphicsPipelineCreateInfo pipeline_create_info = {
@@ -145,20 +148,56 @@ void copy_to_swapchain_pass_init(VulkanContext* ctx)
 		.renderPass = VK_NULL_HANDLE,
 	};
 
-	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &copy_to_swapchain_pass.pipeline));
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &copy_to_swapchain_pass.presentation_pipeline));
+	output_format = ctx->surface_format.format;
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &copy_to_swapchain_pass.swapchain_pipeline));
 
 	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
 	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
 }
 
-// Binds pipeline + this frame's sampled-input set and draws the fullscreen
-// triangle. Called inside the framework's execute callback; the input image
-// must already be in SHADER_READ_ONLY_OPTIMAL (transition before execute).
+void copy_to_swapchain_pass_update_presentation_input(VulkanContext* ctx, VkImageView in_view)
+{
+	VkDescriptorImageInfo image_info = {
+		.sampler = frame_data.linear_sampler,
+		.imageView = in_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	VkWriteDescriptorSet write = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = copy_to_swapchain_pass.presentation_input_sets.current(ctx),
+		.dstBinding = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &image_info,
+	};
+	vulkan_update_descriptor_sets(ctx, 1, &write);
+}
+
+void copy_to_swapchain_pass_draw_presentation(VulkanContext* ctx)
+{
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_to_swapchain_pass.presentation_pipeline);
+	vkCmdBindDescriptorSets(
+		command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		copy_to_swapchain_pass.pipeline_layout,
+		0, 1, &copy_to_swapchain_pass.presentation_input_sets.current(ctx),
+		0, nullptr);
+	const CopyToSwapchainPushConstants constants = {
+		.output_mode = DISPLAY_OUTPUT_MODE_PRESENTATION,
+		.sdr_attachment_is_srgb = 0,
+	};
+	vkCmdPushConstants(
+		command_buffer, copy_to_swapchain_pass.pipeline_layout,
+		VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
+}
+
 void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_to_swapchain_pass.pipeline);
+	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_to_swapchain_pass.swapchain_pipeline);
 
 	vkCmdBindDescriptorSets(
 		command_buffer,
@@ -182,6 +221,7 @@ void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 
 void copy_to_swapchain_pass_shutdown(VulkanContext* ctx)
 {
-	vkDestroyPipeline(ctx->device, copy_to_swapchain_pass.pipeline, nullptr);
+	vkDestroyPipeline(ctx->device, copy_to_swapchain_pass.presentation_pipeline, nullptr);
+	vkDestroyPipeline(ctx->device, copy_to_swapchain_pass.swapchain_pipeline, nullptr);
 	vkDestroyPipelineLayout(ctx->device, copy_to_swapchain_pass.pipeline_layout, nullptr);
 }

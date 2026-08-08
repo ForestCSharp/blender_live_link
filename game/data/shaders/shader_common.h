@@ -22,6 +22,9 @@
 #define DISPLAY_OUTPUT_MODE_SDR 0
 #define DISPLAY_OUTPUT_MODE_EDR 1
 #define DISPLAY_OUTPUT_MODE_HDR10 2
+// Internal mode used by the float presentation-composite draw. It is never a
+// negotiated display mode and performs no display encoding.
+#define DISPLAY_OUTPUT_MODE_PRESENTATION 3
 
 // Capped by MoltenVK's non-update-after-bind limits
 // (maxPerStageDescriptorSampledImages = 256, maxPerStageResources = 287).

@@ -18,8 +18,9 @@ struct TonemappingFinalPushConstants
 	f32 exposure_bias;
 	f32 bloom_intensity;
 	HMM_Vec2 guide_pixel_size;
+	f32 gt7_integration_scale;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 24);
+static_assert(sizeof(TonemappingFinalPushConstants) == 28);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -29,8 +30,9 @@ struct TonemappingLocalProxyPushConstants
 	f32 highlight_recovery;
 	f32 preference_sigma;
 	i32 method;
+	f32 gt7_integration_scale;
 };
-static_assert(sizeof(TonemappingLocalProxyPushConstants) == 28);
+static_assert(sizeof(TonemappingLocalProxyPushConstants) == 32);
 
 struct TonemappingLocalDownsamplePushConstants
 {
@@ -165,7 +167,13 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
 
-	DynamicArray<u16> gt7_lut_pixels = GT7Tonemapping::generate_sdr_lut();
+	const bool hdr_output = ctx->active_output_mode != EDisplayOutputMode::SDR;
+	printf("GT7 profile: %s, integration scale %.7f\n",
+		hdr_output ? "HDR 1000-nit peak / 203-nit diffuse white" : "SDR",
+		hdr_output ? GT7Tonemapping::HDR_INTEGRATION_SCALE : GT7Tonemapping::SDR_INTEGRATION_SCALE);
+	DynamicArray<u16> gt7_lut_pixels = hdr_output
+		? GT7Tonemapping::generate_hdr_lut()
+		: GT7Tonemapping::generate_sdr_lut();
 	tonemapping_pass.gt7_lut = gpu_image_create_from_data(
 		ctx,
 		GT7Tonemapping::LUT_RESOLUTION,
@@ -174,7 +182,7 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		gt7_lut_pixels.data(),
 		gt7_lut_pixels.length() * sizeof(u16),
 		GT7Tonemapping::LUT_RESOLUTION,
-		"GT7 SDR Tone Mapping LUT");
+		hdr_output ? "GT7 HDR 1000-nit Tone Mapping LUT" : "GT7 SDR Tone Mapping LUT");
 
 	tonemapping_pass.final_pipeline_layout = tonemapping_create_pipeline_layout(
 		ctx, tonemapping_pass.final_set_layout, sizeof(TonemappingFinalPushConstants));
@@ -503,6 +511,9 @@ void tonemapping_pass_prepare_local(
 			.highlight_recovery = in_state.local_highlight_recovery,
 			.preference_sigma = in_state.local_exposure_preference_sigma,
 			.method = (i32)in_state.method,
+			.gt7_integration_scale = ctx->active_output_mode == EDisplayOutputMode::SDR
+				? GT7Tonemapping::SDR_INTEGRATION_SCALE
+				: GT7Tonemapping::HDR_INTEGRATION_SCALE,
 		};
 		tonemapping_draw_local_stage(
 			ctx,
@@ -711,6 +722,9 @@ void tonemapping_pass_draw(
 		.guide_pixel_size = HMM_V2(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
+		.gt7_integration_scale = ctx->active_output_mode == EDisplayOutputMode::SDR
+			? GT7Tonemapping::SDR_INTEGRATION_SCALE
+			: GT7Tonemapping::HDR_INTEGRATION_SCALE,
 	};
 
 	vkCmdBindPipeline(
