@@ -32,6 +32,8 @@ The standalone tonemapping and display-output tests can be run without launching
 a window:
 
 ```sh
+clang++ -std=c++20 -O2 tests/auto_adaptation_tests.cpp -I src \
+  -o /tmp/auto_adaptation_tests && /tmp/auto_adaptation_tests
 clang++ -std=c++20 -O2 tests/bloom_profile_tests.cpp -I src \
   -o /tmp/bloom_profile_tests && /tmp/bloom_profile_tests
 clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
@@ -48,14 +50,16 @@ clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/inc
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-These check normalized bloom-band reconstruction, the published GT7 vectors,
+These check auto-exposure/AWB histogram reduction and frame-rate-independent
+temporal response, normalized bloom-band reconstruction, the published GT7 vectors,
 ACES 2 and Blender AgX asset headers and CRCs, SDR/EDR/HDR10 LUT reference
 vectors and interpolation invariants, Khronos PBR Neutral reference behavior,
 the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling, and
 synthetic output-format negotiation.
 
 The formal suite adds a 110,604-sample deterministic corpus, upstream OCIO
-regeneration checks, direct production-GLSL compute readback, all 24
+regeneration checks, direct production-GLSL compute readback (including synthetic
+framebuffer metering and adaptation updates), all 24
 method/local/output renderer combinations, isolated constant-field checks, and
 an HTML visual-review report:
 
@@ -154,6 +158,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
   local tonemapping for the selected method. This explicit setting takes
   precedence over the behavior implied by `GAME2_TONEMAP_MODE`.
+- `GAME2_AUTO_EXPOSURE=0|1` and `GAME2_AUTO_WHITE_BALANCE=0|1` — independently
+  disable or enable GPU framebuffer adaptation; both default to enabled. With
+  auto exposure active, the UI exposure control is compensation in EV.
 - `GAME2_TONEMAP_VALIDATION_CHART=1|constant`,
   `GAME2_TONEMAP_VALIDATION_OUTPUT_MODE=sdr|edr|hdr10`, and
   `GAME2_TONEMAP_VALIDATION_CAPTURE=<prefix>` — validation-only controls used
@@ -241,7 +248,7 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   screen-space contact shadows (trace + edge-aware filter) → cook-torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
-  ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
+  ping-pong history) → fixed-grid auto-exposure/AWB metering → exposure-aware HDR bloom (13-tap half-resolution
   downsample pyramid + normalized, weighted additive tent reconstruction) →
   selected GT7/AgX/ACES 2.0/
   Khronos PBR Neutral method with optional exposure-fusion local tonemapping
@@ -270,6 +277,41 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   GI/tessellation controls, probe picking, render-target viewers, and overlay
   status text. The `GAME2_*` toggles remain available for automated/headless
   verification.
+
+### Framebuffer auto-exposure and white balance
+
+Auto-exposure and auto-white-balance are enabled by default and run entirely on
+the GPU. After TAA, a compute pass samples the unexposed, un-white-balanced
+scene on a fixed 256×144 grid. It accumulates 256 integer bins over −16…+16 EV,
+trims the darkest and brightest 2%, and derives exposure from geometric-mean
+luminance. The same accepted bins produce a luminance-weighted framebuffer
+white estimate; a small D65 virtual reference stabilizes dark frames. Bradford
+LMS corrections are limited to ±1 EV.
+
+Bloom, the local-tonemapping proxy, and the final tone pass consume the previous
+adaptation state. The new measurement is applied only after final tone mapping,
+so Frame N metering affects Frame N+1 and never meters its own correction.
+Exposure defaults to a −8…+8 EV range, a 0.35-second darkening response, and a
+1.0-second brightening response. White balance defaults to a 1.0-second response
+and full correction strength. Delta time is clamped to 0.1 seconds. The final
+pass applies white balance and total exposure once, while bloom thresholding
+uses corrected luminance but retains raw bloom color.
+
+Ctrl+I exposes independent enable switches, minimum/maximum automatic EV,
+brightening and darkening response times, white-balance response and strength,
+Exposure Compensation (EV), Reset Adaptation, and delayed non-blocking
+diagnostics for current/target EV, measured white xy, and current Bradford gains.
+Feature-specific controls remain visible but disabled when their automatic
+feature is off. Startup, re-enabling a feature, live-link scene reset,
+active-camera changes, and debug/game-camera changes request a snap on the next
+measured frame. Resize, ordinary camera motion, and TAA history invalidation do
+not. Validation charts bypass both automatic systems to retain their established
+conformance output.
+
+This milestone is framebuffer-only gray-world metering. Strongly colored scenes
+can bias the white estimate; sky, sunlight, probes, color-temperature/tint
+controls, dual physiological adaptation, and replay serialization are not yet
+inputs. No Live Link schema or tone-method selection changes are involved.
 
 ### Tonemapping and macOS HDR output
 

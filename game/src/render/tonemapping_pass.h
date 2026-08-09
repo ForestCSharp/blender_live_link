@@ -23,8 +23,10 @@ struct TonemappingFinalPushConstants
 	f32 lut_integration_scale;
 	i32 validation_chart;
 	HMM_Vec4 bloom_profile_gain;
+	i32 auto_exposure_enabled;
+	i32 auto_white_balance_enabled;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 48);
+static_assert(sizeof(TonemappingFinalPushConstants) == 64);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -36,8 +38,10 @@ struct TonemappingLocalProxyPushConstants
 	i32 method;
 	f32 lut_integration_scale;
 	i32 validation_chart;
+	i32 auto_exposure_enabled;
+	i32 auto_white_balance_enabled;
 };
-static_assert(sizeof(TonemappingLocalProxyPushConstants) == 36);
+static_assert(sizeof(TonemappingLocalProxyPushConstants) == 44);
 
 struct TonemappingLocalDownsamplePushConstants
 {
@@ -75,6 +79,7 @@ struct TonemappingPass
 
 	VkImageView scene_color_view = VK_NULL_HANDLE;
 	VkSampler sampler = VK_NULL_HANDLE;
+	VkBuffer auto_adaptation_state_buffer = VK_NULL_HANDLE;
 	i32 effective_coarsest_mip = 1;
 	i32 effective_reconstruction_mip = 1;
 };
@@ -144,14 +149,14 @@ inline i32 tonemapping_pass_get_effective_reconstruction_mip()
 	return tonemapping_pass.effective_reconstruction_mip;
 }
 
-inline void tonemapping_create_sampled_layout(
+inline void tonemapping_create_layout(
 	VulkanContext* ctx,
-	u32 in_binding_count,
+	u32 in_image_binding_count,
 	VkDescriptorSetLayout* out_layout)
 {
-	VkDescriptorSetLayoutBinding bindings[5] = {};
-	assert(in_binding_count <= 5);
-	for (u32 binding_idx = 0; binding_idx < in_binding_count; ++binding_idx)
+	VkDescriptorSetLayoutBinding bindings[6] = {};
+	assert(in_image_binding_count <= 5);
+	for (u32 binding_idx = 0; binding_idx < in_image_binding_count; ++binding_idx)
 	{
 		bindings[binding_idx] = {
 			.binding = binding_idx,
@@ -160,9 +165,15 @@ inline void tonemapping_create_sampled_layout(
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		};
 	}
+	bindings[in_image_binding_count] = {
+		.binding = in_image_binding_count,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.descriptorCount = 1,
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+	};
 	VkDescriptorSetLayoutCreateInfo create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = in_binding_count,
+		.bindingCount = in_image_binding_count + 1,
 		.pBindings = bindings,
 	};
 	VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &create_info, nullptr, out_layout));
@@ -192,8 +203,8 @@ inline VkPipelineLayout tonemapping_create_pipeline_layout(
 
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	tonemapping_create_sampled_layout(ctx, 5, &tonemapping_pass.final_set_layout);
-	tonemapping_create_sampled_layout(ctx, 4, &tonemapping_pass.local_set_layout);
+	tonemapping_create_layout(ctx, 5, &tonemapping_pass.final_set_layout);
+	tonemapping_create_layout(ctx, 4, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
 
 	const EDisplayOutputMode profile_output_mode = tonemapping_profile_output_mode(ctx);
@@ -368,7 +379,7 @@ inline VkDescriptorSet tonemapping_local_descriptor_set(
 	VkDescriptorSet set =
 		vulkan_allocate_transient_descriptor_set(ctx, tonemapping_pass.local_set_layout);
 	VkDescriptorImageInfo image_infos[4] = {};
-	VkWriteDescriptorSet writes[4] = {};
+	VkWriteDescriptorSet writes[5] = {};
 	for (u32 view_idx = 0; view_idx < in_view_count; ++view_idx)
 	{
 		image_infos[view_idx] = descriptor_sampled(tonemapping_pass.sampler, in_views[view_idx]);
@@ -378,7 +389,11 @@ inline VkDescriptorSet tonemapping_local_descriptor_set(
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			&image_infos[view_idx]);
 	}
-	vulkan_update_descriptor_sets(ctx, in_view_count, writes, 0, nullptr, false);
+	VkDescriptorBufferInfo buffer_info = descriptor_buffer(
+		tonemapping_pass.auto_adaptation_state_buffer);
+	writes[in_view_count] = descriptor_write_buffer(
+		set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
+	vulkan_update_descriptor_sets(ctx, in_view_count + 1, writes, 0, nullptr, false);
 	return set;
 }
 
@@ -501,10 +516,12 @@ void tonemapping_pass_update(
 	VkImageView in_scene_color_view,
 	VkImageView in_bloom_view,
 	f32 in_bloom_intensity,
-	VkSampler in_sampler)
+	VkSampler in_sampler,
+	VkBuffer in_auto_adaptation_state_buffer)
 {
 	tonemapping_pass.scene_color_view = in_scene_color_view;
 	tonemapping_pass.sampler = in_sampler;
+	tonemapping_pass.auto_adaptation_state_buffer = in_auto_adaptation_state_buffer;
 
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
@@ -518,13 +535,16 @@ void tonemapping_pass_update(
 			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
 		descriptor_sampled(in_sampler, tonemapping_pass.tonemapping_lut.view),
 	};
-	VkWriteDescriptorSet writes[5] = {};
+	VkWriteDescriptorSet writes[6] = {};
 	for (u32 binding = 0; binding < 5; ++binding)
 	{
 		writes[binding] = descriptor_write_image(
 			set, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[binding]);
 	}
-	vulkan_update_descriptor_sets(ctx, 5, writes);
+	VkDescriptorBufferInfo buffer_info = descriptor_buffer(in_auto_adaptation_state_buffer);
+	writes[5] = descriptor_write_buffer(
+		set, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
+	vulkan_update_descriptor_sets(ctx, 6, writes);
 }
 
 void tonemapping_pass_prepare_local(
@@ -579,6 +599,10 @@ void tonemapping_pass_prepare_local(
 			.method = (i32)in_state.method,
 			.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
 			.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
+			.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+				&& in_state.auto_exposure_enabled ? 1 : 0,
+			.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+				&& in_state.auto_white_balance_enabled ? 1 : 0,
 		};
 		tonemapping_draw_local_stage(
 			ctx,
@@ -792,6 +816,10 @@ void tonemapping_pass_draw(
 		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
 		.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
 		.bloom_profile_gain = in_bloom_profile_gain,
+		.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+			&& in_state.auto_exposure_enabled ? 1 : 0,
+		.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+			&& in_state.auto_white_balance_enabled ? 1 : 0,
 	};
 
 	vkCmdBindPipeline(

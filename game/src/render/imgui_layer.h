@@ -290,9 +290,86 @@ namespace ImGuiLayer
 						"Method##Tonemapping",
 						(i32*)&state.tonemapping.method,
 						ETonemappingMethodNames,
-						(i32)ETonemappingMethod::MAX);
+						(i32)ETonemappingMethod::MAX
+                    );
+
+					ImGui::SliderFloat(
+						state.tonemapping.auto_exposure_enabled
+							? "Exposure Compensation (EV)"
+							: "Exposure (EV)",
+						&state.tonemapping.exposure_bias,
+						-5.0f, 5.0f, "%.2f stops"
+                    );
+
+					if (ImGui::Button("Reset Adaptation"))
+                    {
+						state.tonemapping.adaptation_reset_requested = true;
+                    }
+
+					ImGui::Checkbox("Auto Exposure", &state.tonemapping.auto_exposure_enabled);
+                    ImGui::Indent();
+					ImGui::BeginDisabled(!state.tonemapping.auto_exposure_enabled);
+					{
+						if (ImGui::SliderFloat("Minimum Auto EV",
+							&state.tonemapping.auto_exposure_min_ev,
+							-16.0f, 16.0f, "%.2f EV"))
+						{
+							state.tonemapping.auto_exposure_max_ev = MAX(
+								state.tonemapping.auto_exposure_max_ev,
+								state.tonemapping.auto_exposure_min_ev);
+						}
+						if (ImGui::SliderFloat("Maximum Auto EV",
+							&state.tonemapping.auto_exposure_max_ev,
+							-16.0f, 16.0f, "%.2f EV"))
+						{
+							state.tonemapping.auto_exposure_min_ev = MIN(
+								state.tonemapping.auto_exposure_min_ev,
+								state.tonemapping.auto_exposure_max_ev);
+						}
+						ImGui::SliderFloat("Brightening Response",
+							&state.tonemapping.auto_exposure_brightening_seconds,
+							0.01f, 10.0f, "%.2f s", ImGuiSliderFlags_Logarithmic);
+						ImGui::SliderFloat("Darkening Response",
+							&state.tonemapping.auto_exposure_darkening_seconds,
+							0.01f, 10.0f, "%.2f s", ImGuiSliderFlags_Logarithmic);
+    
+                        ImGui::TextDisabled(
+                            "Auto EV %.2f -> %.2f | white xy %.4f, %.4f",
+                            state.tonemapping.adaptation_current_ev,
+                            state.tonemapping.adaptation_target_ev,
+                            state.tonemapping.adaptation_measured_white_x,
+                            state.tonemapping.adaptation_measured_white_y
+                        );
+					}
+					ImGui::EndDisabled();
+                    ImGui::Unindent();
+
+					ImGui::Checkbox(
+						"Auto White Balance", &state.tonemapping.auto_white_balance_enabled);
+                    ImGui::Indent();
+					ImGui::BeginDisabled(!state.tonemapping.auto_white_balance_enabled);
+					{
+						ImGui::SliderFloat("White-Balance Response",
+							&state.tonemapping.auto_white_balance_seconds,
+							0.01f, 10.0f, "%.2f s", ImGuiSliderFlags_Logarithmic);
+						ImGui::SliderFloat("AWB Strength",
+							&state.tonemapping.auto_white_balance_strength,
+							0.0f, 1.0f, "%.2f");
+
+                        ImGui::TextDisabled(
+                            "Bradford LMS %.3f, %.3f, %.3f | %d samples%s",
+                            state.tonemapping.adaptation_current_l_gain,
+                            state.tonemapping.adaptation_current_m_gain,
+                            state.tonemapping.adaptation_current_s_gain,
+                            state.tonemapping.adaptation_accepted_sample_count,
+                            state.tonemapping.adaptation_measurement_valid ? "" : " (invalid)"
+                        );
+					}
+
+					ImGui::EndDisabled();
+                    ImGui::Unindent();
+
 					ImGui::Checkbox("Local Tonemapping", &state.tonemapping.local_enabled);
-					ImGui::SliderFloat("Exposure (EV)", &state.tonemapping.exposure_bias, -5.0f, 5.0f, "%.2f stops");
 					ImGui::Indent();
 					ImGui::BeginDisabled(!state.tonemapping.local_enabled);
 					{

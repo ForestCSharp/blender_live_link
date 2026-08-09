@@ -48,9 +48,15 @@ namespace RuntimeStateOverrides
 		// implied global/local state.
 		if (config.local_tonemap)
 			in_state.tonemapping.local_enabled = *config.local_tonemap;
-		printf("Tonemapping: method %s, local %s\n",
+		if (config.auto_exposure)
+			in_state.tonemapping.auto_exposure_enabled = *config.auto_exposure;
+		if (config.auto_white_balance)
+			in_state.tonemapping.auto_white_balance_enabled = *config.auto_white_balance;
+		printf("Tonemapping: method %s, local %s, auto exposure %s, auto WB %s\n",
 			ETonemappingMethodNames[(i32)in_state.tonemapping.method],
-			in_state.tonemapping.local_enabled ? "enabled" : "disabled");
+			in_state.tonemapping.local_enabled ? "enabled" : "disabled",
+			in_state.tonemapping.auto_exposure_enabled ? "enabled" : "disabled",
+			in_state.tonemapping.auto_white_balance_enabled ? "enabled" : "disabled");
 		if (config.bloom) { in_state.bloom.enable = *config.bloom; }
 		if (config.bloom_threshold)
 		{

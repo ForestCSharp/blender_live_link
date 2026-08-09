@@ -2,12 +2,17 @@
 
 #include "tonemapping_operators.h"
 #include "tonemapping_validation_chart.h"
+#include "auto_adaptation.h"
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2D local_guide;
 layout(set = 0, binding = 2) uniform sampler2D local_fused_lightness;
 layout(set = 0, binding = 3) uniform sampler2D bloom_color;
 layout(set = 0, binding = 4) uniform sampler2DArray tonemapping_lut;
+layout(std430, set = 0, binding = 5) readonly buffer AutoAdaptationStateBlock
+{
+	vec4 auto_adaptation_values[AUTO_ADAPTATION_STATE_VEC4_COUNT];
+};
 
 layout(push_constant) uniform PushConstants
 {
@@ -19,6 +24,8 @@ layout(push_constant) uniform PushConstants
 	float lut_integration_scale;
 	int validation_chart;
 	vec4 bloom_profile_gain;
+	int auto_exposure_enabled;
+	int auto_white_balance_enabled;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -27,16 +34,36 @@ layout(location = 0) out vec4 frag_color;
 
 void main()
 {
-	float exposure_scale = exp2(pc.exposure_bias);
+	float auto_exposure_ev = pc.auto_exposure_enabled != 0
+		? auto_adaptation_values[AUTO_ADAPTATION_STATE_EXPOSURE_WHITE].x
+		: 0.0;
+	float exposure_scale = exp2(pc.exposure_bias + auto_exposure_ev);
 	vec3 source_color = pc.validation_chart == 2 ? vec3(0.18)
 		: pc.validation_chart == 1 ? tonemapping_validation_chart(uv)
 		: texture(scene_color, uv).rgb;
+	if (pc.auto_white_balance_enabled != 0)
+	{
+		source_color = auto_adaptation_apply_white_balance(
+			source_color,
+			auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_0],
+			auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_1],
+			auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_2]);
+	}
 	vec3 exposed_color = max(source_color, vec3(0.0)) * exposure_scale;
 	vec3 exposed_bloom = vec3(0.0);
 	if (pc.validation_chart == 0 && pc.bloom_intensity > 0.0)
 	{
-		exposed_bloom = max(texture(bloom_color, uv).rgb, vec3(0.0))
-			* pc.bloom_profile_gain.rgb * exposure_scale * pc.bloom_intensity;
+		vec3 bloom = texture(bloom_color, uv).rgb;
+		if (pc.auto_white_balance_enabled != 0)
+		{
+			bloom = auto_adaptation_apply_white_balance(
+				bloom,
+				auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_0],
+				auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_1],
+				auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_2]);
+		}
+		exposed_bloom = max(bloom, vec3(0.0)) * pc.bloom_profile_gain.rgb
+			* exposure_scale * pc.bloom_intensity;
 	}
 	vec3 tonemapped_color;
 

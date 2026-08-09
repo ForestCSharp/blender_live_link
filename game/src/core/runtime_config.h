@@ -23,6 +23,8 @@ namespace RuntimeConfig
 		std::optional<bool> fxaa;
 		std::optional<std::string> tonemap_mode;
 		std::optional<bool> local_tonemap;
+		std::optional<bool> auto_exposure;
+		std::optional<bool> auto_white_balance;
 		std::optional<std::string> output_mode;
 		int tonemap_validation_chart = 0;
 		std::optional<std::string> tonemap_validation_output_mode;
@@ -108,6 +110,8 @@ namespace RuntimeConfig
 		config.fxaa = boolean_value("GAME2_FXAA");
 		config.tonemap_mode = string_value("GAME2_TONEMAP_MODE");
 		config.local_tonemap = boolean_value("GAME2_LOCAL_TONEMAP");
+		config.auto_exposure = boolean_value("GAME2_AUTO_EXPOSURE");
+		config.auto_white_balance = boolean_value("GAME2_AUTO_WHITE_BALANCE");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
 		if (const char* chart = environment_value("GAME2_TONEMAP_VALIDATION_CHART"))
 			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2 : 1;

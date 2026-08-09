@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 METHODS = ("gt7", "agx", "aces", "neutral")
 OUTPUTS = ("sdr", "edr", "hdr10")
 CPU_TESTS = (
+    "auto_adaptation_tests",
     "gt7_tonemapping_tests",
     "aces2_tonemapping_tests",
     "agx_tonemapping_tests",

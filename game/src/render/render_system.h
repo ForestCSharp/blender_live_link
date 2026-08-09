@@ -3,6 +3,7 @@
 #include <limits>
 
 #include "input/input_system.h"
+#include "render/auto_adaptation_pass.h"
 #include "render/bloom_pass.h"
 #include "render/blur_pass.h"
 #include "render/copy_to_swapchain_pass.h"
@@ -211,6 +212,7 @@ namespace RenderSystem
 			Tessellation::init(&in_state.vk);
 			lighting_pass_init(&in_state.vk, frame_data.linear_sampler);
 			BloomPass::init(&in_state.vk, frame_data.linear_sampler);
+			AutoAdaptationPass::init(&in_state.vk, frame_data.linear_sampler);
 			tonemapping_pass_init(&in_state.vk);
 			sky_pass_init(&in_state.vk);
 			copy_to_swapchain_pass_init(&in_state.vk);
@@ -503,14 +505,17 @@ namespace RenderSystem
 			return false;
 		}
 		resize(in_state, in_state.window.render_resolution_dirty);
+		AutoAdaptationPass::consume_diagnostics(
+			&in_state.vk, in_state.tonemapping);
 		ImGuiLayer::begin_frame();
 		return true;
 	}
 
-	inline void render(State& in_state)
+	inline void render(State& in_state, f32 in_delta_time)
 	{
-			CPU_TIMING_SCOPE("Rendering");
-			ImGuiLayer::draw_controls(in_state, g_gi_scene);
+		CPU_TIMING_SCOPE("Rendering");
+		ImGuiLayer::draw_controls(in_state, g_gi_scene);
+		AutoAdaptationPass::prepare_frame(in_state);
 		
 			// View + Projection matrix setup (TAA jitters the projection; the
 			// unjittered previous VP is not kept, so reprojection uses the jittered
@@ -702,9 +707,16 @@ namespace RenderSystem
 				);
 			}
 		
-			VkImageView pre_tonemap_scene_color_view = in_state.temporal_aa.enable
-				? get_temporal_aa_pass(temporal_aa_output_index).get_color_output(0).view
-				: post_wire_scene_color_view;
+			GpuImage* pre_tonemap_scene_color = in_state.temporal_aa.enable
+				? &get_temporal_aa_pass(temporal_aa_output_index).get_color_output(0)
+				: in_state.wireframe.shaded_wireframe
+					? &wire_overlay_render_pass.get_color_output(0)
+					: in_state.dof.enable
+						? &dof_combine_render_pass.get_color_output(0)
+						: fog_render_active
+							? &fog_render_pass.get_color_output(0)
+							: &lighting_render_pass.get_color_output(0);
+			VkImageView pre_tonemap_scene_color_view = pre_tonemap_scene_color->view;
 			const bool bloom_active = in_state.bloom.enable && in_state.bloom.intensity > 0.0f;
 			const f32 bloom_intensity = bloom_active
 				? CLAMP(in_state.bloom.intensity, 0.0f, State::BloomState::MAX_INTENSITY)
@@ -714,7 +726,8 @@ namespace RenderSystem
 				pre_tonemap_scene_color_view,
 				BloomPass::mip_view(0),
 				bloom_intensity,
-				frame_data.linear_sampler);
+				frame_data.linear_sampler,
+				AutoAdaptationPass::state_buffer());
 		
 			// FXAA reads the tonemapped target. Presentation composite upscales the
 			// selected result at output resolution before UI and display encoding.
@@ -1059,6 +1072,10 @@ namespace RenderSystem
 				in_state.temporal_aa.history_index = temporal_aa_previous_index;
 			}
 
+			AutoAdaptationPass::meter(
+				&in_state.vk, *pre_tonemap_scene_color, in_state.tonemapping);
+			AutoAdaptationPass::mark_state_for_fragment_read(&in_state.vk);
+
 			// Bloom reconstructs an exposure-aware HDR pyramid after the temporal
 			// resolve. Local tonemapping still derives its guide from the original
 			// scene so the glow cannot suppress itself through local adaptation.
@@ -1068,7 +1085,8 @@ namespace RenderSystem
 					&in_state.vk,
 					pre_tonemap_scene_color_view,
 					in_state.bloom,
-					in_state.tonemapping.exposure_bias);
+					in_state.tonemapping,
+					AutoAdaptationPass::state_buffer());
 			}
 		
 			if (in_state.tonemapping.local_enabled)
@@ -1083,6 +1101,8 @@ namespace RenderSystem
 					bloom_intensity,
 					BloomPass::get_profile_base_gain());
 			});
+			AutoAdaptationPass::update_after_tonemapping(
+				&in_state.vk, in_state.tonemapping, in_delta_time);
 		
 			// FXAA filters at render resolution. Presentation composite performs the
 			// one upscale and places UI into the same normalized float target.
@@ -1136,6 +1156,7 @@ namespace RenderSystem
 		copy_to_swapchain_pass_shutdown(&in_state.vk);
 		sky_pass_shutdown(&in_state.vk);
 		tonemapping_pass_shutdown(&in_state.vk);
+		AutoAdaptationPass::shutdown(&in_state.vk);
 		BloomPass::shutdown(&in_state.vk);
 		Tessellation::shutdown(&in_state.vk);
 		GpuSkinning::shutdown(&in_state.vk);

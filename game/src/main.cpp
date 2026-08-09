@@ -162,7 +162,7 @@ void frame(f32 in_delta_time)
 		AnimationSystem::pack_skin_matrices(state);
 	}
 
-	RenderSystem::render(state);
+	RenderSystem::render(state, in_delta_time);
 	automated_screenshot.queue_if_ready(state);
 
 	RenderSystem::end_frame(state);

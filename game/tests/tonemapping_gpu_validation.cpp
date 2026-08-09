@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "render/auto_adaptation_math.h"
 #include "tonemapping_validation_common.h"
 
 using TonemappingValidation::Assets;
@@ -361,12 +362,67 @@ public:
 
 	const std::string& gpu_name() const { return device_name; }
 
+	ConfigurationResult validate_auto_adaptation()
+	{
+		struct Case
+		{
+			const char* name;
+			std::vector<AutoAdaptationMath::Rgb> pixels;
+		};
+		const size_t pixel_count = (size_t)AutoAdaptationMath::METER_WIDTH
+			* AutoAdaptationMath::METER_HEIGHT;
+		auto constant = [pixel_count](AutoAdaptationMath::Rgb color) {
+			return std::vector<AutoAdaptationMath::Rgb>(pixel_count, color);
+		};
+		std::vector<Case> cases;
+		cases.push_back({"middle-gray", constant({0.18f, 0.18f, 0.18f})});
+		cases.push_back({"four-times-gray", constant({0.72f, 0.72f, 0.72f})});
+		cases.push_back({"warm", constant({0.36f, 0.18f, 0.06f})});
+		cases.push_back({"cool", constant({0.06f, 0.18f, 0.42f})});
+		cases.push_back({"high-outliers", constant({0.18f, 0.18f, 0.18f})});
+		for (size_t index = 0; index < 600; ++index)
+			cases.back().pixels[index] = {1000.0f, 1000.0f, 1000.0f};
+
+		ConfigurationResult result;
+		result.name = "auto-adaptation/framebuffer-meter";
+		for (const Case& test_case : cases)
+		{
+			AutoAdaptationMath::HistogramBin expected_bins[AutoAdaptationMath::HISTOGRAM_BIN_COUNT] = {};
+			for (const AutoAdaptationMath::Rgb color : test_case.pixels)
+				AutoAdaptationMath::add_sample(expected_bins, color);
+			const AutoAdaptationMath::Measurement expected =
+				AutoAdaptationMath::reduce_histogram(expected_bins);
+			const float white_balance_strength = std::strcmp(test_case.name, "warm") == 0
+				? 0.5f : 1.0f;
+			const float case_error = dispatch_auto_adaptation(
+				test_case.pixels, expected_bins, expected, white_balance_strength);
+			result.maximum_error = std::max(result.maximum_error, case_error);
+			result.mean_error += case_error;
+			result.samples += test_case.pixels.size();
+		}
+		result.mean_error /= (double)cases.size();
+		return result;
+	}
+
 	void shutdown()
 	{
 		if (device != VK_NULL_HANDLE) vkDeviceWaitIdle(device);
 		destroy_image(lut);
 		destroy_buffer(output);
 		destroy_buffer(input);
+		destroy_image(auto_scene);
+		destroy_buffer(auto_state);
+		destroy_buffer(auto_measurement);
+		destroy_buffer(auto_histogram);
+		if (auto_histogram_pipeline) vkDestroyPipeline(device, auto_histogram_pipeline, nullptr);
+		if (auto_reduce_pipeline) vkDestroyPipeline(device, auto_reduce_pipeline, nullptr);
+		if (auto_update_pipeline) vkDestroyPipeline(device, auto_update_pipeline, nullptr);
+		if (auto_meter_pipeline_layout) vkDestroyPipelineLayout(device, auto_meter_pipeline_layout, nullptr);
+		if (auto_buffer_pipeline_layout) vkDestroyPipelineLayout(device, auto_buffer_pipeline_layout, nullptr);
+		if (auto_descriptor_pool) vkDestroyDescriptorPool(device, auto_descriptor_pool, nullptr);
+		if (auto_meter_layout) vkDestroyDescriptorSetLayout(device, auto_meter_layout, nullptr);
+		if (auto_buffer_layout) vkDestroyDescriptorSetLayout(device, auto_buffer_layout, nullptr);
+		if (auto_sampler) vkDestroySampler(device, auto_sampler, nullptr);
 		if (exact_pipeline) vkDestroyPipeline(device, exact_pipeline, nullptr);
 		if (matched_pipeline) vkDestroyPipeline(device, matched_pipeline, nullptr);
 		if (display_pipeline) vkDestroyPipeline(device, display_pipeline, nullptr);
@@ -494,7 +550,7 @@ private:
 		return words;
 	}
 
-	VkPipeline create_pipeline(const char* path)
+	VkPipeline create_pipeline(const char* path, VkPipelineLayout layout = VK_NULL_HANDLE)
 	{
 		const std::vector<uint32_t> words = read_spirv(path);
 		VkShaderModuleCreateInfo module_info = {
@@ -513,7 +569,7 @@ private:
 		VkComputePipelineCreateInfo pipeline_info = {
 			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage = stage,
-			.layout = pipeline_layout,
+			.layout = layout != VK_NULL_HANDLE ? layout : pipeline_layout,
 		};
 		VkPipeline pipeline = VK_NULL_HANDLE;
 		vk_check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
@@ -580,6 +636,309 @@ private:
 		exact_pipeline = create_pipeline("bin/shaders/tonemapping_validation.comp.spv");
 		matched_pipeline = create_pipeline("bin/shaders/tonemapping_validation_match_gray.comp.spv");
 		display_pipeline = create_pipeline("bin/shaders/display_encoding_validation.comp.spv");
+		create_auto_adaptation_resources();
+	}
+
+	void create_auto_adaptation_resources()
+	{
+		const VkSamplerCreateInfo sampler_info = {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_NEAREST,
+			.minFilter = VK_FILTER_NEAREST,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		};
+		vk_check(vkCreateSampler(device, &sampler_info, nullptr, &auto_sampler),
+			"create auto adaptation sampler");
+		const VkDescriptorSetLayoutBinding meter_bindings[2] = {
+			{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+			{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		};
+		const VkDescriptorSetLayoutBinding buffer_bindings[2] = {
+			{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+			{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		};
+		VkDescriptorSetLayoutCreateInfo layout_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = 2,
+			.pBindings = meter_bindings,
+		};
+		vk_check(vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &auto_meter_layout),
+			"create auto adaptation meter layout");
+		layout_info.pBindings = buffer_bindings;
+		vk_check(vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &auto_buffer_layout),
+			"create auto adaptation buffer layout");
+
+		VkPipelineLayoutCreateInfo pipeline_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &auto_meter_layout,
+		};
+		vk_check(vkCreatePipelineLayout(device, &pipeline_info, nullptr, &auto_meter_pipeline_layout),
+			"create auto adaptation meter pipeline layout");
+		const VkPushConstantRange update_push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 40};
+		pipeline_info.pSetLayouts = &auto_buffer_layout;
+		pipeline_info.pushConstantRangeCount = 1;
+		pipeline_info.pPushConstantRanges = &update_push;
+		vk_check(vkCreatePipelineLayout(device, &pipeline_info, nullptr, &auto_buffer_pipeline_layout),
+			"create auto adaptation buffer pipeline layout");
+		auto_histogram_pipeline = create_pipeline(
+			"bin/shaders/auto_adaptation_histogram.comp.spv", auto_meter_pipeline_layout);
+		auto_reduce_pipeline = create_pipeline(
+			"bin/shaders/auto_adaptation_reduce.comp.spv", auto_buffer_pipeline_layout);
+		auto_update_pipeline = create_pipeline(
+			"bin/shaders/auto_adaptation_update.comp.spv", auto_buffer_pipeline_layout);
+
+		const VkDescriptorPoolSize pool_sizes[2] = {
+			{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5},
+			{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+		};
+		VkDescriptorPoolCreateInfo pool_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = 3,
+			.poolSizeCount = 2,
+			.pPoolSizes = pool_sizes,
+		};
+		vk_check(vkCreateDescriptorPool(device, &pool_info, nullptr, &auto_descriptor_pool),
+			"create auto adaptation descriptor pool");
+		const VkDescriptorSetLayout layouts[3] = {
+			auto_meter_layout, auto_buffer_layout, auto_buffer_layout};
+		VkDescriptorSet sets[3] = {};
+		VkDescriptorSetAllocateInfo allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = auto_descriptor_pool,
+			.descriptorSetCount = 3,
+			.pSetLayouts = layouts,
+		};
+		vk_check(vkAllocateDescriptorSets(device, &allocate_info, sets),
+			"allocate auto adaptation descriptor sets");
+		auto_meter_set = sets[0];
+		auto_reduce_set = sets[1];
+		auto_update_set = sets[2];
+
+		auto_histogram = create_buffer(
+			sizeof(AutoAdaptationMath::HistogramBin) * AutoAdaptationMath::HISTOGRAM_BIN_COUNT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		auto_measurement = create_buffer(32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		auto_state = create_buffer(112, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		const VkDescriptorBufferInfo histogram_info = {
+			auto_histogram.buffer, 0, auto_histogram.size};
+		const VkDescriptorBufferInfo measurement_info = {
+			auto_measurement.buffer, 0, auto_measurement.size};
+		const VkDescriptorBufferInfo state_info = {auto_state.buffer, 0, auto_state.size};
+		const VkWriteDescriptorSet writes[5] = {
+			{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, auto_meter_set, 1, 0, 1,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &histogram_info, nullptr},
+			{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, auto_reduce_set, 0, 0, 1,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &histogram_info, nullptr},
+			{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, auto_reduce_set, 1, 0, 1,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &measurement_info, nullptr},
+			{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, auto_update_set, 0, 0, 1,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &measurement_info, nullptr},
+			{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, auto_update_set, 1, 0, 1,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &state_info, nullptr},
+		};
+		vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+	}
+
+	void upload_auto_scene(const std::vector<AutoAdaptationMath::Rgb>& pixels)
+	{
+		destroy_image(auto_scene);
+		std::vector<Float4> rgba(pixels.size());
+		for (size_t index = 0; index < pixels.size(); ++index)
+			rgba[index] = {pixels[index].r, pixels[index].g, pixels[index].b, 1.0f};
+		Buffer staging = create_buffer(rgba.size() * sizeof(Float4),
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+		std::memcpy(staging.mapped, rgba.data(), staging.size);
+		flush(staging);
+
+		VkImageCreateInfo image_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = VK_FORMAT_R32G32B32A32_SFLOAT,
+			.extent = {(uint32_t)AutoAdaptationMath::METER_WIDTH,
+				(uint32_t)AutoAdaptationMath::METER_HEIGHT, 1},
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+		vk_check(vkCreateImage(device, &image_info, nullptr, &auto_scene.image),
+			"create auto adaptation scene image");
+		VkMemoryRequirements requirements = {};
+		vkGetImageMemoryRequirements(device, auto_scene.image, &requirements);
+		VkMemoryAllocateInfo allocation = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = requirements.size,
+			.memoryTypeIndex = find_memory_type(requirements.memoryTypeBits,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+		};
+		vk_check(vkAllocateMemory(device, &allocation, nullptr, &auto_scene.memory),
+			"allocate auto adaptation scene memory");
+		vk_check(vkBindImageMemory(device, auto_scene.image, auto_scene.memory, 0),
+			"bind auto adaptation scene memory");
+
+		begin_commands();
+		VkImageMemoryBarrier barrier = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = auto_scene.image,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		};
+		vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		const VkBufferImageCopy copy = {
+			.bufferOffset = 0,
+			.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.imageExtent = {(uint32_t)AutoAdaptationMath::METER_WIDTH,
+				(uint32_t)AutoAdaptationMath::METER_HEIGHT, 1},
+		};
+		vkCmdCopyBufferToImage(command_buffer, staging.buffer, auto_scene.image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		end_commands();
+		destroy_buffer(staging);
+
+		VkImageViewCreateInfo view_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = auto_scene.image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = VK_FORMAT_R32G32B32A32_SFLOAT,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		};
+		vk_check(vkCreateImageView(device, &view_info, nullptr, &auto_scene.view),
+			"create auto adaptation scene view");
+		const VkDescriptorImageInfo scene_info = {
+			.sampler = auto_sampler,
+			.imageView = auto_scene.view,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+		const VkWriteDescriptorSet write = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = auto_meter_set,
+			.dstBinding = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &scene_info,
+		};
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+	}
+
+	float dispatch_auto_adaptation(
+		const std::vector<AutoAdaptationMath::Rgb>& pixels,
+		const AutoAdaptationMath::HistogramBin* expected_bins,
+		const AutoAdaptationMath::Measurement& expected,
+		float white_balance_strength)
+	{
+		upload_auto_scene(pixels);
+		std::memset(auto_histogram.mapped, 0, auto_histogram.size);
+		std::memset(auto_measurement.mapped, 0, auto_measurement.size);
+		float identity_state[28] = {};
+		identity_state[2] = 0.3127f;
+		identity_state[3] = 0.3290f;
+		identity_state[12] = 1.0f;
+		identity_state[17] = 1.0f;
+		identity_state[22] = 1.0f;
+		std::memcpy(auto_state.mapped, identity_state, sizeof(identity_state));
+		flush(auto_histogram);
+		flush(auto_measurement);
+		flush(auto_state);
+
+		begin_commands();
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			auto_histogram_pipeline);
+		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			auto_meter_pipeline_layout, 0, 1, &auto_meter_set, 0, nullptr);
+		vkCmdDispatch(command_buffer, 16, 9, 1);
+		VkMemoryBarrier compute_barrier = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		};
+		vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &compute_barrier, 0, nullptr, 0, nullptr);
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, auto_reduce_pipeline);
+		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			auto_buffer_pipeline_layout, 0, 1, &auto_reduce_set, 0, nullptr);
+		const float reduce_constants[2] = {-8.0f, 8.0f};
+		vkCmdPushConstants(command_buffer, auto_buffer_pipeline_layout,
+			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(reduce_constants), reduce_constants);
+		vkCmdDispatch(command_buffer, 1, 1, 1);
+		compute_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &compute_barrier, 0, nullptr, 0, nullptr);
+		struct UpdateConstants
+		{
+			float delta;
+			int exposure;
+			int white_balance;
+			int reset;
+			float min_ev;
+			float max_ev;
+			float darkening_seconds;
+			float brightening_seconds;
+			float white_balance_seconds;
+			float white_balance_strength;
+		};
+		const UpdateConstants constants = {
+			1.0f / 60.0f, 1, 1, 3, -8.0f, 8.0f, 0.35f, 1.0f, 1.0f,
+			white_balance_strength};
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, auto_update_pipeline);
+		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			auto_buffer_pipeline_layout, 0, 1, &auto_update_set, 0, nullptr);
+		vkCmdPushConstants(command_buffer, auto_buffer_pipeline_layout,
+			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), &constants);
+		vkCmdDispatch(command_buffer, 1, 1, 1);
+		compute_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &compute_barrier, 0, nullptr, 0, nullptr);
+		end_commands();
+		invalidate(auto_histogram);
+		invalidate(auto_measurement);
+		invalidate(auto_state);
+
+		const auto* gpu_bins = (const AutoAdaptationMath::HistogramBin*)auto_histogram.mapped;
+		for (int bin = 0; bin < AutoAdaptationMath::HISTOGRAM_BIN_COUNT; ++bin)
+			if (std::memcmp(&gpu_bins[bin], &expected_bins[bin], sizeof(gpu_bins[bin])) != 0)
+				throw std::runtime_error("auto-adaptation GPU histogram differs from CPU reference");
+		const float* measurement = (const float*)auto_measurement.mapped;
+		const float* state = (const float*)auto_state.mapped;
+		float maximum_error = 0.0f;
+		auto compare_value = [&maximum_error](float actual, float wanted) {
+			maximum_error = std::max(maximum_error, std::abs(actual - wanted));
+		};
+		compare_value(measurement[0], expected.target_ev);
+		compare_value(measurement[1], expected.white_x);
+		compare_value(measurement[2], expected.white_y);
+		compare_value(measurement[4], expected.target_log_lms[0]);
+		compare_value(measurement[5], expected.target_log_lms[1]);
+		compare_value(measurement[6], expected.target_log_lms[2]);
+		compare_value(state[0], expected.target_ev);
+		compare_value(state[4], expected.target_log_lms[0] * white_balance_strength);
+		compare_value(state[5], expected.target_log_lms[1] * white_balance_strength);
+		compare_value(state[6], expected.target_log_lms[2] * white_balance_strength);
+		if ((uint32_t)std::lround(measurement[7]) != expected.accepted_count)
+			throw std::runtime_error("auto-adaptation GPU accepted count differs from CPU reference");
+		if (maximum_error > 2.0e-5f)
+			throw std::runtime_error("auto-adaptation GPU reduction error "
+				+ std::to_string(maximum_error) + " exceeds tolerance (GPU EV "
+				+ std::to_string(measurement[0]) + ", CPU EV "
+				+ std::to_string(expected.target_ev) + ")");
+		return maximum_error;
 	}
 
 	VkInstance instance = VK_NULL_HANDLE;
@@ -598,6 +957,22 @@ private:
 	VkPipeline exact_pipeline = VK_NULL_HANDLE;
 	VkPipeline matched_pipeline = VK_NULL_HANDLE;
 	VkPipeline display_pipeline = VK_NULL_HANDLE;
+	VkDescriptorSetLayout auto_meter_layout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout auto_buffer_layout = VK_NULL_HANDLE;
+	VkDescriptorPool auto_descriptor_pool = VK_NULL_HANDLE;
+	VkDescriptorSet auto_meter_set = VK_NULL_HANDLE;
+	VkDescriptorSet auto_reduce_set = VK_NULL_HANDLE;
+	VkDescriptorSet auto_update_set = VK_NULL_HANDLE;
+	VkPipelineLayout auto_meter_pipeline_layout = VK_NULL_HANDLE;
+	VkPipelineLayout auto_buffer_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline auto_histogram_pipeline = VK_NULL_HANDLE;
+	VkPipeline auto_reduce_pipeline = VK_NULL_HANDLE;
+	VkPipeline auto_update_pipeline = VK_NULL_HANDLE;
+	VkSampler auto_sampler = VK_NULL_HANDLE;
+	Buffer auto_histogram;
+	Buffer auto_measurement;
+	Buffer auto_state;
+	Image auto_scene;
 	Buffer input;
 	Buffer output;
 	Image lut;
@@ -831,6 +1206,7 @@ int main(int argc, char** argv)
 					corpus, encoded, output_mode, srgb_attachment));
 			}
 		}
+		results.push_back(harness.validate_auto_adaptation());
 		write_json(json_path, harness.gpu_name(), results, corpus.size());
 		std::printf("Tonemapping GPU conformance passed on %s: %zu samples, %zu configurations\n",
 			harness.gpu_name().c_str(), corpus.size(), results.size());

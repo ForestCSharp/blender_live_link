@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include "core/runtime_config.h"
 #include "core/timings.h"
 #include "render/bloom_profile.inl"
 #include "render/frame_data.h"
@@ -26,8 +27,10 @@ namespace BloomPass
 		f32 soft_knee;
 		f32 exposure_scale;
 		i32 apply_threshold;
+		i32 auto_exposure_enabled;
+		i32 auto_white_balance_enabled;
 	};
-	static_assert(sizeof(DownsamplePushConstants) == 24);
+static_assert(sizeof(DownsamplePushConstants) == 32);
 
 	struct UpsamplePushConstants
 	{
@@ -51,6 +54,7 @@ namespace BloomPass
 		i32 available_mip_count = 0;
 		i32 effective_mip_count = 0;
 		HMM_Vec4 profile_base_gain = HMM_V4(1.0f, 1.0f, 1.0f, 1.0f);
+		VkBuffer auto_adaptation_state_buffer = VK_NULL_HANDLE;
 	};
 
 	inline Pass bloom_pass;
@@ -181,9 +185,15 @@ namespace BloomPass
 			vulkan_allocate_transient_descriptor_set(ctx, bloom_pass.set_layout);
 		VkDescriptorImageInfo image_info =
 			descriptor_sampled(bloom_pass.linear_sampler, in_view);
-		VkWriteDescriptorSet write = descriptor_write_image(
-			set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_info);
-		vulkan_update_descriptor_sets(ctx, 1, &write, 0, nullptr, false);
+		VkDescriptorBufferInfo buffer_info = descriptor_buffer(
+			bloom_pass.auto_adaptation_state_buffer);
+		VkWriteDescriptorSet writes[] = {
+			descriptor_write_image(
+				set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_info),
+			descriptor_write_buffer(
+				set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info),
+		};
+		vulkan_update_descriptor_sets(ctx, 2, writes, 0, nullptr, false);
 		return set;
 	}
 
@@ -213,16 +223,24 @@ namespace BloomPass
 	inline void init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		bloom_pass.linear_sampler = in_linear_sampler;
-		VkDescriptorSetLayoutBinding binding = {
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		VkDescriptorSetLayoutBinding bindings[] = {
+			{
+				.binding = 0,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			},
+			{
+				.binding = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			},
 		};
 		VkDescriptorSetLayoutCreateInfo set_layout_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 1,
-			.pBindings = &binding,
+			.bindingCount = 2,
+			.pBindings = bindings,
 		};
 		VK_CHECK(vkCreateDescriptorSetLayout(
 			ctx->device, &set_layout_info, nullptr, &bloom_pass.set_layout));
@@ -307,11 +325,13 @@ namespace BloomPass
 		VulkanContext* ctx,
 		VkImageView in_source_view,
 		const State::BloomState& in_state,
-		f32 in_exposure_bias)
+		const State::TonemappingState& in_tonemapping_state,
+		VkBuffer in_auto_adaptation_state_buffer)
 	{
 		assert(bloom_pass.pyramid.image != VK_NULL_HANDLE);
 		bloom_pass.effective_mip_count = CLAMP(
 			in_state.requested_mip_count, 1, bloom_pass.available_mip_count);
+		bloom_pass.auto_adaptation_state_buffer = in_auto_adaptation_state_buffer;
 		const BloomProfile::ResolvedProfile profile =
 			BloomProfile::resolve(bloom_pass.effective_mip_count);
 		bloom_pass.profile_base_gain = HMM_V4(
@@ -353,8 +373,13 @@ namespace BloomPass
 						1.0f / (f32)source_height),
 					.threshold = CLAMP(in_state.threshold, 0.0f, 10.0f),
 					.soft_knee = CLAMP(in_state.soft_knee, 0.0f, 1.0f),
-					.exposure_scale = std::exp2(CLAMP(in_exposure_bias, -5.0f, 5.0f)),
+					.exposure_scale = std::exp2(CLAMP(
+						in_tonemapping_state.exposure_bias, -5.0f, 5.0f)),
 					.apply_threshold = mip == 0 ? 1 : 0,
+					.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+						&& in_tonemapping_state.auto_exposure_enabled ? 1 : 0,
+					.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
+						&& in_tonemapping_state.auto_white_balance_enabled ? 1 : 0,
 				};
 				draw(
 					ctx, bloom_pass.downsample_pipeline, set,

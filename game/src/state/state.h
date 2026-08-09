@@ -336,9 +336,17 @@ struct State
 		const struct Defaults
 		{
 			f32 exposure_bias = 0.0f;	// Default scene exposure bias.
+			bool auto_exposure_enabled = true;
+			bool auto_white_balance_enabled = true;
+			f32 auto_exposure_min_ev = -8.0f;
+			f32 auto_exposure_max_ev = 8.0f;
+			f32 auto_exposure_brightening_seconds = 1.0f;
+			f32 auto_exposure_darkening_seconds = 0.35f;
+			f32 auto_white_balance_seconds = 1.0f;
+			f32 auto_white_balance_strength = 1.0f;
 			ETonemappingMethod method = ETonemappingMethod::GT7;
-			bool local_enabled = true;
 
+			bool local_enabled = true;
 			f32 local_shadow_recovery = 1.5f;
 			f32 local_highlight_recovery = 2.0f;
 			f32 local_exposure_preference_sigma = 5.0f;
@@ -348,6 +356,24 @@ struct State
 		} DEFAULTS;
 
 		f32 exposure_bias = DEFAULTS.exposure_bias;
+		bool auto_exposure_enabled = DEFAULTS.auto_exposure_enabled;
+		bool auto_white_balance_enabled = DEFAULTS.auto_white_balance_enabled;
+		f32 auto_exposure_min_ev = DEFAULTS.auto_exposure_min_ev;
+		f32 auto_exposure_max_ev = DEFAULTS.auto_exposure_max_ev;
+		f32 auto_exposure_brightening_seconds = DEFAULTS.auto_exposure_brightening_seconds;
+		f32 auto_exposure_darkening_seconds = DEFAULTS.auto_exposure_darkening_seconds;
+		f32 auto_white_balance_seconds = DEFAULTS.auto_white_balance_seconds;
+		f32 auto_white_balance_strength = DEFAULTS.auto_white_balance_strength;
+		bool adaptation_reset_requested = true;
+		bool adaptation_measurement_valid = false;
+		f32 adaptation_current_ev = 0.0f;
+		f32 adaptation_target_ev = 0.0f;
+		f32 adaptation_measured_white_x = 0.3127f;
+		f32 adaptation_measured_white_y = 0.3290f;
+		f32 adaptation_current_l_gain = 1.0f;
+		f32 adaptation_current_m_gain = 1.0f;
+		f32 adaptation_current_s_gain = 1.0f;
+		i32 adaptation_accepted_sample_count = 0;
 		ETonemappingMethod method = DEFAULTS.method;
 		bool local_enabled = DEFAULTS.local_enabled;
 
@@ -360,12 +386,24 @@ struct State
 
 		void reset_defaults()
 		{
+			exposure_bias = DEFAULTS.exposure_bias;
+			auto_exposure_enabled = DEFAULTS.auto_exposure_enabled;
+			auto_white_balance_enabled = DEFAULTS.auto_white_balance_enabled;
+			auto_exposure_min_ev = DEFAULTS.auto_exposure_min_ev;
+			auto_exposure_max_ev = DEFAULTS.auto_exposure_max_ev;
+			auto_exposure_brightening_seconds = DEFAULTS.auto_exposure_brightening_seconds;
+			auto_exposure_darkening_seconds = DEFAULTS.auto_exposure_darkening_seconds;
+			auto_white_balance_seconds = DEFAULTS.auto_white_balance_seconds;
+			auto_white_balance_strength = DEFAULTS.auto_white_balance_strength;
+			method = DEFAULTS.method;
+			local_enabled = DEFAULTS.local_enabled;
 			local_shadow_recovery = DEFAULTS.local_shadow_recovery;
 			local_highlight_recovery = DEFAULTS.local_highlight_recovery;
 			local_exposure_preference_sigma = DEFAULTS.local_exposure_preference_sigma;
 			local_coarsest_mip = DEFAULTS.local_coarsest_mip;
 			local_reconstruction_mip = DEFAULTS.local_reconstruction_mip;
 			local_contrast_boost = DEFAULTS.local_contrast_boost;
+			adaptation_reset_requested = true;
 		}
 	} tonemapping;
 
@@ -908,6 +946,7 @@ void scene_clear_objects(State& in_state)
 	in_state.scene.primary_sun_id.reset();
 	in_state.fog.active_fog_controller_id.reset();
 	in_state.fog.active = false;
+	in_state.tonemapping.adaptation_reset_requested = true;
 	scene_reset_indexes(in_state);
 	mark_lighting_dirty(in_state);
 	in_state.gi.layout_dirty = true;
