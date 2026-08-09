@@ -370,6 +370,10 @@ namespace ImGuiLayer
                     ImGui::Unindent();
 
 					ImGui::Checkbox("Local Tonemapping", &state.tonemapping.local_enabled);
+					if (!state.tonemapping.local_enabled)
+					{
+						state.debug_ui.show_local_tonemapping_debug = false;
+					}
 					ImGui::Indent();
 					ImGui::BeginDisabled(!state.tonemapping.local_enabled);
 					{
@@ -418,6 +422,23 @@ namespace ImGuiLayer
 						ImGui::Checkbox(
 							"Boost Local Contrast",
 							&state.tonemapping.local_contrast_boost);
+						ImGui::Checkbox(
+							"Show Local Tonemapping Debug Overlay",
+							&state.debug_ui.show_local_tonemapping_debug);
+						state.debug_ui.local_tonemapping_debug_mip = CLAMP(
+							state.debug_ui.local_tonemapping_debug_mip,
+							state.tonemapping.local_reconstruction_mip,
+							state.tonemapping.local_coarsest_mip);
+						ImGui::BeginDisabled(
+							!state.debug_ui.show_local_tonemapping_debug);
+						ImGui::SliderInt(
+							"Debug Mip",
+							&state.debug_ui.local_tonemapping_debug_mip,
+							state.tonemapping.local_reconstruction_mip,
+							state.tonemapping.local_coarsest_mip,
+							"%d",
+							ImGuiSliderFlags_ClampOnInput);
+						ImGui::EndDisabled();
 						if (ImGui::Button("Reset Defaults"))
 						{
 							state.tonemapping.reset_defaults();
@@ -757,6 +778,217 @@ namespace ImGuiLayer
 		if (!state.runtime.is_simulating) { foreground->AddText(pos, IM_COL32_WHITE, "Simulation Paused"); }
 	}
 
+	inline void draw_local_tonemapping_debug(
+		const State& state,
+		VkImageView final_tonemapped_view)
+	{
+		if (!state.debug_ui.show_local_tonemapping_debug
+			|| !state.tonemapping.local_enabled)
+		{
+			return;
+		}
+		const TonemappingDebugViewData& debug =
+			tonemapping_pass_get_debug_view_data();
+		if (!debug.ready || final_tonemapped_view == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
+		ImGuiViewport* viewport = ImGui::GetMainViewport();
+		ImDrawList* draw_list = ImGui::GetBackgroundDrawList(viewport);
+		const ImVec2 origin = viewport->WorkPos;
+		const ImVec2 available(
+			MIN(viewport->WorkSize.x, (f32)state.window.width),
+			MIN(viewport->WorkSize.y, (f32)state.window.height));
+		const f32 margin = 10.0f;
+		const f32 gap = 6.0f;
+		const f32 padding = 5.0f;
+		const f32 label_height = 28.0f;
+		const f32 label_font_size = 9.0f;
+		const f32 section_height = 20.0f;
+		const f32 overview_height = CLAMP(available.y * 0.12f, 70.0f, 120.0f);
+		const f32 aspect = debug.base_height > 0
+			? (f32)debug.base_width / (f32)debug.base_height
+			: 16.0f / 9.0f;
+		const f32 max_card_width =
+			(available.x - 2.0f * margin - 3.0f * gap) / 4.0f;
+		const f32 max_image_height =
+			(available.y - 2.0f * margin - section_height - overview_height
+				- 4.0f * label_height - 5.0f * gap - 8.0f * padding) / 4.0f;
+		const f32 image_width = MAX(48.0f, MIN(
+			max_card_width - 2.0f * padding,
+			MAX(32.0f, max_image_height) * aspect));
+		const f32 image_height = image_width / MAX(aspect, 0.01f);
+		const f32 card_width = image_width + 2.0f * padding;
+		const f32 card_height = image_height + label_height + 2.0f * padding;
+		const f32 atlas_width = 4.0f * card_width + 3.0f * gap;
+		const f32 start_x = origin.x + MAX(margin, (available.x - atlas_width) * 0.5f);
+		const f32 start_y = origin.y + margin + section_height;
+		const ImU32 card_color = IM_COL32(8, 10, 14, 205);
+		const ImU32 border_color = IM_COL32(160, 170, 185, 105);
+		const ImU32 text_color = IM_COL32_WHITE;
+
+		char header[192];
+		snprintf(
+			header,
+			sizeof(header),
+			"LOCAL TONEMAPPING  |  selected mip %d  |  reconstruction %d -> %d",
+			debug.selected_full_mip,
+			debug.coarsest_full_mip,
+			debug.reconstruction_full_mip);
+		draw_list->AddText(ImVec2(start_x, origin.y + margin), text_color, header);
+
+		const i32 selected_internal_mip = debug.selected_full_mip - 1;
+		const i32 reconstruction_internal_mip = debug.reconstruction_full_mip - 1;
+		const u32 selected_width = tonemapping_local_mip_extent(
+			debug.base_width, (u32)selected_internal_mip);
+		const u32 selected_height = tonemapping_local_mip_extent(
+			debug.base_height, (u32)selected_internal_mip);
+		const u32 transfer_width = tonemapping_local_mip_extent(
+			debug.base_width, (u32)reconstruction_internal_mip);
+		const u32 transfer_height = tonemapping_local_mip_extent(
+			debug.base_height, (u32)reconstruction_internal_mip);
+
+		const auto draw_card = [&](i32 row, i32 column, VkImageView view, const char* label,
+			const char* unavailable_text = nullptr)
+		{
+			const ImVec2 top_left(
+				start_x + (f32)column * (card_width + gap),
+				start_y + (f32)row * (card_height + gap));
+			const ImVec2 bottom_right(top_left.x + card_width, top_left.y + card_height);
+			draw_list->AddRectFilled(top_left, bottom_right, card_color, 3.0f);
+			draw_list->AddRect(top_left, bottom_right, border_color, 3.0f);
+			draw_list->AddText(
+				ImGui::GetFont(),
+				label_font_size,
+				ImVec2(top_left.x + padding, top_left.y + padding),
+				text_color,
+				label,
+				nullptr,
+				image_width);
+			const ImVec2 image_min(
+				top_left.x + padding,
+				top_left.y + padding + label_height);
+			const ImVec2 image_max(image_min.x + image_width, image_min.y + image_height);
+			if (view != VK_NULL_HANDLE)
+			{
+				draw_list->AddImage(texture(frame_data.linear_sampler, view), image_min, image_max);
+			}
+			else if (unavailable_text)
+			{
+				const ImVec2 text_size = ImGui::CalcTextSize(unavailable_text);
+				draw_list->AddText(
+					ImVec2(
+						image_min.x + MAX(0.0f, (image_width - text_size.x) * 0.5f),
+						image_min.y + MAX(0.0f, (image_height - text_size.y) * 0.5f)),
+					IM_COL32(190, 195, 205, 255),
+					unavailable_text);
+			}
+		};
+
+		char labels[16][160] = {};
+		snprintf(labels[0], sizeof(labels[0]), "Highlight lightness  -%.2f EV  |  mip %d  %ux%u",
+			state.tonemapping.local_highlight_recovery, debug.selected_full_mip,
+			selected_width, selected_height);
+		snprintf(labels[1], sizeof(labels[1]), "Normal lightness  0 EV  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[2], sizeof(labels[2]), "Shadow lightness  +%.2f EV  |  mip %d  %ux%u",
+			state.tonemapping.local_shadow_recovery, debug.selected_full_mip,
+			selected_width, selected_height);
+		snprintf(labels[3], sizeof(labels[3]), "Selected reconstruction  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[4], sizeof(labels[4]), "Highlight weight  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[5], sizeof(labels[5]), "Normal weight  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[6], sizeof(labels[6]), "Shadow weight  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[7], sizeof(labels[7]), "Transfer guide (normal)  |  mip %d  %ux%u",
+			debug.reconstruction_full_mip, transfer_width, transfer_height);
+		snprintf(labels[8], sizeof(labels[8]), "Highlight Laplacian  |  -1 black, 0 gray, +1 white");
+		snprintf(labels[9], sizeof(labels[9]), "Normal Laplacian  |  -1 black, 0 gray, +1 white");
+		snprintf(labels[10], sizeof(labels[10]), "Shadow Laplacian  |  -1 black, 0 gray, +1 white");
+		snprintf(labels[11], sizeof(labels[11]), "Fused transfer target  |  mip %d  %ux%u",
+			debug.reconstruction_full_mip, transfer_width, transfer_height);
+		snprintf(labels[12], sizeof(labels[12]), "Full-res source lightness  |  %dx%d",
+			state.window.render_width, state.window.render_height);
+		snprintf(labels[13], sizeof(labels[13]), "Full-res guided target  |  %dx%d",
+			state.window.render_width, state.window.render_height);
+		snprintf(labels[14], sizeof(labels[14]), "Local adjustment  |  -4 EV black, 0 gray, +4 EV white");
+		snprintf(labels[15], sizeof(labels[15]), "Final tonemapped output (pre-FXAA)  |  %dx%d",
+			state.window.render_width, state.window.render_height);
+
+		for (i32 channel = 0; channel < 3; ++channel)
+		{
+			draw_card(0, channel, debug.exposure[channel], labels[channel]);
+			draw_card(1, channel, debug.weights[channel], labels[4 + channel]);
+			draw_card(
+				2,
+				channel,
+				debug.laplacians[channel],
+				labels[8 + channel],
+				"Coarsest Gaussian - no Laplacian");
+		}
+		draw_card(0, 3, debug.selected_reconstruction, labels[3]);
+		draw_card(1, 3, debug.transfer_guide, labels[7]);
+		draw_card(2, 3, debug.transfer_fused, labels[11]);
+		draw_card(3, 0, debug.guided[0], labels[12]);
+		draw_card(3, 1, debug.guided[1], labels[13]);
+		draw_card(3, 2, debug.guided[2], labels[14]);
+		draw_card(3, 3, final_tonemapped_view, labels[15]);
+
+		if (debug.reconstruction_pyramid)
+		{
+			const i32 overview_count =
+				debug.coarsest_full_mip - debug.reconstruction_full_mip + 1;
+			const f32 overview_top =
+				start_y + 4.0f * (card_height + gap) + 2.0f;
+			const f32 overview_label_height = 13.0f;
+			const f32 overview_image_width = MIN(
+				card_width,
+				(available.x - 2.0f * margin - (f32)(overview_count - 1) * gap)
+					/ (f32)MAX(overview_count, 1));
+			const f32 overview_image_height = MIN(
+				overview_height - overview_label_height - 2.0f * padding,
+				overview_image_width / MAX(aspect, 0.01f));
+			for (i32 index = 0; index < overview_count; ++index)
+			{
+				const i32 full_mip = debug.coarsest_full_mip - index;
+				const u32 mip = (u32)(full_mip - 1);
+				const u32 width = tonemapping_local_mip_extent(debug.base_width, mip);
+				const u32 height = tonemapping_local_mip_extent(debug.base_height, mip);
+				const ImVec2 top_left(
+					origin.x + margin + (f32)index * (overview_image_width + gap),
+					overview_top);
+				const ImVec2 bottom_right(
+					top_left.x + overview_image_width,
+					top_left.y + overview_label_height + overview_image_height + padding);
+				draw_list->AddRectFilled(top_left, bottom_right, card_color, 3.0f);
+				draw_list->AddRect(top_left, bottom_right, border_color, 3.0f);
+				char overview_label[96];
+				snprintf(overview_label, sizeof(overview_label),
+					"Recon M%d  %ux%u", full_mip, width, height);
+				draw_list->AddText(
+					ImGui::GetFont(),
+					9.0f,
+					ImVec2(top_left.x + padding, top_left.y + 2.0f),
+					text_color,
+					overview_label,
+					nullptr,
+					MAX(overview_image_width - 2.0f * padding, 1.0f));
+				draw_list->AddImage(
+					texture(
+						frame_data.linear_sampler,
+						tonemapping_mip_view(
+							*debug.reconstruction_pyramid, mip)),
+					ImVec2(top_left.x, top_left.y + overview_label_height),
+					ImVec2(
+						top_left.x + overview_image_width,
+						top_left.y + overview_label_height + overview_image_height));
+			}
+		}
+	}
+
 	inline void render(VulkanContext* ctx, f32 in_paper_white_scale)
 	{
 		ImGui::Render();
@@ -818,6 +1050,7 @@ namespace ImGuiLayer
 	inline void unregister_texture(VkImageView) {}
 	inline void begin_frame() {}
 	inline void draw_controls(State&, GI_Scene&) {}
+	inline void draw_local_tonemapping_debug(const State&, VkImageView) {}
 	inline void render(VulkanContext*, f32) {}
 	inline void shutdown() {}
 }

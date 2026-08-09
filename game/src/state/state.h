@@ -195,6 +195,8 @@ struct State
 		bool gpu_time_valid = false;
 		bool gpu_time_pending = false;
 		bool show_immediate_timings = false;
+		bool show_local_tonemapping_debug = false;
+		i32 local_tonemapping_debug_mip = 2;
 	} debug_ui;
 
 	struct AnimationState
@@ -335,7 +337,7 @@ struct State
 	{
 		const struct Defaults
 		{
-			f32 exposure_bias = 0.0f;	// Default scene exposure bias.
+			f32 exposure_bias = 0.0f;
 			bool auto_exposure_enabled = true;
 			bool auto_white_balance_enabled = true;
 			f32 auto_exposure_min_ev = -8.0f;
@@ -352,7 +354,7 @@ struct State
 			f32 local_exposure_preference_sigma = 5.0f;
 			i32 local_coarsest_mip = 9;
 			i32 local_reconstruction_mip = 2;
-			bool local_contrast_boost = false;
+			bool local_contrast_boost = true;
 		} DEFAULTS;
 
 		f32 exposure_bias = DEFAULTS.exposure_bias;

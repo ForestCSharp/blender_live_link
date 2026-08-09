@@ -514,6 +514,10 @@ namespace RenderSystem
 	inline void render(State& in_state, f32 in_delta_time)
 	{
 		CPU_TIMING_SCOPE("Rendering");
+		if (!in_state.tonemapping.local_enabled)
+		{
+			in_state.debug_ui.show_local_tonemapping_debug = false;
+		}
 		ImGuiLayer::draw_controls(in_state, g_gi_scene);
 		AutoAdaptationPass::prepare_frame(in_state);
 		
@@ -1092,6 +1096,15 @@ namespace RenderSystem
 			if (in_state.tonemapping.local_enabled)
 			{
 				tonemapping_pass_prepare_local(&in_state.vk, in_state.tonemapping);
+			#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
+				if (in_state.debug_ui.show_local_tonemapping_debug)
+				{
+					tonemapping_pass_prepare_local_debug(
+						&in_state.vk,
+						in_state.tonemapping,
+						in_state.debug_ui.local_tonemapping_debug_mip);
+				}
+			#endif
 			}
 			tonemapping_render_pass.execute_sampled(&in_state.vk, [&](i32)
 			{
@@ -1117,6 +1130,9 @@ namespace RenderSystem
 			get_render_pass(ERenderPass::PresentationComposite).execute_sampled(&in_state.vk, [&](i32)
 			{
 				copy_to_swapchain_pass_draw_presentation(&in_state.vk);
+				ImGuiLayer::draw_local_tonemapping_debug(
+					in_state,
+					tonemapping_render_pass.get_color_output(0).view);
 				const f32 paper_white_scale = in_state.vk.active_output_mode == EDisplayOutputMode::SDR
 					? 1.0f
 					: GT7Tonemapping::HDR_PAPER_WHITE_NITS / GT7Tonemapping::HDR_PEAK_NITS;
