@@ -4,6 +4,7 @@ layout(set = 0, binding = 0) uniform sampler2D source_tex;
 
 layout(push_constant) uniform PushConstants
 {
+	vec4 coarse_weight_ratio;
 	vec2 source_pixel_size;
 } pc;
 
@@ -22,5 +23,5 @@ void main()
 	result += texture(source_tex, uv + vec2(-1.0,  1.0) * pc.source_pixel_size).rgb;
 	result += texture(source_tex, uv + vec2( 0.0,  1.0) * pc.source_pixel_size).rgb * 2.0;
 	result += texture(source_tex, uv + vec2( 1.0,  1.0) * pc.source_pixel_size).rgb;
-	frag_color = vec4(result / 16.0, 0.0);
+	frag_color = vec4((result / 16.0) * pc.coarse_weight_ratio.rgb, 0.0);
 }

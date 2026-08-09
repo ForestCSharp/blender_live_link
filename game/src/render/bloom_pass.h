@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "core/timings.h"
+#include "render/bloom_profile.inl"
 #include "render/frame_data.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_image.h"
@@ -16,7 +17,7 @@
 
 namespace BloomPass
 {
-	static constexpr i32 MAX_MIP_COUNT = 8;
+	static constexpr i32 MAX_MIP_COUNT = BloomProfile::MAX_BAND_COUNT;
 
 	struct DownsamplePushConstants
 	{
@@ -30,9 +31,10 @@ namespace BloomPass
 
 	struct UpsamplePushConstants
 	{
+		HMM_Vec4 coarse_weight_ratio;
 		HMM_Vec2 source_pixel_size;
 	};
-	static_assert(sizeof(UpsamplePushConstants) == 8);
+	static_assert(sizeof(UpsamplePushConstants) == 32);
 
 	struct Pass
 	{
@@ -48,6 +50,7 @@ namespace BloomPass
 		u32 base_height = 0;
 		i32 available_mip_count = 0;
 		i32 effective_mip_count = 0;
+		HMM_Vec4 profile_base_gain = HMM_V4(1.0f, 1.0f, 1.0f, 1.0f);
 	};
 
 	inline Pass bloom_pass;
@@ -90,6 +93,11 @@ namespace BloomPass
 	inline GpuImage& get_pyramid()
 	{
 		return bloom_pass.pyramid;
+	}
+
+	inline HMM_Vec4 get_profile_base_gain()
+	{
+		return bloom_pass.profile_base_gain;
 	}
 
 	inline ImageUsage mip_usage(
@@ -222,7 +230,7 @@ namespace BloomPass
 		VkPushConstantRange push_constant_range = {
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.offset = 0,
-			.size = sizeof(DownsamplePushConstants),
+			.size = sizeof(UpsamplePushConstants),
 		};
 		VkPipelineLayoutCreateInfo pipeline_layout_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -260,6 +268,7 @@ namespace BloomPass
 		bloom_pass.source_height = 0;
 		bloom_pass.available_mip_count = 0;
 		bloom_pass.effective_mip_count = 0;
+		bloom_pass.profile_base_gain = HMM_V4(1.0f, 1.0f, 1.0f, 1.0f);
 	}
 
 	inline void handle_resize(VulkanContext* ctx, i32 in_width, i32 in_height)
@@ -303,6 +312,13 @@ namespace BloomPass
 		assert(bloom_pass.pyramid.image != VK_NULL_HANDLE);
 		bloom_pass.effective_mip_count = CLAMP(
 			in_state.requested_mip_count, 1, bloom_pass.available_mip_count);
+		const BloomProfile::ResolvedProfile profile =
+			BloomProfile::resolve(bloom_pass.effective_mip_count);
+		bloom_pass.profile_base_gain = HMM_V4(
+			profile.bands[0].r,
+			profile.bands[0].g,
+			profile.bands[0].b,
+			1.0f);
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		{
@@ -368,10 +384,17 @@ namespace BloomPass
 				--coarse_mip)
 			{
 				const i32 fine_mip = coarse_mip - 1;
+				const BloomProfile::RgbWeight coarse_weight_ratio =
+					BloomProfile::reconstruction_ratio(profile, fine_mip);
 				VkDescriptorSet set = sampled_set(ctx, mip_view(coarse_mip));
 				begin_mip_render(
 					ctx, (u32)fine_mip, VK_ATTACHMENT_LOAD_OP_LOAD, false);
 				UpsamplePushConstants constants = {
+					.coarse_weight_ratio = HMM_V4(
+						coarse_weight_ratio.r,
+						coarse_weight_ratio.g,
+						coarse_weight_ratio.b,
+						1.0f),
 					.source_pixel_size = HMM_V2(
 						1.0f / (f32)mip_extent(bloom_pass.base_width, (u32)coarse_mip),
 						1.0f / (f32)mip_extent(bloom_pass.base_height, (u32)coarse_mip)),

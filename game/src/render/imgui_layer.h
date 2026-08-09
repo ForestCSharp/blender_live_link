@@ -341,9 +341,9 @@ namespace ImGuiLayer
 						ImGui::Checkbox(
 							"Boost Local Contrast",
 							&state.tonemapping.local_contrast_boost);
-						if (ImGui::Button("Reset Local Defaults"))
+						if (ImGui::Button("Reset Defaults"))
 						{
-							state.tonemapping.reset_local_defaults(max_mip);
+							state.tonemapping.reset_defaults();
 						}
 						ImGui::TextDisabled(
 							"Effective mip range: %d -> %d (available through %d)",
@@ -363,7 +363,12 @@ namespace ImGuiLayer
 					ImGui::BeginDisabled(!state.bloom.enable);
 					ImGui::SliderFloat("Bloom Threshold", &state.bloom.threshold, 0.0f, 10.0f, "%.2f");
 					ImGui::SliderFloat("Bloom Soft Knee", &state.bloom.soft_knee, 0.0f, 1.0f, "%.2f");
-					ImGui::SliderFloat("Bloom Intensity", &state.bloom.intensity, 0.0f, 1.0f, "%.3f");
+					ImGui::SliderFloat(
+						"Bloom Intensity",
+						&state.bloom.intensity,
+						0.0f,
+						State::BloomState::MAX_INTENSITY,
+						"%.3f");
 					const i32 available_bloom_mips = BloomPass::get_available_mip_count();
 					state.bloom.requested_mip_count = CLAMP(
 						state.bloom.requested_mip_count, 1, available_bloom_mips);
@@ -376,10 +381,7 @@ namespace ImGuiLayer
 						ImGuiSliderFlags_ClampOnInput);
 					if (ImGui::Button("Reset Bloom Defaults"))
 					{
-						state.bloom.threshold = 1.0f;
-						state.bloom.soft_knee = 0.5f;
-						state.bloom.intensity = 0.05f;
-						state.bloom.requested_mip_count = MIN(6, available_bloom_mips);
+						state.bloom.reset_defaults();
 					}
 					GpuImage& bloom_pyramid = BloomPass::get_pyramid();
 					ImGui::TextDisabled(

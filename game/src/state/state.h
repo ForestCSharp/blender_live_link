@@ -333,53 +333,68 @@ struct State
 
 	struct TonemappingState
 	{
-		struct LocalDefaults
+		const struct Defaults
 		{
-			f32 shadow_recovery;
-			f32 highlight_recovery;
-			f32 exposure_preference_sigma;
-			i32 coarsest_mip;
-			i32 reconstruction_mip;
-			bool contrast_boost;
-		};
+			f32 exposure_bias = 0.0f;	// Default scene exposure bias.
+			ETonemappingMethod method = ETonemappingMethod::GT7;
+			bool local_enabled = true;
 
-		inline static constexpr LocalDefaults LOCAL_DEFAULTS = {
-			.shadow_recovery = 1.5f,
-			.highlight_recovery = 2.0f,
-			.exposure_preference_sigma = 5.0f,
-			.coarsest_mip = 9,
-			.reconstruction_mip = 2,
-			.contrast_boost = false,
-		};
+			f32 local_shadow_recovery = 1.5f;
+			f32 local_highlight_recovery = 2.0f;
+			f32 local_exposure_preference_sigma = 5.0f;
+			i32 local_coarsest_mip = 9;
+			i32 local_reconstruction_mip = 2;
+			bool local_contrast_boost = false;
+		} DEFAULTS;
 
-		f32 exposure_bias = 0.0f;	// Default scene exposure bias.
-		ETonemappingMethod method = ETonemappingMethod::GT7;
-		bool local_enabled = true;
-		f32 local_shadow_recovery = LOCAL_DEFAULTS.shadow_recovery;
-		f32 local_highlight_recovery = LOCAL_DEFAULTS.highlight_recovery;
-		f32 local_exposure_preference_sigma = LOCAL_DEFAULTS.exposure_preference_sigma;
-		i32 local_coarsest_mip = LOCAL_DEFAULTS.coarsest_mip;
-		i32 local_reconstruction_mip = LOCAL_DEFAULTS.reconstruction_mip;
-		bool local_contrast_boost = LOCAL_DEFAULTS.contrast_boost;
+		f32 exposure_bias = DEFAULTS.exposure_bias;
+		ETonemappingMethod method = DEFAULTS.method;
+		bool local_enabled = DEFAULTS.local_enabled;
 
-		void reset_local_defaults(i32 max_mip)
+		f32 local_shadow_recovery = DEFAULTS.local_shadow_recovery;
+		f32 local_highlight_recovery = DEFAULTS.local_highlight_recovery;
+		f32 local_exposure_preference_sigma = DEFAULTS.local_exposure_preference_sigma;
+		i32 local_coarsest_mip = DEFAULTS.local_coarsest_mip;
+		i32 local_reconstruction_mip = DEFAULTS.local_reconstruction_mip;
+		bool local_contrast_boost = DEFAULTS.local_contrast_boost;
+
+		void reset_defaults()
 		{
-			local_shadow_recovery = LOCAL_DEFAULTS.shadow_recovery;
-			local_highlight_recovery = LOCAL_DEFAULTS.highlight_recovery;
-			local_exposure_preference_sigma = LOCAL_DEFAULTS.exposure_preference_sigma;
-			local_coarsest_mip = MIN(LOCAL_DEFAULTS.coarsest_mip, max_mip);
-			local_reconstruction_mip = MIN(LOCAL_DEFAULTS.reconstruction_mip, local_coarsest_mip);
-			local_contrast_boost = LOCAL_DEFAULTS.contrast_boost;
+			local_shadow_recovery = DEFAULTS.local_shadow_recovery;
+			local_highlight_recovery = DEFAULTS.local_highlight_recovery;
+			local_exposure_preference_sigma = DEFAULTS.local_exposure_preference_sigma;
+			local_coarsest_mip = DEFAULTS.local_coarsest_mip;
+			local_reconstruction_mip = DEFAULTS.local_reconstruction_mip;
+			local_contrast_boost = DEFAULTS.local_contrast_boost;
 		}
 	} tonemapping;
 
 	struct BloomState
 	{
-		bool enable = true;
-		f32 threshold = 1.0f;
-		f32 soft_knee = 0.5f;
-		f32 intensity = 0.35f;
-		i32 requested_mip_count = 6;
+		inline static constexpr f32 MAX_INTENSITY = 5.0f;
+
+		const struct Defaults
+		{
+			bool enable = true;
+			f32 threshold = 1.0f;
+			f32 soft_knee = 0.5f;
+			f32 intensity = 3.0f;
+			i32 requested_mip_count = 6;
+		} DEFAULTS;
+
+		bool enable = DEFAULTS.enable;
+		f32 threshold = DEFAULTS.threshold;
+		f32 soft_knee = DEFAULTS.soft_knee;
+		f32 intensity = DEFAULTS.intensity;
+		i32 requested_mip_count = DEFAULTS.requested_mip_count;
+
+		void reset_defaults()
+		{
+			threshold = DEFAULTS.threshold;
+			soft_knee = DEFAULTS.soft_knee;
+			intensity = DEFAULTS.intensity;
+			requested_mip_count = DEFAULTS.requested_mip_count;
+		}
 	} bloom;
 
 	struct GiState

@@ -707,7 +707,7 @@ namespace RenderSystem
 				: post_wire_scene_color_view;
 			const bool bloom_active = in_state.bloom.enable && in_state.bloom.intensity > 0.0f;
 			const f32 bloom_intensity = bloom_active
-				? CLAMP(in_state.bloom.intensity, 0.0f, 1.0f)
+				? CLAMP(in_state.bloom.intensity, 0.0f, State::BloomState::MAX_INTENSITY)
 				: 0.0f;
 			tonemapping_pass_update(
 				&in_state.vk,
@@ -1078,7 +1078,10 @@ namespace RenderSystem
 			tonemapping_render_pass.execute_sampled(&in_state.vk, [&](i32)
 			{
 				tonemapping_pass_draw(
-					&in_state.vk, in_state.tonemapping, bloom_intensity);
+					&in_state.vk,
+					in_state.tonemapping,
+					bloom_intensity,
+					BloomPass::get_profile_base_gain());
 			});
 		
 			// FXAA filters at render resolution. Presentation composite performs the

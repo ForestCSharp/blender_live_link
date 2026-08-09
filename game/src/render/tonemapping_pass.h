@@ -22,8 +22,9 @@ struct TonemappingFinalPushConstants
 	HMM_Vec2 guide_pixel_size;
 	f32 lut_integration_scale;
 	i32 validation_chart;
+	HMM_Vec4 bloom_profile_gain;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 32);
+static_assert(sizeof(TonemappingFinalPushConstants) == 48);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -769,7 +770,8 @@ void tonemapping_pass_prepare_local(
 void tonemapping_pass_draw(
 	VulkanContext* ctx,
 	const State::TonemappingState& in_state,
-	f32 in_bloom_intensity)
+	f32 in_bloom_intensity,
+	HMM_Vec4 in_bloom_profile_gain)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 	const i32 reconstruction_mip = MAX(
@@ -782,12 +784,14 @@ void tonemapping_pass_draw(
 		.method = (i32)in_state.method,
 		.local_enabled = in_state.local_enabled ? 1 : 0,
 		.exposure_bias = in_state.exposure_bias,
-		.bloom_intensity = CLAMP(in_bloom_intensity, 0.0f, 1.0f),
+		.bloom_intensity = CLAMP(
+			in_bloom_intensity, 0.0f, State::BloomState::MAX_INTENSITY),
 		.guide_pixel_size = HMM_V2(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
 		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
 		.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
+		.bloom_profile_gain = in_bloom_profile_gain,
 	};
 
 	vkCmdBindPipeline(

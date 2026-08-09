@@ -32,6 +32,8 @@ The standalone tonemapping and display-output tests can be run without launching
 a window:
 
 ```sh
+clang++ -std=c++20 -O2 tests/bloom_profile_tests.cpp -I src \
+  -o /tmp/bloom_profile_tests && /tmp/bloom_profile_tests
 clang++ -std=c++20 -O2 tests/gt7_tonemapping_tests.cpp -I src -I extern \
   -o /tmp/gt7_tonemapping_tests && /tmp/gt7_tonemapping_tests
 clang++ -std=c++20 -O2 tests/aces2_tonemapping_tests.cpp -I src -I extern \
@@ -46,10 +48,11 @@ clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/inc
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 ```
 
-These check the published GT7 vectors, ACES 2 and Blender AgX asset headers and
-CRCs, SDR/EDR/HDR10 LUT reference vectors and interpolation invariants, Khronos
-PBR Neutral reference behavior, the 203/1000-nit HDR calibration, Rec.2020/PQ
-encoding anchors, EDR scaling, and synthetic output-format negotiation.
+These check normalized bloom-band reconstruction, the published GT7 vectors,
+ACES 2 and Blender AgX asset headers and CRCs, SDR/EDR/HDR10 LUT reference
+vectors and interpolation invariants, Khronos PBR Neutral reference behavior,
+the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling, and
+synthetic output-format negotiation.
 
 The formal suite adds a 110,604-sample deterministic corpus, upstream OCIO
 regeneration checks, direct production-GLSL compute readback, all 24
@@ -165,8 +168,10 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_BLOOM=0|1` — disable or enable the default HDR bloom pass
 - `GAME2_BLOOM_THRESHOLD=<0..10>` / `GAME2_BLOOM_SOFT_KNEE=<0..1>` — tune
   the exposure-aware highlight selection
-- `GAME2_BLOOM_INTENSITY=<0..1>` / `GAME2_BLOOM_MIPS=<1..8>` — tune bloom
-  strength and the active half-resolution pyramid depth
+- `GAME2_BLOOM_INTENSITY=<0..5>` / `GAME2_BLOOM_MIPS=<1..8>` — tune bloom
+  strength and the active half-resolution pyramid depth. Active frequency bands
+  use a normalized diffraction-inspired profile, so changing pyramid depth
+  changes the glare radius without changing its total band weight.
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
   frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
@@ -237,7 +242,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
   ping-pong history) → exposure-aware HDR bloom (13-tap half-resolution
-  downsample pyramid + additive tent reconstruction) → selected GT7/AgX/ACES 2.0/
+  downsample pyramid + normalized, weighted additive tent reconstruction) →
+  selected GT7/AgX/ACES 2.0/
   Khronos PBR Neutral method with optional exposure-fusion local tonemapping
   (GT7 + local is the default) → FXAA →
   copy-to-swapchain, all at render scale with CPU frustum culling. Camera +

@@ -18,6 +18,7 @@ layout(push_constant) uniform PushConstants
 	vec2 guide_pixel_size;
 	float lut_integration_scale;
 	int validation_chart;
+	vec4 bloom_profile_gain;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -35,7 +36,7 @@ void main()
 	if (pc.validation_chart == 0 && pc.bloom_intensity > 0.0)
 	{
 		exposed_bloom = max(texture(bloom_color, uv).rgb, vec3(0.0))
-			* exposure_scale * pc.bloom_intensity;
+			* pc.bloom_profile_gain.rgb * exposure_scale * pc.bloom_intensity;
 	}
 	vec3 tonemapped_color;
 

@@ -62,7 +62,8 @@ namespace RuntimeStateOverrides
 		}
 		if (config.bloom_intensity)
 		{
-			in_state.bloom.intensity = CLAMP((f32)*config.bloom_intensity, 0.0f, 1.0f);
+			in_state.bloom.intensity = CLAMP(
+				(f32)*config.bloom_intensity, 0.0f, State::BloomState::MAX_INTENSITY);
 		}
 		if (config.bloom_mips)
 		{
