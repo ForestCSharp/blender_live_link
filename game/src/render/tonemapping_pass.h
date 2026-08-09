@@ -25,6 +25,7 @@ struct TonemappingFinalPushConstants
 	HMM_Vec4 bloom_profile_gain;
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
+	f32 bloom_auto_exposure_influence;
 };
 static_assert(sizeof(TonemappingFinalPushConstants) == 64);
 
@@ -795,7 +796,8 @@ void tonemapping_pass_draw(
 	VulkanContext* ctx,
 	const State::TonemappingState& in_state,
 	f32 in_bloom_intensity,
-	HMM_Vec4 in_bloom_profile_gain)
+	HMM_Vec4 in_bloom_profile_gain,
+	f32 in_bloom_auto_exposure_influence)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 	const i32 reconstruction_mip = MAX(
@@ -820,6 +822,8 @@ void tonemapping_pass_draw(
 			&& in_state.auto_exposure_enabled ? 1 : 0,
 		.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
 			&& in_state.auto_white_balance_enabled ? 1 : 0,
+		.bloom_auto_exposure_influence = CLAMP(
+			in_bloom_auto_exposure_influence, 0.0f, 1.0f),
 	};
 
 	vkCmdBindPipeline(

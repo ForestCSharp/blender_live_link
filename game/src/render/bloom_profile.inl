@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 
 // Vulkan-independent bloom frequency-band profile. The RGB representation is
 // intentionally retained even while all three channels share the same Stage 1
@@ -33,6 +34,20 @@ namespace BloomProfile
 		RgbWeight bands[MAX_BAND_COUNT] = {};
 		int band_count = 1;
 	};
+
+	inline float influenced_auto_exposure_ev(float auto_ev, float influence)
+	{
+		return auto_ev * std::clamp(influence, 0.0f, 1.0f);
+	}
+
+	inline float exposure_scale(
+		float manual_ev,
+		float auto_ev,
+		float auto_exposure_influence)
+	{
+		return std::exp2(
+			manual_ev + influenced_auto_exposure_ev(auto_ev, auto_exposure_influence));
+	}
 
 	inline ResolvedProfile resolve(int in_band_count)
 	{

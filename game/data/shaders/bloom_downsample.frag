@@ -17,6 +17,7 @@ layout(push_constant) uniform PushConstants
 	int apply_threshold;
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
+	float auto_exposure_influence;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -43,7 +44,8 @@ vec3 threshold_color(vec3 raw_color)
 	float auto_exposure_ev = pc.auto_exposure_enabled != 0
 		? auto_adaptation_values[AUTO_ADAPTATION_STATE_EXPOSURE_WHITE].x
 		: 0.0;
-	return result * pc.exposure_scale * exp2(auto_exposure_ev);
+	return result * pc.exposure_scale
+		* exp2(auto_exposure_ev * clamp(pc.auto_exposure_influence, 0.0, 1.0));
 }
 
 vec3 downsample_13_tap(vec2 sample_uv)

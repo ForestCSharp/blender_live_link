@@ -1099,7 +1099,8 @@ namespace RenderSystem
 					&in_state.vk,
 					in_state.tonemapping,
 					bloom_intensity,
-					BloomPass::get_profile_base_gain());
+					BloomPass::get_profile_base_gain(),
+					in_state.bloom.auto_exposure_influence);
 			});
 			AutoAdaptationPass::update_after_tonemapping(
 				&in_state.vk, in_state.tonemapping, in_delta_time);

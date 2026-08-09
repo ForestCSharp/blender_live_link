@@ -51,6 +51,28 @@ static float reconstruct_recursively(
 
 int main()
 {
+	for (float auto_ev : {-4.0f, 4.0f})
+	{
+		const float manual_ev = 0.75f;
+		expect_near(
+			BloomProfile::exposure_scale(manual_ev, auto_ev, 0.0f),
+			std::exp2(manual_ev));
+		expect_near(
+			BloomProfile::exposure_scale(manual_ev, auto_ev, 0.5f),
+			std::exp2(manual_ev + auto_ev * 0.5f));
+		expect_near(
+			BloomProfile::exposure_scale(manual_ev, auto_ev, 1.0f),
+			std::exp2(manual_ev + auto_ev));
+		for (float influence : {0.0f, 0.5f, 1.0f})
+		{
+			expect_near(
+				BloomProfile::exposure_scale(manual_ev + 1.0f, auto_ev, influence),
+				BloomProfile::exposure_scale(manual_ev, auto_ev, influence) * 2.0f);
+		}
+	}
+	expect_near(BloomProfile::influenced_auto_exposure_ev(4.0f, -1.0f), 0.0f);
+	expect_near(BloomProfile::influenced_auto_exposure_ev(4.0f, 2.0f), 4.0f);
+
 	for (int band_count = 1; band_count <= BloomProfile::MAX_BAND_COUNT; ++band_count)
 	{
 		validate_profile(band_count);

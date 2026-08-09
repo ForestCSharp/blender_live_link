@@ -26,6 +26,7 @@ layout(push_constant) uniform PushConstants
 	vec4 bloom_profile_gain;
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
+	float bloom_auto_exposure_influence;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -38,6 +39,8 @@ void main()
 		? auto_adaptation_values[AUTO_ADAPTATION_STATE_EXPOSURE_WHITE].x
 		: 0.0;
 	float exposure_scale = exp2(pc.exposure_bias + auto_exposure_ev);
+	float bloom_exposure_scale = exp2(pc.exposure_bias
+		+ auto_exposure_ev * clamp(pc.bloom_auto_exposure_influence, 0.0, 1.0));
 	vec3 source_color = pc.validation_chart == 2 ? vec3(0.18)
 		: pc.validation_chart == 1 ? tonemapping_validation_chart(uv)
 		: texture(scene_color, uv).rgb;
@@ -63,7 +66,7 @@ void main()
 				auto_adaptation_values[AUTO_ADAPTATION_STATE_WB_COLUMN_2]);
 		}
 		exposed_bloom = max(bloom, vec3(0.0)) * pc.bloom_profile_gain.rgb
-			* exposure_scale * pc.bloom_intensity;
+			* bloom_exposure_scale * pc.bloom_intensity;
 	}
 	vec3 tonemapped_color;
 

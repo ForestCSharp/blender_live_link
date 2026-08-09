@@ -12,9 +12,8 @@
 #include "render/vulkan_context.h"
 #include "state/state.h"
 
-// Exposure-aware HDR bloom. The source is thresholded while accounting for
-// exposure, but the pyramid stores scene-linear radiance so tonemapping applies
-// exposure exactly once.
+// HDR bloom stores scene-linear radiance. A user-controlled influence determines
+// how much automatic exposure affects thresholding and the final composite.
 
 namespace BloomPass
 {
@@ -29,8 +28,9 @@ namespace BloomPass
 		i32 apply_threshold;
 		i32 auto_exposure_enabled;
 		i32 auto_white_balance_enabled;
+		f32 auto_exposure_influence;
 	};
-static_assert(sizeof(DownsamplePushConstants) == 32);
+	static_assert(sizeof(DownsamplePushConstants) == 36);
 
 	struct UpsamplePushConstants
 	{
@@ -248,7 +248,8 @@ static_assert(sizeof(DownsamplePushConstants) == 32);
 		VkPushConstantRange push_constant_range = {
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.offset = 0,
-			.size = sizeof(UpsamplePushConstants),
+			.size = (u32)MAX(
+				sizeof(DownsamplePushConstants), sizeof(UpsamplePushConstants)),
 		};
 		VkPipelineLayoutCreateInfo pipeline_layout_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -380,6 +381,8 @@ static_assert(sizeof(DownsamplePushConstants) == 32);
 						&& in_tonemapping_state.auto_exposure_enabled ? 1 : 0,
 					.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
 						&& in_tonemapping_state.auto_white_balance_enabled ? 1 : 0,
+					.auto_exposure_influence = CLAMP(
+						in_state.auto_exposure_influence, 0.0f, 1.0f),
 				};
 				draw(
 					ctx, bloom_pass.downsample_pipeline, set,

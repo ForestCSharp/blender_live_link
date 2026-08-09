@@ -178,7 +178,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 - `GAME2_BLOOM_INTENSITY=<0..5>` / `GAME2_BLOOM_MIPS=<1..8>` — tune bloom
   strength and the active half-resolution pyramid depth. Active frequency bands
   use a normalized diffraction-inspired profile, so changing pyramid depth
-  changes the glare radius without changing its total band weight.
+  changes the glare radius without changing its total band weight. ImGui also
+  exposes Bloom Auto-Exposure Influence; it defaults to 0%, keeping glare stable
+  across automatic exposure changes, while 100% restores fully exposure-aware bloom.
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
   frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
@@ -295,7 +297,10 @@ Exposure defaults to a −8…+8 EV range, a 0.35-second darkening response, and
 1.0-second brightening response. White balance defaults to a 1.0-second response
 and full correction strength. Delta time is clamped to 0.1 seconds. The final
 pass applies white balance and total exposure once, while bloom thresholding
-uses corrected luminance but retains raw bloom color.
+uses corrected luminance but retains raw bloom color. Bloom Auto-Exposure
+Influence independently scales the automatic EV used by both thresholding and
+the final glare composite. It defaults to 0%; manual exposure compensation and
+white balance continue to affect bloom fully.
 
 Ctrl+I exposes independent enable switches, minimum/maximum automatic EV,
 brightening and darkening response times, white-balance response and strength,

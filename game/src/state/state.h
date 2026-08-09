@@ -417,6 +417,7 @@ struct State
 			f32 threshold = 1.0f;
 			f32 soft_knee = 0.5f;
 			f32 intensity = 3.0f;
+			f32 auto_exposure_influence = 0.0f;
 			i32 requested_mip_count = 6;
 		} DEFAULTS;
 
@@ -424,6 +425,7 @@ struct State
 		f32 threshold = DEFAULTS.threshold;
 		f32 soft_knee = DEFAULTS.soft_knee;
 		f32 intensity = DEFAULTS.intensity;
+		f32 auto_exposure_influence = DEFAULTS.auto_exposure_influence;
 		i32 requested_mip_count = DEFAULTS.requested_mip_count;
 
 		void reset_defaults()
@@ -431,6 +433,7 @@ struct State
 			threshold = DEFAULTS.threshold;
 			soft_knee = DEFAULTS.soft_knee;
 			intensity = DEFAULTS.intensity;
+			auto_exposure_influence = DEFAULTS.auto_exposure_influence;
 			requested_mip_count = DEFAULTS.requested_mip_count;
 		}
 	} bloom;

@@ -446,6 +446,18 @@ namespace ImGuiLayer
 						0.0f,
 						State::BloomState::MAX_INTENSITY,
 						"%.3f");
+					f32 auto_exposure_influence_percent =
+						state.bloom.auto_exposure_influence * 100.0f;
+					ImGui::BeginDisabled(!state.tonemapping.auto_exposure_enabled);
+					if (ImGui::SliderFloat(
+						"Bloom Auto-Exposure Influence",
+						&auto_exposure_influence_percent,
+						0.0f, 100.0f, "%.0f%%"))
+					{
+						state.bloom.auto_exposure_influence = CLAMP(
+							auto_exposure_influence_percent * 0.01f, 0.0f, 1.0f);
+					}
+					ImGui::EndDisabled();
 					const i32 available_bloom_mips = BloomPass::get_available_mip_count();
 					state.bloom.requested_mip_count = CLAMP(
 						state.bloom.requested_mip_count, 1, available_bloom_mips);
