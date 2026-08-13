@@ -553,10 +553,9 @@ namespace RenderSystem
 				in_state.tessellation.enabled || in_state.wireframe.shaded_wireframe);
 			Tessellation::update(&in_state.vk, in_state, camera, fov);
 		
-			// Per-frame UBO. Sun sourced from the scene's primary sun; the hardcoded
-			// fallback drives only the sky bake. Geometry lighting comes solely from
-			// the light buffers, so
-			// sunless scenes render unlit meshes under a daytime sky.
+			// Per-frame UBO sun data serves shadow/fog compatibility. The direct sky
+			// uses its selected atmosphere controller, while geometry lighting comes
+			// solely from the light buffers.
 			PerFrameData per_frame_data = {
 				.view = view_matrix,
 				.projection = projection_matrix,
@@ -728,6 +727,7 @@ namespace RenderSystem
 			tonemapping_pass_update(
 				&in_state.vk,
 				pre_tonemap_scene_color_view,
+				geometry_render_pass.get_color_output(1).view,
 				BloomPass::mip_view(0),
 				bloom_intensity,
 				frame_data.linear_sampler,
@@ -751,16 +751,12 @@ namespace RenderSystem
 			frame_data_write_copy_input(
 				&in_state.vk,
 				get_render_pass(ERenderPass::PresentationComposite).get_color_output(0).view);
-			sky_pass_update(&in_state.vk);
-		
-			// Re-bake the octahedral sky when the sun moved (records before the
-			// geometry pass, which samples it for the composite). The atmosphere
-			// wants the direction toward the sun — the negated light-travel
-			// direction.
-			sky_pass_bake_if_needed(&in_state.vk, -per_frame_data.sun_direction.XYZ);
+			// Precompute physical atmosphere LUTs only when their signature changes.
+			// Visible and probe rays sample the LUTs at their real positions.
+			sky_pass_update_atmosphere(&in_state.vk, in_state);
 		
 			// Incrementally capture and project GI probes after GPU skinning and the
-			// sky bake, before the main pass chain samples the probe atlas.
+			// atmosphere update, before the main pass chain samples the probe atlas.
 			{
 				CPU_TIMING_SCOPE("GI Scene Update");
 				gi_scene_update(&in_state.vk, g_gi_scene, in_state);

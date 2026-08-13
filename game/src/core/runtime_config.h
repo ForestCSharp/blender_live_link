@@ -114,7 +114,8 @@ namespace RuntimeConfig
 		config.auto_white_balance = boolean_value("GAME2_AUTO_WHITE_BALANCE");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
 		if (const char* chart = environment_value("GAME2_TONEMAP_VALIDATION_CHART"))
-			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2 : 1;
+			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2
+				: std::strcmp(chart, "sky") == 0 ? 3 : 1;
 		config.tonemap_validation_output_mode = string_value("GAME2_TONEMAP_VALIDATION_OUTPUT_MODE");
 		config.tonemap_validation_capture = string_value("GAME2_TONEMAP_VALIDATION_CAPTURE");
 		config.bloom = boolean_value("GAME2_BLOOM");

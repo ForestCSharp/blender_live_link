@@ -8,10 +8,76 @@
 
 namespace SceneSystem
 {
+	void refresh_active_sky_controller(State& in_state)
+	{
+		const std::optional<i32> previous_id = in_state.scene.active_sky_controller_id;
+		const i32 previous_candidate_count = in_state.scene.sky_controller_candidate_count;
+		const i32 previous_invalid_count = in_state.scene.invalid_sky_controller_count;
+		in_state.scene.active_sky_controller_id.reset();
+
+		i32 selected_uid = std::numeric_limits<i32>::max();
+		i32 candidate_count = 0;
+		i32 invalid_count = 0;
+		for (auto& [unique_id, object] : in_state.scene.objects)
+		{
+			if (!object.has_sky_atmosphere)
+			{
+				continue;
+			}
+			if (!object_is_sun_light(object))
+			{
+				if (object.sky_atmosphere.enabled) ++invalid_count;
+				continue;
+			}
+			if (!object.sky_atmosphere.enabled || !object.visibility)
+			{
+				continue;
+			}
+			++candidate_count;
+			selected_uid = MIN(selected_uid, unique_id);
+		}
+		if (selected_uid != std::numeric_limits<i32>::max())
+		{
+			in_state.scene.active_sky_controller_id = selected_uid;
+		}
+		in_state.scene.sky_controller_candidate_count = candidate_count;
+		in_state.scene.invalid_sky_controller_count = invalid_count;
+
+		if (previous_id != in_state.scene.active_sky_controller_id)
+		{
+			if (in_state.scene.active_sky_controller_id)
+			{
+				printf("Active sky controller: UID %i%s\n",
+					*in_state.scene.active_sky_controller_id,
+					candidate_count > 1 ? " (lowest UID selected from multiple controllers)" : "");
+			}
+			else
+			{
+				printf("Active sky controller: none; procedural sky disabled\n");
+			}
+			mark_lighting_dirty(in_state);
+			in_state.shadow.force_recapture = true;
+			if (in_state.gi.render_sky_to_probes) in_state.gi.is_updating = true;
+		}
+		if (candidate_count > 1 && candidate_count != previous_candidate_count)
+		{
+			printf("Sky atmosphere warning: %i active controllers; lowest UID wins\n", candidate_count);
+		}
+		if (invalid_count > 0 && invalid_count != previous_invalid_count)
+		{
+			printf("Sky atmosphere warning: ignored %i controller(s) not attached to a Sun\n", invalid_count);
+		}
+	}
+
 	// Keeps state.scene.primary_sun_id pointing at a valid sun object,
 	// rescanning the light index when the cached id goes stale.
 	void refresh_primary_sun_id(State& in_state)
 	{
+		if (in_state.scene.active_sky_controller_id)
+		{
+			in_state.scene.primary_sun_id = in_state.scene.active_sky_controller_id;
+			return;
+		}
 		if (in_state.scene.primary_sun_id)
 		{
 			auto found = in_state.scene.objects.find(*in_state.scene.primary_sun_id);
@@ -80,6 +146,7 @@ namespace SceneSystem
 	void refresh_derived_state(State& in_state)
 	{
 		scene_ensure_indexes(in_state);
+		refresh_active_sky_controller(in_state);
 		refresh_primary_sun_id(in_state);
 		refresh_active_fog_controller(in_state);
 	}

@@ -630,6 +630,40 @@ namespace LiveLinkSystem
 								};
 								break;
 							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentSkyAtmosphere:
+							{
+								using Blender::LiveLink::GameplayComponentSkyAtmosphere;
+								const GameplayComponentSkyAtmosphere* sky_component =
+									reinterpret_cast<const GameplayComponentSkyAtmosphere*>(component);
+								const f32 atmosphere_height = CLAMP(sky_component->atmosphere_height_m(), 10000.0f, 200000.0f);
+								const HMM_Vec3 ground_albedo = sky_component->ground_albedo()
+									? flatbuffer_helpers::to_hmm_vec3(sky_component->ground_albedo())
+									: HMM_V3(0.1f, 0.1f, 0.1f);
+								game_object.has_sky_atmosphere = true;
+								const f32 authored_planet_center_z = sky_component->planet_center_z_m();
+								game_object.sky_atmosphere = (SkyAtmosphere) {
+									.enabled = sky_component->enabled(),
+									.planet_center_z_m = std::isfinite(authored_planet_center_z)
+										? CLAMP(authored_planet_center_z, -1.0e9f, 1.0e9f)
+										: -6360000.0f,
+									.air_density = CLAMP(sky_component->air_density(), 0.0f, 4.0f),
+									.aerosol_density = CLAMP(sky_component->aerosol_density(), 0.0f, 10.0f),
+									.ozone_density = CLAMP(sky_component->ozone_density(), 0.0f, 4.0f),
+									.ground_albedo = HMM_V3(
+										CLAMP(ground_albedo.X, 0.0f, 1.0f),
+										CLAMP(ground_albedo.Y, 0.0f, 1.0f),
+										CLAMP(ground_albedo.Z, 0.0f, 1.0f)),
+									.sky_intensity = CLAMP(sky_component->sky_intensity(), 0.0f, 20.0f),
+									.sun_disc_angular_diameter_degrees = CLAMP(sky_component->sun_disc_angular_diameter_degrees(), 0.01f, 10.0f),
+									.sun_disc_intensity = CLAMP(sky_component->sun_disc_intensity(), 0.0f, 20.0f),
+									.atmosphere_height_m = atmosphere_height,
+									.rayleigh_scale_height_m = CLAMP(sky_component->rayleigh_scale_height_m(), 1000.0f, 30000.0f),
+									.mie_scale_height_m = CLAMP(sky_component->mie_scale_height_m(), 100.0f, 10000.0f),
+									.mie_anisotropy = CLAMP(sky_component->mie_anisotropy(), 0.0f, 0.95f),
+									.max_sun_zenith_angle_degrees = CLAMP(sky_component->max_sun_zenith_angle_degrees(), 90.0f, 120.0f),
+								};
+								break;
+							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
 							{
 								using Blender::LiveLink::GameplayComponentCameraControl;
@@ -1019,6 +1053,7 @@ namespace LiveLinkSystem
 				if (scene_update.editor_camera)
 				{
 					state.debug_camera.camera = *scene_update.editor_camera;
+					state.debug_camera.initial_location = state.debug_camera.camera.location;
 					const Camera& camera = state.debug_camera.camera;
 					printf(
 						"Debug camera initialized from Blender viewport: "

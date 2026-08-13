@@ -48,6 +48,8 @@ clang++ -std=c++20 -O2 tests/display_encoding_tests.cpp \
   -o /tmp/display_encoding_tests && /tmp/display_encoding_tests
 clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/include \
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
+clang++ -std=c++20 -O2 tests/sky_aware_tonemapping_tests.cpp \
+  -o /tmp/sky_aware_tonemapping_tests && /tmp/sky_aware_tonemapping_tests
 ```
 
 These check auto-exposure/AWB histogram reduction and frame-rate-independent
@@ -56,6 +58,9 @@ ACES 2 and Blender AgX asset headers and CRCs, SDR/EDR/HDR10 LUT reference
 vectors and interpolation invariants, Khronos PBR Neutral reference behavior,
 the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling, and
 synthetic output-format negotiation.
+
+The sky-aware local-tonemapping test covers geometry coverage, bright-sky
+silhouettes, thin geometry, boundary suppression, and recovery-range clamping.
 
 The formal suite adds a 110,604-sample deterministic corpus, upstream OCIO
 regeneration checks, direct production-GLSL compute readback (including synthetic
@@ -245,8 +250,8 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   reverse-Z render chain uses cascaded EVSM shadow maps (2048²×4 layered Array
   pass + 21-tap
   separable moments blur, Frustum/CenteredSquares placement) → G-buffer
-  geometry (preferably 4× RGBA32F + D32, sky composited at the far plane from a 256²
-  octahedral bake cached on sun movement) → half-res SSAO + blur → half-res
+  geometry (preferably 4× RGBA32F + D32, with the far-plane sky sampled directly
+  from precomputed Bruneton atmosphere LUTs) → half-res SSAO + blur → half-res
   screen-space contact shadows (trace + edge-aware filter) → cook-torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
@@ -384,6 +389,18 @@ tonemapping is enabled, the selected method evaluates the three synthetic
 exposures, defines their perceptual-lightness weights, and produces the final
 guided reconstruction. Disabling local tonemapping skips the proxy pyramid and
 applies the same selected method globally.
+
+Local exposure fusion is geometry-only. The G-buffer position alpha classifies
+sky with an exact nearest-sampled `position.w == 0` test. Geometry coverage is
+carried in the existing RGBA16F pyramid alpha channels, and positive filters
+operate on premultiplied exposure and weight values so atmospheric luminance
+cannot ring across silhouettes. Sky and the analytic solar disc always receive
+the selected global tone operator. Geometry within a mixed 3x3 sky boundary
+fades back to that global result; fully supported geometry keeps local recovery,
+bounded by the authored shadow/highlight EV limits. This mask does not affect
+global auto-exposure or white-balance metering, and bloom is still added after
+the local multiplier. Debug views expose pyramid coverage, boundary strength,
+and the applied local EV.
 
 Khronos PBR Neutral is the pinned Apache-2.0 reference implementation for
 non-negative linear Rec.709 input. It preserves well-exposed diffuse PBR colors,

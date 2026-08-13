@@ -79,7 +79,12 @@ struct CaptureSkyPushConstants
 {
 	HMM_Mat4 inv_view_projection;
 	HMM_Vec4 capture_position;
+	HMM_Vec4 sun_direction;
+	HMM_Vec4 light_color_and_sky_intensity;
+	HMM_Vec4 planet_center_z;
 };
+static_assert(sizeof(CaptureSkyPushConstants) == 128,
+	"Sky capture push constants must fit Vulkan's guaranteed minimum");
 
 // Mirrors radial_depth.frag's fs_params (used as push constants here)
 struct RadialDepthPushConstants
@@ -134,10 +139,9 @@ struct LightingCapture
 	VkPipeline capture_geometry_pipeline = VK_NULL_HANDLE;
 	VkPipeline capture_geometry_skinned_pipeline = VK_NULL_HANDLE;
 
-	// Capture sky (layout B set + push constants)
+	// Capture sky (Bruneton LUT set + per-probe position push constants)
 	VkPipelineLayout capture_sky_pipeline_layout = VK_NULL_HANDLE;
 	VkPipeline capture_sky_pipeline = VK_NULL_HANDLE;
-	VkDescriptorSet sky_input_sets[MAX_FRAMES_IN_FLIGHT] = {};
 
 	// Capture lighting: layout C reused; RGBA32F pipeline variant + slot ring
 	VkPipeline capture_lighting_pipeline = VK_NULL_HANDLE;
@@ -579,9 +583,6 @@ struct LightingCapture
 				.descriptorSetCount = 1,
 			};
 
-			allocate_info.pSetLayouts = &frame_data.sampled_input_layout;
-			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &sky_input_sets[frame_idx]));
-
 			for (i32 slot_idx = 0; slot_idx < LIGHTING_SLOTS_PER_FRAME; ++slot_idx)
 			{
 				allocate_info.pSetLayouts = &::lighting_pass.set_layout;
@@ -643,7 +644,7 @@ struct LightingCapture
 			VkPipelineLayoutCreateInfo layout_create_info = {
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 				.setLayoutCount = 1,
-				.pSetLayouts = &frame_data.sampled_input_layout,
+				.pSetLayouts = &bruneton_atmosphere_pass.descriptor_layout,
 				.pushConstantRangeCount = 1,
 				.pPushConstantRanges = &push_range,
 			};
@@ -870,25 +871,6 @@ struct LightingCapture
 			vkCmdEndRendering(command_buffer);
 			gpu_image_transition(command_buffer, brdf_lut, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		});
-
-		// Sky input sets: the baked octahedral sky image is fixed-size
-		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
-		{
-			VkDescriptorImageInfo sky_info = {
-				.sampler = frame_data.linear_sampler,
-				.imageView = sky_pass.bake_render_pass.get_color_output(0).view,
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			};
-			VkWriteDescriptorSet write = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = sky_input_sets[frame_idx],
-				.dstBinding = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &sky_info,
-			};
-			vulkan_update_descriptor_sets(ctx, 1, &write);
-		}
 
 		// cube_to_oct inputs: the capture cubemaps never resize
 		{
@@ -1192,19 +1174,26 @@ struct LightingCapture
 				}
 			}
 
-			if (in_state.gi.render_sky_to_probes)
+			if (in_state.gi.render_sky_to_probes
+				&& sky_pass.has_active_atmosphere
+				&& bruneton_atmosphere_pass.has_precomputed)
 			{
 				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, capture_sky_pipeline);
 				vkCmdBindDescriptorSets(
 					command_buffer,
 					VK_PIPELINE_BIND_POINT_GRAPHICS,
 					capture_sky_pipeline_layout,
-					0, 1, &sky_input_sets[frame_index],
+					0, 1, &bruneton_atmosphere_pass.descriptor_sets[frame_index],
 					0, nullptr
 				);
 				CaptureSkyPushConstants sky_push = {
 					.inv_view_projection = HMM_InvGeneralM4(view_projection),
 					.capture_position = HMM_V4V(in_location, 1.0f),
+					.sun_direction = HMM_V4V(sky_pass.active_sun_direction, 0.0f),
+					.light_color_and_sky_intensity = HMM_V4V(
+						sky_pass.active_sun_color, sky_pass.active_parameters.sky_intensity),
+					.planet_center_z = HMM_V4(
+						sky_pass.active_parameters.planet_center_z_m, 0.0f, 0.0f, 0.0f),
 				};
 				vkCmdPushConstants(command_buffer, capture_sky_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky_push), &sky_push);
 				vulkan_cmd_draw(ctx, 3, 1, 0, 0);

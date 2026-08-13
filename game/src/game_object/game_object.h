@@ -82,6 +82,24 @@ struct FogController
 	f32 anisotropy = 0.2f;
 };
 
+struct SkyAtmosphere
+{
+	bool enabled = true;
+	f32 planet_center_z_m = -6360000.0f;
+	f32 air_density = 1.0f;
+	f32 aerosol_density = 1.0f;
+	f32 ozone_density = 1.0f;
+	HMM_Vec3 ground_albedo = HMM_V3(0.1f, 0.1f, 0.1f);
+	f32 sky_intensity = 1.0f;
+	f32 sun_disc_angular_diameter_degrees = 0.5357f;
+	f32 sun_disc_intensity = 1.0f;
+	f32 atmosphere_height_m = 60000.0f;
+	f32 rayleigh_scale_height_m = 8000.0f;
+	f32 mie_scale_height_m = 1200.0f;
+	f32 mie_anisotropy = 0.8f;
+	f32 max_sun_zenith_angle_degrees = 102.0f;
+};
+
 enum class PartType : u8
 {
 	Body = 0,
@@ -213,6 +231,9 @@ struct Object
 	// is Phase 3)
 	bool has_fog_controller = false;
 	FogController fog_controller;
+
+	bool has_sky_atmosphere = false;
+	SkyAtmosphere sky_atmosphere;
 
 	bool has_part = false;
 	Part part;

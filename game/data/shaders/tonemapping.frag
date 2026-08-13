@@ -10,7 +10,8 @@ layout(set = 0, binding = 1) uniform sampler2D local_guide;
 layout(set = 0, binding = 2) uniform sampler2D local_fused_lightness;
 layout(set = 0, binding = 3) uniform sampler2D bloom_color;
 layout(set = 0, binding = 4) uniform sampler2DArray tonemapping_lut;
-layout(std430, set = 0, binding = 5) readonly buffer AutoAdaptationStateBlock
+layout(set = 0, binding = 5) uniform sampler2D position_tex;
+layout(std430, set = 0, binding = 6) readonly buffer AutoAdaptationStateBlock
 {
 	vec4 auto_adaptation_values[AUTO_ADAPTATION_STATE_VEC4_COUNT];
 };
@@ -28,6 +29,7 @@ layout(push_constant) uniform PushConstants
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
 	float bloom_auto_exposure_influence;
+	vec4 local_recovery;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -44,6 +46,7 @@ void main()
 		+ auto_exposure_ev * clamp(pc.bloom_auto_exposure_influence, 0.0, 1.0));
 	vec3 source_color = pc.validation_chart == 2 ? vec3(0.18)
 		: pc.validation_chart == 1 ? tonemapping_validation_chart(uv)
+		: pc.validation_chart == 3 ? tonemapping_validation_sky_geometry_chart(uv)
 		: texture(scene_color, uv).rgb;
 	if (pc.auto_white_balance_enabled != 0)
 	{
@@ -73,17 +76,29 @@ void main()
 
 	if (pc.local_enabled != 0)
 	{
-		TonemappingLocalGuidedResult guided = tonemapping_local_guided_transfer(
-			pc.method,
-			tonemapping_lut,
-			exposed_color,
-			pc.lut_integration_scale,
-			local_guide,
-			local_fused_lightness,
-			uv,
-			pc.guide_pixel_size);
+		float local_strength = pc.validation_chart == 3
+			? tonemapping_validation_geometry_local_strength(
+				uv, 1.0 / vec2(textureSize(position_tex, 0)))
+			: pc.validation_chart != 0 ? 1.0
+			: tonemapping_geometry_local_strength(position_tex, uv);
+		float local_multiplier = 1.0;
+		if (local_strength > 1.0e-5)
+		{
+			TonemappingLocalGuidedResult guided = tonemapping_local_guided_transfer(
+				pc.method,
+				tonemapping_lut,
+				exposed_color,
+				pc.lut_integration_scale,
+				local_guide,
+				local_fused_lightness,
+				uv,
+				pc.guide_pixel_size,
+				pc.local_recovery.x,
+				pc.local_recovery.y);
+			local_multiplier = mix(1.0, guided.multiplier, local_strength);
+		}
 		tonemapped_color = tonemap_apply(pc.method, tonemapping_lut,
-			exposed_color * guided.multiplier + exposed_bloom,
+			exposed_color * local_multiplier + exposed_bloom,
 			pc.lut_integration_scale);
 	}
 	else

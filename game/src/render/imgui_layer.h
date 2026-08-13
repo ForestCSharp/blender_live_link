@@ -208,6 +208,17 @@ namespace ImGuiLayer
 			draw_stats_ui(state);
 		}
 
+		if (ImGui::CollapsingHeader("Debug Camera"))
+		{
+			ImGui::InputFloat("Speed", &state.debug_camera.move_speed, 1.0f, 10.0f, "%.1f");
+			state.debug_camera.move_speed = MAX(state.debug_camera.move_speed, 0.0f);
+			if (ImGui::Button("Reset Camera Position"))
+			{
+				state.debug_camera.camera.location = state.debug_camera.initial_location;
+			}
+			ImGui::TextUnformatted("Hold Shift to move 5x faster.");
+		}
+
 		if (ImGui::CollapsingHeader("Animation"))
 		{
 			if (ImGui::Button("Play")) state.animation.is_playing = true;
@@ -606,6 +617,10 @@ namespace ImGuiLayer
 				if (ImGui::CollapsingHeader("Lighting"))
 				{
 					ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable);
+					ImGui::Text("LUT precomputes: %llu",
+						(unsigned long long) bruneton_atmosphere_pass.precompute_count);
+					ImGui::Text("Last LUT CPU submit: %.2f ms",
+						bruneton_atmosphere_pass.last_precompute_ms);
 					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
 					ImGui::Separator();
 					ImGui::Indent();
@@ -737,7 +752,16 @@ namespace ImGuiLayer
 				);
 			}
 			draw_texture(frame_data.linear_sampler, "Split-Sum BRDF LUT", gi_scene.lighting_capture.brdf_lut, 256.0f);
-			draw_texture(frame_data.linear_sampler, "Baked Sky", sky_pass.bake_render_pass.get_color_output(0), 256.0f);
+			if (bruneton_atmosphere_pass.has_precomputed)
+			{
+				draw_texture(frame_data.linear_sampler, "Atmosphere: Transmittance",
+					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Atmosphere: Irradiance",
+					bruneton_atmosphere_pass.irradiance_pass.get_color_output(1), 256.0f);
+				GpuImage& scattering = bruneton_atmosphere_pass.scattering_pass.get_color_output(2);
+				draw_texture(frame_data.linear_sampler, "Atmosphere: Scattering Ground Layer",
+					scattering, 256.0f, scattering.layer_views[0]);
+			}
 			if (state.bloom.enable && state.bloom.intensity > 0.0f)
 			{
 				GpuImage& bloom_pyramid = BloomPass::get_pyramid();
@@ -814,7 +838,7 @@ namespace ImGuiLayer
 			(available.x - 2.0f * margin - 3.0f * gap) / 4.0f;
 		const f32 max_image_height =
 			(available.y - 2.0f * margin - section_height - overview_height
-				- 4.0f * label_height - 5.0f * gap - 8.0f * padding) / 4.0f;
+				- 5.0f * label_height - 6.0f * gap - 10.0f * padding) / 5.0f;
 		const f32 image_width = MAX(48.0f, MIN(
 			max_card_width - 2.0f * padding,
 			MAX(32.0f, max_image_height) * aspect));
@@ -886,7 +910,7 @@ namespace ImGuiLayer
 			}
 		};
 
-		char labels[16][160] = {};
+		char labels[18][160] = {};
 		snprintf(labels[0], sizeof(labels[0]), "Highlight lightness  -%.2f EV  |  mip %d  %ux%u",
 			state.tonemapping.local_highlight_recovery, debug.selected_full_mip,
 			selected_width, selected_height);
@@ -914,9 +938,12 @@ namespace ImGuiLayer
 			state.window.render_width, state.window.render_height);
 		snprintf(labels[13], sizeof(labels[13]), "Full-res guided target  |  %dx%d",
 			state.window.render_width, state.window.render_height);
-		snprintf(labels[14], sizeof(labels[14]), "Local adjustment  |  -4 EV black, 0 gray, +4 EV white");
+		snprintf(labels[14], sizeof(labels[14]), "Final applied local EV  |  -4 black, 0 gray, +4 white");
 		snprintf(labels[15], sizeof(labels[15]), "Final tonemapped output (pre-FXAA)  |  %dx%d",
 			state.window.render_width, state.window.render_height);
+		snprintf(labels[16], sizeof(labels[16]), "Geometry coverage  |  mip %d  %ux%u",
+			debug.selected_full_mip, selected_width, selected_height);
+		snprintf(labels[17], sizeof(labels[17]), "Boundary local strength  |  sky and silhouettes are black");
 
 		for (i32 channel = 0; channel < 3; ++channel)
 		{
@@ -936,13 +963,15 @@ namespace ImGuiLayer
 		draw_card(3, 1, debug.guided[1], labels[13]);
 		draw_card(3, 2, debug.guided[2], labels[14]);
 		draw_card(3, 3, final_tonemapped_view, labels[15]);
+		draw_card(4, 0, debug.geometry_coverage, labels[16]);
+		draw_card(4, 1, debug.boundary_suppression, labels[17]);
 
 		if (debug.reconstruction_pyramid)
 		{
 			const i32 overview_count =
 				debug.coarsest_full_mip - debug.reconstruction_full_mip + 1;
 			const f32 overview_top =
-				start_y + 4.0f * (card_height + gap) + 2.0f;
+				start_y + 5.0f * (card_height + gap) + 2.0f;
 			const f32 overview_label_height = 13.0f;
 			const f32 overview_image_width = MIN(
 				card_width,

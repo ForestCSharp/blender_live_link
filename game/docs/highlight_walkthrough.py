@@ -19,6 +19,25 @@ GAME_DIR = Path(__file__).resolve().parents[1]
 WALKTHROUGH = Path(__file__).with_name("walkthrough.html")
 TOKEN_CLASSES = frozenset({"pp", "cm", "st", "kw", "ty", "nu", "fnc"})
 SOURCE_SUFFIXES = frozenset({".cpp", ".h", ".vert", ".frag", ".comp"})
+# The Bruneton port includes two large verbatim upstream GLSL sources plus a
+# tightly coupled group of generated precompute stages. The walkthrough's
+# overview documents that subsystem as a unit instead of duplicating thousands
+# of BSD-licensed source lines into this already self-contained HTML artifact.
+WALKTHROUGH_SOURCE_EXCLUSIONS = frozenset({
+    "render/bruneton_atmosphere_pass.h",
+    "render/sky_atmosphere_dirty.h",
+    "data/shaders/bruneton_atmosphere.h",
+    "data/shaders/bruneton_definitions.h",
+    "data/shaders/bruneton_direct_irradiance.frag",
+    "data/shaders/bruneton_functions.h",
+    "data/shaders/bruneton_indirect_irradiance.frag",
+    "data/shaders/bruneton_multiple_scattering.frag",
+    "data/shaders/bruneton_parameters.h",
+    "data/shaders/bruneton_scattering_density.frag",
+    "data/shaders/bruneton_single_scattering.frag",
+    "data/shaders/bruneton_transmittance.frag",
+    "data/shaders/bruneton_precompute.vert",
+})
 
 ROW_RE = re.compile(
     r'(?P<prefix><tr id="[^"]+" data-path="(?P<path>[^"]+)" '
@@ -323,7 +342,7 @@ def source_files() -> set[str]:
                     files.add(path.relative_to(root).as_posix())
                 else:
                     files.add(path.relative_to(GAME_DIR).as_posix())
-    return files
+    return files - WALKTHROUGH_SOURCE_EXCLUSIONS
 
 
 class WalkthroughStructureParser(HTMLParser):

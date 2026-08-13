@@ -236,7 +236,7 @@ static void draw_stats_ui(State& state)
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Vulkan / VMA"))
+	if (ImGui::CollapsingHeader("Vulkan / VMA stats"))
 	{
 		const VulkanMemoryStats memory = vulkan_context_get_memory_stats(&state.vk);
 		const VulkanMetrics& metrics = state.vk.metrics;

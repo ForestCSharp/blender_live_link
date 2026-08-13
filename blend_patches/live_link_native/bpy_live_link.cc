@@ -1151,6 +1151,49 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentFogController, value.Union()));
     }
+    else if (type == "SKY_ATMOSPHERE") {
+      PyPtr sky(PyObject_GetAttrString(component, "sky_atmosphere"));
+      if (!sky) {
+        PyErr_Clear();
+        continue;
+      }
+      float albedo_values[3] = {0.1f, 0.1f, 0.1f};
+      PyPtr albedo_attr(PyObject_GetAttrString(sky, "ground_albedo"));
+      PyPtr albedo_sequence(albedo_attr ?
+                                PySequence_Fast(albedo_attr, "sky_atmosphere.ground_albedo must be a sequence") :
+                                nullptr);
+      if (albedo_sequence) {
+        const Py_ssize_t albedo_size = PySequence_Fast_GET_SIZE(albedo_sequence);
+        for (Py_ssize_t color_index = 0; color_index < albedo_size && color_index < 3; color_index++) {
+          const double parsed = PyFloat_AsDouble(
+              PySequence_Fast_GET_ITEM(albedo_sequence.value, color_index));
+          if (!PyErr_Occurred()) albedo_values[color_index] = float(parsed);
+          else PyErr_Clear();
+        }
+      }
+      else {
+        PyErr_Clear();
+      }
+      const ll::Vec3 ground_albedo(albedo_values[0], albedo_values[1], albedo_values[2]);
+      const auto value = ll::CreateGameplayComponentSkyAtmosphere(
+          builder,
+          py_bool_attr(sky, "enabled", true),
+          py_float_attr(sky, "planet_center_z_m", -6360000.0f),
+          py_float_attr(sky, "air_density", 1.0f),
+          py_float_attr(sky, "aerosol_density", 1.0f),
+          py_float_attr(sky, "ozone_density", 1.0f),
+          &ground_albedo,
+          py_float_attr(sky, "sky_intensity", 1.0f),
+          py_float_attr(sky, "sun_disc_angular_diameter_degrees", 0.5357f),
+          py_float_attr(sky, "sun_disc_intensity", 1.0f),
+          py_float_attr(sky, "atmosphere_height_m", 60000.0f),
+          py_float_attr(sky, "rayleigh_scale_height_m", 8000.0f),
+          py_float_attr(sky, "mie_scale_height_m", 1200.0f),
+          py_float_attr(sky, "mie_anisotropy", 0.8f),
+          py_float_attr(sky, "max_sun_zenith_angle_degrees", 102.0f));
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentSkyAtmosphere, value.Union()));
+    }
     else if (type == "PART") {
       PyPtr part(PyObject_GetAttrString(component, "part"));
       if (!part) {
@@ -2447,6 +2490,29 @@ void compare_component(DiffList &diffs,
       compare_float(diffs, path + ".fog_controller.ambient_intensity", native_fog->ambient_intensity(), python_fog->ambient_intensity());
       compare_float(diffs, path + ".fog_controller.sun_intensity", native_fog->sun_intensity(), python_fog->sun_intensity());
       compare_float(diffs, path + ".fog_controller.anisotropy", native_fog->anisotropy(), python_fog->anisotropy());
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentSkyAtmosphere &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentSkyAtmosphere)
+  {
+    const ll::GameplayComponentSkyAtmosphere *native_sky = native_value->value_as_GameplayComponentSkyAtmosphere();
+    const ll::GameplayComponentSkyAtmosphere *python_sky = python_value->value_as_GameplayComponentSkyAtmosphere();
+    compare_exact(diffs, path + ".sky.present", native_sky != nullptr, python_sky != nullptr);
+    if (native_sky && python_sky) {
+      compare_exact(diffs, path + ".sky.enabled", native_sky->enabled(), python_sky->enabled());
+      compare_float(diffs, path + ".sky.planet_center_z_m", native_sky->planet_center_z_m(), python_sky->planet_center_z_m());
+      compare_float(diffs, path + ".sky.air_density", native_sky->air_density(), python_sky->air_density());
+      compare_float(diffs, path + ".sky.aerosol_density", native_sky->aerosol_density(), python_sky->aerosol_density());
+      compare_float(diffs, path + ".sky.ozone_density", native_sky->ozone_density(), python_sky->ozone_density());
+      compare_vec3(diffs, path + ".sky.ground_albedo", native_sky->ground_albedo(), python_sky->ground_albedo());
+      compare_float(diffs, path + ".sky.sky_intensity", native_sky->sky_intensity(), python_sky->sky_intensity());
+      compare_float(diffs, path + ".sky.sun_disc_angular_diameter_degrees", native_sky->sun_disc_angular_diameter_degrees(), python_sky->sun_disc_angular_diameter_degrees());
+      compare_float(diffs, path + ".sky.sun_disc_intensity", native_sky->sun_disc_intensity(), python_sky->sun_disc_intensity());
+      compare_float(diffs, path + ".sky.atmosphere_height_m", native_sky->atmosphere_height_m(), python_sky->atmosphere_height_m());
+      compare_float(diffs, path + ".sky.rayleigh_scale_height_m", native_sky->rayleigh_scale_height_m(), python_sky->rayleigh_scale_height_m());
+      compare_float(diffs, path + ".sky.mie_scale_height_m", native_sky->mie_scale_height_m(), python_sky->mie_scale_height_m());
+      compare_float(diffs, path + ".sky.mie_anisotropy", native_sky->mie_anisotropy(), python_sky->mie_anisotropy());
+      compare_float(diffs, path + ".sky.max_sun_zenith_angle_degrees", native_sky->max_sun_zenith_angle_degrees(), python_sky->max_sun_zenith_angle_degrees());
     }
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&

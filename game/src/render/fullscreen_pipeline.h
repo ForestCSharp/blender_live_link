@@ -14,6 +14,7 @@ struct FullscreenPipelineDesc
 	const VkFormat* color_formats = nullptr;
 	u32 color_format_count = 0;
 	bool additive_blending = false;
+	u32 additive_blend_mask = 0;
 };
 
 inline VkPipeline vulkan_create_fullscreen_pipeline(
@@ -96,6 +97,14 @@ inline VkPipeline vulkan_create_fullscreen_pipeline(
 							| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 		}
 	);
+	for (u32 attachment_idx = 0; attachment_idx < in_desc.color_format_count; ++attachment_idx)
+	{
+		const bool additive = in_desc.additive_blending
+			|| (in_desc.additive_blend_mask & (1u << attachment_idx)) != 0;
+		blend_attachments[attachment_idx].blendEnable = additive ? VK_TRUE : VK_FALSE;
+		blend_attachments[attachment_idx].dstColorBlendFactor =
+			additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+	}
 	VkPipelineColorBlendStateCreateInfo color_blending = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 		.attachmentCount = in_desc.color_format_count,

@@ -12,6 +12,6 @@ layout(location = 0) out vec4 channel_output;
 
 void main()
 {
-	float value = texture(packed_input, uv)[clamp(pc.channel, 0, 2)];
+	float value = texture(packed_input, uv)[clamp(pc.channel, 0, 3)];
 	channel_output = vec4(vec3(value), 1.0);
 }

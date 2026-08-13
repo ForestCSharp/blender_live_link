@@ -243,7 +243,10 @@ struct State
 		ankerl::unordered_dense::map<i32, Object> objects;
 		std::optional<i32> camera_control_id;
 		std::optional<i32> primary_sun_id;
+		std::optional<i32> active_sky_controller_id;
 		std::optional<i32> player_character_id;
+		i32 sky_controller_candidate_count = 0;
+		i32 invalid_sky_controller_count = 0;
 
 		// Per-kind object id lists are rebuilt lazily when dirty and cached
 		// until the next scene mutation.
@@ -580,6 +583,8 @@ struct State
 	{
 		bool active = true;
 		bool live_link_initialization_complete = false;
+		f32 move_speed = 10.0f;
+		HMM_Vec3 initial_location = HMM_V3(2.5f, -15.0f, 3.0f);
 		Camera camera = {
 			.location = HMM_V3(2.5f, -15.0f, 3.0f),
 			.forward = HMM_NormV3(HMM_V3(0.0f, 1.0f, -0.5f)),
@@ -874,6 +879,10 @@ void scene_invalidate_cached_object_ids(State& in_state, i32 in_unique_id)
 	{
 		in_state.scene.primary_sun_id.reset();
 	}
+	if (in_state.scene.active_sky_controller_id == in_unique_id)
+	{
+		in_state.scene.active_sky_controller_id.reset();
+	}
 	if (in_state.fog.active_fog_controller_id == in_unique_id)
 	{
 		in_state.fog.active_fog_controller_id.reset();
@@ -949,6 +958,9 @@ void scene_clear_objects(State& in_state)
 	in_state.scene.camera_control_id.reset();
 	in_state.scene.player_character_id.reset();
 	in_state.scene.primary_sun_id.reset();
+	in_state.scene.active_sky_controller_id.reset();
+	in_state.scene.sky_controller_candidate_count = 0;
+	in_state.scene.invalid_sky_controller_count = 0;
 	in_state.fog.active_fog_controller_id.reset();
 	in_state.fog.active = false;
 	in_state.tonemapping.adaptation_reset_requested = true;

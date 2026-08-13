@@ -279,7 +279,7 @@ namespace InputSystem
 		Camera& camera = in_state.debug_camera.camera;
 		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
 	
-		f32 move_speed = 10.0f * in_delta_time;
+		f32 move_speed = in_state.debug_camera.move_speed * in_delta_time;
 		if (is_key_pressed(in_state, GLFW_KEY_LEFT_SHIFT))
 		{
 			move_speed *= 5.0f;
@@ -422,6 +422,7 @@ namespace InputSystem
 				if (!in_state.debug_camera.active)
 				{
 					in_state.debug_camera.camera = active_camera(in_state);
+					in_state.debug_camera.initial_location = in_state.debug_camera.camera.location;
 				}
 				in_state.debug_camera.active = !in_state.debug_camera.active;
 			}
@@ -446,4 +447,3 @@ namespace InputSystem
 		}
 	}
 }
-

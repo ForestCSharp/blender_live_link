@@ -187,6 +187,24 @@ table GameplayComponentFogController
 	anisotropy			: float = 0.2;
 }
 
+table GameplayComponentSkyAtmosphere
+{
+	enabled						: bool = true;
+	planet_center_z_m				: float = -6360000.0;
+	air_density					: float = 1.0;
+	aerosol_density				: float = 1.0;
+	ozone_density					: float = 1.0;
+	ground_albedo					: Vec3;
+	sky_intensity					: float = 1.0;
+	sun_disc_angular_diameter_degrees	: float = 0.5357;
+	sun_disc_intensity			: float = 1.0;
+	atmosphere_height_m			: float = 60000.0;
+	rayleigh_scale_height_m		: float = 8000.0;
+	mie_scale_height_m			: float = 1200.0;
+	mie_anisotropy				: float = 0.8;
+	max_sun_zenith_angle_degrees	: float = 102.0;
+}
+
 table GameplayComponentPart
 {
 	part_type : PartType = Body;
@@ -211,7 +229,8 @@ union GameplayComponent
 	GameplayComponentCameraControl,
 	GameplayComponentFogController,
 	GameplayComponentPart,
-	GameplayComponentAttachmentPoint
+	GameplayComponentAttachmentPoint,
+	GameplayComponentSkyAtmosphere
 }
 
 table GameplayComponentContainer

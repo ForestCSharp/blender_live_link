@@ -73,6 +73,7 @@ def validate_compression_registries(extension_module) -> None:
         ("FOG_CONTROLLER", "fog_controller"),
         ("PART", "part"),
         ("ATTACHMENT_POINT", "attachment_point"),
+        ("SKY_ATMOSPHERE", "sky_atmosphere"),
     ]
     actual_components = [
         (component_class.type_name, group_name)
@@ -213,6 +214,9 @@ def create_synthetic_scene():
     bpy.context.scene.collection.objects.link(duplicate_body)
     duplicate_body_component = add_component(duplicate_body, "PART")
     duplicate_body_component.part.part_type = "BODY"
+    # Deliberately bypass the add operator to verify exporters preserve an
+    # invalid non-Sun host for runtime-side defensive rejection.
+    add_component(duplicate_body, "SKY_ATMOSPHERE")
     duplicate_body.hide_set(True)
 
     part_objects = {}
@@ -306,6 +310,21 @@ def create_synthetic_scene():
     light_object = bpy.data.objects.new("CI Sun", light_data)
     bpy.context.scene.collection.objects.link(light_object)
     add_component(light_object, "FOG_CONTROLLER")
+    sky_component = add_component(light_object, "SKY_ATMOSPHERE")
+    sky_component.sky_atmosphere.enabled = True
+    sky_component.sky_atmosphere.planet_center_z_m = -6358766.0
+    sky_component.sky_atmosphere.air_density = 1.2
+    sky_component.sky_atmosphere.aerosol_density = 2.3
+    sky_component.sky_atmosphere.ozone_density = 0.8
+    sky_component.sky_atmosphere.ground_albedo = (0.2, 0.3, 0.4)
+    sky_component.sky_atmosphere.sky_intensity = 1.4
+    sky_component.sky_atmosphere.sun_disc_angular_diameter_degrees = 0.7
+    sky_component.sky_atmosphere.sun_disc_intensity = 1.6
+    sky_component.sky_atmosphere.atmosphere_height_m = 70000.0
+    sky_component.sky_atmosphere.rayleigh_scale_height_m = 9000.0
+    sky_component.sky_atmosphere.mie_scale_height_m = 1500.0
+    sky_component.sky_atmosphere.mie_anisotropy = 0.75
+    sky_component.sky_atmosphere.max_sun_zenith_angle_degrees = 105.0
 
     synthetic_objects = [
         mesh_object,
@@ -398,6 +417,57 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             raise AssertionError("Synthetic mesh object has no mesh payload")
         if exported_objects["CI Sun"].Light() is None:
             raise AssertionError("Synthetic light object has no light payload")
+
+        def component_of_type(exported_object, component_type):
+            for component_index in range(exported_object.ComponentsLength()):
+                container = exported_object.Components(component_index)
+                if container.ValueType() != component_type:
+                    continue
+                value = container.Value()
+                return value
+            return None
+
+        sky_union = component_of_type(
+            exported_objects["CI Sun"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentSkyAtmosphere,
+        )
+        if sky_union is None:
+            raise AssertionError("Sun object has no Sky Atmosphere component")
+        sky = extension_module.GameplayComponentSkyAtmosphere.GameplayComponentSkyAtmosphere()
+        sky.Init(sky_union.Bytes, sky_union.Pos)
+        sky_values = (
+            sky.Enabled(), sky.PlanetCenterZM(), sky.AirDensity(),
+            sky.AerosolDensity(), sky.OzoneDensity(), sky.SkyIntensity(),
+            sky.SunDiscAngularDiameterDegrees(), sky.SunDiscIntensity(),
+            sky.AtmosphereHeightM(), sky.RayleighScaleHeightM(),
+            sky.MieScaleHeightM(), sky.MieAnisotropy(),
+            sky.MaxSunZenithAngleDegrees(),
+        )
+        expected_sky_values = (
+            True, -6358766.0, 1.2, 2.3, 0.8, 1.4, 0.7, 1.6,
+            70000.0, 9000.0, 1500.0, 0.75, 105.0,
+        )
+        for actual, expected in zip(sky_values, expected_sky_values):
+            if isinstance(expected, bool):
+                if actual != expected:
+                    raise AssertionError(f"Sky enabled mismatch: {actual}")
+            elif abs(actual - expected) > 1.0e-4:
+                raise AssertionError(f"Sky field mismatch: expected {expected}, got {actual}")
+        albedo = sky.GroundAlbedo()
+        if albedo is None or any(abs(actual - expected) > 1.0e-4 for actual, expected in zip(
+            (albedo.X(), albedo.Y(), albedo.Z()), (0.2, 0.3, 0.4)
+        )):
+            raise AssertionError("Sky ground albedo changed during export")
+        invalid_sky_union = component_of_type(
+            exported_objects["CI Duplicate Body"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentSkyAtmosphere,
+        )
+        invalid_sky = extension_module.GameplayComponentSkyAtmosphere.GameplayComponentSkyAtmosphere()
+        invalid_sky.Init(invalid_sky_union.Bytes, invalid_sky_union.Pos)
+        if (not invalid_sky.Enabled()
+                or invalid_sky.PlanetCenterZM() != -6360000.0
+                or invalid_sky.AtmosphereHeightM() != 60000.0):
+            raise AssertionError("Default Sky Atmosphere fields changed on invalid host fixture")
         if exported_objects["CI Triangle"].Visibility():
             raise AssertionError("Hidden Body part became visible during export")
         if exported_objects["CI Player Character"].Visibility():
@@ -421,15 +491,6 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             raise AssertionError(
                 f"Decoded component vector ordering changed: {second_character_component_types}"
             )
-
-        def component_of_type(exported_object, component_type):
-            for component_index in range(exported_object.ComponentsLength()):
-                container = exported_object.Components(component_index)
-                if container.ValueType() != component_type:
-                    continue
-                value = container.Value()
-                return value
-            return None
 
         part_union = component_of_type(
             exported_objects["CI Triangle"],

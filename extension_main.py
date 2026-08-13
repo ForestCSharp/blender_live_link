@@ -45,6 +45,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCameraCon
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosphere
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import Image
 from .compiled_schemas.python.Blender.LiveLink import Light
@@ -1706,6 +1707,9 @@ def gameplay_component_property_update(self, _context):
     if isinstance(source_object, bpy.types.Object):
         queue_object_update(source_object, update_reason="gameplay_component_property_update")
 
+def sky_atmosphere_property_update(self, context):
+    gameplay_component_property_update(self, context)
+
 class Component(PropertyGroup):
     # Blender UI Info
     type_name = 'INVALID'
@@ -1832,6 +1836,78 @@ class Component_FogController(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentFogController
 
+class Component_SkyAtmosphere(Component):
+    type_name = 'SKY_ATMOSPHERE'
+    label = 'Sky Atmosphere'
+
+    enabled: BoolProperty(name="Enabled", default=True, update=sky_atmosphere_property_update)
+    planet_center_z_m: FloatProperty(
+        name="Planet Center Z", description="World-space Z coordinate of the fixed Earth center, in meters",
+        default=-6360000.0, min=-1.0e9, max=1.0e9,
+        update=sky_atmosphere_property_update)
+    air_density: FloatProperty(
+        name="Air Density", default=1.0, min=0.0, max=4.0,
+        update=sky_atmosphere_property_update)
+    aerosol_density: FloatProperty(
+        name="Aerosol / Dust Density", default=1.0, min=0.0, max=10.0,
+        update=sky_atmosphere_property_update)
+    ozone_density: FloatProperty(
+        name="Ozone Density", default=1.0, min=0.0, max=4.0,
+        update=sky_atmosphere_property_update)
+    ground_albedo: FloatVectorProperty(
+        name="Ground Albedo", subtype='COLOR', size=3,
+        default=(0.1, 0.1, 0.1), min=0.0, max=1.0,
+        update=sky_atmosphere_property_update)
+    sky_intensity: FloatProperty(
+        name="Sky Intensity", default=1.0, min=0.0, max=20.0,
+        update=sky_atmosphere_property_update)
+    sun_disc_angular_diameter_degrees: FloatProperty(
+        name="Sun Disc Diameter", description="Angular diameter in degrees",
+        default=0.5357, min=0.01, max=10.0,
+        update=sky_atmosphere_property_update)
+    sun_disc_intensity: FloatProperty(
+        name="Sun Disc Intensity", default=1.0, min=0.0, max=20.0,
+        update=sky_atmosphere_property_update)
+    atmosphere_height_m: FloatProperty(
+        name="Atmosphere Height", default=60000.0, min=10000.0, max=200000.0,
+        update=sky_atmosphere_property_update)
+    rayleigh_scale_height_m: FloatProperty(
+        name="Rayleigh Scale Height", default=8000.0, min=1000.0, max=30000.0,
+        update=sky_atmosphere_property_update)
+    mie_scale_height_m: FloatProperty(
+        name="Mie Scale Height", default=1200.0, min=100.0, max=10000.0,
+        update=sky_atmosphere_property_update)
+    mie_anisotropy: FloatProperty(
+        name="Mie Anisotropy", default=0.8, min=0.0, max=0.95,
+        update=sky_atmosphere_property_update)
+    max_sun_zenith_angle_degrees: FloatProperty(
+        name="Maximum Sun Zenith", default=102.0, min=90.0, max=120.0,
+        update=sky_atmosphere_property_update)
+
+    def create_flatbuffers_value(self, builder, **_kwargs):
+        GameplayComponentSkyAtmosphere.Start(builder)
+        GameplayComponentSkyAtmosphere.AddEnabled(builder, self.enabled)
+        GameplayComponentSkyAtmosphere.AddPlanetCenterZM(builder, self.planet_center_z_m)
+        GameplayComponentSkyAtmosphere.AddAirDensity(builder, self.air_density)
+        GameplayComponentSkyAtmosphere.AddAerosolDensity(builder, self.aerosol_density)
+        GameplayComponentSkyAtmosphere.AddOzoneDensity(builder, self.ozone_density)
+        ground_albedo = Vec3.CreateVec3(builder, *self.ground_albedo)
+        GameplayComponentSkyAtmosphere.AddGroundAlbedo(builder, ground_albedo)
+        GameplayComponentSkyAtmosphere.AddSkyIntensity(builder, self.sky_intensity)
+        GameplayComponentSkyAtmosphere.AddSunDiscAngularDiameterDegrees(
+            builder, self.sun_disc_angular_diameter_degrees)
+        GameplayComponentSkyAtmosphere.AddSunDiscIntensity(builder, self.sun_disc_intensity)
+        GameplayComponentSkyAtmosphere.AddAtmosphereHeightM(builder, self.atmosphere_height_m)
+        GameplayComponentSkyAtmosphere.AddRayleighScaleHeightM(builder, self.rayleigh_scale_height_m)
+        GameplayComponentSkyAtmosphere.AddMieScaleHeightM(builder, self.mie_scale_height_m)
+        GameplayComponentSkyAtmosphere.AddMieAnisotropy(builder, self.mie_anisotropy)
+        GameplayComponentSkyAtmosphere.AddMaxSunZenithAngleDegrees(
+            builder, self.max_sun_zenith_angle_degrees)
+        return GameplayComponentSkyAtmosphere.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentSkyAtmosphere
+
 PART_TYPE_SPECS = [
     ('BODY', 'Body', PartType.PartType.Body, False),
     ('LEGS', 'Legs', PartType.PartType.Legs, True),
@@ -1914,6 +1990,7 @@ COMPONENT_SPECS = [
     (Component_FogController, 'fog_controller'),
     (Component_Part, 'part'),
     (Component_AttachmentPoint, 'attachment_point'),
+    (Component_SkyAtmosphere, 'sky_atmosphere'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -1938,6 +2015,7 @@ class ComponentContainer(PropertyGroup):
     fog_controller: PointerProperty(type=Component_FogController)
     part:           PointerProperty(type=Component_Part)
     attachment_point: PointerProperty(type=Component_AttachmentPoint)
+    sky_atmosphere: PointerProperty(type=Component_SkyAtmosphere)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
@@ -1997,6 +2075,14 @@ class OBJECT_OT_add_custom_item(Operator):
     def execute(self, context):
         obj = context.object
         settings = obj.live_link_settings
+
+        if settings.add_type == Component_SkyAtmosphere.type_name:
+            if obj.type != 'LIGHT' or obj.data.type != 'SUN':
+                self.report({'WARNING'}, "Sky Atmosphere can only be added to a Sun light")
+                return {'CANCELLED'}
+            if any(component.type == settings.add_type for component in settings.components):
+                self.report({'WARNING'}, "Sky Atmosphere already exists on this object")
+                return {'CANCELLED'}
 
         if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name}:
             if any(component.type == settings.add_type for component in settings.components):

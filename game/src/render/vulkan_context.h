@@ -168,6 +168,7 @@ static constexpr u32 TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS = 192;
 struct VulkanCapabilities
 {
 	VkPhysicalDeviceProperties properties = {};
+	VkPhysicalDeviceFeatures features = {};
 	VkPhysicalDeviceVulkan12Features features_1_2 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 	};
@@ -823,6 +824,7 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 		.pNext = &result.features_1_3,
 	};
 	vkGetPhysicalDeviceFeatures2(in_device, &features_2);
+	result.features = features_2.features;
 	vkGetPhysicalDeviceProperties(in_device, &result.properties);
 
 	u32 extension_count = 0;
@@ -911,6 +913,7 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	if (!result.features_1_3.shaderDemoteToHelperInvocation) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "shaderDemoteToHelperInvocation missing");
 	if (!result.features_1_2.descriptorBindingPartiallyBound) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "descriptorBindingPartiallyBound missing");
 	if (!result.features_1_2.shaderSampledImageArrayNonUniformIndexing) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "sampled-image non-uniform indexing missing");
+	if (!result.features.independentBlend) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "independentBlend missing");
 	if (result.properties.limits.maxPerStageDescriptorSampledImages < 128 || result.properties.limits.maxDescriptorSetSampledImages < 128)
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "128 sampled-image descriptors unsupported");
 	if (result.scene_color_format == VK_FORMAT_UNDEFINED) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "scene-color format unsupported");
@@ -1485,6 +1488,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.synchronization2 = VK_TRUE,
 			.dynamicRendering = VK_TRUE,
 		};
+		VkPhysicalDeviceFeatures enabled_features = {
+			.independentBlend = VK_TRUE,
+		};
 
 		VkDeviceCreateInfo device_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -1493,6 +1499,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.pQueueCreateInfos = queue_create_infos,
 			.enabledExtensionCount = (u32)device_extensions.length(),
 			.ppEnabledExtensionNames = device_extensions.data(),
+			.pEnabledFeatures = &enabled_features,
 		};
 
 		VK_CHECK(vkCreateDevice(ctx->physical_device, &device_create_info, nullptr, &ctx->device));

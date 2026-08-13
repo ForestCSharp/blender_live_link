@@ -26,8 +26,9 @@ struct TonemappingFinalPushConstants
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
 	f32 bloom_auto_exposure_influence;
+	HMM_Vec4 local_recovery;
 };
-static_assert(sizeof(TonemappingFinalPushConstants) == 64);
+static_assert(sizeof(TonemappingFinalPushConstants) == 80);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -57,7 +58,7 @@ struct TonemappingLocalReconstructPushConstants
 static_assert(sizeof(TonemappingLocalReconstructPushConstants) == 4);
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
-static constexpr u32 TONEMAPPING_DEBUG_PANEL_COUNT = 13;
+static constexpr u32 TONEMAPPING_DEBUG_PANEL_COUNT = 15;
 
 struct TonemappingLocalDebugChannelPushConstants
 {
@@ -74,8 +75,9 @@ struct TonemappingLocalDebugGuidedPushConstants
 	i32 validation_chart;
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
+	HMM_Vec2 recovery_limits;
 };
-static_assert(sizeof(TonemappingLocalDebugGuidedPushConstants) == 32);
+static_assert(sizeof(TonemappingLocalDebugGuidedPushConstants) == 40);
 
 struct TonemappingDebugViewData
 {
@@ -92,6 +94,8 @@ struct TonemappingDebugViewData
 	VkImageView transfer_guide = VK_NULL_HANDLE;
 	VkImageView transfer_fused = VK_NULL_HANDLE;
 	VkImageView guided[3] = {};
+	VkImageView geometry_coverage = VK_NULL_HANDLE;
+	VkImageView boundary_suppression = VK_NULL_HANDLE;
 	const GpuImage* reconstruction_pyramid = nullptr;
 };
 #endif
@@ -134,7 +138,9 @@ struct TonemappingPass
 	u32 local_source_height = 0;
 
 	VkImageView scene_color_view = VK_NULL_HANDLE;
+	VkImageView position_view = VK_NULL_HANDLE;
 	VkSampler sampler = VK_NULL_HANDLE;
+	VkSampler position_sampler = VK_NULL_HANDLE;
 	VkBuffer auto_adaptation_state_buffer = VK_NULL_HANDLE;
 	i32 effective_coarsest_mip = 1;
 	i32 effective_reconstruction_mip = 1;
@@ -215,8 +221,8 @@ inline void tonemapping_create_layout(
 	u32 in_image_binding_count,
 	VkDescriptorSetLayout* out_layout)
 {
-	VkDescriptorSetLayoutBinding bindings[6] = {};
-	assert(in_image_binding_count <= 5);
+	VkDescriptorSetLayoutBinding bindings[7] = {};
+	assert(in_image_binding_count <= 6);
 	for (u32 binding_idx = 0; binding_idx < in_image_binding_count; ++binding_idx)
 	{
 		bindings[binding_idx] = {
@@ -264,9 +270,20 @@ inline VkPipelineLayout tonemapping_create_pipeline_layout(
 
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	tonemapping_create_layout(ctx, 5, &tonemapping_pass.final_set_layout);
-	tonemapping_create_layout(ctx, 4, &tonemapping_pass.local_set_layout);
+	tonemapping_create_layout(ctx, 6, &tonemapping_pass.final_set_layout);
+	tonemapping_create_layout(ctx, 5, &tonemapping_pass.local_set_layout);
 	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
+	VkSamplerCreateInfo position_sampler_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_NEAREST,
+		.minFilter = VK_FILTER_NEAREST,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	};
+	VK_CHECK(vkCreateSampler(
+		ctx->device, &position_sampler_info, nullptr, &tonemapping_pass.position_sampler));
 
 	const EDisplayOutputMode profile_output_mode = tonemapping_profile_output_mode(ctx);
 	const bool hdr_output = profile_output_mode != EDisplayOutputMode::SDR;
@@ -518,16 +535,20 @@ void tonemapping_pass_ensure_debug_resources(VulkanContext* ctx)
 inline VkDescriptorSet tonemapping_local_descriptor_set(
 	VulkanContext* ctx,
 	const VkImageView* in_views,
-	u32 in_view_count)
+	u32 in_view_count,
+	VkSampler in_last_sampler = VK_NULL_HANDLE)
 {
-	assert(in_view_count <= 4);
+	assert(in_view_count <= 5);
 	VkDescriptorSet set =
 		vulkan_allocate_transient_descriptor_set(ctx, tonemapping_pass.local_set_layout);
-	VkDescriptorImageInfo image_infos[4] = {};
-	VkWriteDescriptorSet writes[5] = {};
+	VkDescriptorImageInfo image_infos[5] = {};
+	VkWriteDescriptorSet writes[6] = {};
 	for (u32 view_idx = 0; view_idx < in_view_count; ++view_idx)
 	{
-		image_infos[view_idx] = descriptor_sampled(tonemapping_pass.sampler, in_views[view_idx]);
+		const VkSampler view_sampler = in_last_sampler != VK_NULL_HANDLE
+			&& view_idx + 1 == in_view_count
+			? in_last_sampler : tonemapping_pass.sampler;
+		image_infos[view_idx] = descriptor_sampled(view_sampler, in_views[view_idx]);
 		writes[view_idx] = descriptor_write_image(
 			set,
 			view_idx,
@@ -537,7 +558,7 @@ inline VkDescriptorSet tonemapping_local_descriptor_set(
 	VkDescriptorBufferInfo buffer_info = descriptor_buffer(
 		tonemapping_pass.auto_adaptation_state_buffer);
 	writes[in_view_count] = descriptor_write_buffer(
-		set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
+		set, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
 	vulkan_update_descriptor_sets(ctx, in_view_count + 1, writes, 0, nullptr, false);
 	return set;
 }
@@ -728,19 +749,21 @@ inline void tonemapping_draw_local_stage(
 void tonemapping_pass_update(
 	VulkanContext* ctx,
 	VkImageView in_scene_color_view,
+	VkImageView in_position_view,
 	VkImageView in_bloom_view,
 	f32 in_bloom_intensity,
 	VkSampler in_sampler,
 	VkBuffer in_auto_adaptation_state_buffer)
 {
 	tonemapping_pass.scene_color_view = in_scene_color_view;
+	tonemapping_pass.position_view = in_position_view;
 	tonemapping_pass.sampler = in_sampler;
 	tonemapping_pass.auto_adaptation_state_buffer = in_auto_adaptation_state_buffer;
 
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
 	VkDescriptorSet& set = tonemapping_pass.final_sets.current(ctx);
-	VkDescriptorImageInfo infos[5] = {
+	VkDescriptorImageInfo infos[6] = {
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
 		descriptor_sampled(in_sampler, in_scene_color_view),
@@ -748,17 +771,18 @@ void tonemapping_pass_update(
 			in_sampler,
 			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
 		descriptor_sampled(in_sampler, tonemapping_pass.tonemapping_lut.view),
+		descriptor_sampled(tonemapping_pass.position_sampler, in_position_view),
 	};
-	VkWriteDescriptorSet writes[6] = {};
-	for (u32 binding = 0; binding < 5; ++binding)
+	VkWriteDescriptorSet writes[7] = {};
+	for (u32 binding = 0; binding < 6; ++binding)
 	{
 		writes[binding] = descriptor_write_image(
 			set, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[binding]);
 	}
 	VkDescriptorBufferInfo buffer_info = descriptor_buffer(in_auto_adaptation_state_buffer);
-	writes[5] = descriptor_write_buffer(
-		set, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
-	vulkan_update_descriptor_sets(ctx, 6, writes);
+	writes[6] = descriptor_write_buffer(
+		set, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
+	vulkan_update_descriptor_sets(ctx, 7, writes);
 }
 
 void tonemapping_pass_prepare_local(
@@ -795,8 +819,10 @@ void tonemapping_pass_prepare_local(
 		VkImageView views[] = {
 			tonemapping_pass.scene_color_view,
 			tonemapping_pass.tonemapping_lut.view,
+			tonemapping_pass.position_view,
 		};
-		VkDescriptorSet set = tonemapping_local_descriptor_set(ctx, views, 2);
+		VkDescriptorSet set = tonemapping_local_descriptor_set(
+			ctx, views, 3, tonemapping_pass.position_sampler);
 		GpuImage* outputs[] = {
 			&tonemapping_pass.local_exposure_pyramid,
 			&tonemapping_pass.local_weight_pyramid,
@@ -1077,9 +1103,11 @@ void tonemapping_pass_prepare_local_debug(
 		tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, reconstruction_mip),
 		tonemapping_mip_view(tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip),
 		tonemapping_pass.tonemapping_lut.view,
+		tonemapping_pass.position_view,
 	};
 	VkDescriptorSet guided_set =
-		tonemapping_local_descriptor_set(ctx, guided_views, 4);
+		tonemapping_local_descriptor_set(
+			ctx, guided_views, 5, tonemapping_pass.position_sampler);
 	GpuImage* guided_output[] = {
 		&tonemapping_pass.local_debug_guided,
 	};
@@ -1106,6 +1134,9 @@ void tonemapping_pass_prepare_local_debug(
 			&& in_state.auto_exposure_enabled ? 1 : 0,
 		.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
 			&& in_state.auto_white_balance_enabled ? 1 : 0,
+		.recovery_limits = HMM_V2(
+			in_state.local_shadow_recovery,
+			in_state.local_highlight_recovery),
 	};
 	tonemapping_draw_local_stage(
 		ctx,
@@ -1174,6 +1205,8 @@ void tonemapping_pass_prepare_local_debug(
 			channel);
 	}
 	draw_channel(9, transfer_guide, 1);
+	draw_channel(13, selected_exposure, 3);
+	draw_channel(14, tonemapping_pass.local_debug_guided.view, 3);
 
 	DynamicArray<ImageUsage> panel_outputs;
 	for (u32 layer = 0; layer < TONEMAPPING_DEBUG_PANEL_COUNT; ++layer)
@@ -1221,6 +1254,8 @@ void tonemapping_pass_prepare_local_debug(
 	debug.transfer_guide = tonemapping_pass.local_debug_panels.layer_views[9];
 	debug.transfer_fused = tonemapping_mip_view(
 		tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip);
+	debug.geometry_coverage = tonemapping_pass.local_debug_panels.layer_views[13];
+	debug.boundary_suppression = tonemapping_pass.local_debug_panels.layer_views[14];
 	debug.reconstruction_pyramid =
 		&tonemapping_pass.local_reconstruction_pyramid;
 
@@ -1266,6 +1301,10 @@ void tonemapping_pass_draw(
 			&& in_state.auto_white_balance_enabled ? 1 : 0,
 		.bloom_auto_exposure_influence = CLAMP(
 			in_bloom_auto_exposure_influence, 0.0f, 1.0f),
+		.local_recovery = HMM_V4(
+			in_state.local_shadow_recovery,
+			in_state.local_highlight_recovery,
+			0.0f, 0.0f),
 	};
 
 	vkCmdBindPipeline(
@@ -1312,6 +1351,7 @@ void tonemapping_pass_shutdown(VulkanContext* ctx)
 	vkDestroyPipeline(ctx->device, tonemapping_pass.local_downsample_pipeline, nullptr);
 	vkDestroyPipeline(ctx->device, tonemapping_pass.local_proxy_pipeline, nullptr);
 	vkDestroyPipeline(ctx->device, tonemapping_pass.final_pipeline, nullptr);
+	vkDestroySampler(ctx->device, tonemapping_pass.position_sampler, nullptr);
 	vkDestroyPipelineLayout(ctx->device, tonemapping_pass.local_pipeline_layout, nullptr);
 	vkDestroyPipelineLayout(ctx->device, tonemapping_pass.final_pipeline_layout, nullptr);
 	vkDestroyDescriptorSetLayout(ctx->device, tonemapping_pass.local_set_layout, nullptr);

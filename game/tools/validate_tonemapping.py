@@ -29,6 +29,7 @@ CPU_TESTS = (
     "pbr_neutral_tonemapping_tests",
     "display_encoding_tests",
     "output_selection_tests",
+    "sky_aware_tonemapping_tests",
 )
 
 
@@ -244,6 +245,113 @@ def image_metrics(width: int, height: int, pixels: list[float], local: bool) -> 
     }
 
 
+def validation_geometry_mask(u: float, v: float) -> bool:
+    horizon = 0.60 if u < 0.28 else 0.48 + 0.22 * u
+    ground = v >= horizon
+    thin_geometry = abs(u - 0.52) < 0.006 and 0.20 <= v < horizon
+    return ground or thin_geometry
+
+
+def run_sky_aware_pipeline_test(game: Path, capture_dir: Path, preview_dir: Path,
+                                log_dir: Path, frame: int) -> dict:
+    images: dict[bool, tuple[int, int, list[float]]] = {}
+    previews: dict[bool, str] = {}
+    for local in (False, True):
+        label = f"sdr-gt7-sky-{'local' if local else 'global'}"
+        prefix = capture_dir / label
+        environment = os.environ.copy()
+        configure_moltenvk(environment)
+        environment.update({
+            "GAME2_OUTPUT_MODE": "sdr",
+            "GAME2_TONEMAP_VALIDATION_CHART": "sky",
+            "GAME2_TONEMAP_VALIDATION_OUTPUT_MODE": "sdr",
+            "GAME2_TONEMAP_VALIDATION_CAPTURE": str(prefix),
+            "GAME2_SCREENSHOT_FRAME": str(frame),
+            "GAME2_TONEMAP_MODE": "gt7",
+            "GAME2_LOCAL_TONEMAP": "1" if local else "0",
+            "GAME2_RENDER_SCALE": "100",
+            "GAME2_HIDE_UI": "1",
+            "GAME2_BLOOM": "0", "GAME2_TAA": "0", "GAME2_FXAA": "0",
+            "GAME2_SSAO": "0", "GAME2_DOF": "0",
+        })
+        run([str(game), "--no-live-link"], env=environment,
+            output=log_dir / f"{label}.log")
+        width, height, pixels = read_pfm(Path(f"{prefix}.repeat0.tonemapped.pfm"))
+        repeat_width, repeat_height, repeated = read_pfm(
+            Path(f"{prefix}.repeat1.tonemapped.pfm"))
+        if (width, height) != (repeat_width, repeat_height):
+            raise RuntimeError(f"{label}: repeat dimensions differ")
+        repeat_error = max(abs(a - b) for a, b in zip(pixels, repeated))
+        if repeat_error > 1e-6:
+            raise RuntimeError(f"{label}: temporal determinism error {repeat_error}")
+        if not all(math.isfinite(value) for value in pixels):
+            raise RuntimeError(f"{label}: capture contains NaN or Inf")
+        if min(pixels) < -0.002 or max(pixels) > 1.002:
+            raise RuntimeError(f"{label}: SDR result is outside [0,1]")
+        preview = preview_dir / f"{label}.ppm"
+        write_preview(preview, width, height, pixels)
+        previews[local] = str(preview.relative_to(capture_dir.parent))
+        images[local] = (width, height, pixels)
+
+    width, height, global_pixels = images[False]
+    local_width, local_height, local_pixels = images[True]
+    if (width, height) != (local_width, local_height):
+        raise RuntimeError("sky-aware local/global dimensions differ")
+
+    sky_error = 0.0
+    boundary_error = 0.0
+    interior_difference = 0.0
+    sky_pixels = 0
+    boundary_pixels = 0
+    interior_pixels = 0
+    for y in range(height):
+        for x in range(width):
+            u = (x + 0.5) / width
+            v = (y + 0.5) / height
+            geometry = validation_geometry_mask(u, v)
+            geometry_count = 0
+            if geometry:
+                for offset_y in (-1, 0, 1):
+                    for offset_x in (-1, 0, 1):
+                        sample_x = min(max(x + offset_x, 0), width - 1)
+                        sample_y = min(max(y + offset_y, 0), height - 1)
+                        geometry_count += validation_geometry_mask(
+                            (sample_x + 0.5) / width, (sample_y + 0.5) / height)
+            difference = max(abs(local_pixels[(y * width + x) * 3 + channel]
+                                 - global_pixels[(y * width + x) * 3 + channel])
+                             for channel in range(3))
+            if not geometry:
+                sky_error = max(sky_error, difference)
+                sky_pixels += 1
+            elif geometry_count <= 6:
+                boundary_error = max(boundary_error, difference)
+                boundary_pixels += 1
+            elif geometry_count == 9:
+                interior_difference = max(interior_difference, difference)
+                interior_pixels += 1
+
+    if not sky_pixels or not boundary_pixels or not interior_pixels:
+        raise RuntimeError("sky-aware chart did not exercise every classification")
+    if sky_error > 1e-6:
+        raise RuntimeError(f"sky pixels differ from global tonemapping by {sky_error}")
+    if boundary_error > 1e-6:
+        raise RuntimeError(
+            f"suppressed silhouette pixels differ from global tonemapping by {boundary_error}")
+    if interior_difference <= 1e-5:
+        raise RuntimeError("sky-aware chart did not exercise local recovery on geometry")
+    return {
+        "name": "sky-aware-silhouette",
+        "global_preview": previews[False],
+        "local_preview": previews[True],
+        "sky_pixel_count": sky_pixels,
+        "boundary_pixel_count": boundary_pixels,
+        "interior_geometry_pixel_count": interior_pixels,
+        "maximum_sky_global_error": sky_error,
+        "maximum_suppressed_boundary_error": boundary_error,
+        "maximum_interior_local_difference": interior_difference,
+    }
+
+
 def run_pipeline_matrix(report_dir: Path, frame: int) -> dict:
     game = ROOT / "bin/game"
     if platform.system() == "Windows":
@@ -348,9 +456,12 @@ def run_pipeline_matrix(report_dir: Path, frame: int) -> dict:
                     f"{label}: repeat={repeat_error}, constant-field range={uniform_range}")
             constant_tests.append({"name": label, "maximum_repeat_error": repeat_error,
                                    "constant_field_range": uniform_range})
+    sky_aware_test = run_sky_aware_pipeline_test(
+        game, capture_dir, preview_dir, log_dir, frame)
     report = {"suite": "tonemapping-full-pipeline-v1", "passed": True,
               "configuration_count": len(results), "configurations": results,
-              "constant_field_tests": constant_tests}
+              "constant_field_tests": constant_tests,
+              "sky_aware_test": sky_aware_test}
     (report_dir / "pipeline_validation.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8")
     write_html(report_dir, report)
@@ -370,12 +481,20 @@ def write_html(report_dir: Path, pipeline: dict) -> None:
                 result["constant_field_range"],
                 ("<br>global/local SSIM {:.6f}".format(result["global_local_luminance_ssim"])
                  if "global_local_luminance_ssim" in result else "")))
+    sky = pipeline["sky_aware_test"]
     document = """<!doctype html><meta charset="utf-8"><title>Tonemapping validation</title>
 <style>body{{font:14px system-ui;background:#17191d;color:#eee;margin:24px}}table{{border-collapse:collapse}}
 td,th{{border:1px solid #555;padding:8px;vertical-align:top}}img{{image-rendering:auto}}</style>
 <h1>Tonemapping validation review</h1><p>Numerical gates passed. Images are review artifacts, not goldens.</p>
+<h2>Sky-aware silhouette</h2>
+<p>Global <img src="{}" width="384"> Local <img src="{}" width="384"></p>
+<p>maximum sky/global error {:.4g}; maximum suppressed-boundary error {:.4g};
+maximum interior local difference {:.4g}</p>
+<h2>Method/output matrix</h2>
 <table><tr><th>Configuration</th><th>Procedural chart</th><th>Metrics</th></tr>{}</table>""".format(
-        "\n".join(rows))
+        html.escape(sky["global_preview"]), html.escape(sky["local_preview"]),
+        sky["maximum_sky_global_error"], sky["maximum_suppressed_boundary_error"],
+        sky["maximum_interior_local_difference"], "\n".join(rows))
     (report_dir / "index.html").write_text(document, encoding="utf-8")
 
 
