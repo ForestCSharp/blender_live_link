@@ -124,6 +124,17 @@ pipeline cache defaults to `bin/pipeline_cache.bin`; override it with
 The game listens on `127.0.0.1:65432` (override with `--port`); the Blender
 addon connects to it.
 
+Sun energy in the game wire format/runtime is incident irradiance in W/m²
+before atmospheric attenuation. Blender retains its familiar artistic Sun
+strength; both exporters multiply that strength by `1361` while sending it to
+the game (for example, Blender `2.0` becomes runtime `2722 W/m²`). `1361 W/m²`
+is the Earth top-of-atmosphere reference used by the Bruneton sky; the active
+atmosphere-controller Sun is additionally attenuated from each shaded or
+captured world position. Existing `.blend` files therefore need no migration.
+Auto exposure meters the ordinary trimmed framebuffer histogram and then adds
+an exposure-only, center-weighted analytic solar guard; the guard never changes
+auto white balance or increases exposure.
+
 ## Controls
 
 - Left click: lock mouse for camera look (Shift+Escape to unlock)

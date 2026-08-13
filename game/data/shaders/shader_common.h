@@ -45,7 +45,7 @@ struct PerFrameData
 	vec4 camera_position;	// w unused
 	vec4 camera_forward;	// w unused
 	vec4 sun_direction;		// xyz = light travel direction; w unused
-	vec4 sun_color;			// rgb = light.color * sun.power; w unused
+	vec4 sun_color;			// rgb = calibrated scene irradiance; w unused
 };
 
 // Per-object data uses a std430-compatible 144-byte stride: two mat4 values,
@@ -90,7 +90,7 @@ struct SunLightData		// 64 bytes
 {
 	vec4 location;
 	vec4 color;
-	float power;
+	float power;			// top-of-atmosphere irradiance in W/m^2
 	int cast_shadows;
 	float _pad0;
 	float _pad1;

@@ -721,8 +721,8 @@ private:
 		auto_histogram = create_buffer(
 			sizeof(AutoAdaptationMath::HistogramBin) * AutoAdaptationMath::HISTOGRAM_BIN_COUNT,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-		auto_measurement = create_buffer(32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-		auto_state = create_buffer(112, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		auto_measurement = create_buffer(48, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		auto_state = create_buffer(128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 		const VkDescriptorBufferInfo histogram_info = {
 			auto_histogram.buffer, 0, auto_histogram.size};
 		const VkDescriptorBufferInfo measurement_info = {
@@ -847,7 +847,7 @@ private:
 		upload_auto_scene(pixels);
 		std::memset(auto_histogram.mapped, 0, auto_histogram.size);
 		std::memset(auto_measurement.mapped, 0, auto_measurement.size);
-		float identity_state[28] = {};
+		float identity_state[32] = {};
 		identity_state[2] = 0.3127f;
 		identity_state[3] = 0.3290f;
 		identity_state[12] = 1.0f;

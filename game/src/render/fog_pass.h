@@ -5,6 +5,7 @@
 #include "render/render_types.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
+#include "render/bruneton_atmosphere_pass.h"
 
 // Exponential height fog over the lit scene.
 // Runs after lighting when an enabled fog controller exists;
@@ -29,8 +30,12 @@ struct FogFsParams
 	f32 _pad0;
 	HMM_Vec3 sun_color;
 	f32 _pad1;
+	i32 atmosphere_enabled;
+	f32 atmosphere_planet_center_z;
+	f32 _atmosphere_pad0;
+	f32 _atmosphere_pad1;
 };
-static_assert(sizeof(FogFsParams) == 96, "FogFsParams must match fog.frag's fs_params std140 layout");
+static_assert(sizeof(FogFsParams) == 112, "FogFsParams must match fog.frag's fs_params std140 layout");
 
 struct FogPass
 {
@@ -51,9 +56,9 @@ void fog_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 {
 	fog_pass.linear_sampler = in_linear_sampler;
 
-	// Set layout: b0 fs_params UBO, b1 lit color CIS, b2 world position CIS
+	// Set layout: b0 params, b1 lit color, b2 position, b3 atmosphere, b4 transmittance.
 	{
-		VkDescriptorSetLayoutBinding bindings[3] = {};
+		VkDescriptorSetLayoutBinding bindings[5] = {};
 		bindings[0] = (VkDescriptorSetLayoutBinding) {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -69,10 +74,22 @@ void fog_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
 		}
+		bindings[3] = (VkDescriptorSetLayoutBinding) {
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		};
+		bindings[4] = (VkDescriptorSetLayoutBinding) {
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		};
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 3,
+			.bindingCount = 5,
 			.pBindings = bindings,
 		};
 		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &fog_pass.set_layout));
@@ -107,7 +124,9 @@ void fog_pass_update(
 	VulkanContext* ctx,
 	const FogFsParams& in_fs_params,
 	VkImageView in_lit_color_view,
-	VkImageView in_gbuffer_position_view
+	VkImageView in_gbuffer_position_view,
+	VkBuffer in_atmosphere_parameters_buffer,
+	VkImageView in_atmosphere_transmittance_view
 )
 {
 	VkDescriptorSet& set = fog_pass.sets.current(ctx);
@@ -116,9 +135,10 @@ void fog_pass_update(
 	VkDescriptorImageInfo image_infos[] = {
 		descriptor_sampled(fog_pass.linear_sampler, in_lit_color_view),
 		descriptor_sampled(fog_pass.linear_sampler, in_gbuffer_position_view),
+		descriptor_sampled(fog_pass.linear_sampler, in_atmosphere_transmittance_view),
 	};
 
-	VkWriteDescriptorSet writes[3] = {};
+	VkWriteDescriptorSet writes[5] = {};
 	writes[0] =
 		descriptor_write_buffer(set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &ubo_info);
 	for (u32 image_idx = 0; image_idx < 2; ++image_idx)
@@ -130,7 +150,13 @@ void fog_pass_update(
 			&image_infos[image_idx]
 		);
 	}
-	vulkan_update_descriptor_sets(ctx, 3, writes);
+	VkDescriptorBufferInfo atmosphere_info = descriptor_buffer(
+		in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu));
+	writes[3] = descriptor_write_buffer(
+		set, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &atmosphere_info);
+	writes[4] = descriptor_write_image(
+		set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_infos[2]);
+	vulkan_update_descriptor_sets(ctx, 5, writes);
 }
 
 void fog_pass_draw(VulkanContext* ctx)

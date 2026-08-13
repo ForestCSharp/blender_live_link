@@ -135,11 +135,23 @@ static void test_white_balance_limits_and_direction()
 	assert(cool.target_log_lms[0] > cool.target_log_lms[2]);
 }
 
+static void test_solar_guard_only_darkens()
+{
+	expect_near(apply_solar_guard(2.0f, 2.0f, 1000, 12.0f, 0.0f), 2.0f);
+	const float centered = apply_solar_guard(2.0f, 2.0f, 1000, 12.0f, 1.0f);
+	const float partial = apply_solar_guard(2.0f, 2.0f, 1000, 12.0f, 0.5f);
+	assert(centered < partial && partial < 2.0f);
+	assert(apply_solar_guard(-4.0f, -4.0f, 1000, -8.0f, 1.0f) == -4.0f);
+	assert(apply_solar_guard(2.0f, 2.0f, 0, 12.0f, 1.0f) == 2.0f);
+	assert(apply_solar_guard(2.0f, 2.0f, 1000, NAN, 1.0f) == 2.0f);
+}
+
 int main()
 {
 	test_neutral_exposure_and_white_balance();
 	test_percentile_rejection_and_invalid_samples();
 	test_frame_rate_independent_smoothing();
 	test_white_balance_limits_and_direction();
+	test_solar_guard_only_darkens();
 	return 0;
 }

@@ -44,10 +44,11 @@ void main()
 		unused_single_mie_texture, camera, view_dir,
 		normalize(pc.sun_direction.xyz), transmittance);
 	vec3 sky_color = max(luminance, vec3(0.0))
+		* BRUNETON_SCENE_PHOTOMETRIC_SCALE
 		* pc.light_color_and_sky_intensity.rgb
 		* pc.light_color_and_sky_intensity.w;
 
-	out_color = vec4(sky_color, 1.0);
+	out_color = vec4(SanitizeSceneColor(sky_color), 1.0);
 	out_position = vec4(0.0);
 	out_normal = vec4(0.0);
 	out_roughness_metallic_emissive = vec4(0.0, 0.0, 1.0, 0.0);

@@ -8,6 +8,7 @@ layout(std430, set = 0, binding = 0) readonly buffer MeasurementBuffer
 {
 	vec4 exposure_white;
 	vec4 target_log_lms;
+	vec4 solar_diagnostics;
 } measurement;
 
 layout(std430, set = 0, binding = 1) buffer AdaptationStateBuffer
@@ -139,5 +140,7 @@ void main()
 	status.x = measurement_valid ? 1.0 : 0.0;
 	status.w = measurement.target_log_lms.w;
 	adaptation.values[AUTO_ADAPTATION_STATE_STATUS] = status;
+	adaptation.values[AUTO_ADAPTATION_STATE_SOLAR_DIAGNOSTICS] =
+		measurement.solar_diagnostics;
 	write_white_balance_matrix(current_log_lms);
 }

@@ -1222,6 +1222,13 @@ struct LightingCapture
 			fs_params.num_spot_lights = (i32) in_state.lighting.spot_lights.length();
 			fs_params.num_sun_lights = (i32) in_state.lighting.sun_lights.length();
 			fs_params.direct_lighting_enable = 1;
+			fs_params.atmosphere_sun_index =
+				in_state.lighting.active_atmosphere_sun_index;
+			fs_params.atmosphere_enabled = sky_pass.has_active_atmosphere
+				&& bruneton_atmosphere_pass.has_precomputed
+				&& in_state.lighting.active_atmosphere_sun_index >= 0 ? 1 : 0;
+			fs_params.atmosphere_planet_center_z =
+				sky_pass.active_parameters.planet_center_z_m;
 			fs_params.shadow_bias = 0.001f;
 			fs_params.shadow_map_texel_size = HMM_V2(1.0f, 1.0f);
 			lighting_slot_ubos[frame_index][slot].update_gpu_buffer(&fs_params, sizeof(fs_params));
@@ -1317,6 +1324,18 @@ struct LightingCapture
 					.pBufferInfo = &light_infos[0],
 				};
 			}
+			VkDescriptorBufferInfo atmosphere_buffer_info = descriptor_buffer(
+				bruneton_atmosphere_pass.parameter_buffers[frame_index].get_gpu_buffer(),
+				sizeof(BrunetonAtmosphereGpu));
+			writes[write_count++] = descriptor_write_buffer(
+				slot_set, 20, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				&atmosphere_buffer_info);
+			VkDescriptorImageInfo atmosphere_image_info = descriptor_sampled(
+				::lighting_pass.linear_sampler,
+				bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view);
+			writes[write_count++] = descriptor_write_image(
+				slot_set, 21, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				&atmosphere_image_info);
 			vulkan_update_descriptor_sets(ctx, write_count, writes);
 
 			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, capture_lighting_pipeline);

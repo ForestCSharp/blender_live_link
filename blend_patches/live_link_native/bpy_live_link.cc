@@ -74,6 +74,8 @@ namespace {
 
 namespace ll = Blender::LiveLink;
 
+constexpr float EARTH_TOA_SOLAR_IRRADIANCE_W_M2 = 1361.0f;
+
 template<typename T> std::vector<T> reversed_copy(const std::vector<T> &values)
 {
   return std::vector<T>(values.rbegin(), values.rend());
@@ -1002,7 +1004,10 @@ flatbuffers::Offset<ll::Light> export_light(flatbuffers::FlatBufferBuilder &buil
   ll::LightType type = ll::LightType_Point;
   ll::PointLight point_light(light->energy);
   ll::SpotLight spot_light(light->energy, light->spotsize, light->spotblend);
-  ll::SunLight sun_light(light->energy, (light->mode & LA_SHADOW) != 0);
+  // Blender keeps its familiar artistic Sun strength. The game wire format is
+  // calibrated as top-of-atmosphere incident irradiance in W/m^2.
+  ll::SunLight sun_light(light->energy * EARTH_TOA_SOLAR_IRRADIANCE_W_M2,
+                         (light->mode & LA_SHADOW) != 0);
   const void *point_ptr = nullptr;
   const void *spot_ptr = nullptr;
   const void *sun_ptr = nullptr;

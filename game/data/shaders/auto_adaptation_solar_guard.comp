@@ -1,0 +1,102 @@
+#version 450
+
+// Exposure-only analytic solar metering. The histogram and its white-balance
+// chromaticity remain untouched; this pass can only lower the target exposure.
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+#define BRUNETON_PARAMETER_BINDING 2
+#include "bruneton_parameters.h"
+
+layout(std430, set = 0, binding = 0) buffer MeasurementBuffer
+{
+	vec4 exposure_white;
+	vec4 target_log_lms;
+	vec4 solar_diagnostics;
+} measurement;
+
+layout(set = 0, binding = 1) uniform sampler2D position_tex;
+layout(set = 0, binding = 3) uniform sampler2D transmittance_texture;
+
+layout(push_constant) uniform PushConstants
+{
+	vec4 sun_screen_uv_radius_enabled;
+	vec4 camera_position_and_planet_center;
+	vec4 sun_direction_and_disc_intensity;
+	vec4 sun_tint_and_irradiance;
+	vec4 extent_and_ev_limits;
+} pc;
+
+const float MIDDLE_GRAY = 0.18;
+const vec3 LUMINANCE = vec3(0.2126729, 0.7151522, 0.0721750);
+
+void main()
+{
+	float base_target_unclamped = measurement.solar_diagnostics.x;
+	float base_target = measurement.exposure_white.x;
+	measurement.solar_diagnostics = vec4(
+		base_target_unclamped, base_target, 0.0, 0.0);
+	if (measurement.exposure_white.w < 0.5
+		|| pc.sun_screen_uv_radius_enabled.w < 0.5)
+		return;
+
+	vec2 sun_uv = pc.sun_screen_uv_radius_enabled.xy;
+	if (any(lessThanEqual(sun_uv, vec2(0.0)))
+		|| any(greaterThanEqual(sun_uv, vec2(1.0))))
+		return;
+
+	float edge_distance = min(min(sun_uv.x, 1.0 - sun_uv.x),
+		min(sun_uv.y, 1.0 - sun_uv.y));
+	float center_weight = smoothstep(0.0, 0.325, edge_distance);
+	if (!(center_weight > 0.0)) return;
+
+	ivec2 extent = max(ivec2(pc.extent_and_ev_limits.xy), ivec2(1));
+	ivec2 center = clamp(ivec2(sun_uv * vec2(extent)), ivec2(0), extent - 1);
+	int spacing = max(1, int(ceil(pc.sun_screen_uv_radius_enabled.z)));
+	float sky_samples = 0.0;
+	for (int y = -1; y <= 1; ++y)
+	{
+		for (int x = -1; x <= 1; ++x)
+		{
+			ivec2 texel = clamp(center + ivec2(x, y) * spacing,
+				ivec2(0), extent - 1);
+			sky_samples += texelFetch(position_tex, texel, 0).w == 0.0 ? 1.0 : 0.0;
+		}
+	}
+	float sky_fraction = sky_samples / 9.0;
+	float guard_weight = center_weight * sky_fraction;
+	if (!(guard_weight > 0.0)) return;
+
+	AtmosphereParameters atmosphere = GetAtmosphere();
+	vec3 atmosphere_camera = GetAtmosphereCameraPosition(
+		atmosphere, pc.camera_position_and_planet_center.xyz,
+		pc.camera_position_and_planet_center.w);
+	vec3 sun_direction = normalize(pc.sun_direction_and_disc_intensity.xyz);
+	vec3 transmittance = GetAtmosphereSunTransmittance(
+		atmosphere, transmittance_texture, atmosphere_camera, sun_direction);
+	vec3 solar_radiance = atmosphere.solar_irradiance /
+		(PI * atmosphere.sun_angular_radius * atmosphere.sun_angular_radius);
+	vec3 disc_color = transmittance * solar_radiance
+		* BRUNETON_SOLAR_RADIANCE_TO_LUMINANCE
+		* BRUNETON_SCENE_PHOTOMETRIC_SCALE
+		* max(pc.sun_tint_and_irradiance.rgb, vec3(0.0))
+		* GetSolarIrradianceScale(pc.sun_tint_and_irradiance.w)
+		* max(pc.sun_direction_and_disc_intensity.w, 0.0);
+	float disc_luminance = dot(SanitizeSceneColor(disc_color), LUMINANCE);
+	if (!(disc_luminance > 0.0) || isnan(disc_luminance) || isinf(disc_luminance))
+		return;
+
+	float disc_ev = clamp(log2(disc_luminance / MIDDLE_GRAY), -16.0, 16.0);
+	float accepted_count = max(measurement.target_log_lms.w, 1.0);
+	float virtual_count = accepted_count * 0.10 * guard_weight;
+	float base_mean_ev = -base_target_unclamped;
+	float guarded_target_unclamped = -(
+		base_mean_ev * accepted_count + disc_ev * virtual_count)
+		/ (accepted_count + virtual_count);
+	float guarded_target = clamp(guarded_target_unclamped,
+		min(pc.extent_and_ev_limits.z, pc.extent_and_ev_limits.w),
+		max(pc.extent_and_ev_limits.z, pc.extent_and_ev_limits.w));
+	measurement.exposure_white.x = min(base_target, guarded_target);
+	measurement.solar_diagnostics = vec4(
+		base_target, measurement.exposure_white.x, guard_weight, disc_ev);
+}

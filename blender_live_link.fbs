@@ -138,7 +138,8 @@ struct SpotLight
 
 struct SunLight
 {
-	// power in watts
+	// Runtime incident irradiance before atmospheric attenuation, in W/m^2.
+	// Blender exporters convert authoring Sun strength by multiplying by 1361.
 	power			: float;
 
 	// does this sunlight cast shadows?

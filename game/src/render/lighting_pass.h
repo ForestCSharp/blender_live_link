@@ -5,6 +5,7 @@
 #include "render/render_types.h"
 #include "render/shader_module.h"
 #include "render/gpu_buffer.h"
+#include "render/bruneton_atmosphere_pass.h"
 
 // Deferred lighting pass: fullscreen, reads the G-buffer + light SSBOs,
 // writes HDR scene color. Owns descriptor set layout C (pass-local set 0):
@@ -17,8 +18,9 @@
 //   13-14 = GI lighting/depth atlases     (FS)
 //   15-17 = SH9/SG9/octree SSBOs          (FS)
 //   18-19 = GI specular atlas/BRDF LUT     (FS)
+//   20-21 = Bruneton atmosphere UBO/transmittance LUT (FS)
 
-static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 20;
+static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 22;
 
 // C++ mirror of the lighting shader's fs_params UBO, including GI/SSAO/SSS.
 // The byte layout must remain identical to the shader declaration.
@@ -53,6 +55,10 @@ struct LightingFsParams
 	i32 screen_space_shadows_enable;
 	f32 shadow_bias;
 	f32 screen_space_shadow_intensity;
+	i32 atmosphere_sun_index;
+	i32 atmosphere_enabled;
+	f32 atmosphere_planet_center_z;
+	f32 _atmosphere_pad0;
 	f32 _pad1;
 	HMM_Vec2 shadow_map_texel_size;
 	HMM_Vec4 shadow_cascade_distances;
@@ -62,7 +68,7 @@ struct LightingFsParams
 	f32 _pad3;
 	HMM_Mat4 shadow_view_projections[4];
 };
-static_assert(sizeof(LightingFsParams) == 448, "Must match lighting.frag's std140 layout");
+static_assert(sizeof(LightingFsParams) == 464, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {
@@ -148,6 +154,18 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
 		}
+		bindings[20] = (VkDescriptorSetLayoutBinding) {
+			.binding = 20,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		};
+		bindings[21] = (VkDescriptorSetLayoutBinding) {
+			.binding = 21,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		};
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -160,8 +178,8 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	// Pool + sets
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
-			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 11 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 12 * MAX_FRAMES_IN_FLIGHT },
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
@@ -320,7 +338,9 @@ void lighting_pass_update(
 	VkBuffer in_gi_octree_buffer,
 	VkSampler in_gi_specular_sampler,
 	VkImageView in_gi_specular_view,
-	VkImageView in_brdf_lut_view
+	VkImageView in_brdf_lut_view,
+	VkBuffer in_atmosphere_parameters_buffer,
+	VkImageView in_atmosphere_transmittance_view
 )
 {
 	const u32 frame_index = ctx->frame_index;
@@ -478,6 +498,17 @@ void lighting_pass_update(
 			.pImageInfo = &specular_image_infos[specular_image_idx],
 		};
 	}
+
+	VkDescriptorBufferInfo atmosphere_buffer_info = descriptor_buffer(
+		in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu));
+	writes[write_count++] = descriptor_write_buffer(
+		lighting_pass.sets[frame_index], 20,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &atmosphere_buffer_info);
+	VkDescriptorImageInfo atmosphere_image_info = descriptor_sampled(
+		lighting_pass.linear_sampler, in_atmosphere_transmittance_view);
+	writes[write_count++] = descriptor_write_image(
+		lighting_pass.sets[frame_index], 21,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &atmosphere_image_info);
 
 	vulkan_update_descriptor_sets(ctx, write_count, writes);
 }

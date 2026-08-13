@@ -6,6 +6,9 @@
 
 const float M_PI = 3.14159265358979323846;
 
+#define BRUNETON_PARAMETER_BINDING 3
+#include "bruneton_parameters.h"
+
 layout(set = 0, binding = 0) uniform fs_params
 {
 	vec3 camera_position;
@@ -22,10 +25,16 @@ layout(set = 0, binding = 0) uniform fs_params
 	float anisotropy;
 	vec3 sun_direction;
 	vec3 sun_color;
+	float _sun_color_pad;
+	int atmosphere_enabled;
+	float atmosphere_planet_center_z;
+	float _atmosphere_pad0;
+	float _atmosphere_pad1;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D color_tex;
 layout(set = 0, binding = 2) uniform sampler2D position_tex;
+layout(set = 0, binding = 4) uniform sampler2D atmosphere_transmittance_tex;
 
 layout(location = 0) in vec2 uv;
 
@@ -121,8 +130,21 @@ void main()
 
 	float sun_phase = henyey_greenstein_phase(dot(ray_dir, -normalize(sun_direction)), anisotropy) * 4.0 * M_PI;
 	vec3 ambient_inscatter = fog_color * ambient_intensity;
-	vec3 sun_inscatter = sun_color * fog_color * sun_intensity * sun_phase;
+	vec3 attenuated_sun_color = sun_color;
+	if (atmosphere_enabled != 0)
+	{
+		AtmosphereParameters atmosphere = GetAtmosphere();
+		vec3 atmosphere_camera = GetAtmosphereCameraPosition(
+			atmosphere, camera_position, atmosphere_planet_center_z);
+		attenuated_sun_color *= GetAtmosphereSunTransmittance(
+			atmosphere, atmosphere_transmittance_tex, atmosphere_camera,
+			-normalize(sun_direction));
+	}
+	vec3 sun_inscatter = SanitizeSceneColor(
+		SanitizeSceneColor(attenuated_sun_color)
+		* fog_color * sun_intensity * sun_phase);
 	vec3 inscatter = ambient_inscatter + sun_inscatter;
 
-	frag_color = vec4(lit_color.rgb * transmittance + inscatter * fog_amount, lit_color.a);
+	frag_color = vec4(
+		lit_color.rgb * transmittance + inscatter * fog_amount, lit_color.a);
 }

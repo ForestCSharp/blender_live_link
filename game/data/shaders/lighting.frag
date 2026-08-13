@@ -7,6 +7,8 @@
 #include "gi_helpers.h"
 #include "octahedral_helpers.h"
 #include "probe_radiance.h"
+#define BRUNETON_PARAMETER_BINDING 20
+#include "bruneton_parameters.h"
 
 // Set 0 (lighting layout C)
 layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
@@ -39,6 +41,10 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	int screen_space_shadows_enable;
 	float shadow_bias;
 	float screen_space_shadow_intensity;
+	int atmosphere_sun_index;
+	int atmosphere_enabled;
+	float atmosphere_planet_center_z;
+	float _atmosphere_pad0;
 	vec2 shadow_map_texel_size;
 	vec4 shadow_cascade_distances;
 	vec3 shadow_cascade_view_position;
@@ -96,6 +102,7 @@ layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
 
 layout(set = 0, binding = 18) uniform sampler2D specular_probe_atlas;
 layout(set = 0, binding = 19) uniform sampler2D brdf_lut;
+layout(set = 0, binding = 21) uniform sampler2D atmosphere_transmittance_tex;
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -145,7 +152,8 @@ vec3 sample_point_light(
 	vec3 light_radiance = in_point_light.color.xyz * light_attenuation;
 
 	vec3 f0 = mix(vec3(0.04, 0.04, 0.04), in_surface_albedo, vec3(in_surface_metallic));
-	return cook_torrance_brdf(n, l, v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
+	return cook_torrance_brdf(n, l, v, in_surface_albedo, f0,
+		in_surface_roughness, in_surface_metallic, light_radiance);
 }
 
 vec3 sample_spot_light(
@@ -187,6 +195,7 @@ vec3 sample_spot_light(
 
 vec3 sample_sun_light(
 	SunLightData in_sun_light,
+	int in_sun_index,
 	vec3 in_view_position,
 	vec3 in_surface_position,
 	vec3 in_surface_normal,
@@ -199,11 +208,22 @@ vec3 sample_sun_light(
 	vec3 l = -normalize(in_sun_light.direction.xyz);
 	vec3 v = normalize(in_view_position - in_surface_position);
 
-	float light_attenuation = in_sun_light.power;
-	vec3 light_radiance = in_sun_light.color.xyz * light_attenuation;
+	vec3 light_radiance = GetSceneSolarIrradiance(
+		in_sun_light.color.xyz, in_sun_light.power);
+	if (atmosphere_enabled != 0 && in_sun_index == atmosphere_sun_index)
+	{
+		AtmosphereParameters atmosphere = GetAtmosphere();
+		vec3 atmosphere_position = GetAtmosphereCameraPosition(
+			atmosphere, in_surface_position, atmosphere_planet_center_z);
+		light_radiance *= GetAtmosphereSunTransmittance(
+			atmosphere, atmosphere_transmittance_tex, atmosphere_position, l);
+	}
+	light_radiance = SanitizeSceneColor(light_radiance);
 
 	vec3 f0 = mix(vec3(0.04, 0.04, 0.04), in_surface_albedo, vec3(in_surface_metallic));
-	return cook_torrance_brdf(n, l, v, in_surface_albedo, f0, in_surface_roughness, in_surface_metallic, light_radiance);
+	return SanitizeSceneColor(cook_torrance_brdf(
+		n, l, v, in_surface_albedo, f0, in_surface_roughness,
+		in_surface_metallic, light_radiance));
 }
 
 // ---- EVSM shadow sampling (enabled in the shadow step) ----
@@ -574,7 +594,7 @@ void main()
 					}
 
 					final_color.xyz += sun_shadow_visibility * sample_sun_light(
-						sun_lights[i], view_position, position, normal,
+						sun_lights[i], i, view_position, position, normal,
 						color, roughness, metallic);
 				}
 			}

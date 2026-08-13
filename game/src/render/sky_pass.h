@@ -6,6 +6,7 @@
 #include "render/shader_module.h"
 #include "render/frame_data.h"
 #include "render/bruneton_atmosphere_pass.h"
+#include "render/solar_calibration.h"
 #include "state/state.h"
 
 // The physical LUTs are the only sky cache. Visible pixels and GI capture rays
@@ -26,6 +27,8 @@ struct SkyPass
 	SkyAtmosphere active_parameters = {};
 	HMM_Vec3 active_sun_direction = HMM_V3(0.0f, 0.0f, 1.0f);
 	HMM_Vec3 active_sun_color = HMM_V3(0.0f, 0.0f, 0.0f);
+	HMM_Vec3 active_sun_tint = HMM_V3(0.0f, 0.0f, 0.0f);
+	f32 active_sun_irradiance_w_m2 = 0.0f;
 	bool has_active_atmosphere = false;
 	bool has_probe_signature = false;
 };
@@ -169,7 +172,8 @@ inline bool sky_pass_update_atmosphere(VulkanContext* ctx, State& state)
 	const SkyAtmosphere& atmosphere = sun.sky_atmosphere;
 	const HMM_Vec3 sun_direction = -HMM_NormV3(HMM_RotateV3Q(
 		HMM_V3(0.0f, 0.0f, -1.0f), sun.current_transform.rotation));
-	const HMM_Vec3 sun_color = sun.light.color * MAX(sun.light.sun.power, 0.0f);
+	const HMM_Vec3 sun_color = sun.light.color
+		* solar_irradiance_scale(sun.light.sun.power);
 
 	bruneton_atmosphere_pass.update(ctx, atmosphere);
 	bruneton_atmosphere_pass.precompute_if_needed(ctx, atmosphere);
@@ -195,6 +199,8 @@ inline bool sky_pass_update_atmosphere(VulkanContext* ctx, State& state)
 	sky_pass.active_parameters = atmosphere;
 	sky_pass.active_sun_direction = sun_direction;
 	sky_pass.active_sun_color = sun_color;
+	sky_pass.active_sun_tint = sun.light.color;
+	sky_pass.active_sun_irradiance_w_m2 = sun.light.sun.power;
 	sky_pass.has_active_atmosphere = true;
 	return true;
 }

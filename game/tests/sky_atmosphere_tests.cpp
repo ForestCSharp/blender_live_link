@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -14,6 +15,7 @@
 #include "handmade_math/HandmadeMath.h"
 
 #include "render/sky_atmosphere_dirty.h"
+#include "render/solar_calibration.h"
 #include "scene/scene_system.h"
 
 static Object& add_sun(State& state, i32 uid, bool with_sky = true)
@@ -25,7 +27,10 @@ static Object& add_sun(State& state, i32 uid, bool with_sky = true)
 	object.has_light = true;
 	object.light.type = LightType::Sun;
 	object.light.color = HMM_V3(1.0f, 1.0f, 1.0f);
-	object.light.sun = { .power = 1.0f, .cast_shadows = true };
+	object.light.sun = {
+		.power = EARTH_TOA_SOLAR_IRRADIANCE_W_M2,
+		.cast_shadows = true,
+	};
 	object.has_sky_atmosphere = with_sky;
 	state.scene.objects.insert({ uid, std::move(object) });
 	return state.scene.objects.at(uid);
@@ -119,10 +124,25 @@ static void test_dirty_classification()
 	assert(bruneton_probe_sky_signature_equal(a, a));
 }
 
+static void test_physical_sun_calibration()
+{
+	assert(solar_irradiance_scale(0.0f) == 0.0f);
+	assert(solar_irradiance_scale(-1.0f) == 0.0f);
+	assert(solar_irradiance_scale(NAN) == 0.0f);
+	assert(solar_irradiance_scale(INFINITY) == 0.0f);
+	assert(std::abs(solar_irradiance_scale(1361.0f) - 1.0f) < 1.0e-6f);
+	assert(std::abs(solar_irradiance_scale(2722.0f) - 2.0f) < 1.0e-6f);
+	const HMM_Vec3 reference = scene_solar_irradiance(
+		HMM_V3(1.0f, 1.0f, 1.0f), 1361.0f);
+	assert(reference.X > reference.Y && reference.Y > reference.Z);
+	assert(reference.Z > 1.0f && reference.X < 2.0f);
+}
+
 int main()
 {
 	test_controller_selection();
 	test_dirty_classification();
+	test_physical_sun_calibration();
 	// game_object.h owns the process-wide Jolt state used by the unity build;
 	// this CPU-only test never initializes it, so skip its runtime destructor.
 	std::_Exit(0);

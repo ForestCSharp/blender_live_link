@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <limits>
 
 #include "input/input_system.h"
@@ -546,6 +547,10 @@ namespace RenderSystem
 			const HMM_Vec3 target = camera.location + camera.forward * 10;
 			const HMM_Mat4 view_matrix = HMM_LookAt_RH(camera.location, target, camera.up);
 			const HMM_Mat4 view_projection_matrix = HMM_MulM4(projection_matrix, view_matrix);
+
+			// Resolve/update the active atmosphere before any lighting, fog, probe,
+			// or exposure descriptors consume this frame's parameters.
+			sky_pass_update_atmosphere(&in_state.vk, in_state);
 		
 			// Deform source vertices first, then plan/emit tessellation. GI captures
 			// and all raster passes below consume the resulting MeshRenderView.
@@ -572,7 +577,8 @@ namespace RenderSystem
 				Object& sun_object = in_state.scene.objects[*in_state.scene.primary_sun_id];
 				const HMM_Vec3 sun_direction = HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), sun_object.current_transform.rotation));
 				per_frame_data.sun_direction = HMM_V4V(sun_direction, 0.0f);
-				per_frame_data.sun_color = HMM_V4V(sun_object.light.color * sun_object.light.sun.power, 1.0f);
+				per_frame_data.sun_color = HMM_V4V(scene_solar_irradiance(
+					sun_object.light.color, sun_object.light.sun.power), 1.0f);
 			}
 		
 			// Descriptor writes happen before any of this frame's binds are recorded
@@ -614,12 +620,17 @@ namespace RenderSystem
 					// sun drives only the sky.
 					.sun_direction = in_state.scene.primary_sun_id ? per_frame_data.sun_direction.XYZ : HMM_V3(0.0f, 0.0f, -1.0f),
 					.sun_color = in_state.scene.primary_sun_id ? per_frame_data.sun_color.XYZ : HMM_V3(0.0f, 0.0f, 0.0f),
+					.atmosphere_enabled = sky_pass.has_active_atmosphere
+						&& bruneton_atmosphere_pass.has_precomputed ? 1 : 0,
+					.atmosphere_planet_center_z = sky_pass.active_parameters.planet_center_z_m,
 				};
 				fog_pass_update(
 					&in_state.vk,
 					fog_fs_params,
 					lighting_render_pass.get_color_output(0).view,
-					geometry_render_pass.get_color_output(1).view
+					geometry_render_pass.get_color_output(1).view,
+					bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
+					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 				);
 			}
 		
@@ -751,10 +762,6 @@ namespace RenderSystem
 			frame_data_write_copy_input(
 				&in_state.vk,
 				get_render_pass(ERenderPass::PresentationComposite).get_color_output(0).view);
-			// Precompute physical atmosphere LUTs only when their signature changes.
-			// Visible and probe rays sample the LUTs at their real positions.
-			sky_pass_update_atmosphere(&in_state.vk, in_state);
-		
 			// Incrementally capture and project GI probes after GPU skinning and the
 			// atmosphere update, before the main pass chain samples the probe atlas.
 			{
@@ -840,6 +847,14 @@ namespace RenderSystem
 				lighting_fs_params.screen_space_shadows_enable = 1;
 				lighting_fs_params.screen_space_shadow_intensity = in_state.shadow.screen_space.intensity;
 			}
+			lighting_fs_params.atmosphere_sun_index =
+				in_state.lighting.active_atmosphere_sun_index;
+			lighting_fs_params.atmosphere_enabled =
+				sky_pass.has_active_atmosphere
+				&& bruneton_atmosphere_pass.has_precomputed
+				&& in_state.lighting.active_atmosphere_sun_index >= 0 ? 1 : 0;
+			lighting_fs_params.atmosphere_planet_center_z =
+				sky_pass.active_parameters.planet_center_z_m;
 			// Lighting samples the blurred moments (soft penumbra) unless the blur is
 			// disabled; blur is enabled by default.
 			VkImageView shadow_moments_view = in_state.shadow.blur_enable
@@ -864,7 +879,9 @@ namespace RenderSystem
 				g_gi_scene.octree_nodes_buffer.get_gpu_buffer(),
 				g_gi_scene.lighting_capture.specular_sampler,
 				gi_scene_get_specular_lighting_view(g_gi_scene),
-				gi_scene_get_brdf_lut_view(g_gi_scene)
+				gi_scene_get_brdf_lut_view(g_gi_scene),
+				bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
+				bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 			);
 		
 			ssao_pass_update(
@@ -1072,8 +1089,45 @@ namespace RenderSystem
 				in_state.temporal_aa.history_index = temporal_aa_previous_index;
 			}
 
+			AutoAdaptationPass::SolarGuardPushConstants solar_guard = {};
+			if (sky_pass.has_active_atmosphere
+				&& bruneton_atmosphere_pass.has_precomputed)
+			{
+				const HMM_Vec4 sun_clip = HMM_MulM4V4(
+					view_projection_matrix,
+					HMM_V4V(sky_pass.active_sun_direction, 0.0f));
+				const bool sun_in_front = std::isfinite(sun_clip.W)
+					&& sun_clip.W > 1.0e-6f;
+				HMM_Vec2 sun_uv = HMM_V2(-1.0f, -1.0f);
+				if (sun_in_front)
+				{
+					const HMM_Vec2 sun_ndc = HMM_V2(
+						sun_clip.X / sun_clip.W, sun_clip.Y / sun_clip.W);
+					sun_uv = HMM_V2(
+						sun_ndc.X * 0.5f + 0.5f,
+						0.5f - sun_ndc.Y * 0.5f);
+				}
+				const f32 angular_radius = HMM_AngleDeg(
+					sky_pass.active_parameters.sun_disc_angular_diameter_degrees * 0.5f);
+				const f32 projected_radius_pixels =
+					0.5f * (f32)in_state.window.render_height
+					* tanf(angular_radius) / tanf(fov * 0.5f);
+				solar_guard.sun_screen_uv_radius_enabled = HMM_V4(
+					sun_uv.X, sun_uv.Y, MAX(projected_radius_pixels, 1.0f),
+					sun_in_front ? 1.0f : 0.0f);
+				solar_guard.camera_position_and_planet_center = HMM_V4V(
+					camera.location, sky_pass.active_parameters.planet_center_z_m);
+				solar_guard.sun_direction_and_disc_intensity = HMM_V4V(
+					sky_pass.active_sun_direction,
+					sky_pass.active_parameters.sun_disc_intensity);
+				solar_guard.sun_tint_and_irradiance = HMM_V4V(
+					sky_pass.active_sun_tint,
+					sky_pass.active_sun_irradiance_w_m2);
+			}
 			AutoAdaptationPass::meter(
-				&in_state.vk, *pre_tonemap_scene_color, in_state.tonemapping);
+				&in_state.vk, *pre_tonemap_scene_color,
+				geometry_render_pass.get_color_output(1),
+				in_state.tonemapping, solar_guard);
 			AutoAdaptationPass::mark_state_for_fragment_read(&in_state.vk);
 
 			// Bloom reconstructs an exposure-aware HDR pyramid after the temporal

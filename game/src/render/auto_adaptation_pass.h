@@ -5,6 +5,7 @@
 #include "core/runtime_config.h"
 #include "core/timings.h"
 #include "render/auto_adaptation_math.h"
+#include "render/bruneton_atmosphere_pass.h"
 #include "render/gpu_buffer.h"
 #include "render/gpu_image.h"
 #include "render/shader_module.h"
@@ -13,7 +14,7 @@
 
 namespace AutoAdaptationPass
 {
-	static constexpr i32 STATE_VEC4_COUNT = 7;
+	static constexpr i32 STATE_VEC4_COUNT = 8;
 	static constexpr i32 RESET_EXPOSURE = 1;
 	static constexpr i32 RESET_WHITE_BALANCE = 2;
 
@@ -21,14 +22,25 @@ namespace AutoAdaptationPass
 	{
 		HMM_Vec4 exposure_white;
 		HMM_Vec4 target_log_lms;
+		HMM_Vec4 solar_diagnostics;
 	};
-	static_assert(sizeof(MeasurementBufferData) == 32);
+	static_assert(sizeof(MeasurementBufferData) == 48);
 
 	struct StateBufferData
 	{
 		HMM_Vec4 values[STATE_VEC4_COUNT];
 	};
-	static_assert(sizeof(StateBufferData) == 112);
+	static_assert(sizeof(StateBufferData) == 128);
+
+	struct SolarGuardPushConstants
+	{
+		HMM_Vec4 sun_screen_uv_radius_enabled;
+		HMM_Vec4 camera_position_and_planet_center;
+		HMM_Vec4 sun_direction_and_disc_intensity;
+		HMM_Vec4 sun_tint_and_irradiance;
+		HMM_Vec4 extent_and_ev_limits;
+	};
+	static_assert(sizeof(SolarGuardPushConstants) == 80);
 
 	struct UpdatePushConstants
 	{
@@ -63,6 +75,7 @@ namespace AutoAdaptationPass
 	{
 		ComputePipeline histogram_pipeline;
 		ComputePipeline reduce_pipeline;
+		ComputePipeline solar_guard_pipeline;
 		ComputePipeline update_pipeline;
 		GpuBuffer<AutoAdaptationMath::HistogramBin> histogram;
 		GpuBuffer<MeasurementBufferData> measurement;
@@ -70,6 +83,7 @@ namespace AutoAdaptationPass
 		GpuBuffer<StateBufferData> diagnostic_readback[MAX_FRAMES_IN_FLIGHT];
 		bool readback_pending[MAX_FRAMES_IN_FLIGHT] = {};
 		VkSampler sampler = VK_NULL_HANDLE;
+		VkSampler nearest_sampler = VK_NULL_HANDLE;
 		bool metered_this_frame = false;
 		bool camera_key_initialized = false;
 		i32 previous_camera_key = 0;
@@ -141,6 +155,16 @@ namespace AutoAdaptationPass
 	inline void init(VulkanContext* ctx, VkSampler in_sampler)
 	{
 		pass.sampler = in_sampler;
+		VkSamplerCreateInfo nearest_info = {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_NEAREST,
+			.minFilter = VK_FILTER_NEAREST,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		};
+		VK_CHECK(vkCreateSampler(ctx->device, &nearest_info, nullptr, &pass.nearest_sampler));
 		const VkDescriptorSetLayoutBinding histogram_bindings[] = {
 			{
 				.binding = 0,
@@ -169,10 +193,23 @@ namespace AutoAdaptationPass
 				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 		};
+		const VkDescriptorSetLayoutBinding solar_guard_bindings[] = {
+			{ .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+		};
 		create_pipeline(ctx, pass.histogram_pipeline, histogram_bindings, 2,
 			"bin/shaders/auto_adaptation_histogram.comp.spv");
 		create_pipeline(ctx, pass.reduce_pipeline, buffer_bindings, 2,
 			"bin/shaders/auto_adaptation_reduce.comp.spv", sizeof(ReducePushConstants));
+		create_pipeline(ctx, pass.solar_guard_pipeline, solar_guard_bindings, 4,
+			"bin/shaders/auto_adaptation_solar_guard.comp.spv",
+			sizeof(SolarGuardPushConstants));
 		create_pipeline(ctx, pass.update_pipeline, buffer_bindings, 2,
 			"bin/shaders/auto_adaptation_update.comp.spv", sizeof(UpdatePushConstants));
 
@@ -239,6 +276,10 @@ namespace AutoAdaptationPass
 		state.adaptation_current_s_gain = std::exp2(data.values[1].Z);
 		state.adaptation_measurement_valid = data.values[6].X > 0.5f;
 		state.adaptation_accepted_sample_count = (i32)data.values[6].W;
+		state.adaptation_base_target_ev = data.values[7].X;
+		state.adaptation_guarded_target_ev = data.values[7].Y;
+		state.adaptation_solar_guard_weight = data.values[7].Z;
+		state.adaptation_solar_disc_ev = data.values[7].W;
 	}
 
 	inline void prepare_frame(State& state)
@@ -311,7 +352,9 @@ namespace AutoAdaptationPass
 	inline void meter(
 		VulkanContext* ctx,
 		GpuImage& scene_color,
-		const State::TonemappingState& state)
+		GpuImage& position,
+		const State::TonemappingState& state,
+		SolarGuardPushConstants solar_constants)
 	{
 		pass.metered_this_frame = false;
 		if (!active(state)) return;
@@ -387,6 +430,67 @@ namespace AutoAdaptationPass
 		};
 		vkCmdPushConstants(command_buffer, pass.reduce_pipeline.pipeline_layout,
 			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(reduce_constants), &reduce_constants);
+		vulkan_cmd_dispatch(ctx, 1, 1, 1);
+
+		PassResourceUsage solar_usage;
+		solar_usage.images.add({
+			.image = &position,
+			.range = { .aspectMask = position.aspects, .baseMipLevel = 0,
+				.levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
+			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		});
+		GpuImage& transmittance =
+			bruneton_atmosphere_pass.transmittance_pass.get_color_output(0);
+		solar_usage.images.add({
+			.image = &transmittance,
+			.range = { .aspectMask = transmittance.aspects, .baseMipLevel = 0,
+				.levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
+			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		});
+		solar_usage.buffers.add({ .buffer = measurement,
+			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+				| VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT });
+		solar_usage.buffers.add({
+			.buffer = bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index]
+				.get_gpu_buffer(),
+			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.access = VK_ACCESS_2_UNIFORM_READ_BIT });
+		vulkan_apply_pass_resource_usage(ctx, solar_usage);
+		VkDescriptorSet solar_set = vulkan_allocate_transient_descriptor_set(
+			ctx, pass.solar_guard_pipeline.set_layout);
+		VkDescriptorBufferInfo solar_buffer_infos[] = {
+			descriptor_buffer(measurement),
+			descriptor_buffer(
+				bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index].get_gpu_buffer(),
+				sizeof(BrunetonAtmosphereGpu)),
+		};
+		VkDescriptorImageInfo solar_image_infos[] = {
+			descriptor_sampled(pass.nearest_sampler, position.view),
+			descriptor_sampled(pass.sampler, transmittance.view),
+		};
+		VkWriteDescriptorSet solar_writes[] = {
+			descriptor_write_buffer(solar_set, 0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &solar_buffer_infos[0]),
+			descriptor_write_image(solar_set, 1,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &solar_image_infos[0]),
+			descriptor_write_buffer(solar_set, 2,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &solar_buffer_infos[1]),
+			descriptor_write_image(solar_set, 3,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &solar_image_infos[1]),
+		};
+		vulkan_update_descriptor_sets(ctx, 4, solar_writes, 0, nullptr, false);
+		bind_compute(ctx, pass.solar_guard_pipeline, solar_set);
+		solar_constants.extent_and_ev_limits = HMM_V4(
+			(f32)position.extent.width, (f32)position.extent.height,
+			reduce_constants.auto_exposure_min_ev,
+			reduce_constants.auto_exposure_max_ev);
+		vkCmdPushConstants(command_buffer, pass.solar_guard_pipeline.pipeline_layout,
+			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(solar_constants), &solar_constants);
 		vulkan_cmd_dispatch(ctx, 1, 1, 1);
 
 		pass.metered_this_frame = true;
@@ -484,7 +588,8 @@ namespace AutoAdaptationPass
 		pass.measurement.destroy_gpu_buffer();
 		pass.histogram.destroy_gpu_buffer();
 		ComputePipeline* pipelines[] = {
-			&pass.update_pipeline, &pass.reduce_pipeline, &pass.histogram_pipeline,
+			&pass.update_pipeline, &pass.solar_guard_pipeline,
+			&pass.reduce_pipeline, &pass.histogram_pipeline,
 		};
 		for (ComputePipeline* pipeline : pipelines)
 		{
@@ -492,5 +597,6 @@ namespace AutoAdaptationPass
 			vkDestroyPipelineLayout(ctx->device, pipeline->pipeline_layout, nullptr);
 			vkDestroyDescriptorSetLayout(ctx->device, pipeline->set_layout, nullptr);
 		}
+		vkDestroySampler(ctx->device, pass.nearest_sampler, nullptr);
 	}
 }

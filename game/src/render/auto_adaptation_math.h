@@ -203,6 +203,29 @@ namespace AutoAdaptationMath
 		return current + (target - current) * alpha;
 	}
 
+	inline float apply_solar_guard(
+		float base_target_unclamped,
+		float base_target,
+		std::uint32_t accepted_count,
+		float disc_ev,
+		float guard_weight,
+		float minimum_auto_ev = MIN_AUTO_EV,
+		float maximum_auto_ev = MAX_AUTO_EV)
+	{
+		if (accepted_count == 0 || !std::isfinite(disc_ev)
+			|| !(guard_weight > 0.0f)) return base_target;
+		const float weight = clamp(guard_weight, 0.0f, 1.0f);
+		const float virtual_count = (float)accepted_count * 0.10f * weight;
+		const float guarded_unclamped = -(
+			-base_target_unclamped * (float)accepted_count
+			+ clamp(disc_ev, MIN_HISTOGRAM_EV, MAX_HISTOGRAM_EV) * virtual_count)
+			/ ((float)accepted_count + virtual_count);
+		const float guarded = clamp(guarded_unclamped,
+			std::min(minimum_auto_ev, maximum_auto_ev),
+			std::max(minimum_auto_ev, maximum_auto_ev));
+		return std::min(base_target, guarded);
+	}
+
 	inline float update_exposure(
 		float current,
 		float target,

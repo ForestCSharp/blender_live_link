@@ -1,1 +1,1 @@
-- docs/walkthrough.html should be kept up to date with changes to this project
+- Never update docs/walkthrough.html unless the user explicitly asks for it.

@@ -306,6 +306,7 @@ def create_synthetic_scene():
     blender_hidden_character_object.hide_set(True)
 
     light_data = bpy.data.lights.new("CI Sun Data", type="SUN")
+    # Blender keeps its normal artistic strength; export converts it to W/m^2.
     light_data.energy = 2.0
     light_object = bpy.data.objects.new("CI Sun", light_data)
     bpy.context.scene.collection.objects.link(light_object)
@@ -417,6 +418,11 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             raise AssertionError("Synthetic mesh object has no mesh payload")
         if exported_objects["CI Sun"].Light() is None:
             raise AssertionError("Synthetic light object has no light payload")
+        exported_sun = exported_objects["CI Sun"].Light().SunLight()
+        if exported_sun is None or abs(exported_sun.Power() - 2722.0) > 1.0e-3:
+            raise AssertionError(
+                f"Physical Sun irradiance export mismatch: {exported_sun.Power() if exported_sun else None}"
+            )
 
         def component_of_type(exported_object, component_type):
             for component_index in range(exported_object.ComponentsLength()):

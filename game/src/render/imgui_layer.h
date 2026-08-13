@@ -351,6 +351,12 @@ namespace ImGuiLayer
                             state.tonemapping.adaptation_measured_white_x,
                             state.tonemapping.adaptation_measured_white_y
                         );
+						ImGui::TextDisabled(
+							"Solar guard %.2f -> %.2f EV | weight %.3f | disc %.2f EV",
+							state.tonemapping.adaptation_base_target_ev,
+							state.tonemapping.adaptation_guarded_target_ev,
+							state.tonemapping.adaptation_solar_guard_weight,
+							state.tonemapping.adaptation_solar_disc_ev);
 					}
 					ImGui::EndDisabled();
                     ImGui::Unindent();

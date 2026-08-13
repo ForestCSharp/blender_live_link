@@ -46,6 +46,7 @@ void main()
 		unused_single_mie_texture, camera, view_dir, sun_direction,
 		transmittance);
 	vec3 sky_color = max(sky_luminance, vec3(0.0))
+		* BRUNETON_SCENE_PHOTOMETRIC_SCALE
 		* pc.sun_tint_and_disc_intensity.rgb
 		* pc.planet_center_z_and_sky_intensity.y;
 
@@ -55,15 +56,15 @@ void main()
 		pc.sun_direction_and_cos_radius.w - edge_width,
 		pc.sun_direction_and_cos_radius.w + edge_width,
 		view_sun_cos);
-	const vec3 SUN_RADIANCE_TO_RGB =
-		vec3(98242.786222, 69954.398112, 66475.012354) * 1.0e-5;
 	vec3 solar_radiance = atmosphere.solar_irradiance /
 		(PI * atmosphere.sun_angular_radius * atmosphere.sun_angular_radius);
-	sky_color += disc * transmittance * solar_radiance * SUN_RADIANCE_TO_RGB
+	sky_color += disc * transmittance * solar_radiance
+		* BRUNETON_SOLAR_RADIANCE_TO_LUMINANCE
+		* BRUNETON_SCENE_PHOTOMETRIC_SCALE
 		* pc.sun_tint_and_disc_intensity.rgb
 		* pc.sun_tint_and_disc_intensity.w;
 
-	out_color = vec4(sky_color, 1.0);
+	out_color = vec4(SanitizeSceneColor(sky_color), 1.0);
 	out_position = vec4(0.0);
 	out_normal = vec4(0.0);
 	out_roughness_metallic_emissive = vec4(0.0, 0.0, 1.0, 0.0);

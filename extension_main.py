@@ -64,6 +64,8 @@ from .compiled_schemas.python.Blender.LiveLink import Update
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 
+EARTH_TOA_SOLAR_IRRADIANCE_W_M2 = 1361.0
+
 EXPORT_TIMING_KEYS = (
     "mesh_eval",
     "triangulation",
@@ -878,7 +880,9 @@ class LiveLinkConnection():
                 case light_type_enum.Sun:
                     sun_light = SunLight.CreateSunLight(
                         builder,
-                        power = light_data.energy,
+                        # Keep Blender's familiar artistic Sun strength while
+                        # sending physical irradiance to the game runtime.
+                        power = light_data.energy * EARTH_TOA_SOLAR_IRRADIANCE_W_M2,
                         castShadows = light_data.use_shadow
                     )
                     Light.AddSunLight(builder, sun_light)

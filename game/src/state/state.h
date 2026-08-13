@@ -334,6 +334,7 @@ struct State
 		GpuBuffer<SpotLightData> spot_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
 		GpuBuffer<SunLightData> sun_buffers[RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT];
 		i32 buffer_index = 0;
+		i32 active_atmosphere_sun_index = -1;
 	} lighting;
 
 	struct TonemappingState
@@ -379,6 +380,10 @@ struct State
 		f32 adaptation_current_m_gain = 1.0f;
 		f32 adaptation_current_s_gain = 1.0f;
 		i32 adaptation_accepted_sample_count = 0;
+		f32 adaptation_base_target_ev = 0.0f;
+		f32 adaptation_guarded_target_ev = 0.0f;
+		f32 adaptation_solar_guard_weight = 0.0f;
+		f32 adaptation_solar_disc_ev = 0.0f;
 		ETonemappingMethod method = DEFAULTS.method;
 		bool local_enabled = DEFAULTS.local_enabled;
 
@@ -1010,6 +1015,7 @@ void pack_lights(State& in_state)
 	lighting.point_lights.clear();
 	lighting.spot_lights.clear();
 	lighting.sun_lights.clear();
+	lighting.active_atmosphere_sun_index = -1;
 
 	scene_ensure_indexes(in_state);
 	in_state.data_oriented.frame.lighting_candidate_count += (i32) in_state.scene.indexes.light_object_ids.length();
@@ -1061,6 +1067,7 @@ void pack_lights(State& in_state)
 			case LightType::Sun:
 			{
 				if (lighting.sun_lights.length() >= MAX_LIGHTS_PER_TYPE) { break; }
+				const i32 packed_sun_index = (i32)lighting.sun_lights.length();
 				lighting.sun_lights.add((SunLightData) {
 					.location = location,
 					.color = color,
@@ -1068,6 +1075,8 @@ void pack_lights(State& in_state)
 					.cast_shadows = object.light.sun.cast_shadows ? 1 : 0,
 					.direction = HMM_V4V(direction, 0.0f),
 				});
+				if (in_state.scene.active_sky_controller_id == light_object_id)
+					lighting.active_atmosphere_sun_index = packed_sun_index;
 				break;
 			}
 			default:

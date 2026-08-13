@@ -7,7 +7,11 @@
 #define BRUNETON_DESCRIPTOR_SET 0
 #endif
 
-layout(std140, set = BRUNETON_DESCRIPTOR_SET, binding = 0) uniform BrunetonAtmosphereBlock
+#ifndef BRUNETON_PARAMETER_BINDING
+#define BRUNETON_PARAMETER_BINDING 0
+#endif
+
+layout(std140, set = BRUNETON_DESCRIPTOR_SET, binding = BRUNETON_PARAMETER_BINDING) uniform BrunetonAtmosphereBlock
 {
 	vec4 radii;                 // bottom, top, sun angular radius, mu_s_min
 	vec4 rayleigh_scattering;   // rgb coefficient, inverse scale height
