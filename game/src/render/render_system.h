@@ -169,8 +169,16 @@ namespace RenderSystem
 	
 		i32 closest_probe_index = -1;
 		f32 closest_t = std::numeric_limits<f32>::max();
-		for (i32 probe_index = 0; probe_index < g_gi_scene.non_fallback_probe_count; ++probe_index)
+		for (i32 probe_index = 0; probe_index < (i32)g_gi_scene.probes.length(); ++probe_index)
 		{
+			if (!gi_scene_debug_probe_matches_level_filter(
+				g_gi_scene,
+				probe_index,
+				in_state.gi.probe_level_filter_enable,
+				in_state.gi.probe_level_filter_selection))
+			{
+				continue;
+			}
 			f32 t = 0.0f;
 			if (ray_sphere_intersect(
 				camera.location,

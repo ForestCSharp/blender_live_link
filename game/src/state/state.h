@@ -451,6 +451,7 @@ struct State
 	struct GiState
 	{
 		bool enable = true;
+		bool probe_influence_culling = true;
 		bool probe_occlusion = true;
 		i32 octree_depth = 4;
 		bool layout_dirty = true;
@@ -461,6 +462,8 @@ struct State
 		bool probe_specular_enable = true;
 		f32 intensity = 1.0f;
 		bool show_probes = false;
+		bool probe_level_filter_enable = false;
+		i32 probe_level_filter_selection = 0;
 		EProbeVisMode probe_vis_mode = EProbeVisMode::Irradiance;
 		f32 specular_debug_roughness = 0.0f;
 		bool probe_isolation_enable = false;
@@ -628,6 +631,7 @@ struct State
 			i32 cull_visible_count = 0;
 			i32 cull_non_renderable_count = 0;
 			i32 cull_visibility_count = 0;
+			i32 cull_influence_count = 0;
 			i32 cull_frustum_count = 0;
 			i32 cull_skinned_visible_count = 0;
 			i32 draw_calls = 0;

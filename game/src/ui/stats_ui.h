@@ -231,6 +231,7 @@ static void draw_stats_ui(State& state)
 			stats_ui_cell_i32("Hidden", previous.cull_visibility_count);
 
 			ImGui::TableNextRow();
+			stats_ui_cell_i32("Influence", previous.cull_influence_count);
 			stats_ui_cell_i32("Frustum", previous.cull_frustum_count);
 			ImGui::EndTable();
 		}

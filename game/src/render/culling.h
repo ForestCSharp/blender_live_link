@@ -12,12 +12,18 @@ struct CullResult
 	i32 candidate_count = 0;
 	i32 non_renderable_cull_count = 0;
 	i32 visibility_cull_count = 0;
+	i32 influence_cull_count = 0;
 	i32 frustum_cull_count = 0;
 };
 
-// Culls scene mesh objects against a view-projection frustum. Skinned meshes
-// bypass the frustum test because animated bounds are not yet available.
-CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bounds_padding)
+// Culls scene mesh objects against an optional influence sphere and a
+// view-projection frustum. Skinned meshes bypass the CPU bounds tests because
+// animated bounds are not yet available.
+CullResult cull_objects(
+	State& in_state,
+	const HMM_Mat4& in_view_proj,
+	f32 in_bounds_padding,
+	const BoundingSphere* in_influence_sphere = nullptr)
 {
 	CullResult out_cull_result;
 
@@ -58,6 +64,13 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 			object_bounding_box.max += padding;
 		}
 
+		if (in_influence_sphere != nullptr
+			&& bounding_box_outside_sphere(object_bounding_box, *in_influence_sphere))
+		{
+			out_cull_result.influence_cull_count += 1;
+			continue;
+		}
+
 		if (frustum_cull(frustum, object_bounding_box))
 		{
 			out_cull_result.frustum_cull_count += 1;
@@ -72,6 +85,7 @@ CullResult cull_objects(State& in_state, const HMM_Mat4& in_view_proj, f32 in_bo
 	in_state.data_oriented.frame.cull_visible_count += (i32) out_cull_result.object_ids.length();
 	in_state.data_oriented.frame.cull_non_renderable_count += out_cull_result.non_renderable_cull_count;
 	in_state.data_oriented.frame.cull_visibility_count += out_cull_result.visibility_cull_count;
+	in_state.data_oriented.frame.cull_influence_count += out_cull_result.influence_cull_count;
 	in_state.data_oriented.frame.cull_frustum_count += out_cull_result.frustum_cull_count;
 
 	return out_cull_result;

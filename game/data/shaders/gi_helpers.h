@@ -25,7 +25,8 @@ struct GI_Probe
 	vec4 position;
 	int atlas_idx;
 	float max_radial_depth;
-	int padding[2];
+	int octree_level;
+	int padding;
 };
 
 struct GI_OctreeNode

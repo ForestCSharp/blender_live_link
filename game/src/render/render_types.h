@@ -27,11 +27,20 @@ static_assert(sizeof(SkinnedVertex) == 32, "SkinnedVertex must match the skinned
 // (sky draws at z=0, shadow receiver depth = 1 - ndc.z, ...).
 #define PERSPECTIVE_FUNCTION HMM_Perspective_RH_ZO
 
-HMM_Mat4 mat4_perspective(f32 in_fov, f32 in_aspect_ratio)
+HMM_Mat4 mat4_perspective(
+	f32 in_fov,
+	f32 in_aspect_ratio,
+	f32 in_projection_far)
 {
 	const f32 projection_near = 0.01f;
-	const f32 projection_far = 10000.0f;
-	return PERSPECTIVE_FUNCTION(in_fov, in_aspect_ratio, projection_far, projection_near);
+	assert(in_projection_far > projection_near);
+	return PERSPECTIVE_FUNCTION(
+		in_fov, in_aspect_ratio, in_projection_far, projection_near);
+}
+
+HMM_Mat4 mat4_perspective(f32 in_fov, f32 in_aspect_ratio)
+{
+	return mat4_perspective(in_fov, in_aspect_ratio, 10000.0f);
 }
 
 namespace Render

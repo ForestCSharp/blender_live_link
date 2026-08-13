@@ -633,6 +633,8 @@ namespace ImGuiLayer
 					if (ImGui::CollapsingHeader("Global Illumination"))
 					{
 						ImGui::Checkbox("GI", &state.gi.enable);
+						if (ImGui::Checkbox("GI Probe Influence Culling", &state.gi.probe_influence_culling))
+							state.gi.is_updating = true;
 						ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
 						if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
 						{
@@ -667,6 +669,31 @@ namespace ImGuiLayer
 							state.gi.is_updating = true;
 						ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
 						ImGui::Checkbox("Show Probes", &state.gi.show_probes);
+						ImGui::Checkbox("Filter Probe Level", &state.gi.probe_level_filter_enable);
+						ImGui::SameLine();
+						state.gi.probe_level_filter_selection = CLAMP(
+							state.gi.probe_level_filter_selection, 0, gi_scene.octree_depth + 1);
+						char probe_level_label[48] = {};
+						if (state.gi.probe_level_filter_selection == 0)
+							snprintf(probe_level_label, sizeof(probe_level_label), "Fallback");
+						else if (state.gi.probe_level_filter_selection == 1)
+							snprintf(probe_level_label, sizeof(probe_level_label), "Level 0 (largest)");
+						else if (state.gi.probe_level_filter_selection == gi_scene.octree_depth + 1)
+							snprintf(probe_level_label, sizeof(probe_level_label),
+								"Level %d (deepest)", gi_scene.octree_depth);
+						else
+							snprintf(probe_level_label, sizeof(probe_level_label),
+								"Level %d", state.gi.probe_level_filter_selection - 1);
+						ImGui::BeginDisabled(!state.gi.probe_level_filter_enable);
+						ImGui::SetNextItemWidth(180.0f);
+						ImGui::SliderInt(
+							"##Probe Level",
+							&state.gi.probe_level_filter_selection,
+							0,
+							gi_scene.octree_depth + 1,
+							probe_level_label,
+							ImGuiSliderFlags_AlwaysClamp);
+						ImGui::EndDisabled();
 						if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable))
 						{
 							if (state.gi.probe_isolation_enable)

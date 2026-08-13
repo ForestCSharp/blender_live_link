@@ -5,7 +5,7 @@
 layout(push_constant) uniform DebugParams
 {
 	mat4 view_projection;
-	int debug_probe_start_index;
+	int octree_depth;
 	float probe_debug_radius;
 	int atlas_total_size;
 	int atlas_entry_size;
@@ -15,6 +15,8 @@ layout(push_constant) uniform DebugParams
 	int specular_atlas_entry_size;
 	int specular_mip_count;
 	float specular_debug_roughness;
+	int probe_level_filter_enable;
+	int probe_level_filter_selection;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer ProbeVertexBlock
@@ -30,9 +32,25 @@ layout(location = 2) flat out int probe_index;
 
 void main()
 {
-	probe_index = debug_probe_start_index + gl_InstanceIndex;
+	probe_index = gl_InstanceIndex;
 	GI_Probe probe = probes[probe_index];
-	float radius = max((probe.max_radial_depth / GI_RADIAL_DEPTH_CELL_SCALE) * 0.1, probe_debug_radius);
+	bool visible = probe_level_filter_enable != 0
+		? (probe_level_filter_selection == 0
+			? probe.octree_level < 0
+			: probe.octree_level == probe_level_filter_selection - 1)
+		: probe.octree_level >= 0;
+	if (!visible)
+	{
+		world_position = vec4(0.0);
+		world_normal = vec4(0.0);
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+
+	int levels_above_deepest = probe.octree_level < 0
+		? octree_depth + 1
+		: clamp(octree_depth - probe.octree_level, 0, octree_depth);
+	float radius = probe_debug_radius * pow(1.1, float(levels_above_deepest));
 	world_position = vec4(probe.position.xyz + position.xyz * radius, 1.0);
 	world_normal = normal;
 	gl_Position = view_projection * world_position;

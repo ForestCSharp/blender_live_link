@@ -209,13 +209,17 @@ f32 gi_scene_max_radial_depth_from_cell_extent(const f32 in_cell_extent)
 	return std::max(in_cell_extent * GI_Scene::radial_depth_cell_scale, GI_Scene::minimum_scene_extent);
 }
 
-GI_Probe gi_scene_make_probe(const HMM_Vec3 in_position, const f32 in_max_radial_depth)
+GI_Probe gi_scene_make_probe(
+	const HMM_Vec3 in_position,
+	const f32 in_max_radial_depth,
+	const i32 in_octree_level)
 {
 	GI_Probe probe = {};
 	probe.position = HMM_V4V(in_position, 1.0f);
 	probe.atlas_idx = -1;
 	probe.max_radial_depth = in_max_radial_depth;
-	probe.padding[0] = probe.padding[1] = 0;
+	probe.octree_level = in_octree_level;
+	probe.padding = 0;
 	return probe;
 }
 
@@ -235,7 +239,8 @@ void gi_scene_add_fallback_probe(GI_Scene& out_gi_scene)
 	out_gi_scene.fallback_probe_index = out_gi_scene.non_fallback_probe_count;
 
 	const f32 fallback_radial_depth = gi_scene_max_radial_depth_from_cell_extent(out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X);
-	out_gi_scene.probes.add(gi_scene_make_probe(gi_scene_bounds_center(out_gi_scene.scene_bounds), fallback_radial_depth));
+	out_gi_scene.probes.add(gi_scene_make_probe(
+		gi_scene_bounds_center(out_gi_scene.scene_bounds), fallback_radial_depth, -1));
 	out_gi_scene.max_radial_depth = std::max(out_gi_scene.max_radial_depth, fallback_radial_depth);
 }
 
@@ -279,7 +284,8 @@ i32 gi_scene_get_or_create_probe(
 	GI_Scene& out_gi_scene,
 	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
 	const GI_Coords in_max_depth_coords,
-	const f32 in_required_radial_depth)
+	const f32 in_required_radial_depth,
+	const i32 in_octree_level)
 {
 	const u64 probe_key = gi_scene_probe_corner_key(in_max_depth_coords);
 	auto existing_probe = out_probe_indices_by_corner.find(probe_key);
@@ -287,12 +293,14 @@ i32 gi_scene_get_or_create_probe(
 	{
 		GI_Probe& probe = out_gi_scene.probes[existing_probe->second];
 		probe.max_radial_depth = std::max(probe.max_radial_depth, in_required_radial_depth);
+		probe.octree_level = std::min(probe.octree_level, in_octree_level);
 		return existing_probe->second;
 	}
 
 	const i32 probe_index = (i32) out_gi_scene.probes.length();
 	const HMM_Vec3 probe_position = gi_scene_lattice_position(out_gi_scene.scene_bounds, out_gi_scene.leaf_divisions, in_max_depth_coords);
-	out_gi_scene.probes.add(gi_scene_make_probe(probe_position, in_required_radial_depth));
+	out_gi_scene.probes.add(gi_scene_make_probe(
+		probe_position, in_required_radial_depth, in_octree_level));
 	out_probe_indices_by_corner[probe_key] = probe_index;
 	return probe_index;
 }
@@ -332,7 +340,12 @@ i32 gi_scene_add_node_payload(
 					(in_coords.z + corner_z) * coord_scale,
 				};
 				const i32 corner_index = corner_x + corner_y * 2 + corner_z * 4;
-				cell.probe_indices[corner_index] = gi_scene_get_or_create_probe(out_gi_scene, out_probe_indices_by_corner, probe_coords, required_radial_depth);
+				cell.probe_indices[corner_index] = gi_scene_get_or_create_probe(
+					out_gi_scene,
+					out_probe_indices_by_corner,
+					probe_coords,
+					required_radial_depth,
+					in_depth);
 			}
 		}
 	}
@@ -531,8 +544,31 @@ f32 gi_scene_debug_probe_radius(const GI_Scene& in_gi_scene)
 f32 gi_scene_debug_probe_radius_for_probe(const GI_Scene& in_gi_scene, const i32 in_probe_index)
 {
 	assert(in_gi_scene.probes.is_valid_index(in_probe_index));
-	const f32 probe_cell_extent = in_gi_scene.probes[in_probe_index].max_radial_depth / GI_Scene::radial_depth_cell_scale;
-	return std::max(probe_cell_extent * 0.1f, gi_scene_debug_probe_radius(in_gi_scene));
+	const i32 probe_level = in_gi_scene.probes[in_probe_index].octree_level;
+	const i32 levels_above_deepest = probe_level < 0
+		? in_gi_scene.octree_depth + 1
+		: std::clamp(in_gi_scene.octree_depth - probe_level, 0, in_gi_scene.octree_depth);
+	return gi_scene_debug_probe_radius(in_gi_scene)
+		* std::pow(1.1f, (f32) levels_above_deepest);
+}
+
+bool gi_scene_debug_probe_matches_level_filter(
+	const GI_Scene& in_gi_scene,
+	const i32 in_probe_index,
+	const bool in_filter_enabled,
+	const i32 in_filter_selection)
+{
+	assert(in_gi_scene.probes.is_valid_index(in_probe_index));
+	const i32 probe_level = in_gi_scene.probes[in_probe_index].octree_level;
+	if (!in_filter_enabled)
+	{
+		return probe_level >= 0;
+	}
+	const i32 filter_selection = std::clamp(
+		in_filter_selection, 0, in_gi_scene.octree_depth + 1);
+	return filter_selection == 0
+		? probe_level < 0
+		: probe_level == filter_selection - 1;
 }
 
 HMM_Vec3 gi_scene_probe_position_from_index(GI_Scene& in_gi_scene, const i32 in_probe_index)

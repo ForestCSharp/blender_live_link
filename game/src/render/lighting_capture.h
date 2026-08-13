@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cmath>
 
 #include "core/types.h"
@@ -66,13 +67,19 @@ struct LightingCaptureDesc
 	i32 specular_mip_count = 4;
 };
 
-// Mirrors geometry_capture.vert's push constants
+// Mirrors the geometry capture vertex/fragment push constants.
 struct CaptureGeometryPushConstants
 {
 	HMM_Mat4 view_projection;
 	i32 object_index;
 	i32 skin_matrix_offset;
+	i32 _padding0[2];
+	HMM_Vec4 capture_position_and_radius;
 };
+static_assert(sizeof(CaptureGeometryPushConstants) == 96,
+	"Geometry capture push constants must fit Vulkan's guaranteed minimum");
+static_assert(offsetof(CaptureGeometryPushConstants, capture_position_and_radius) == 80,
+	"Geometry capture radius must match the shader push-constant offset");
 
 // Mirrors sky_capture.frag's push constants
 struct CaptureSkyPushConstants
@@ -622,7 +629,7 @@ struct LightingCapture
 		// ---- Pipeline layouts ----
 		{
 			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				.offset = 0,
 				.size = sizeof(CaptureGeometryPushConstants),
 			};
@@ -1094,8 +1101,16 @@ struct LightingCapture
 
 		// Face cameras use a negative viewport height for the required Y flip,
 		// keeping all six faces consistently oriented.
+		const bool cull_to_probe_influence = in_should_render_geometry
+			&& in_state.gi.probe_influence_culling;
+		const BoundingSphere influence_sphere = {
+			.center = in_location,
+			.radius = in_max_radial_depth,
+		};
 		const f32 fov = HMM_AngleDeg(90.0f);
-		HMM_Mat4 projection_matrix = mat4_perspective(fov, 1.0f);
+		HMM_Mat4 projection_matrix = cull_to_probe_influence
+			? mat4_perspective(fov, 1.0f, in_max_radial_depth)
+			: mat4_perspective(fov, 1.0f);
 
 		HMM_Mat4 view_projection_matrices[NUM_CUBE_FACES];
 		for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
@@ -1121,8 +1136,12 @@ struct LightingCapture
 					0, nullptr
 				);
 
-				CullResult cull_result = cull_objects(in_state, view_projection,
-					in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
+				CullResult cull_result = cull_objects(
+					in_state,
+					view_projection,
+					in_state.tessellation.enabled
+						? in_state.tessellation.bounds_padding : 0.0f,
+					cull_to_probe_influence ? &influence_sphere : nullptr);
 				VkPipeline bound_pipeline = VK_NULL_HANDLE;
 				for (i32 object_id : cull_result.object_ids)
 				{
@@ -1157,8 +1176,17 @@ struct LightingCapture
 						.view_projection = view_projection,
 						.object_index = object.render_object_index,
 						.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
+						.capture_position_and_radius = HMM_V4V(
+							in_location,
+							cull_to_probe_influence ? in_max_radial_depth : 0.0f),
 					};
-					vkCmdPushConstants(command_buffer, capture_geometry_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
+					vkCmdPushConstants(
+						command_buffer,
+						capture_geometry_pipeline_layout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						0,
+						sizeof(push_constants),
+						&push_constants);
 
 					VkBuffer vertex_buffer = render_view.vertex_buffer;
 					VkDeviceSize vertex_offset = 0;

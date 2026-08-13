@@ -15,6 +15,8 @@ layout(push_constant) uniform PushConstants
 	mat4 view_projection;
 	int object_index;
 	int skin_matrix_offset;
+	ivec2 _padding0;
+	vec4 capture_position_and_radius;	// used by geometry_capture.frag
 } pc;
 
 layout(location = 0) out vec4 out_world_position;

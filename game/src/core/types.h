@@ -119,6 +119,27 @@ struct BoundingBox
 	HMM_Vec3 max;
 };
 
+struct BoundingSphere
+{
+	HMM_Vec3 center;
+	f32 radius;
+};
+
+/** Returns true when in_bounding_box is fully outside in_sphere. */
+bool bounding_box_outside_sphere(
+	const BoundingBox& in_bounding_box,
+	const BoundingSphere& in_sphere)
+{
+	const HMM_Vec3 closest_point = HMM_V3(
+		CLAMP(in_sphere.center.X, in_bounding_box.min.X, in_bounding_box.max.X),
+		CLAMP(in_sphere.center.Y, in_bounding_box.min.Y, in_bounding_box.max.Y),
+		CLAMP(in_sphere.center.Z, in_bounding_box.min.Z, in_bounding_box.max.Z)
+	);
+	const HMM_Vec3 center_to_box = closest_point - in_sphere.center;
+	const f32 radius = MAX(in_sphere.radius, 0.0f);
+	return HMM_LenSqrV3(center_to_box) > radius * radius;
+}
+
 BoundingBox bounding_box_init()
 {
 	return (BoundingBox) {

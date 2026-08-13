@@ -8,7 +8,7 @@ namespace GIDebugPass
 	struct PushConstants
 	{
 		HMM_Mat4 view_projection;
-		i32 debug_probe_start_index = 0;
+		i32 octree_depth = 0;
 		f32 probe_debug_radius = 0.1f;
 		i32 atlas_total_size = 0;
 		i32 atlas_entry_size = 0;
@@ -18,6 +18,8 @@ namespace GIDebugPass
 		i32 specular_atlas_entry_size = 0;
 		i32 specular_mip_count = 0;
 		f32 specular_debug_roughness = 0.0f;
+		i32 probe_level_filter_enable = 0;
+		i32 probe_level_filter_selection = 0;
 	};
 	static_assert(sizeof(PushConstants) == 112, "GI debug push constants mismatch");
 
@@ -117,7 +119,7 @@ namespace GIDebugPass
 
 	inline void draw(VulkanContext* ctx, GI_Scene& gi_scene, State& state, const HMM_Mat4& view_projection)
 	{
-		if (!state.gi.show_probes || gi_scene.non_fallback_probe_count <= 0) { return; }
+		if (!state.gi.show_probes || gi_scene.probes.empty()) { return; }
 		VkDescriptorBufferInfo buffers[] = {
 			{ .buffer = gi_scene.probes_buffer.get_gpu_buffer(), .range = VK_WHOLE_SIZE },
 			{ .buffer = gi_scene.probes_buffer.get_gpu_buffer(), .range = VK_WHOLE_SIZE },
@@ -141,14 +143,17 @@ namespace GIDebugPass
 				.pBufferInfo = image ? nullptr : &buffers[buffer_idx] };
 		}
 		vulkan_update_descriptor_sets(ctx, 7, writes);
-		PushConstants params = { .view_projection = view_projection, .debug_probe_start_index = 0,
+		PushConstants params = { .view_projection = view_projection, .octree_depth = gi_scene.octree_depth,
 			.probe_debug_radius = gi_scene_debug_probe_radius(gi_scene), .atlas_total_size = GI_Scene::atlas_total_size,
 			.atlas_entry_size = GI_Scene::atlas_entry_size, .probe_vis_mode = (i32) state.gi.probe_vis_mode,
 			.isolated_probe_index = state.gi.probe_isolation_enable ? state.gi.isolated_probe_index : -1,
 			.specular_atlas_total_size = gi_scene.lighting_capture.specular_atlas_total_size,
 			.specular_atlas_entry_size = gi_scene.lighting_capture.desc.specular_entry_size,
 			.specular_mip_count = gi_scene.lighting_capture.desc.specular_mip_count,
-			.specular_debug_roughness = state.gi.specular_debug_roughness };
+			.specular_debug_roughness = state.gi.specular_debug_roughness,
+			.probe_level_filter_enable = state.gi.probe_level_filter_enable ? 1 : 0,
+			.probe_level_filter_selection = std::clamp(
+				state.gi.probe_level_filter_selection, 0, gi_scene.octree_depth + 1) };
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &sets[ctx->frame_index], 0, nullptr);
@@ -156,7 +161,7 @@ namespace GIDebugPass
 		VkBuffer vertex = sphere_mesh.vertex_buffer.get_gpu_buffer(); VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex, &offset);
 		vkCmdBindIndexBuffer(command_buffer, sphere_mesh.index_buffer.get_gpu_buffer(), 0, VK_INDEX_TYPE_UINT32);
-		vulkan_cmd_draw_indexed(ctx, sphere_mesh.index_count, gi_scene.non_fallback_probe_count, 0, 0, 0);
+		vulkan_cmd_draw_indexed(ctx, sphere_mesh.index_count, (u32)gi_scene.probes.length(), 0, 0, 0);
 	}
 
 	inline void shutdown(VulkanContext* ctx)
