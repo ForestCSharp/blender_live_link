@@ -2587,17 +2587,20 @@ bool vulkan_context_dump_image_pfm(
 	GpuImage* in_image,
 	const char* in_path)
 {
+	const bool rgba16 = in_image && in_image->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+	const bool r16 = in_image && in_image->format == VK_FORMAT_R16_SFLOAT;
 	if (!in_image || in_image->image == VK_NULL_HANDLE
-		|| in_image->format != VK_FORMAT_R16G16B16A16_SFLOAT
+		|| (!rgba16 && !r16)
 		|| in_image->array_layers != 1 || in_image->mip_levels != 1)
 	{
-		printf("PFM validation capture requires a single-layer RGBA16F image\n");
+		printf("PFM validation capture requires a single-layer R16F or RGBA16F image\n");
 		return false;
 	}
 	VK_CHECK(vulkan_device_wait_idle(ctx));
 	const u32 width = in_image->extent.width;
 	const u32 height = in_image->extent.height;
-	const u64 buffer_size = (u64)width * height * 4 * sizeof(u16);
+	const u32 channel_count = rgba16 ? 4u : 1u;
+	const u64 buffer_size = (u64)width * height * channel_count * sizeof(u16);
 	VkBufferCreateInfo buffer_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.size = buffer_size,
@@ -2677,11 +2680,12 @@ bool vulkan_context_dump_image_pfm(
 		for (i32 y = (i32)height - 1; y >= 0 && succeeded; --y)
 			for (u32 x = 0; x < width && succeeded; ++x)
 			{
-				const u16* pixel = &pixels[((u64)y * width + x) * 4];
+				const u16* pixel = &pixels[((u64)y * width + x) * channel_count];
+				const f32 red = vulkan_validation_half_to_float(pixel[0]);
 				const f32 rgb[3] = {
-					vulkan_validation_half_to_float(pixel[0]),
-					vulkan_validation_half_to_float(pixel[1]),
-					vulkan_validation_half_to_float(pixel[2]),
+					red,
+					rgba16 ? vulkan_validation_half_to_float(pixel[1]) : red,
+					rgba16 ? vulkan_validation_half_to_float(pixel[2]) : red,
 				};
 				succeeded = fwrite(rgb, sizeof(f32), 3, file) == 3;
 			}

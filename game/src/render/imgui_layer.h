@@ -10,6 +10,7 @@
 #include "ui/stats_ui.h"
 #include "ui/cpu_profiler_ui.h"
 #include "input/input_api.h"
+#include "render/cloud_pass.h"
 
 namespace ImGuiLayer
 {
@@ -732,6 +733,83 @@ namespace ImGuiLayer
 					ImGui::Unindent();
 				}
 			};
+			const auto draw_cloud_controls = [&]()
+			{
+				if (ImGui::CollapsingHeader("Cloud System"))
+				{
+					ImGui::Text("Active: %s", state.clouds.active ? "yes" : "no");
+					ImGui::Text("Active layers: %d / %d",
+						state.clouds.active_layer_count, MAX_CLOUD_LAYERS);
+					ImGui::Text("Temporal history: %s",
+						CloudPass::pass.history_valid ? "valid" : "invalid");
+					ImGui::Text("Procedural caches: %s",
+						CloudPass::pass.caches_generated ? "ready" : "pending");
+					ImGui::Checkbox("Apply Cloud Shadows",
+						&state.clouds.shadow_lighting_enabled);
+					ImGui::Checkbox("Show Shadow Map Fullscreen",
+						&state.clouds.debug_show_shadow_map_fullscreen);
+					if (state.scene.active_cloud_controller_id.has_value()
+						&& state.scene.objects.contains(*state.scene.active_cloud_controller_id))
+					{
+						const Object& controller = state.scene.objects.at(
+							*state.scene.active_cloud_controller_id);
+						const f32 shadow_extent = controller.cloud_system.shadow_extent_m;
+						const bool sun_casts_shadows = controller.light.sun.cast_shadows;
+						ImGui::Text("Cloud shadows: %s  Extent: %.1f km  Texel: %.1f m",
+							controller.cloud_system.shadow_enabled && sun_casts_shadows
+								&& state.clouds.shadow_lighting_enabled
+								? "enabled" : "disabled",
+							shadow_extent * 0.001f, shadow_extent / 512.0f);
+						ImGui::TextDisabled(
+							"Cloud transmittance attenuates direct atmosphere-Sun lighting only");
+						if (shadow_extent / 512.0f > 50.0f)
+							ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+								"Broad footprint: small views may receive nearly uniform shadowing");
+					}
+					ImGui::SeparatorText("Quality");
+					bool resolution_changed = ImGui::SliderFloat(
+						"Cloud Resolution Scale", &state.clouds.resolution_scale,
+						0.5f, 1.0f, "%.2fx");
+					bool quality_changed = resolution_changed;
+					quality_changed |= ImGui::SliderInt(
+						"View Steps", &state.clouds.view_steps, 12, 48);
+					quality_changed |= ImGui::SliderFloat(
+						"Dense Step Scale", &state.clouds.dense_step_scale,
+						0.5f, 1.0f, "%.2f");
+					quality_changed |= ImGui::SliderFloat(
+						"Empty Step Scale", &state.clouds.empty_step_scale,
+						1.0f, 4.0f, "%.2f");
+					quality_changed |= ImGui::SliderInt(
+						"Sun Cone Samples", &state.clouds.sun_cone_samples, 1, 8);
+					quality_changed |= ImGui::SliderFloat(
+						"History Weight", &state.clouds.history_weight,
+						0.0f, 0.98f, "%.2f");
+					quality_changed |= ImGui::SliderFloat(
+						"Depth Rejection", &state.clouds.depth_rejection,
+						0.01f, 0.5f, "%.3f");
+					if (ImGui::Button("Reset Cloud Quality"))
+					{
+						state.clouds.resolution_scale = State::CloudState::DEFAULT_RESOLUTION_SCALE;
+						state.clouds.view_steps = State::CloudState::DEFAULT_VIEW_STEPS;
+						state.clouds.dense_step_scale = State::CloudState::DEFAULT_DENSE_STEP_SCALE;
+						state.clouds.empty_step_scale = State::CloudState::DEFAULT_EMPTY_STEP_SCALE;
+						state.clouds.sun_cone_samples = State::CloudState::DEFAULT_SUN_CONE_SAMPLES;
+						state.clouds.history_weight = State::CloudState::DEFAULT_HISTORY_WEIGHT;
+						state.clouds.depth_rejection = State::CloudState::DEFAULT_DEPTH_REJECTION;
+						resolution_changed = true;
+						quality_changed = true;
+					}
+					if (resolution_changed)
+						state.window.render_resolution_dirty = true;
+					if (quality_changed)
+						state.clouds.history_reset_requested = true;
+					if (state.clouds.layer_budget_warning)
+						ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+							"3-4 layers may exceed the 4 ms target");
+					ImGui::TextDisabled(
+						"Profiler scopes: shadow, ray march, temporal, composite");
+				}
+			};
 
 			// Keep the controls in the same order as their frame passes.
 			draw_tessellation_controls();
@@ -739,6 +817,7 @@ namespace ImGuiLayer
 			draw_ssao_controls();
 			draw_screen_space_shadow_controls();
 			draw_lighting_controls();
+			draw_cloud_controls();
 			draw_fog_controls();
 			draw_dof_controls();
 			draw_wireframe_controls();
@@ -794,6 +873,41 @@ namespace ImGuiLayer
 				GpuImage& scattering = bruneton_atmosphere_pass.scattering_pass.get_color_output(2);
 				draw_texture(frame_data.linear_sampler, "Atmosphere: Scattering Ground Layer",
 					scattering, 256.0f, scattering.layer_views[0]);
+			}
+			if (ImGui::TreeNode("Cloud System Debug Views"))
+			{
+				ImGui::Text("Active layers: %d  Temporal: %s",
+					state.clouds.active_layer_count,
+					CloudPass::pass.history_valid ? "valid" : "invalid");
+				draw_texture(frame_data.linear_sampler, "Current density / radiance",
+					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(0), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Weighted mean cloud depth",
+					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(1), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Temporal radiance / transmittance",
+					get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().get_color_output(0), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Temporal weighted depth / validity",
+					get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().get_color_output(1), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Reactive mask",
+					get_render_pass(ERenderPass::CloudComposite).get_color_output(2), 256.0f);
+				draw_texture(frame_data.linear_sampler, "Shadow transmittance",
+					get_render_pass(ERenderPass::CloudShadow).get_color_output(0), 256.0f);
+				if (CloudPass::pass.caches_generated)
+				{
+					draw_texture(frame_data.linear_sampler, "Base shape slice 0",
+						CloudPass::pass.base_shape, 256.0f, CloudPass::pass.base_shape.layer_views[0]);
+					draw_texture(frame_data.linear_sampler, "Erosion slice 0",
+						CloudPass::pass.erosion, 256.0f, CloudPass::pass.erosion.layer_views[0]);
+					for (i32 layer_index = 0;
+						layer_index < MIN(state.clouds.active_layer_count, MAX_CLOUD_LAYERS);
+						++layer_index)
+					{
+						char label[64];
+						snprintf(label, sizeof(label), "Weather field layer %d", layer_index + 1);
+						draw_texture(frame_data.linear_sampler, label, CloudPass::pass.weather,
+							256.0f, CloudPass::pass.weather.layer_views[layer_index]);
+					}
+				}
+				ImGui::TreePop();
 			}
 			if (state.bloom.enable && state.bloom.intensity > 0.0f)
 			{

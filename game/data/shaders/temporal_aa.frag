@@ -14,11 +14,13 @@ layout(set = 0, binding = 0) uniform fs_params
 	float rejection_threshold;
 	int history_valid;
 	int debug_mode;
+	int reactive_enable;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D current_color_tex;
 layout(set = 0, binding = 2) uniform sampler2D position_tex;	// nearest sampler
 layout(set = 0, binding = 3) uniform sampler2D history_tex;
+layout(set = 0, binding = 4) uniform sampler2D reactive_mask_tex;
 
 layout(location = 0) in vec2 uv;
 
@@ -89,6 +91,7 @@ bool get_previous_uv(vec3 world_position, out vec2 previous_uv)
 void main()
 {
 	vec4 current_color = texture(current_color_tex, uv);
+	float reactive = reactive_enable != 0 ? texture(reactive_mask_tex, uv).r : 0.0;
 	vec3 min_color = neighborhood_min(uv);
 	vec3 max_color = neighborhood_max(uv);
 	vec3 sharpened_color = sharpen_current(uv, current_color.rgb, min_color, max_color);
@@ -110,8 +113,10 @@ void main()
 		history_color = clamped_history;
 	}
 
+	accepted_history = accepted_history && reactive < 0.98;
+	float reactive_blend_alpha = mix(blend_alpha, min(blend_alpha, 0.08), reactive);
 	vec3 resolved_color = accepted_history
-		? mix(sharpened_color, history_color, blend_alpha)
+		? mix(sharpened_color, history_color, reactive_blend_alpha)
 		: current_color.rgb;
 
 	if (debug_mode == 1)

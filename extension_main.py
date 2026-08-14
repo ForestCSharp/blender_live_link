@@ -8,7 +8,7 @@ except ImportError:
     print("Failed to import cython.")
 
 import bpy
-from bpy.props import (BoolProperty, StringProperty, FloatProperty, FloatVectorProperty, PointerProperty, CollectionProperty, EnumProperty)
+from bpy.props import (BoolProperty, StringProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, CollectionProperty, EnumProperty)
 from bpy.types import (Panel, Operator, PropertyGroup)
 from bpy.app.handlers import persistent
 
@@ -46,7 +46,10 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCharacter
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosphere
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSystem
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
+from .compiled_schemas.python.Blender.LiveLink import CloudLayer
+from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
 from .compiled_schemas.python.Blender.LiveLink import Image
 from .compiled_schemas.python.Blender.LiveLink import Light
 from .compiled_schemas.python.Blender.LiveLink import LightType
@@ -61,6 +64,7 @@ from .compiled_schemas.python.Blender.LiveLink import RigidBody
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
 from .compiled_schemas.python.Blender.LiveLink import SunLight
 from .compiled_schemas.python.Blender.LiveLink import Update
+from .compiled_schemas.python.Blender.LiveLink import Vec2
 from .compiled_schemas.python.Blender.LiveLink import Vec3
 from .compiled_schemas.python.Blender.LiveLink import Vec4
 
@@ -1912,6 +1916,156 @@ class Component_SkyAtmosphere(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentSkyAtmosphere
 
+CLOUD_PROFILE_ITEMS = [
+    ('STRATUS', 'Stratus', 'Low, broad, softly eroded sheet clouds'),
+    ('CUMULUS', 'Cumulus', 'Puffy low clouds with cauliflower-like detail'),
+    ('CUMULONIMBUS', 'Cumulonimbus', 'Deep storm towers with anvil shaping'),
+    ('CIRRUS', 'Cirrus', 'High, thin, strongly eroded clouds'),
+]
+
+CLOUD_PROFILE_DEFAULTS = {
+    'STRATUS': dict(base_altitude_m=1500.0, thickness_m=800.0, coverage=0.75,
+                    density=0.65, shape_scale_m=20000.0, detail_scale_m=2500.0,
+                    erosion=0.25, anvil_bias=0.0, phase_forward=0.65,
+                    phase_backward=-0.2, phase_blend=0.8, ambient_scale=0.75,
+                    multi_scattering_strength=0.6),
+    'CUMULUS': dict(base_altitude_m=1800.0, thickness_m=3000.0, coverage=0.5,
+                    density=1.0, shape_scale_m=8000.0, detail_scale_m=1000.0,
+                    erosion=0.65, anvil_bias=0.1, phase_forward=0.75,
+                    phase_backward=-0.25, phase_blend=0.8, ambient_scale=0.6,
+                    multi_scattering_strength=0.8),
+    'CUMULONIMBUS': dict(base_altitude_m=1200.0, thickness_m=9000.0, coverage=0.35,
+                         density=1.2, shape_scale_m=10000.0, detail_scale_m=1200.0,
+                         erosion=0.55, anvil_bias=0.8, phase_forward=0.8,
+                         phase_backward=-0.25, phase_blend=0.85, ambient_scale=0.5,
+                         multi_scattering_strength=0.85),
+    'CIRRUS': dict(base_altitude_m=8000.0, thickness_m=1500.0, coverage=0.25,
+                   density=0.3, shape_scale_m=24000.0, detail_scale_m=3000.0,
+                   erosion=0.8, anvil_bias=0.0, phase_forward=0.6,
+                   phase_backward=-0.15, phase_blend=0.75, ambient_scale=0.9,
+                   multi_scattering_strength=0.35),
+}
+
+CLOUD_PROFILE_TO_FLATBUFFER = {
+    'STRATUS': CloudLayerProfile.CloudLayerProfile.Stratus,
+    'CUMULUS': CloudLayerProfile.CloudLayerProfile.Cumulus,
+    'CUMULONIMBUS': CloudLayerProfile.CloudLayerProfile.Cumulonimbus,
+    'CIRRUS': CloudLayerProfile.CloudLayerProfile.Cirrus,
+}
+
+def apply_cloud_profile_defaults(layer, profile=None):
+    for name, value in CLOUD_PROFILE_DEFAULTS[profile or layer.profile].items():
+        setattr(layer, name, value)
+
+def cloud_layer_profile_update(self, context):
+    apply_cloud_profile_defaults(self)
+    gameplay_component_property_update(self, context)
+
+class CloudLayerSettings(PropertyGroup):
+    enabled: BoolProperty(name="Enabled", default=True, update=gameplay_component_property_update)
+    profile: EnumProperty(name="Profile", items=CLOUD_PROFILE_ITEMS, default='CUMULUS',
+                          update=cloud_layer_profile_update)
+    seed_offset: IntProperty(name="Seed Offset", default=0, min=0, max=2147483647,
+                             update=gameplay_component_property_update)
+    base_altitude_m: FloatProperty(name="Base Altitude", default=1800.0, min=0.0,
+                                   soft_max=20000.0, subtype='DISTANCE', unit='LENGTH',
+                                   update=gameplay_component_property_update)
+    thickness_m: FloatProperty(name="Thickness", default=3000.0, min=10.0,
+                               soft_max=20000.0, subtype='DISTANCE', unit='LENGTH',
+                               update=gameplay_component_property_update)
+    coverage: FloatProperty(name="Coverage", default=0.5, min=0.0, max=1.0,
+                            update=gameplay_component_property_update)
+    density: FloatProperty(name="Density", default=1.0, min=0.0, max=4.0,
+                           update=gameplay_component_property_update)
+    shape_scale_m: FloatProperty(name="Shape Scale", default=8000.0, min=100.0,
+                                 soft_max=50000.0, subtype='DISTANCE', unit='LENGTH',
+                                 update=gameplay_component_property_update)
+    detail_scale_m: FloatProperty(name="Detail Scale", default=1000.0, min=10.0,
+                                  soft_max=10000.0, subtype='DISTANCE', unit='LENGTH',
+                                  update=gameplay_component_property_update)
+    erosion: FloatProperty(name="Erosion", default=0.65, min=0.0, max=1.0,
+                           update=gameplay_component_property_update)
+    anvil_bias: FloatProperty(name="Anvil Bias", default=0.1, min=0.0, max=1.0,
+                              update=gameplay_component_property_update)
+    wind_multiplier: FloatProperty(name="Wind Multiplier", default=1.0, min=-4.0, max=4.0,
+                                   update=gameplay_component_property_update)
+    phase_forward: FloatProperty(name="Forward Phase", default=0.75, min=-0.95, max=0.95,
+                                 update=gameplay_component_property_update)
+    phase_backward: FloatProperty(name="Backward Phase", default=-0.25, min=-0.95, max=0.95,
+                                  update=gameplay_component_property_update)
+    phase_blend: FloatProperty(name="Forward Phase Blend", default=0.8, min=0.0, max=1.0,
+                               update=gameplay_component_property_update)
+    ambient_scale: FloatProperty(name="Ambient Scale", default=0.6, min=0.0, max=2.0,
+                                 update=gameplay_component_property_update)
+    multi_scattering_strength: FloatProperty(name="Multiple Scattering", default=0.8,
+                                              min=0.0, max=1.0,
+                                              update=gameplay_component_property_update)
+
+    def create_flatbuffers_value(self, builder):
+        CloudLayer.Start(builder)
+        CloudLayer.AddEnabled(builder, self.enabled)
+        CloudLayer.AddProfile(builder, CLOUD_PROFILE_TO_FLATBUFFER[self.profile])
+        CloudLayer.AddSeedOffset(builder, self.seed_offset)
+        CloudLayer.AddBaseAltitudeM(builder, self.base_altitude_m)
+        CloudLayer.AddThicknessM(builder, self.thickness_m)
+        CloudLayer.AddCoverage(builder, self.coverage)
+        CloudLayer.AddDensity(builder, self.density)
+        CloudLayer.AddShapeScaleM(builder, self.shape_scale_m)
+        CloudLayer.AddDetailScaleM(builder, self.detail_scale_m)
+        CloudLayer.AddErosion(builder, self.erosion)
+        CloudLayer.AddAnvilBias(builder, self.anvil_bias)
+        CloudLayer.AddWindMultiplier(builder, self.wind_multiplier)
+        CloudLayer.AddPhaseForward(builder, self.phase_forward)
+        CloudLayer.AddPhaseBackward(builder, self.phase_backward)
+        CloudLayer.AddPhaseBlend(builder, self.phase_blend)
+        CloudLayer.AddAmbientScale(builder, self.ambient_scale)
+        CloudLayer.AddMultiScatteringStrength(builder, self.multi_scattering_strength)
+        return CloudLayer.End(builder)
+
+class Component_CloudSystem(Component):
+    type_name = 'CLOUD_SYSTEM'
+    label = 'Cloud System'
+
+    enabled: BoolProperty(name="Enabled", default=True, update=gameplay_component_property_update)
+    seed: IntProperty(name="Seed", default=1, min=0, max=2147483647,
+                      update=gameplay_component_property_update)
+    weather_world_scale_m: FloatProperty(name="Weather World Scale", default=100000.0,
+                                         min=1000.0, soft_max=500000.0,
+                                         subtype='DISTANCE', unit='LENGTH',
+                                         update=gameplay_component_property_update)
+    wind_direction: FloatVectorProperty(name="Wind Direction", size=2, default=(1.0, 0.0),
+                                        min=-1.0, max=1.0,
+                                        update=gameplay_component_property_update)
+    wind_speed_m_s: FloatProperty(name="Wind Speed", default=20.0, min=0.0, max=200.0,
+                                  update=gameplay_component_property_update)
+    shadow_enabled: BoolProperty(name="Cast Cloud Shadows", default=True,
+                                 update=gameplay_component_property_update)
+    shadow_extent_m: FloatProperty(name="Shadow Extent", default=8000.0, min=1000.0,
+                                   soft_max=200000.0, subtype='DISTANCE', unit='LENGTH',
+                                   update=gameplay_component_property_update)
+    layers: CollectionProperty(type=CloudLayerSettings)
+
+    def create_flatbuffers_value(self, builder, **_kwargs):
+        layer_offsets = [self.layers[index].create_flatbuffers_value(builder)
+                         for index in range(min(len(self.layers), 4))]
+        layers = build_offset_vector(
+            builder, layer_offsets, GameplayComponentCloudSystem.StartLayersVector)
+        GameplayComponentCloudSystem.Start(builder)
+        GameplayComponentCloudSystem.AddEnabled(builder, self.enabled)
+        GameplayComponentCloudSystem.AddSeed(builder, self.seed)
+        GameplayComponentCloudSystem.AddWeatherWorldScaleM(builder, self.weather_world_scale_m)
+        wind_direction = Vec2.CreateVec2(builder, self.wind_direction[0], self.wind_direction[1])
+        GameplayComponentCloudSystem.AddWindDirection(builder, wind_direction)
+        GameplayComponentCloudSystem.AddWindSpeedMS(builder, self.wind_speed_m_s)
+        GameplayComponentCloudSystem.AddShadowEnabled(builder, self.shadow_enabled)
+        GameplayComponentCloudSystem.AddShadowExtentM(builder, self.shadow_extent_m)
+        if layers is not None:
+            GameplayComponentCloudSystem.AddLayers(builder, layers)
+        return GameplayComponentCloudSystem.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentCloudSystem
+
 PART_TYPE_SPECS = [
     ('BODY', 'Body', PartType.PartType.Body, False),
     ('LEGS', 'Legs', PartType.PartType.Legs, True),
@@ -1995,6 +2149,7 @@ COMPONENT_SPECS = [
     (Component_Part, 'part'),
     (Component_AttachmentPoint, 'attachment_point'),
     (Component_SkyAtmosphere, 'sky_atmosphere'),
+    (Component_CloudSystem, 'cloud_system'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -2020,6 +2175,7 @@ class ComponentContainer(PropertyGroup):
     part:           PointerProperty(type=Component_Part)
     attachment_point: PointerProperty(type=Component_AttachmentPoint)
     sky_atmosphere: PointerProperty(type=Component_SkyAtmosphere)
+    cloud_system:   PointerProperty(type=Component_CloudSystem)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
@@ -2088,6 +2244,18 @@ class OBJECT_OT_add_custom_item(Operator):
                 self.report({'WARNING'}, "Sky Atmosphere already exists on this object")
                 return {'CANCELLED'}
 
+        if settings.add_type == Component_CloudSystem.type_name:
+            if obj.type != 'LIGHT' or obj.data.type != 'SUN':
+                self.report({'WARNING'}, "Cloud System can only be added to a Sun light")
+                return {'CANCELLED'}
+            if not any(component.type == Component_SkyAtmosphere.type_name
+                       for component in settings.components):
+                self.report({'WARNING'}, "Add Sky Atmosphere to this Sun before Cloud System")
+                return {'CANCELLED'}
+            if any(component.type == settings.add_type for component in settings.components):
+                self.report({'WARNING'}, "Cloud System already exists on this object")
+                return {'CANCELLED'}
+
         if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name}:
             if any(component.type == settings.add_type for component in settings.components):
                 self.report({'WARNING'}, f"{settings.add_type.replace('_', ' ').title()} already exists on this object")
@@ -2095,6 +2263,16 @@ class OBJECT_OT_add_custom_item(Operator):
 
         new_component = settings.components.add()
         new_component.type = settings.add_type
+
+        if settings.add_type == Component_CloudSystem.type_name:
+            cumulus = new_component.cloud_system.layers.add()
+            cumulus.profile = 'CUMULUS'
+            cumulus.seed_offset = 0
+            apply_cloud_profile_defaults(cumulus)
+            cirrus = new_component.cloud_system.layers.add()
+            cirrus.profile = 'CIRRUS'
+            cirrus.seed_offset = 1
+            apply_cloud_profile_defaults(cirrus)
 
         queue_object_update(obj, update_reason="gameplay_component_added")
 
@@ -2118,6 +2296,76 @@ class OBJECT_OT_remove_custom_item(Operator):
             self.report({'WARNING'}, "Invalid index")
             return {'CANCELLED'}
 
+def get_cloud_system_component(context, component_index):
+    obj = context.object
+    if not obj or component_index < 0 or component_index >= len(obj.live_link_settings.components):
+        return None
+    component = obj.live_link_settings.components[component_index]
+    return component.cloud_system if component.type == Component_CloudSystem.type_name else None
+
+class OBJECT_OT_cloud_layer_add(Operator):
+    bl_idname = "object.live_link_cloud_layer_add"
+    bl_label = "Add Cloud Layer"
+    component_index: IntProperty()
+
+    def execute(self, context):
+        cloud = get_cloud_system_component(context, self.component_index)
+        if cloud is None:
+            return {'CANCELLED'}
+        if len(cloud.layers) >= 4:
+            self.report({'WARNING'}, "Cloud System supports at most four layers")
+            return {'CANCELLED'}
+        layer = cloud.layers.add()
+        layer.profile = 'CUMULUS'
+        layer.seed_offset = len(cloud.layers) - 1
+        apply_cloud_profile_defaults(layer)
+        queue_object_update(context.object, update_reason="cloud_layer_added")
+        return {'FINISHED'}
+
+class OBJECT_OT_cloud_layer_remove(Operator):
+    bl_idname = "object.live_link_cloud_layer_remove"
+    bl_label = "Remove Cloud Layer"
+    component_index: IntProperty()
+    layer_index: IntProperty()
+
+    def execute(self, context):
+        cloud = get_cloud_system_component(context, self.component_index)
+        if cloud is None or not 0 <= self.layer_index < len(cloud.layers):
+            return {'CANCELLED'}
+        cloud.layers.remove(self.layer_index)
+        queue_object_update(context.object, update_reason="cloud_layer_removed")
+        return {'FINISHED'}
+
+class OBJECT_OT_cloud_layer_move(Operator):
+    bl_idname = "object.live_link_cloud_layer_move"
+    bl_label = "Move Cloud Layer"
+    component_index: IntProperty()
+    layer_index: IntProperty()
+    direction: IntProperty(default=1, min=-1, max=1)
+
+    def execute(self, context):
+        cloud = get_cloud_system_component(context, self.component_index)
+        target = self.layer_index + self.direction
+        if cloud is None or not 0 <= self.layer_index < len(cloud.layers) or not 0 <= target < len(cloud.layers):
+            return {'CANCELLED'}
+        cloud.layers.move(self.layer_index, target)
+        queue_object_update(context.object, update_reason="cloud_layer_reordered")
+        return {'FINISHED'}
+
+class OBJECT_OT_cloud_layer_reset_profile(Operator):
+    bl_idname = "object.live_link_cloud_layer_reset_profile"
+    bl_label = "Reset Cloud Layer to Profile"
+    component_index: IntProperty()
+    layer_index: IntProperty()
+
+    def execute(self, context):
+        cloud = get_cloud_system_component(context, self.component_index)
+        if cloud is None or not 0 <= self.layer_index < len(cloud.layers):
+            return {'CANCELLED'}
+        apply_cloud_profile_defaults(cloud.layers[self.layer_index])
+        queue_object_update(context.object, update_reason="cloud_layer_profile_reset")
+        return {'FINISHED'}
+
 # ------------------------------------------------------------
 # Utility function to auto-draw groups
 # ------------------------------------------------------------
@@ -2126,6 +2374,53 @@ def draw_property_group(layout, group):
     for prop in group.bl_rna.properties:
         if prop.identifier != "rna_type":
             layout.prop(group, prop.identifier)
+
+def draw_cloud_system(layout, cloud, component_index):
+    layout.prop(cloud, "enabled")
+    layout.prop(cloud, "seed")
+    layout.prop(cloud, "weather_world_scale_m")
+    layout.prop(cloud, "wind_direction")
+    layout.prop(cloud, "wind_speed_m_s")
+    layout.prop(cloud, "shadow_enabled")
+    if cloud.shadow_enabled:
+        layout.prop(cloud, "shadow_extent_m")
+
+    if len(cloud.layers) > 2:
+        warning = layout.box()
+        warning.label(text="Three or four layers may exceed the 4 ms target", icon='ERROR')
+    for layer_index, layer in enumerate(cloud.layers):
+        layer_box = layout.box()
+        header = layer_box.row(align=True)
+        header.prop(layer, "enabled", text="")
+        header.prop(layer, "profile", text=f"Layer {layer_index + 1}")
+        up = header.operator(OBJECT_OT_cloud_layer_move.bl_idname, text="", icon='TRIA_UP')
+        up.component_index, up.layer_index, up.direction = component_index, layer_index, -1
+        down = header.operator(OBJECT_OT_cloud_layer_move.bl_idname, text="", icon='TRIA_DOWN')
+        down.component_index, down.layer_index, down.direction = component_index, layer_index, 1
+        remove = header.operator(OBJECT_OT_cloud_layer_remove.bl_idname, text="", icon='X')
+        remove.component_index, remove.layer_index = component_index, layer_index
+        if not layer.enabled:
+            continue
+        primary = layer_box.column(align=True)
+        primary.prop(layer, "base_altitude_m")
+        primary.prop(layer, "thickness_m")
+        primary.prop(layer, "coverage")
+        primary.prop(layer, "density")
+        advanced = layer_box.box()
+        advanced.label(text="Advanced")
+        for property_name in (
+            "seed_offset", "shape_scale_m", "detail_scale_m", "erosion", "anvil_bias",
+            "wind_multiplier", "phase_forward", "phase_backward", "phase_blend",
+            "ambient_scale", "multi_scattering_strength"):
+            advanced.prop(layer, property_name)
+        reset = advanced.operator(OBJECT_OT_cloud_layer_reset_profile.bl_idname,
+                                  text="Reset to Profile", icon='FILE_REFRESH')
+        reset.component_index, reset.layer_index = component_index, layer_index
+
+    add = layout.operator(OBJECT_OT_cloud_layer_add.bl_idname, text="Add Cloud Layer", icon='ADD')
+    add.component_index = component_index
+    if len(cloud.layers) >= 4:
+        layout.label(text="Four-layer maximum reached")
 
 # ------------------------------------------------------------
 # Panel UI
@@ -2159,7 +2454,10 @@ class OBJECT_PT_custom_object_panel(Panel):
             if group_name:
                 group = getattr(component, group_name, None)
                 if group:
-                    draw_property_group(box, group)
+                    if component.type == Component_CloudSystem.type_name:
+                        draw_cloud_system(box, group, i)
+                    else:
+                        draw_property_group(box, group)
 
 
 # ------------------------------------------------------------
@@ -2178,11 +2476,16 @@ classes_to_register = [
     LiveLinkView3DPanel,
 
     # Custom Property Group System
+    CloudLayerSettings,
     *COMPONENT_CLASSES,
     ComponentContainer,
     LiveLinkObjectSettings,
     OBJECT_OT_add_custom_item,
     OBJECT_OT_remove_custom_item,
+    OBJECT_OT_cloud_layer_add,
+    OBJECT_OT_cloud_layer_remove,
+    OBJECT_OT_cloud_layer_move,
+    OBJECT_OT_cloud_layer_reset_profile,
     OBJECT_PT_custom_object_panel,
 ]
 

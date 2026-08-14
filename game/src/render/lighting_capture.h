@@ -1324,7 +1324,7 @@ struct LightingCapture
 					.pBufferInfo = &light_infos[binding_idx - 6],
 				};
 			}
-			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14, 18, 19 };
+			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14, 18, 19, 22 };
 			for (u32 binding_idx : fallback_image_bindings)
 			{
 				writes[write_count++] = (VkWriteDescriptorSet) {
@@ -1360,7 +1360,9 @@ struct LightingCapture
 				&atmosphere_buffer_info);
 			VkDescriptorImageInfo atmosphere_image_info = descriptor_sampled(
 				::lighting_pass.linear_sampler,
-				bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view);
+				bruneton_atmosphere_pass.has_precomputed
+					? bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
+					: default_image.view);
 			writes[write_count++] = descriptor_write_image(
 				slot_set, 21, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				&atmosphere_image_info);

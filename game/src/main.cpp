@@ -90,6 +90,7 @@ using std::optional;
 #include "ui/debug_ui_system.h"
 
 static AutomatedScreenshot automated_screenshot;
+static bool cloud_shadow_validation_capture_finished = false;
 static bool tonemapping_validation_capture_finished = false;
 static bool tonemapping_validation_capture_failed = false;
 static i32 tonemapping_validation_capture_count = 0;
@@ -181,6 +182,18 @@ void frame(f32 in_delta_time)
 		tonemapping_validation_capture_finished =
 			tonemapping_validation_capture_failed || tonemapping_validation_capture_count == 2;
 	}
+	if (runtime_config.cloud_shadow_validation_capture
+		&& !cloud_shadow_validation_capture_finished
+		&& state.vk.frame_number >= runtime_config.screenshot_frame
+		&& state.clouds.active
+		&& CloudPass::pass.shadow_update_count >= 4
+		&& !state.gi.layout_dirty
+		&& !state.gi.is_updating)
+	{
+		cloud_shadow_validation_capture_finished = true;
+		RenderSystem::dump_cloud_shadow_validation(
+			state, *runtime_config.cloud_shadow_validation_capture);
+	}
 
 	InputSystem::reset_mouse_delta(state);
 }
@@ -199,6 +212,7 @@ int main(int argc, char** argv)
 		("warmup-frames", "Benchmark warmup frame count", cxxopts::value<u64>()->default_value("300"))
 		("benchmark-frames", "Measured frame count; providing this enables benchmark mode", cxxopts::value<u64>())
 		("benchmark-output", "Benchmark JSON output path", cxxopts::value<std::string>()->default_value("benchmark.json"))
+		("fullscreen", "Use the primary monitor in fullscreen mode", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
 	;
 
 	// First positional arg can be file to load
@@ -213,6 +227,7 @@ int main(int argc, char** argv)
 	}
 	state.live_link.port = args["port"].as<std::string>();
 	const bool no_live_link = args["no-live-link"].as<bool>();
+	const bool fullscreen = args["fullscreen"].as<bool>();
 	BenchmarkState benchmark;
 	if (args.count("benchmark-frames") > 0)
 	{
@@ -245,10 +260,16 @@ int main(int argc, char** argv)
 		glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
 		#endif
 	}
+	GLFWmonitor* window_monitor = fullscreen && !tonemapping_validation
+		? glfwGetPrimaryMonitor() : nullptr;
+	const GLFWvidmode* fullscreen_mode = window_monitor
+		? glfwGetVideoMode(window_monitor) : nullptr;
 	GLFWwindow* window = glfwCreateWindow(
-		tonemapping_validation ? 768 : state.window.width,
-		tonemapping_validation ? 512 : state.window.height,
-		"Blender Game", nullptr, nullptr);
+		tonemapping_validation ? 768
+			: fullscreen_mode ? fullscreen_mode->width : state.window.width,
+		tonemapping_validation ? 512
+			: fullscreen_mode ? fullscreen_mode->height : state.window.height,
+		"Blender Game", window_monitor, nullptr);
 	if (!window)
 	{
 		printf("Failed to create GLFW window\n");

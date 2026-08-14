@@ -6,6 +6,7 @@
 #include "input/input_system.h"
 #include "render/auto_adaptation_pass.h"
 #include "render/bloom_pass.h"
+#include "render/cloud_pass.h"
 #include "render/blur_pass.h"
 #include "render/copy_to_swapchain_pass.h"
 #include "render/dof_combine_pass.h"
@@ -51,6 +52,20 @@ namespace RenderSystem
 				&in_state.vk, &composite, (prefix + ".composite.pfm").c_str());
 	}
 
+	inline bool dump_cloud_shadow_validation(State& in_state, const std::string& path)
+	{
+		const bool shadow_succeeded = vulkan_context_dump_image_pfm(
+			&in_state.vk,
+			&get_render_pass(ERenderPass::CloudShadow).get_color_output(0),
+			path.c_str());
+		const std::string lighting_path = path + ".lighting.pfm";
+		const bool lighting_succeeded = vulkan_context_dump_image_pfm(
+			&in_state.vk,
+			&get_render_pass(ERenderPass::Lighting).get_color_output(0),
+			lighting_path.c_str());
+		return shadow_succeeded && lighting_succeeded;
+	}
+
 	// Derives the internal render size from the window size and resolution
 	// percentage.
 	void update_render_resolution(State& in_state)
@@ -85,6 +100,13 @@ namespace RenderSystem
 		in_state.window.width = framebuffer_width;
 		in_state.window.height = framebuffer_height;
 		update_render_resolution(in_state);
+		const f32 cloud_resolution_scale = CLAMP(in_state.clouds.resolution_scale, 0.5f, 1.0f);
+		get_render_pass_entry(ERenderPass::CloudRaymarch).final_pass().desc.width_scale = cloud_resolution_scale;
+		get_render_pass_entry(ERenderPass::CloudRaymarch).final_pass().desc.height_scale = cloud_resolution_scale;
+		get_render_pass_entry(ERenderPass::CloudTemporal).intermediate_pass().desc.width_scale = cloud_resolution_scale;
+		get_render_pass_entry(ERenderPass::CloudTemporal).intermediate_pass().desc.height_scale = cloud_resolution_scale;
+		get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().desc.width_scale = cloud_resolution_scale;
+		get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().desc.height_scale = cloud_resolution_scale;
 	
 		// Old pass targets are retired against this frame slot; no device-wide
 		// wait is required for render-scale or offscreen target replacement.
@@ -115,6 +137,7 @@ namespace RenderSystem
 	
 		// The TAA history targets were just recreated
 		in_state.temporal_aa.history_valid = false;
+		in_state.clouds.history_reset_requested = true;
 		in_state.window.render_resolution_dirty = false;
 	}
 
@@ -220,10 +243,11 @@ namespace RenderSystem
 			GpuSkinning::init(&in_state.vk);
 			Tessellation::init(&in_state.vk);
 			lighting_pass_init(&in_state.vk, frame_data.linear_sampler);
+			sky_pass_init(&in_state.vk);
+			CloudPass::init(&in_state.vk);
 			BloomPass::init(&in_state.vk, frame_data.linear_sampler);
 			AutoAdaptationPass::init(&in_state.vk, frame_data.linear_sampler);
 			tonemapping_pass_init(&in_state.vk);
-			sky_pass_init(&in_state.vk);
 			copy_to_swapchain_pass_init(&in_state.vk);
 		
 			// These buffers must exist even for empty scenes: descriptor set 0
@@ -393,6 +417,48 @@ namespace RenderSystem
 				},
 				.type = ERenderPassType::Single,
 				.debug_label = "Lighting",
+			});
+
+			const auto make_cloud_pair_desc = [&in_state](const char* label)
+			{
+				return (RenderPassDesc) {
+					.num_outputs = 2,
+					.outputs = {
+						{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+							.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+						{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+							.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					},
+					.width_scale = in_state.clouds.resolution_scale,
+					.height_scale = in_state.clouds.resolution_scale,
+					.debug_label = label,
+				};
+			};
+			get_render_pass_entry(ERenderPass::CloudRaymarch).init_final(
+				make_cloud_pair_desc("Cloud Ray March"));
+			get_render_pass_entry(ERenderPass::CloudTemporal).init_intermediate(
+				make_cloud_pair_desc("Cloud Temporal Set 0"));
+			get_render_pass_entry(ERenderPass::CloudTemporal).init_final(
+				make_cloud_pair_desc("Cloud Temporal Set 1"));
+			get_render_pass_entry(ERenderPass::CloudComposite).init_final((RenderPassDesc) {
+				.num_outputs = 3,
+				.outputs = {
+					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+				},
+				.debug_label = "Cloud Composite",
+			});
+			get_render_pass_entry(ERenderPass::CloudShadow).init_final((RenderPassDesc) {
+				.initial_width = 512, .initial_height = 512,
+				.num_outputs = 1,
+				.outputs = {{ .format = VK_FORMAT_R16_SFLOAT,
+					.load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE }},
+				.resize_with_window = false,
+				.debug_label = "Cloud Sun Shadow",
 			});
 		
 			get_render_pass_entry(ERenderPass::Fog).init_final((RenderPassDesc) {
@@ -602,6 +668,87 @@ namespace RenderSystem
 				(i32) in_state.images.items.length()
 			);
 			RenderPass& tonemapping_render_pass = get_render_pass(ERenderPass::Tonemapping);
+			RenderPass& cloud_raymarch_render_pass = get_render_pass(ERenderPass::CloudRaymarch);
+			RenderPassEntry& cloud_temporal_entry = get_render_pass_entry(ERenderPass::CloudTemporal);
+			RenderPass& cloud_composite_render_pass = get_render_pass(ERenderPass::CloudComposite);
+			RenderPass& cloud_shadow_render_pass = get_render_pass(ERenderPass::CloudShadow);
+			const i32 cloud_history_output_index = CloudPass::pass.history_index;
+			const i32 cloud_history_previous_index = (cloud_history_output_index + 1) % 2;
+			const auto get_cloud_history_pass = [&](i32 set_index) -> RenderPass& {
+				return set_index == 0 ? cloud_temporal_entry.intermediate_pass()
+					: cloud_temporal_entry.final_pass();
+			};
+			const bool cloud_render_active = in_state.clouds.active
+				&& in_state.scene.active_cloud_controller_id.has_value()
+				&& in_state.scene.objects.contains(*in_state.scene.active_cloud_controller_id)
+				&& sky_pass.has_active_atmosphere
+				&& bruneton_atmosphere_pass.has_precomputed
+				&& in_state.clouds.active_layer_count > 0;
+			const bool cloud_shadow_render_active = cloud_render_active
+				&& in_state.scene.objects[*in_state.scene.active_cloud_controller_id]
+					.cloud_system.shadow_enabled
+				&& in_state.scene.objects[*in_state.scene.active_cloud_controller_id]
+					.light.sun.cast_shadows;
+			const bool cloud_shadow_lighting_active = cloud_shadow_render_active
+				&& in_state.clouds.shadow_lighting_enabled;
+			if (cloud_render_active)
+			{
+				Object& cloud_controller =
+					in_state.scene.objects[*in_state.scene.active_cloud_controller_id];
+				const CloudSystem& cloud_system = cloud_controller.cloud_system;
+				const u64 signature = CloudPass::cloud_signature(
+					*in_state.scene.active_cloud_controller_id, cloud_system);
+				if (signature != CloudPass::pass.parameter_signature
+					|| in_state.clouds.history_reset_requested)
+				{
+					CloudPass::pass.parameter_signature = signature;
+					CloudPass::pass.history_valid = false;
+					in_state.clouds.history_reset_requested = false;
+				}
+				CloudPass::generate_caches(
+					&in_state.vk, cloud_system.seed, cloud_system.layer_count);
+				in_state.clouds.elapsed_time_seconds += MAX(in_delta_time, 0.0f);
+				CloudGpuParams cloud_params = CloudPass::build_params(
+					in_state, cloud_controller, view_projection_matrix,
+					camera.location, camera.forward, in_delta_time);
+				VkBuffer cloud_params_buffer = CloudPass::pass.params.update(&in_state.vk, cloud_params);
+				CloudPass::write_sampled_set(&in_state.vk,
+					CloudPass::pass.raymarch_sets.current(&in_state.vk), cloud_params_buffer,
+					CloudPass::pass.base_shape.view, CloudPass::pass.repeat_sampler,
+					CloudPass::pass.erosion.view, CloudPass::pass.repeat_sampler,
+					CloudPass::pass.weather.view, CloudPass::pass.repeat_sampler,
+					geometry_render_pass.get_color_output(1).view, frame_data.linear_sampler);
+				CloudPass::write_sampled_set(&in_state.vk,
+					CloudPass::pass.temporal_sets.current(&in_state.vk), cloud_params_buffer,
+					cloud_raymarch_render_pass.get_color_output(0).view, frame_data.linear_sampler,
+					cloud_raymarch_render_pass.get_color_output(1).view, frame_data.linear_sampler,
+					get_cloud_history_pass(cloud_history_previous_index).get_color_output(0).view, frame_data.linear_sampler,
+					get_cloud_history_pass(cloud_history_previous_index).get_color_output(1).view, frame_data.linear_sampler);
+				CloudPass::write_sampled_set(&in_state.vk,
+					CloudPass::pass.composite_sets.current(&in_state.vk), cloud_params_buffer,
+					lighting_render_pass.get_color_output(0).view, frame_data.linear_sampler,
+					geometry_render_pass.get_color_output(1).view, frame_data.linear_sampler,
+					get_cloud_history_pass(cloud_history_output_index).get_color_output(0).view, frame_data.linear_sampler,
+					get_cloud_history_pass(cloud_history_output_index).get_color_output(1).view, frame_data.linear_sampler);
+				CloudPass::write_sampled_set(&in_state.vk,
+					CloudPass::pass.shadow_sets.current(&in_state.vk), cloud_params_buffer,
+					CloudPass::pass.base_shape.view, CloudPass::pass.repeat_sampler,
+					CloudPass::pass.erosion.view, CloudPass::pass.repeat_sampler,
+					CloudPass::pass.weather.view, CloudPass::pass.repeat_sampler,
+					geometry_render_pass.get_color_output(1).view, frame_data.linear_sampler);
+			}
+			else
+			{
+				CloudPass::pass.history_valid = false;
+			}
+			CloudPass::initialize_shadow(&in_state.vk,
+				cloud_shadow_render_pass.get_color_output(0));
+			VkImageView pre_fog_scene_color_view = cloud_render_active
+				? cloud_composite_render_pass.get_color_output(0).view
+				: lighting_render_pass.get_color_output(0).view;
+			VkImageView pre_fog_position_view = cloud_render_active
+				? cloud_composite_render_pass.get_color_output(1).view
+				: geometry_render_pass.get_color_output(1).view;
 			// Height fog runs when an enabled fog controller exists; downstream
 			// passes read its output instead of the lighting target
 			RenderPass& fog_render_pass = get_render_pass(ERenderPass::Fog);
@@ -635,8 +782,8 @@ namespace RenderSystem
 				fog_pass_update(
 					&in_state.vk,
 					fog_fs_params,
-					lighting_render_pass.get_color_output(0).view,
-					geometry_render_pass.get_color_output(1).view,
+					pre_fog_scene_color_view,
+					pre_fog_position_view,
 					bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
 					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 				);
@@ -644,7 +791,7 @@ namespace RenderSystem
 		
 			VkImageView post_fog_scene_color_view = fog_render_active
 				? fog_render_pass.get_color_output(0).view
-				: lighting_render_pass.get_color_output(0).view;
+				: pre_fog_scene_color_view;
 		
 			// DOF gathers from the post-fog color; tonemapping reads whichever pass
 			// ran last
@@ -666,7 +813,7 @@ namespace RenderSystem
 					&in_state.vk,
 					dof_combine_fs_params,
 					post_fog_scene_color_view,
-					geometry_render_pass.get_color_output(1).view
+					pre_fog_position_view
 				);
 			}
 		
@@ -719,13 +866,17 @@ namespace RenderSystem
 					.rejection_threshold = in_state.temporal_aa.rejection_threshold,
 					.history_valid = in_state.temporal_aa.history_valid ? 1 : 0,
 					.debug_mode = in_state.temporal_aa.debug_mode,
+					.reactive_enable = cloud_render_active ? 1 : 0,
 				};
 				TemporalAAPass::update(
 					&in_state.vk,
 					temporal_aa_fs_params,
 					post_wire_scene_color_view,
-					geometry_render_pass.get_color_output(1).view,
-					get_temporal_aa_pass(temporal_aa_previous_index).get_color_output(1).view
+					pre_fog_position_view,
+					get_temporal_aa_pass(temporal_aa_previous_index).get_color_output(1).view,
+					cloud_render_active
+						? cloud_composite_render_pass.get_color_output(2).view
+						: geometry_render_pass.get_color_output(0).view
 				);
 			}
 		
@@ -737,7 +888,9 @@ namespace RenderSystem
 						? &dof_combine_render_pass.get_color_output(0)
 						: fog_render_active
 							? &fog_render_pass.get_color_output(0)
-							: &lighting_render_pass.get_color_output(0);
+							: cloud_render_active
+								? &cloud_composite_render_pass.get_color_output(0)
+								: &lighting_render_pass.get_color_output(0);
 			VkImageView pre_tonemap_scene_color_view = pre_tonemap_scene_color->view;
 			const bool bloom_active = in_state.bloom.enable && in_state.bloom.intensity > 0.0f;
 			const f32 bloom_intensity = bloom_active
@@ -760,8 +913,11 @@ namespace RenderSystem
 			{
 				FXAAPass::update(&in_state.vk, tonemapping_render_pass.get_color_output(0).view);
 			}
-			const VkImageView presentation_input =
-				in_state.images.enable_debug_fullscreen && in_state.images.items.length() > 0
+			const bool show_cloud_shadow_fullscreen =
+				in_state.clouds.debug_show_shadow_map_fullscreen;
+			const VkImageView presentation_input = show_cloud_shadow_fullscreen
+				? cloud_shadow_render_pass.get_color_output(0).view
+				: in_state.images.enable_debug_fullscreen && in_state.images.items.length() > 0
 					? in_state.images.items[CLAMP(in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)].view
 					: (fxaa_active
 						? fxaa_render_pass.get_color_output(0).view
@@ -863,6 +1019,13 @@ namespace RenderSystem
 				&& in_state.lighting.active_atmosphere_sun_index >= 0 ? 1 : 0;
 			lighting_fs_params.atmosphere_planet_center_z =
 				sky_pass.active_parameters.planet_center_z_m;
+			lighting_fs_params.cloud_shadow_extent_enabled = HMM_V4(
+				cloud_shadow_lighting_active
+					? in_state.scene.objects[*in_state.scene.active_cloud_controller_id]
+						.cloud_system.shadow_extent_m
+					: 8000.0f,
+				cloud_shadow_lighting_active ? 1.0f : 0.0f,
+				0.0f, 0.0f);
 			// Lighting samples the blurred moments (soft penumbra) unless the blur is
 			// disabled; blur is enabled by default.
 			VkImageView shadow_moments_view = in_state.shadow.blur_enable
@@ -889,7 +1052,10 @@ namespace RenderSystem
 				gi_scene_get_specular_lighting_view(g_gi_scene),
 				gi_scene_get_brdf_lut_view(g_gi_scene),
 				bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
-				bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
+				bruneton_atmosphere_pass.has_precomputed
+					? bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
+					: cloud_shadow_render_pass.get_color_output(0).view,
+				cloud_shadow_render_pass.get_color_output(0).view
 			);
 		
 			ssao_pass_update(
@@ -1040,11 +1206,59 @@ namespace RenderSystem
 				screen_space_shadows_entry.final_pass().get_color_output(0),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			);
+			// Update one interleaved quarter before deferred lighting so opaque
+			// surfaces receive this frame's cloud transmittance.
+			if (cloud_shadow_render_active)
+			{
+				cloud_shadow_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				{
+					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.shadow_pipeline,
+						CloudPass::pass.basic_pipeline_layout,
+						CloudPass::pass.shadow_sets.current(&in_state.vk), false);
+				});
+				CloudPass::pass.shadow_update_count += 1;
+			}
 		
 			lighting_render_pass.execute_sampled(&in_state.vk, [&](i32)
 			{
 				lighting_pass_draw(&in_state.vk);
 			});
+
+			if (cloud_render_active)
+			{
+				const i32 cloud_timing = gpu_timestamps_begin_scope(&in_state.vk, "Cloud System");
+				vulkan_begin_debug_label(&in_state.vk, "Cloud System");
+				cloud_raymarch_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				{
+					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.raymarch_pipeline,
+						CloudPass::pass.atmosphere_pipeline_layout,
+						CloudPass::pass.raymarch_sets.current(&in_state.vk), true);
+				});
+				for (i32 set_index = 0; set_index < 2; ++set_index)
+				{
+					for (i32 output_index = 0; output_index < 2; ++output_index)
+						gpu_image_transition(vulkan_current_command_buffer(&in_state.vk),
+							get_cloud_history_pass(set_index).get_color_output(output_index),
+							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				}
+				RenderPass& cloud_history_target = get_cloud_history_pass(cloud_history_output_index);
+				cloud_history_target.execute_sampled(&in_state.vk, [&](i32)
+				{
+					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.temporal_pipeline,
+						CloudPass::pass.basic_pipeline_layout,
+						CloudPass::pass.temporal_sets.current(&in_state.vk), false);
+				});
+				cloud_composite_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				{
+					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.composite_pipeline,
+						CloudPass::pass.atmosphere_pipeline_layout,
+						CloudPass::pass.composite_sets.current(&in_state.vk), true);
+				});
+				CloudPass::pass.history_valid = true;
+				CloudPass::pass.history_index = cloud_history_previous_index;
+				gpu_timestamps_end_scope(&in_state.vk, cloud_timing);
+				vulkan_end_debug_label(&in_state.vk);
+			}
 		
 			// Fog reads the lit scene + G-buffer position; tonemapping then reads the
 			// post-fog color (or the lighting output directly when fog is off)
@@ -1187,7 +1401,8 @@ namespace RenderSystem
 			}
 			get_render_pass(ERenderPass::PresentationComposite).execute_sampled(&in_state.vk, [&](i32)
 			{
-				copy_to_swapchain_pass_draw_presentation(&in_state.vk);
+				copy_to_swapchain_pass_draw_presentation(
+					&in_state.vk, show_cloud_shadow_fullscreen);
 				ImGuiLayer::draw_local_tonemapping_debug(
 					in_state,
 					tonemapping_render_pass.get_color_output(0).view);
@@ -1229,6 +1444,7 @@ namespace RenderSystem
 		}
 
 		copy_to_swapchain_pass_shutdown(&in_state.vk);
+		CloudPass::shutdown(&in_state.vk);
 		sky_pass_shutdown(&in_state.vk);
 		tonemapping_pass_shutdown(&in_state.vk);
 		AutoAdaptationPass::shutdown(&in_state.vk);

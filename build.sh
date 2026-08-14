@@ -88,6 +88,45 @@ log_build() {
 	echo "[$(timestamp)] $*"
 }
 
+stop_running_blender_instances() {
+	log_build "Blender branch: stopping currently running Blender instances"
+
+	if [[ $OS = Windows ]]; then
+		taskkill.exe //F //IM blender.exe > /dev/null 2>&1 || true
+		return 0
+	fi
+
+	if [[ $OS != Mac && $OS != Linux ]]; then
+		echo "Error: cannot stop running Blender instances on $OS."
+		return 1
+	fi
+
+	# Blender's process name is normally capitalized on macOS and lowercase on
+	# Linux. Check both so custom binaries are covered as well.
+	pkill -TERM -x Blender 2> /dev/null || true
+	pkill -TERM -x blender 2> /dev/null || true
+	if [[ $OS = Linux ]] && command -v flatpak > /dev/null 2>&1; then
+		flatpak kill org.blender.Blender 2> /dev/null || true
+	fi
+
+	local attempts=0
+	while pgrep -x Blender > /dev/null 2>&1 || pgrep -x blender > /dev/null 2>&1; do
+		if (( attempts >= 50 )); then
+			log_build "Blender branch: forcing remaining Blender instances to stop"
+			pkill -KILL -x Blender 2> /dev/null || true
+			pkill -KILL -x blender 2> /dev/null || true
+			break
+		fi
+		sleep 0.1
+		attempts=$((attempts + 1))
+	done
+
+	if pgrep -x Blender > /dev/null 2>&1 || pgrep -x blender > /dev/null 2>&1; then
+		echo "Error: one or more Blender instances could not be stopped."
+		return 1
+	fi
+}
+
 set_blender_build_mode() {
 	local requested_mode=$1
 	if [[ $BLENDER_BUILD_MODE_WAS_SET = true && $BLENDER_BUILD_MODE != "$requested_mode" ]]; then
@@ -210,13 +249,11 @@ resolve_installed_blender() {
 
 install_and_launch_installed_blender() {
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
+	stop_running_blender_instances || return
 
 	if [[ $OS = Windows ]]; then
 		log_build "Blender branch: installing extension into installed Blender"
 		# Note: blender.exe should be on system path on windows
-		# kill previous blender instances
-		taskkill.exe //F //IM blender.exe || true
-		sleep 0.5
 		# install add-on and wait for completion
 		blender.exe "${install_args[@]}" || return
 		sleep 0.5
@@ -225,8 +262,6 @@ install_and_launch_installed_blender() {
 		start "" blender.exe $run_args || return
 	elif [[ $OS = Mac ]]; then
 		log_build "Blender branch: installing extension into /Applications/Blender.app"
-		# kill previous blender instances
-		killall Blender || true
 		# install add-on and wait for completion
 		/Applications/Blender.app/Contents/MacOS/Blender "${install_args[@]}" || return
 		sleep 0.5
@@ -237,11 +272,6 @@ install_and_launch_installed_blender() {
 		resolve_installed_blender || return
 
 		log_build "Blender branch: installing extension into installed Blender"
-		if [[ $INSTALLED_BLENDER_KIND = binary ]]; then
-			pkill -x blender 2> /dev/null || true
-		elif [[ $INSTALLED_BLENDER_KIND = flatpak ]]; then
-			flatpak kill org.blender.Blender 2> /dev/null || true
-		fi
 		"${INSTALLED_BLENDER_COMMAND[@]}" "${install_args[@]}" || return
 		sleep 0.5
 		log_build "Blender branch: launching installed Blender"
@@ -273,10 +303,7 @@ install_and_launch_native_blender() {
 	fi
 
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
-
-	if [[ $OS = Linux ]]; then
-		pkill -x blender 2> /dev/null || true
-	fi
+	stop_running_blender_instances || return
 
 	echo "Installing extension into local Blender profile at $NATIVE_BLENDER_USER_DIR"
 	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "${install_args[@]}" || return

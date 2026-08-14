@@ -50,6 +50,7 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	vec3 shadow_cascade_view_position;
 	vec3 shadow_cascade_view_forward;
 	mat4 shadow_view_projections[4];
+	vec4 cloud_shadow_extent_enabled;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D color_tex;
@@ -103,6 +104,7 @@ layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
 layout(set = 0, binding = 18) uniform sampler2D specular_probe_atlas;
 layout(set = 0, binding = 19) uniform sampler2D brdf_lut;
 layout(set = 0, binding = 21) uniform sampler2D atmosphere_transmittance_tex;
+layout(set = 0, binding = 22) uniform sampler2D cloud_shadow_transmittance_tex;
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -591,6 +593,23 @@ void main()
 					{
 						float screen_space_shadow_visibility = texture(screen_space_shadow_tex, uv).r;
 						sun_shadow_visibility *= mix(1.0, screen_space_shadow_visibility, screen_space_shadow_intensity);
+					}
+
+					if (cloud_shadow_extent_enabled.y > 0.5
+						&& i == atmosphere_sun_index
+						&& sun_lights[i].cast_shadows != 0)
+					{
+						float cloud_extent = max(cloud_shadow_extent_enabled.x, 1000.0);
+						vec2 cloud_uv = (position.xy - view_position.xy) / cloud_extent + 0.5;
+						if (all(greaterThanEqual(cloud_uv, vec2(0.0)))
+							&& all(lessThanEqual(cloud_uv, vec2(1.0))))
+						{
+							float boundary = smoothstep(0.0, 0.08,
+								min(min(cloud_uv.x, cloud_uv.y),
+									min(1.0 - cloud_uv.x, 1.0 - cloud_uv.y)));
+							float cloud_visibility = texture(cloud_shadow_transmittance_tex, cloud_uv).r;
+							sun_shadow_visibility *= mix(1.0, cloud_visibility, boundary);
+						}
 					}
 
 					final_color.xyz += sun_shadow_visibility * sample_sun_light(

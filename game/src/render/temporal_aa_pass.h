@@ -23,7 +23,8 @@ struct TemporalAaFsParams
 	f32 rejection_threshold;
 	i32 history_valid;
 	i32 debug_mode;
-	f32 _pad0[3];
+	i32 reactive_enable;
+	f32 _pad0[2];
 };
 static_assert(sizeof(TemporalAaFsParams) == 112, "TemporalAaFsParams must match temporal_aa.frag's fs_params std140 layout");
 
@@ -88,16 +89,16 @@ namespace TemporalAAPass
 		VK_CHECK(vkCreateSampler(ctx->device, &nearest_create_info, nullptr, &nearest_sampler));
 
 		// Set layout: b0 fs UBO, b1 current color CIS, b2 position CIS,
-		// b3 history CIS
+		// b3 history CIS, b4 optional reactive mask CIS
 		{
-			VkDescriptorSetLayoutBinding bindings[4] = {};
+			VkDescriptorSetLayoutBinding bindings[5] = {};
 			bindings[0] = (VkDescriptorSetLayoutBinding) {
 				.binding = 0,
 				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				.descriptorCount = 1,
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			};
-			for (u32 binding_idx = 1; binding_idx <= 3; ++binding_idx)
+			for (u32 binding_idx = 1; binding_idx <= 4; ++binding_idx)
 			{
 				bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
 					.binding = binding_idx,
@@ -108,7 +109,7 @@ namespace TemporalAAPass
 			}
 			VkDescriptorSetLayoutCreateInfo layout_create_info = {
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 4,
+				.bindingCount = 5,
 				.pBindings = bindings,
 			};
 			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &set_layout));
@@ -118,7 +119,7 @@ namespace TemporalAAPass
 		{
 			VkDescriptorPoolSize pool_sizes[] = {
 				{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT },
-				{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT },
+				{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 * MAX_FRAMES_IN_FLIGHT },
 			};
 			VkDescriptorPoolCreateInfo pool_create_info = {
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -256,7 +257,8 @@ namespace TemporalAAPass
 		const TemporalAaFsParams& in_fs_params,
 		VkImageView in_current_color_view,
 		VkImageView in_gbuffer_position_view,
-		VkImageView in_previous_history_view
+		VkImageView in_previous_history_view,
+		VkImageView in_reactive_mask_view
 	)
 	{
 		const u32 frame_index = ctx->frame_index;
@@ -284,9 +286,14 @@ namespace TemporalAAPass
 				.imageView = in_previous_history_view,
 				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			},
+			{
+				.sampler = linear_sampler,
+				.imageView = in_reactive_mask_view,
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			},
 		};
 
-		VkWriteDescriptorSet writes[4] = {};
+		VkWriteDescriptorSet writes[5] = {};
 		writes[0] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = sets[frame_index],
@@ -295,7 +302,7 @@ namespace TemporalAAPass
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.pBufferInfo = &ubo_info,
 		};
-		for (u32 image_idx = 0; image_idx < 3; ++image_idx)
+		for (u32 image_idx = 0; image_idx < 4; ++image_idx)
 		{
 			writes[1 + image_idx] = (VkWriteDescriptorSet) {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -306,7 +313,7 @@ namespace TemporalAAPass
 				.pImageInfo = &image_infos[image_idx],
 			};
 		}
-		vulkan_update_descriptor_sets(ctx, 4, writes);
+		vulkan_update_descriptor_sets(ctx, 5, writes);
 	}
 
 	inline void draw(VulkanContext* ctx)

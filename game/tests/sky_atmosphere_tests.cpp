@@ -76,6 +76,48 @@ static void test_controller_selection()
 	assert(state.scene.primary_sun_id == 20); // legacy non-sky fallback
 }
 
+static void test_cloud_controller_selection()
+{
+	State state = {};
+	Object& primary = add_sun(state, 10);
+	primary.has_cloud_system = true;
+	primary.cloud_system.enabled = true;
+	primary.cloud_system.layer_count = 2;
+	primary.cloud_system.layers[0].enabled = true;
+	primary.cloud_system.layers[1].enabled = true;
+	Object& secondary = add_sun(state, 20);
+	secondary.has_cloud_system = true;
+	secondary.cloud_system.enabled = true;
+	secondary.cloud_system.layer_count = 1;
+	secondary.cloud_system.layers[0].enabled = true;
+
+	scene_ensure_indexes(state);
+	SceneSystem::refresh_active_sky_controller(state);
+	SceneSystem::refresh_active_cloud_controller(state);
+	assert(state.scene.active_sky_controller_id == 10);
+	assert(state.scene.active_cloud_controller_id == 10);
+	assert(state.clouds.active);
+	assert(state.clouds.active_layer_count == 2);
+	assert(state.scene.invalid_cloud_controller_count == 1);
+
+	state.scene.objects.at(10).visibility = false;
+	SceneSystem::refresh_active_sky_controller(state);
+	SceneSystem::refresh_active_cloud_controller(state);
+	assert(state.scene.active_sky_controller_id == 20);
+	assert(state.scene.active_cloud_controller_id == 20);
+
+	state.scene.objects.at(20).cloud_system.layers[0].enabled = false;
+	SceneSystem::refresh_active_cloud_controller(state);
+	assert(!state.scene.active_cloud_controller_id);
+	assert(!state.clouds.active);
+
+	state.scene.objects.at(20).cloud_system.layers[0].enabled = true;
+	state.scene.objects.at(20).light.type = LightType::Point;
+	SceneSystem::refresh_active_sky_controller(state);
+	SceneSystem::refresh_active_cloud_controller(state);
+	assert(!state.scene.active_cloud_controller_id);
+}
+
 static void test_dirty_classification()
 {
 	SkyAtmosphere earth = {};
@@ -141,6 +183,7 @@ static void test_physical_sun_calibration()
 int main()
 {
 	test_controller_selection();
+	test_cloud_controller_selection();
 	test_dirty_classification();
 	test_physical_sun_calibration();
 	// game_object.h owns the process-wide Jolt state used by the unity build;

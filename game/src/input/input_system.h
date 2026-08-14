@@ -277,7 +277,17 @@ namespace InputSystem
 		}
 	
 		Camera& camera = in_state.debug_camera.camera;
-		const HMM_Vec3 camera_right = HMM_NormV3(HMM_Cross(camera.forward, camera.up));
+		camera.up = UnitVectors::Up;
+		HMM_Vec3 movement_forward = vec3_plane_projection(camera.forward, UnitVectors::Up);
+		if (HMM_LenSqrV3(movement_forward) > 1.0e-6f)
+		{
+			movement_forward = HMM_NormV3(movement_forward);
+		}
+		else
+		{
+			movement_forward = UnitVectors::Forward;
+		}
+		const HMM_Vec3 movement_right = HMM_NormV3(HMM_Cross(movement_forward, UnitVectors::Up));
 	
 		f32 move_speed = in_state.debug_camera.move_speed * in_delta_time;
 		if (is_key_pressed(in_state, GLFW_KEY_LEFT_SHIFT))
@@ -287,27 +297,27 @@ namespace InputSystem
 	
 		if (is_key_pressed(in_state, GLFW_KEY_W) || is_key_pressed(in_state, GLFW_KEY_UP))
 		{
-			camera.location += camera.forward * move_speed;
+			camera.location += movement_forward * move_speed;
 		}
 		if (is_key_pressed(in_state, GLFW_KEY_S) || is_key_pressed(in_state, GLFW_KEY_DOWN))
 		{
-			camera.location -= camera.forward * move_speed;
+			camera.location -= movement_forward * move_speed;
 		}
 		if (is_key_pressed(in_state, GLFW_KEY_D) || is_key_pressed(in_state, GLFW_KEY_RIGHT))
 		{
-			camera.location += camera_right * move_speed;
+			camera.location += movement_right * move_speed;
 		}
 		if (is_key_pressed(in_state, GLFW_KEY_A) || is_key_pressed(in_state, GLFW_KEY_LEFT))
 		{
-			camera.location -= camera_right * move_speed;
+			camera.location -= movement_right * move_speed;
 		}
 		if (is_key_pressed(in_state, GLFW_KEY_E))
 		{
-			camera.location += camera.up * move_speed;
+			camera.location += UnitVectors::Up * move_speed;
 		}
 		if (is_key_pressed(in_state, GLFW_KEY_Q))
 		{
-			camera.location -= camera.up * move_speed;
+			camera.location -= UnitVectors::Up * move_speed;
 		}
 	
 		if (is_mouse_locked(in_state))
@@ -315,8 +325,9 @@ namespace InputSystem
 			const f32 look_speed = 1.0f * in_delta_time;
 			const HMM_Vec2 mouse_delta = get_mouse_delta(in_state);
 	
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera.up, -mouse_delta.X * look_speed));
-			camera.forward = HMM_NormV3(rotate_vector(camera.forward, camera_right, -mouse_delta.Y * look_speed));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, UnitVectors::Up, -mouse_delta.X * look_speed));
+			const HMM_Vec3 look_right = HMM_NormV3(HMM_Cross(camera.forward, UnitVectors::Up));
+			camera.forward = HMM_NormV3(rotate_vector(camera.forward, look_right, -mouse_delta.Y * look_speed));
 		}
 	}
 	

@@ -154,7 +154,13 @@ namespace LiveLinkSystem
 					camera.up = HMM_NormV3(camera.up);
 					if (fabsf(HMM_DotV3(camera.forward, camera.up)) < 0.999f)
 					{
-						scene_update.editor_camera = Camera{.location = camera.location, .forward = camera.forward, .up = UnitVectors::Up};
+						// Match Blender's viewport position and viewing direction without
+						// importing viewport roll into the game's Z-up navigation frame.
+						scene_update.editor_camera = Camera{
+							.location = camera.location,
+							.forward = camera.forward,
+							.up = UnitVectors::Up,
+						};
 					}
 				}
 			}
@@ -662,6 +668,72 @@ namespace LiveLinkSystem
 									.mie_anisotropy = CLAMP(sky_component->mie_anisotropy(), 0.0f, 0.95f),
 									.max_sun_zenith_angle_degrees = CLAMP(sky_component->max_sun_zenith_angle_degrees(), 90.0f, 120.0f),
 								};
+								break;
+							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentCloudSystem:
+							{
+								using Blender::LiveLink::GameplayComponentCloudSystem;
+								const GameplayComponentCloudSystem* cloud_component =
+									reinterpret_cast<const GameplayComponentCloudSystem*>(component);
+								if (!cloud_component)
+								{
+									break;
+								}
+								game_object.has_cloud_system = true;
+								CloudSystem& cloud = game_object.cloud_system;
+								auto finite_or = [](f32 value, f32 fallback) {
+									return std::isfinite(value) ? value : fallback;
+								};
+								cloud.enabled = cloud_component->enabled();
+								cloud.seed = cloud_component->seed();
+								cloud.weather_world_scale_m = MAX(
+									finite_or(cloud_component->weather_world_scale_m(), 100000.0f), 1000.0f);
+								if (const Blender::LiveLink::Vec2* wind = cloud_component->wind_direction())
+								{
+									cloud.wind_direction = HMM_V2(
+										finite_or(wind->x(), 1.0f), finite_or(wind->y(), 0.0f));
+								}
+								cloud.wind_speed_m_s = CLAMP(
+									finite_or(cloud_component->wind_speed_m_s(), 20.0f), 0.0f, 200.0f);
+								cloud.shadow_enabled = cloud_component->shadow_enabled();
+								cloud.shadow_extent_m = MAX(
+									finite_or(cloud_component->shadow_extent_m(), 8000.0f), 1000.0f);
+								const i32 payload_layer_count = cloud_component->layers()
+									? (i32)cloud_component->layers()->size() : 0;
+								if (payload_layer_count > MAX_CLOUD_LAYERS)
+									printf("Cloud system warning: capped %i payload layers to %i\n",
+										payload_layer_count, MAX_CLOUD_LAYERS);
+								cloud.layer_count = 0;
+								for (i32 layer_index = 0;
+									layer_index < MIN(payload_layer_count, MAX_CLOUD_LAYERS); ++layer_index)
+								{
+									const Blender::LiveLink::CloudLayer* source =
+										cloud_component->layers()->Get(layer_index);
+									if (!source) continue;
+									CloudLayer& layer = cloud.layers[cloud.layer_count++];
+									layer.enabled = source->enabled();
+									layer.profile = (CloudLayerProfile) CLAMP((i32) source->profile(), 0, 3);
+									layer.seed_offset = source->seed_offset();
+									layer.base_altitude_m = MAX(finite_or(source->base_altitude_m(), 1800.0f), 0.0f);
+									layer.thickness_m = MAX(finite_or(source->thickness_m(), 3000.0f), 10.0f);
+									layer.coverage = CLAMP(finite_or(source->coverage(), 0.5f), 0.0f, 1.0f);
+									layer.density = CLAMP(finite_or(source->density(), 1.0f), 0.0f, 4.0f);
+									layer.shape_scale_m = MAX(finite_or(source->shape_scale_m(), 8000.0f), 100.0f);
+									layer.detail_scale_m = MAX(finite_or(source->detail_scale_m(), 1000.0f), 10.0f);
+									layer.erosion = CLAMP(finite_or(source->erosion(), 0.65f), 0.0f, 1.0f);
+									layer.anvil_bias = CLAMP(finite_or(source->anvil_bias(), 0.1f), 0.0f, 1.0f);
+									layer.wind_multiplier = CLAMP(finite_or(source->wind_multiplier(), 1.0f), -4.0f, 4.0f);
+									layer.phase_forward = CLAMP(finite_or(source->phase_forward(), 0.75f), -0.95f, 0.95f);
+									layer.phase_backward = CLAMP(finite_or(source->phase_backward(), -0.25f), -0.95f, 0.95f);
+									layer.phase_blend = CLAMP(finite_or(source->phase_blend(), 0.8f), 0.0f, 1.0f);
+									layer.ambient_scale = CLAMP(finite_or(source->ambient_scale(), 0.6f), 0.0f, 2.0f);
+									layer.multi_scattering_strength =
+										CLAMP(finite_or(source->multi_scattering_strength(), 0.8f), 0.0f, 1.0f);
+								}
+								std::sort(cloud.layers, cloud.layers + cloud.layer_count,
+									[](const CloudLayer& a, const CloudLayer& b) {
+										return a.base_altitude_m < b.base_altitude_m;
+									});
 								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:

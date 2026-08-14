@@ -103,6 +103,73 @@ namespace SceneSystem
 		}
 	}
 
+	void refresh_active_cloud_controller(State& in_state)
+	{
+		const std::optional<i32> previous_id = in_state.scene.active_cloud_controller_id;
+		const i32 previous_invalid_count = in_state.scene.invalid_cloud_controller_count;
+		in_state.scene.active_cloud_controller_id.reset();
+		in_state.scene.invalid_cloud_controller_count = 0;
+		in_state.clouds.active = false;
+		in_state.clouds.active_layer_count = 0;
+
+		for (auto& [unique_id, object] : in_state.scene.objects)
+		{
+			if (!object.has_cloud_system)
+			{
+				continue;
+			}
+			if (!object.has_sky_atmosphere || !object_is_sun_light(object))
+			{
+				if (object.cloud_system.enabled) ++in_state.scene.invalid_cloud_controller_count;
+				continue;
+			}
+			if (!object.cloud_system.enabled || !object.sky_atmosphere.enabled || !object.visibility)
+			{
+				continue;
+			}
+			if (in_state.scene.active_sky_controller_id == unique_id)
+			{
+				in_state.scene.active_cloud_controller_id = unique_id;
+				in_state.clouds.active = true;
+				for (i32 layer_index = 0; layer_index < object.cloud_system.layer_count; ++layer_index)
+				{
+					if (object.cloud_system.layers[layer_index].enabled)
+						++in_state.clouds.active_layer_count;
+				}
+				in_state.clouds.layer_budget_warning = in_state.clouds.active_layer_count > 2;
+				if (in_state.clouds.active_layer_count == 0)
+				{
+					in_state.scene.active_cloud_controller_id.reset();
+					in_state.clouds.active = false;
+				}
+			}
+			else
+			{
+				// Valid-looking Cloud Systems on non-selected atmosphere Suns are
+				// duplicate global controllers and remain non-rendering.
+				++in_state.scene.invalid_cloud_controller_count;
+			}
+		}
+
+		if (previous_id != in_state.scene.active_cloud_controller_id)
+		{
+			in_state.clouds.history_reset_requested = true;
+			if (in_state.scene.active_cloud_controller_id)
+				printf("Active cloud controller: UID %i (%i layer%s)\n",
+					*in_state.scene.active_cloud_controller_id,
+					in_state.clouds.active_layer_count,
+					in_state.clouds.active_layer_count == 1 ? "" : "s");
+			else
+				printf("Active cloud controller: none\n");
+		}
+		if (in_state.scene.invalid_cloud_controller_count > 0
+			&& in_state.scene.invalid_cloud_controller_count != previous_invalid_count)
+		{
+			printf("Cloud system warning: ignored %i invalid or duplicate controller(s)\n",
+				in_state.scene.invalid_cloud_controller_count);
+		}
+	}
+
 	// Picks the lowest-uid enabled and visible fog controller. Logging is kept
 	// edge-triggered so scene refreshes do not spam an unchanged selection.
 	void refresh_active_fog_controller(State& in_state)
@@ -148,6 +215,7 @@ namespace SceneSystem
 		scene_ensure_indexes(in_state);
 		refresh_active_sky_controller(in_state);
 		refresh_primary_sun_id(in_state);
+		refresh_active_cloud_controller(in_state);
 		refresh_active_fog_controller(in_state);
 	}
 }

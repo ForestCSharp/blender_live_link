@@ -25,10 +25,13 @@ namespace RuntimeConfig
 		std::optional<bool> local_tonemap;
 		std::optional<bool> auto_exposure;
 		std::optional<bool> auto_white_balance;
+		std::optional<bool> cloud_shadows;
+		bool cloud_shadow_debug_fullscreen = false;
 		std::optional<std::string> output_mode;
 		int tonemap_validation_chart = 0;
 		std::optional<std::string> tonemap_validation_output_mode;
 		std::optional<std::string> tonemap_validation_capture;
+		std::optional<std::string> cloud_shadow_validation_capture;
 		std::optional<bool> bloom;
 		std::optional<double> bloom_threshold;
 		std::optional<double> bloom_soft_knee;
@@ -112,12 +115,17 @@ namespace RuntimeConfig
 		config.local_tonemap = boolean_value("GAME2_LOCAL_TONEMAP");
 		config.auto_exposure = boolean_value("GAME2_AUTO_EXPOSURE");
 		config.auto_white_balance = boolean_value("GAME2_AUTO_WHITE_BALANCE");
+		config.cloud_shadows = boolean_value("GAME2_CLOUD_SHADOWS");
+		config.cloud_shadow_debug_fullscreen = is_set(
+			"GAME2_CLOUD_SHADOW_DEBUG_FULLSCREEN");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
 		if (const char* chart = environment_value("GAME2_TONEMAP_VALIDATION_CHART"))
 			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2
 				: std::strcmp(chart, "sky") == 0 ? 3 : 1;
 		config.tonemap_validation_output_mode = string_value("GAME2_TONEMAP_VALIDATION_OUTPUT_MODE");
 		config.tonemap_validation_capture = string_value("GAME2_TONEMAP_VALIDATION_CAPTURE");
+		config.cloud_shadow_validation_capture = string_value(
+			"GAME2_CLOUD_SHADOW_VALIDATION_CAPTURE");
 		config.bloom = boolean_value("GAME2_BLOOM");
 		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
 		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");

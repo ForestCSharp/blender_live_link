@@ -19,8 +19,9 @@
 //   15-17 = SH9/SG9/octree SSBOs          (FS)
 //   18-19 = GI specular atlas/BRDF LUT     (FS)
 //   20-21 = Bruneton atmosphere UBO/transmittance LUT (FS)
+//   22 = camera-centered cloud-shadow transmittance (FS)
 
-static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 22;
+static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 23;
 
 // C++ mirror of the lighting shader's fs_params UBO, including GI/SSAO/SSS.
 // The byte layout must remain identical to the shader declaration.
@@ -67,8 +68,10 @@ struct LightingFsParams
 	HMM_Vec3 shadow_cascade_view_forward;
 	f32 _pad3;
 	HMM_Mat4 shadow_view_projections[4];
+	// x = world extent in metres, y = enabled. The map is centered on view_position.xy.
+	HMM_Vec4 cloud_shadow_extent_enabled;
 };
-static_assert(sizeof(LightingFsParams) == 464, "Must match lighting.frag's std140 layout");
+static_assert(sizeof(LightingFsParams) == 480, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {
@@ -166,6 +169,12 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 			.descriptorCount = 1,
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		};
+		bindings[22] = (VkDescriptorSetLayoutBinding) {
+			.binding = 22,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		};
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -179,7 +188,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 12 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 13 * MAX_FRAMES_IN_FLIGHT },
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
@@ -340,7 +349,8 @@ void lighting_pass_update(
 	VkImageView in_gi_specular_view,
 	VkImageView in_brdf_lut_view,
 	VkBuffer in_atmosphere_parameters_buffer,
-	VkImageView in_atmosphere_transmittance_view
+	VkImageView in_atmosphere_transmittance_view,
+	VkImageView in_cloud_shadow_view
 )
 {
 	const u32 frame_index = ctx->frame_index;
@@ -509,6 +519,11 @@ void lighting_pass_update(
 	writes[write_count++] = descriptor_write_image(
 		lighting_pass.sets[frame_index], 21,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &atmosphere_image_info);
+	VkDescriptorImageInfo cloud_shadow_image_info = descriptor_sampled(
+		lighting_pass.linear_sampler, in_cloud_shadow_view);
+	writes[write_count++] = descriptor_write_image(
+		lighting_pass.sets[frame_index], 22,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloud_shadow_image_info);
 
 	vulkan_update_descriptor_sets(ctx, write_count, writes);
 }

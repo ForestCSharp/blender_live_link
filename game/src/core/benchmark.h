@@ -29,6 +29,7 @@ struct BenchmarkState
 	DynamicArray<f64> wall_frame_ms;
 	DynamicArray<f64> cpu_frame_ms;
 	DynamicArray<f64> gpu_frame_ms;
+	DynamicArray<f64> cloud_continuous_ms;
 	DynamicArray<BenchmarkNamedSamples> gpu_pass_ms;
 	VulkanMetrics metrics_start = {};
 
@@ -103,13 +104,30 @@ struct BenchmarkState
 			GpuTimingFrame frame;
 			if (gpu_timings_copy_history_frame(latest_gpu_frame, frame))
 			{
+				f64 cloud_continuous = 0.0;
+				bool has_cloud_system = false;
+				bool has_cloud_shadow = false;
 				for (const GpuTimingEvent& event : frame.events)
 				{
 					if (event.valid && event.type != GpuTimingEventType::Frame && event.elapsed_ms >= 0.0)
 					{
 						pass_samples(event.name).values.add(event.elapsed_ms);
+						if (std::strcmp(event.name, "Cloud System") == 0)
+						{
+							cloud_continuous += event.elapsed_ms;
+							has_cloud_system = true;
+						}
+						else if (std::strcmp(event.name, "Cloud Sun Shadow") == 0)
+						{
+							cloud_continuous += event.elapsed_ms;
+							has_cloud_shadow = true;
+						}
 					}
 				}
+				// The acceptance cost is the raymarch/temporal/composite group plus
+				// the already-amortized interleaved shadow update for the same frame.
+				if (has_cloud_system && has_cloud_shadow)
+					cloud_continuous_ms.add(cloud_continuous);
 			}
 			#endif
 		}
@@ -171,7 +189,8 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 	fprintf(output, "  \"timings\": {\n");
 	benchmark_write_summary(output, "wall_frame", state.wall_frame_ms, true);
 	benchmark_write_summary(output, "cpu_frame", state.cpu_frame_ms, true);
-	benchmark_write_summary(output, "gpu_frame", state.gpu_frame_ms, false);
+	benchmark_write_summary(output, "gpu_frame", state.gpu_frame_ms, true);
+	benchmark_write_summary(output, "cloud_continuous", state.cloud_continuous_ms, false);
 	fprintf(output, "  },\n");
 	fprintf(output, "  \"gpu_passes\": {\n");
 	for (size_t pass_index = 0; pass_index < state.gpu_pass_ms.length(); ++pass_index)

@@ -192,6 +192,21 @@ float py_float_attr(PyObject *object, const char *name, const float default_valu
   return float(result);
 }
 
+uint32_t py_uint_attr(PyObject *object, const char *name, const uint32_t default_value)
+{
+  PyPtr value(PyObject_GetAttrString(object, name));
+  if (!value) {
+    PyErr_Clear();
+    return default_value;
+  }
+  const unsigned long result = PyLong_AsUnsignedLong(value);
+  if (PyErr_Occurred() || result > UINT32_MAX) {
+    PyErr_Clear();
+    return default_value;
+  }
+  return uint32_t(result);
+}
+
 std::string py_string_attr(PyObject *object, const char *name, const char *default_value = "")
 {
   PyPtr value(PyObject_GetAttrString(object, name));
@@ -1198,6 +1213,89 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
           py_float_attr(sky, "max_sun_zenith_angle_degrees", 102.0f));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentSkyAtmosphere, value.Union()));
+    }
+    else if (type == "CLOUD_SYSTEM") {
+      PyPtr cloud(PyObject_GetAttrString(component, "cloud_system"));
+      if (!cloud) {
+        PyErr_Clear();
+        continue;
+      }
+
+      auto cloud_profile_from_string = [](const std::string &profile) {
+        if (profile == "STRATUS") return ll::CloudLayerProfile_Stratus;
+        if (profile == "CUMULONIMBUS") return ll::CloudLayerProfile_Cumulonimbus;
+        if (profile == "CIRRUS") return ll::CloudLayerProfile_Cirrus;
+        return ll::CloudLayerProfile_Cumulus;
+      };
+      std::vector<flatbuffers::Offset<ll::CloudLayer>> layers;
+      PyPtr layers_attr(PyObject_GetAttrString(cloud, "layers"));
+      PyPtr layers_sequence(layers_attr ?
+                                PySequence_Fast(layers_attr, "cloud_system.layers must be a sequence") :
+                                nullptr);
+      if (layers_sequence) {
+        const Py_ssize_t layer_count = std::min<Py_ssize_t>(
+            PySequence_Fast_GET_SIZE(layers_sequence), 4);
+        layers.reserve(layer_count);
+        for (Py_ssize_t layer_index = 0; layer_index < layer_count; ++layer_index) {
+          PyObject *layer = PySequence_Fast_GET_ITEM(layers_sequence.value, layer_index);
+          layers.push_back(ll::CreateCloudLayer(
+              builder,
+              py_bool_attr(layer, "enabled", true),
+              cloud_profile_from_string(py_string_attr(layer, "profile", "CUMULUS")),
+              py_uint_attr(layer, "seed_offset", 0),
+              py_float_attr(layer, "base_altitude_m", 1800.0f),
+              py_float_attr(layer, "thickness_m", 3000.0f),
+              py_float_attr(layer, "coverage", 0.5f),
+              py_float_attr(layer, "density", 1.0f),
+              py_float_attr(layer, "shape_scale_m", 8000.0f),
+              py_float_attr(layer, "detail_scale_m", 1000.0f),
+              py_float_attr(layer, "erosion", 0.65f),
+              py_float_attr(layer, "anvil_bias", 0.1f),
+              py_float_attr(layer, "wind_multiplier", 1.0f),
+              py_float_attr(layer, "phase_forward", 0.75f),
+              py_float_attr(layer, "phase_backward", -0.25f),
+              py_float_attr(layer, "phase_blend", 0.8f),
+              py_float_attr(layer, "ambient_scale", 0.6f),
+              py_float_attr(layer, "multi_scattering_strength", 0.8f)));
+        }
+      }
+      else {
+        PyErr_Clear();
+      }
+
+      float wind_values[2] = {1.0f, 0.0f};
+      PyPtr wind_attr(PyObject_GetAttrString(cloud, "wind_direction"));
+      PyPtr wind_sequence(wind_attr ?
+                              PySequence_Fast(wind_attr, "cloud_system.wind_direction must be a sequence") :
+                              nullptr);
+      if (wind_sequence) {
+        for (Py_ssize_t axis = 0;
+             axis < PySequence_Fast_GET_SIZE(wind_sequence) && axis < 2;
+             ++axis)
+        {
+          const double parsed = PyFloat_AsDouble(
+              PySequence_Fast_GET_ITEM(wind_sequence.value, axis));
+          if (!PyErr_Occurred()) wind_values[axis] = float(parsed);
+          else PyErr_Clear();
+        }
+      }
+      else {
+        PyErr_Clear();
+      }
+      const ll::Vec2 wind_direction(wind_values[0], wind_values[1]);
+      const auto layers_fb = builder.CreateVector(layers);
+      const auto value = ll::CreateGameplayComponentCloudSystem(
+          builder,
+          py_bool_attr(cloud, "enabled", true),
+          py_uint_attr(cloud, "seed", 1),
+          py_float_attr(cloud, "weather_world_scale_m", 100000.0f),
+          &wind_direction,
+          py_float_attr(cloud, "wind_speed_m_s", 20.0f),
+          py_bool_attr(cloud, "shadow_enabled", true),
+          py_float_attr(cloud, "shadow_extent_m", 8000.0f),
+          layers_fb);
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentCloudSystem, value.Union()));
     }
     else if (type == "PART") {
       PyPtr part(PyObject_GetAttrString(component, "part"));
@@ -2518,6 +2616,56 @@ void compare_component(DiffList &diffs,
       compare_float(diffs, path + ".sky.mie_scale_height_m", native_sky->mie_scale_height_m(), python_sky->mie_scale_height_m());
       compare_float(diffs, path + ".sky.mie_anisotropy", native_sky->mie_anisotropy(), python_sky->mie_anisotropy());
       compare_float(diffs, path + ".sky.max_sun_zenith_angle_degrees", native_sky->max_sun_zenith_angle_degrees(), python_sky->max_sun_zenith_angle_degrees());
+    }
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCloudSystem &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentCloudSystem)
+  {
+    const ll::GameplayComponentCloudSystem *native_cloud =
+        native_value->value_as_GameplayComponentCloudSystem();
+    const ll::GameplayComponentCloudSystem *python_cloud =
+        python_value->value_as_GameplayComponentCloudSystem();
+    compare_exact(diffs, path + ".cloud.present", native_cloud != nullptr, python_cloud != nullptr);
+    if (native_cloud && python_cloud) {
+      compare_exact(diffs, path + ".cloud.enabled", native_cloud->enabled(), python_cloud->enabled());
+      compare_exact(diffs, path + ".cloud.seed", native_cloud->seed(), python_cloud->seed());
+      compare_float(diffs, path + ".cloud.weather_world_scale_m", native_cloud->weather_world_scale_m(), python_cloud->weather_world_scale_m());
+      compare_exact(diffs, path + ".cloud.wind_direction.present", native_cloud->wind_direction() != nullptr, python_cloud->wind_direction() != nullptr);
+      if (native_cloud->wind_direction() && python_cloud->wind_direction()) {
+        compare_float(diffs, path + ".cloud.wind_direction.x", native_cloud->wind_direction()->x(), python_cloud->wind_direction()->x());
+        compare_float(diffs, path + ".cloud.wind_direction.y", native_cloud->wind_direction()->y(), python_cloud->wind_direction()->y());
+      }
+      compare_float(diffs, path + ".cloud.wind_speed_m_s", native_cloud->wind_speed_m_s(), python_cloud->wind_speed_m_s());
+      compare_exact(diffs, path + ".cloud.shadow_enabled", native_cloud->shadow_enabled(), python_cloud->shadow_enabled());
+      compare_float(diffs, path + ".cloud.shadow_extent_m", native_cloud->shadow_extent_m(), python_cloud->shadow_extent_m());
+      const size_t native_layer_count = native_cloud->layers() ? native_cloud->layers()->size() : 0;
+      const size_t python_layer_count = python_cloud->layers() ? python_cloud->layers()->size() : 0;
+      compare_exact(diffs, path + ".cloud.layers.length", native_layer_count, python_layer_count);
+      for (size_t layer_index = 0;
+           layer_index < std::min(native_layer_count, python_layer_count);
+           ++layer_index)
+      {
+        const ll::CloudLayer *a = native_cloud->layers()->Get(layer_index);
+        const ll::CloudLayer *b = python_cloud->layers()->Get(layer_index);
+        const std::string layer_path = path + ".cloud.layers[" + std::to_string(layer_index) + "]";
+        compare_exact(diffs, layer_path + ".enabled", a->enabled(), b->enabled());
+        compare_exact(diffs, layer_path + ".profile", int(a->profile()), int(b->profile()));
+        compare_exact(diffs, layer_path + ".seed_offset", a->seed_offset(), b->seed_offset());
+        compare_float(diffs, layer_path + ".base_altitude_m", a->base_altitude_m(), b->base_altitude_m());
+        compare_float(diffs, layer_path + ".thickness_m", a->thickness_m(), b->thickness_m());
+        compare_float(diffs, layer_path + ".coverage", a->coverage(), b->coverage());
+        compare_float(diffs, layer_path + ".density", a->density(), b->density());
+        compare_float(diffs, layer_path + ".shape_scale_m", a->shape_scale_m(), b->shape_scale_m());
+        compare_float(diffs, layer_path + ".detail_scale_m", a->detail_scale_m(), b->detail_scale_m());
+        compare_float(diffs, layer_path + ".erosion", a->erosion(), b->erosion());
+        compare_float(diffs, layer_path + ".anvil_bias", a->anvil_bias(), b->anvil_bias());
+        compare_float(diffs, layer_path + ".wind_multiplier", a->wind_multiplier(), b->wind_multiplier());
+        compare_float(diffs, layer_path + ".phase_forward", a->phase_forward(), b->phase_forward());
+        compare_float(diffs, layer_path + ".phase_backward", a->phase_backward(), b->phase_backward());
+        compare_float(diffs, layer_path + ".phase_blend", a->phase_blend(), b->phase_blend());
+        compare_float(diffs, layer_path + ".ambient_scale", a->ambient_scale(), b->ambient_scale());
+        compare_float(diffs, layer_path + ".multi_scattering_strength", a->multi_scattering_strength(), b->multi_scattering_strength());
+      }
     }
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&

@@ -21,8 +21,9 @@ struct CopyToSwapchainPushConstants
 {
 	i32 output_mode; // DISPLAY_OUTPUT_MODE_* / EDisplayOutputMode.
 	i32 sdr_attachment_is_srgb;
+	i32 grayscale_input;
 };
-static_assert(sizeof(CopyToSwapchainPushConstants) == sizeof(i32) * 2);
+static_assert(sizeof(CopyToSwapchainPushConstants) == sizeof(i32) * 3);
 
 static CopyToSwapchainPass copy_to_swapchain_pass;
 
@@ -174,7 +175,7 @@ void copy_to_swapchain_pass_update_presentation_input(VulkanContext* ctx, VkImag
 	vulkan_update_descriptor_sets(ctx, 1, &write);
 }
 
-void copy_to_swapchain_pass_draw_presentation(VulkanContext* ctx)
+void copy_to_swapchain_pass_draw_presentation(VulkanContext* ctx, bool in_grayscale_input)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_to_swapchain_pass.presentation_pipeline);
@@ -186,6 +187,7 @@ void copy_to_swapchain_pass_draw_presentation(VulkanContext* ctx)
 	const CopyToSwapchainPushConstants constants = {
 		.output_mode = DISPLAY_OUTPUT_MODE_PRESENTATION,
 		.sdr_attachment_is_srgb = 0,
+		.grayscale_input = in_grayscale_input ? 1 : 0,
 	};
 	vkCmdPushConstants(
 		command_buffer, copy_to_swapchain_pass.pipeline_layout,
@@ -211,6 +213,7 @@ void copy_to_swapchain_pass_draw(VulkanContext* ctx)
 		.sdr_attachment_is_srgb = (
 			ctx->surface_format.format == VK_FORMAT_B8G8R8A8_SRGB
 			|| ctx->surface_format.format == VK_FORMAT_R8G8B8A8_SRGB) ? 1 : 0,
+		.grayscale_input = 0,
 	};
 	vkCmdPushConstants(
 		command_buffer, copy_to_swapchain_pass.pipeline_layout,

@@ -1,0 +1,118 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16f) uniform writeonly image2DArray base_shape_out;
+layout(set = 0, binding = 1, r16f) uniform writeonly image2DArray erosion_out;
+layout(set = 0, binding = 2, rg16f) uniform writeonly image2DArray weather_out;
+
+layout(push_constant) uniform NoisePushConstants
+{
+	uint seed;
+	uint mode;
+	uint size;
+	uint layers;
+} pc;
+
+uint hash_u32(uint x)
+{
+	x ^= x >> 16;
+	x *= 0x7feb352du;
+	x ^= x >> 15;
+	x *= 0x846ca68bu;
+	return x ^ (x >> 16);
+}
+
+float hash3(ivec3 p, uint seed)
+{
+	uint h = hash_u32(uint(p.x) + seed * 0x9e3779b9u);
+	h = hash_u32(h ^ uint(p.y) * 0x85ebca6bu);
+	h = hash_u32(h ^ uint(p.z) * 0xc2b2ae35u);
+	return float(h) / 4294967295.0;
+}
+
+ivec3 wrap_cell(ivec3 p, int period)
+{
+	return ivec3((p.x % period + period) % period,
+		(p.y % period + period) % period,
+		(p.z % period + period) % period);
+}
+
+float value_noise(vec3 p, int period, uint seed)
+{
+	ivec3 i = ivec3(floor(p));
+	vec3 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	float v[8];
+	for (int z = 0; z < 2; ++z)
+	for (int y = 0; y < 2; ++y)
+	for (int x = 0; x < 2; ++x)
+		v[x + y * 2 + z * 4] = hash3(wrap_cell(i + ivec3(x, y, z), period), seed);
+	float z0 = mix(mix(v[0], v[1], f.x), mix(v[2], v[3], f.x), f.y);
+	float z1 = mix(mix(v[4], v[5], f.x), mix(v[6], v[7], f.x), f.y);
+	return mix(z0, z1, f.z);
+}
+
+float worley(vec3 p, int period, uint seed)
+{
+	ivec3 cell = ivec3(floor(p));
+	float nearest = 10.0;
+	for (int z = -1; z <= 1; ++z)
+	for (int y = -1; y <= 1; ++y)
+	for (int x = -1; x <= 1; ++x)
+	{
+		ivec3 neighbor = cell + ivec3(x, y, z);
+		ivec3 wrapped = wrap_cell(neighbor, period);
+		vec3 feature = vec3(neighbor) + vec3(
+			hash3(wrapped, seed), hash3(wrapped, seed + 17u), hash3(wrapped, seed + 43u));
+		nearest = min(nearest, length(feature - p));
+	}
+	return clamp(nearest, 0.0, 1.0);
+}
+
+float fbm(vec3 p, int period, uint seed)
+{
+	float result = 0.0;
+	float weight = 0.5714286;
+	for (int octave = 0; octave < 3; ++octave)
+	{
+		result += value_noise(p, period, seed + uint(octave) * 101u) * weight;
+		p *= 2.0;
+		period *= 2;
+		weight *= 0.5;
+	}
+	return result;
+}
+
+void main()
+{
+	ivec3 id = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(id, ivec3(int(pc.size), int(pc.size), int(pc.layers))))) return;
+	vec3 uvw = (vec3(id) + 0.5) / vec3(float(pc.size), float(pc.size), float(pc.layers));
+
+	if (pc.mode == 0u)
+	{
+		vec3 p = uvw * 8.0;
+		float perlin = fbm(p, 8, pc.seed);
+		float cells = 1.0 - worley(p, 8, pc.seed + 733u);
+		imageStore(base_shape_out, id, vec4(clamp(mix(perlin, cells, 0.45), 0.0, 1.0)));
+	}
+	else if (pc.mode == 1u)
+	{
+		vec3 p = uvw * 6.0;
+		float detail = 1.0 - (0.625 * worley(p, 6, pc.seed + 911u)
+			+ 0.25 * worley(p * 2.0, 12, pc.seed + 1217u)
+			+ 0.125 * worley(p * 4.0, 24, pc.seed + 1553u));
+		imageStore(erosion_out, id, vec4(clamp(detail, 0.0, 1.0)));
+	}
+	else
+	{
+		vec3 p = vec3(uvw.xy * 8.0, float(id.z) * 1.731);
+		float warp_x = fbm(p * 0.5, 4, pc.seed + uint(id.z) * 977u);
+		float warp_y = fbm(p * 0.5, 4, pc.seed + uint(id.z) * 977u + 313u);
+		p.xy += (vec2(warp_x, warp_y) - 0.5) * 1.5;
+		float coverage = fbm(p, 8, pc.seed + uint(id.z) * 1291u);
+		float variation = fbm(p * 2.0, 16, pc.seed + uint(id.z) * 1999u);
+		imageStore(weather_out, id, vec4(coverage, variation, 0.0, 1.0));
+	}
+}

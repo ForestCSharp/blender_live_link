@@ -52,6 +52,10 @@ namespace RuntimeStateOverrides
 			in_state.tonemapping.auto_exposure_enabled = *config.auto_exposure;
 		if (config.auto_white_balance)
 			in_state.tonemapping.auto_white_balance_enabled = *config.auto_white_balance;
+		if (config.cloud_shadows)
+			in_state.clouds.shadow_lighting_enabled = *config.cloud_shadows;
+		if (config.cloud_shadow_debug_fullscreen)
+			in_state.clouds.debug_show_shadow_map_fullscreen = true;
 		printf("Tonemapping: method %s, local %s, auto exposure %s, auto WB %s\n",
 			ETonemappingMethodNames[(i32)in_state.tonemapping.method],
 			in_state.tonemapping.local_enabled ? "enabled" : "disabled",

@@ -50,6 +50,9 @@ clang++ -std=c++20 -O2 tests/output_selection_tests.cpp -I src -I /usr/local/inc
   -o /tmp/output_selection_tests && /tmp/output_selection_tests
 clang++ -std=c++20 -O2 tests/sky_aware_tonemapping_tests.cpp \
   -o /tmp/sky_aware_tonemapping_tests && /tmp/sky_aware_tonemapping_tests
+clang++ -std=c++20 -O2 tests/cloud_math_tests.cpp -I src \
+  -o /tmp/cloud_math_tests && /tmp/cloud_math_tests
+python3 tests/cloud_protocol_tests.py
 ```
 
 These check auto-exposure/AWB histogram reduction and frame-rate-independent
@@ -58,6 +61,28 @@ ACES 2 and Blender AgX asset headers and CRCs, SDR/EDR/HDR10 LUT reference
 vectors and interpolation invariants, Khronos PBR Neutral reference behavior,
 the 203/1000-nit HDR calibration, Rec.2020/PQ encoding anchors, EDR scaling, and
 synthetic output-format negotiation.
+
+The cloud tests cover spherical shell intersections and altitude ordering,
+periodic deterministic noise checksums, coverage monotonicity, finite analytic
+step integration, all four protocol profiles, and boundary-value round trips.
+`tests/cloud_export_parity_blender.py` is the native-Blender background smoke
+test used to compare every Cloud System and Cloud Layer field against the Python
+exporter.
+
+For an interactive GPU smoke test, build the game and run:
+
+```sh
+python3 tests/run_cloud_runtime_smoke.py --timings
+```
+
+The launcher fake-sends a Sun with Sky Atmosphere, the default Cumulus/Cirrus
+Cloud System, and a 40 km opaque ground receiver. It starts fullscreen with a
+camera looking straight up and leaves `GAME2_RENDER_SCALE` unset so the normal
+dynamic-resolution default remains active. Pass `--ground-view` to aim at the
+opaque receiver and inspect moving cloud shadows, or `--windowed` when needed.
+The Cloud System debug panel exposes render scale, view-step count, dense/empty
+step scales, sun-cone sample count, temporal history weight, and depth rejection;
+edits invalidate cloud history, and render-scale edits safely recreate targets.
 
 The sky-aware local-tonemapping test covers geometry coverage, bright-sky
 silhouettes, thin geometry, boundary suppression, and recovery-range clamping.

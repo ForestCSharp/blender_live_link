@@ -206,6 +206,47 @@ table GameplayComponentSkyAtmosphere
 	max_sun_zenith_angle_degrees	: float = 102.0;
 }
 
+enum CloudLayerProfile : byte
+{
+	Stratus		= 0,
+	Cumulus		= 1,
+	Cumulonimbus	= 2,
+	Cirrus			= 3,
+}
+
+table CloudLayer
+{
+	enabled					: bool = true;
+	profile					: CloudLayerProfile = Cumulus;
+	seed_offset				: uint = 0;
+	base_altitude_m			: float = 1800.0;
+	thickness_m				: float = 3000.0;
+	coverage					: float = 0.5;
+	density					: float = 1.0;
+	shape_scale_m				: float = 8000.0;
+	detail_scale_m			: float = 1000.0;
+	erosion					: float = 0.65;
+	anvil_bias					: float = 0.1;
+	wind_multiplier			: float = 1.0;
+	phase_forward				: float = 0.75;
+	phase_backward			: float = -0.25;
+	phase_blend				: float = 0.8;
+	ambient_scale				: float = 0.6;
+	multi_scattering_strength	: float = 0.8;
+}
+
+table GameplayComponentCloudSystem
+{
+	enabled				: bool = true;
+	seed				: uint = 1;
+	weather_world_scale_m	: float = 100000.0;
+	wind_direction		: Vec2;
+	wind_speed_m_s		: float = 20.0;
+	shadow_enabled		: bool = true;
+	shadow_extent_m		: float = 8000.0;
+	layers				: [CloudLayer];
+}
+
 table GameplayComponentPart
 {
 	part_type : PartType = Body;
@@ -231,7 +272,8 @@ union GameplayComponent
 	GameplayComponentFogController,
 	GameplayComponentPart,
 	GameplayComponentAttachmentPoint,
-	GameplayComponentSkyAtmosphere
+	GameplayComponentSkyAtmosphere,
+	GameplayComponentCloudSystem
 }
 
 table GameplayComponentContainer

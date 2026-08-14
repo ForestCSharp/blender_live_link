@@ -104,6 +104,10 @@ enum class ERenderPass : i32
 	SSAO_Blur,
 	ScreenSpaceShadows,
 	Lighting,
+	CloudRaymarch,
+	CloudTemporal,
+	CloudComposite,
+	CloudShadow,
 	Fog,
 	DofCombine,
 	WireOverlay,
@@ -244,9 +248,11 @@ struct State
 		std::optional<i32> camera_control_id;
 		std::optional<i32> primary_sun_id;
 		std::optional<i32> active_sky_controller_id;
+		std::optional<i32> active_cloud_controller_id;
 		std::optional<i32> player_character_id;
 		i32 sky_controller_candidate_count = 0;
 		i32 invalid_sky_controller_count = 0;
+		i32 invalid_cloud_controller_count = 0;
 
 		// Per-kind object id lists are rebuilt lazily when dirty and cached
 		// until the next scene mutation.
@@ -587,6 +593,33 @@ struct State
 		std::optional<i32> active_fog_controller_id;
 	} fog;
 
+	struct CloudState
+	{
+		static constexpr f32 DEFAULT_RESOLUTION_SCALE = 1.0f;
+		static constexpr i32 DEFAULT_VIEW_STEPS = 40;
+		static constexpr f32 DEFAULT_DENSE_STEP_SCALE = 0.75f;
+		static constexpr f32 DEFAULT_EMPTY_STEP_SCALE = 2.0f;
+		static constexpr i32 DEFAULT_SUN_CONE_SAMPLES = 6;
+		static constexpr f32 DEFAULT_HISTORY_WEIGHT = 0.94f;
+		static constexpr f32 DEFAULT_DEPTH_REJECTION = 0.08f;
+
+		bool active = false;
+		bool shadow_lighting_enabled = true;
+		bool debug_show_shadow_map_fullscreen = false;
+		bool history_reset_requested = true;
+		f32 elapsed_time_seconds = 0.0f;
+		i32 active_layer_count = 0;
+		bool layer_budget_warning = false;
+		f32 gpu_time_ms = 0.0f;
+		f32 resolution_scale = DEFAULT_RESOLUTION_SCALE;
+		i32 view_steps = DEFAULT_VIEW_STEPS;
+		f32 dense_step_scale = DEFAULT_DENSE_STEP_SCALE;
+		f32 empty_step_scale = DEFAULT_EMPTY_STEP_SCALE;
+		i32 sun_cone_samples = DEFAULT_SUN_CONE_SAMPLES;
+		f32 history_weight = DEFAULT_HISTORY_WEIGHT;
+		f32 depth_rejection = DEFAULT_DEPTH_REJECTION;
+	} clouds;
+
 	struct DebugCameraState
 	{
 		bool active = true;
@@ -892,6 +925,12 @@ void scene_invalidate_cached_object_ids(State& in_state, i32 in_unique_id)
 	{
 		in_state.scene.active_sky_controller_id.reset();
 	}
+	if (in_state.scene.active_cloud_controller_id == in_unique_id)
+	{
+		in_state.scene.active_cloud_controller_id.reset();
+		in_state.clouds.active = false;
+		in_state.clouds.history_reset_requested = true;
+	}
 	if (in_state.fog.active_fog_controller_id == in_unique_id)
 	{
 		in_state.fog.active_fog_controller_id.reset();
@@ -968,8 +1007,12 @@ void scene_clear_objects(State& in_state)
 	in_state.scene.player_character_id.reset();
 	in_state.scene.primary_sun_id.reset();
 	in_state.scene.active_sky_controller_id.reset();
+	in_state.scene.active_cloud_controller_id.reset();
 	in_state.scene.sky_controller_candidate_count = 0;
 	in_state.scene.invalid_sky_controller_count = 0;
+	in_state.scene.invalid_cloud_controller_count = 0;
+	in_state.clouds.active = false;
+	in_state.clouds.history_reset_requested = true;
 	in_state.fog.active_fog_controller_id.reset();
 	in_state.fog.active = false;
 	in_state.tonemapping.adaptation_reset_requested = true;

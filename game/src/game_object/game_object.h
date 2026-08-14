@@ -100,6 +100,50 @@ struct SkyAtmosphere
 	f32 max_sun_zenith_angle_degrees = 102.0f;
 };
 
+static constexpr i32 MAX_CLOUD_LAYERS = 4;
+
+enum class CloudLayerProfile : u8
+{
+	Stratus = 0,
+	Cumulus = 1,
+	Cumulonimbus = 2,
+	Cirrus = 3,
+};
+
+struct CloudLayer
+{
+	bool enabled = true;
+	CloudLayerProfile profile = CloudLayerProfile::Cumulus;
+	u32 seed_offset = 0;
+	f32 base_altitude_m = 1800.0f;
+	f32 thickness_m = 3000.0f;
+	f32 coverage = 0.5f;
+	f32 density = 1.0f;
+	f32 shape_scale_m = 8000.0f;
+	f32 detail_scale_m = 1000.0f;
+	f32 erosion = 0.65f;
+	f32 anvil_bias = 0.1f;
+	f32 wind_multiplier = 1.0f;
+	f32 phase_forward = 0.75f;
+	f32 phase_backward = -0.25f;
+	f32 phase_blend = 0.8f;
+	f32 ambient_scale = 0.6f;
+	f32 multi_scattering_strength = 0.8f;
+};
+
+struct CloudSystem
+{
+	bool enabled = true;
+	u32 seed = 1;
+	f32 weather_world_scale_m = 100000.0f;
+	HMM_Vec2 wind_direction = HMM_V2(1.0f, 0.0f);
+	f32 wind_speed_m_s = 20.0f;
+	bool shadow_enabled = true;
+	f32 shadow_extent_m = 8000.0f;
+	i32 layer_count = 0;
+	CloudLayer layers[MAX_CLOUD_LAYERS] = {};
+};
+
 enum class PartType : u8
 {
 	Body = 0,
@@ -234,6 +278,9 @@ struct Object
 
 	bool has_sky_atmosphere = false;
 	SkyAtmosphere sky_atmosphere;
+
+	bool has_cloud_system = false;
+	CloudSystem cloud_system;
 
 	bool has_part = false;
 	Part part;
