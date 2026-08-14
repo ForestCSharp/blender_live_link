@@ -1,21 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16181c">
 <title>game runtime — C++ and GLSL annotated walkthrough</title>
+<script>
+(function(){
+  try{
+    var theme=localStorage.getItem('game-src-theme');
+    if(theme==='light'||theme==='dark')document.documentElement.setAttribute('data-theme',theme);
+  }catch(e){}
+})();
+</script>
 <style>
 :root{
-  --bg:#fbfaf8;--bg2:#fff;--bg3:#f1eee8;--fg:#22201d;--fg2:#5c574f;--fg3:#898176;
-  --line:#e1dcd3;--line2:#cec7bb;--accent:#9a5b2e;--accent-bg:#f6ece2;--sel:#ffe9c9;
-  --code-bg:#fdfcfa;--ln:#b0a89c;--kw:#9a3f6c;--st:#39744a;--cm:#8a8377;
-  --ty:#2f6f8f;--nu:#a35a1f;--fnc:#38547d;--pp:#846729;--shadow:0 1px 2px rgba(60,50,40,.06);
-}
-:root[data-theme="dark"]{
+  color-scheme:dark;
   --bg:#16181c;--bg2:#1c1f24;--bg3:#23272e;--fg:#dfe3e8;--fg2:#a8b0ba;--fg3:#737d89;
   --line:#2b3038;--line2:#3a424c;--accent:#e0955a;--accent-bg:#2a2119;--sel:#4a3a1c;
   --code-bg:#191c21;--ln:#59636f;--kw:#e08bb0;--st:#8fcf9a;--cm:#717b87;
   --ty:#7fc0e0;--nu:#e8a86a;--fnc:#90b2e8;--pp:#cbbd7e;--shadow:0 1px 2px rgba(0,0,0,.3);
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#fbfaf8;--bg2:#fff;--bg3:#f1eee8;--fg:#22201d;--fg2:#5c574f;--fg3:#898176;
+  --line:#e1dcd3;--line2:#cec7bb;--accent:#9a5b2e;--accent-bg:#f6ece2;--sel:#ffe9c9;
+  --code-bg:#fdfcfa;--ln:#b0a89c;--kw:#9a3f6c;--st:#39744a;--cm:#8a8377;
+  --ty:#2f6f8f;--nu:#a35a1f;--fnc:#38547d;--pp:#846729;--shadow:0 1px 2px rgba(60,50,40,.06);
 }
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.58 ui-sans-serif,-apple-system,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 code,kbd,.code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
@@ -35299,9 +35311,9 @@ kbd{font-size:.8em;background:var(--bg3);border:1px solid var(--line2);border-bo
   document.querySelectorAll('.tab').forEach(function(t){tabs[t.dataset.file]=t});
   function saved(key){try{return localStorage.getItem(key)}catch(e){return null}}
   function store(key,value){try{localStorage.setItem(key,value)}catch(e){}}
-  function currentTheme(){return root.getAttribute('data-theme')||'light'}
+  function currentTheme(){return root.getAttribute('data-theme')||'dark'}
   function paintTheme(){document.getElementById('themebtn').textContent=currentTheme()==='dark'?'☀ Light':'☾ Dark'}
-  var theme=saved('game-src-theme');if(theme)root.setAttribute('data-theme',theme);paintTheme();
+  paintTheme();
   function flash(el){var target=el.tagName==='TR'||el.classList.contains('note')?el:el.querySelector('tr,.note');if(target){target.classList.add('flash');setTimeout(function(){target.classList.remove('flash')},1400)}}
   function alignNotes(panel){
     if(!panel)return;
