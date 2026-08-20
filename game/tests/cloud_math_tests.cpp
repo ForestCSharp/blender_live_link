@@ -65,10 +65,29 @@ static void test_coverage_and_energy()
 	}
 }
 
+static void test_low_discrepancy_jitter()
+{
+	std::array<float, 16> phases = {};
+	for (std::uint32_t frame = 0; frame < phases.size(); ++frame)
+	{
+		phases[frame] = cloud_low_discrepancy_jitter_cpu(37.0f, 91.0f, frame, 0u);
+		assert(phases[frame] >= 0.0f && phases[frame] < 1.0f);
+	}
+	assert(std::abs(phases[0]
+		- cloud_low_discrepancy_jitter_cpu(37.0f, 91.0f, 16u, 0u)) < 1.0e-6f);
+	std::sort(phases.begin(), phases.end());
+	for (std::size_t index = 1; index < phases.size(); ++index)
+		assert(phases[index] - phases[index - 1] > 0.05f);
+	assert(std::abs(
+		cloud_low_discrepancy_jitter_cpu(37.0f, 91.0f, 0u, 0u)
+		- cloud_low_discrepancy_jitter_cpu(37.0f, 91.0f, 0u, 1u)) > 1.0e-4f);
+}
+
 int main()
 {
 	test_shell_intersection_and_sorting();
 	test_periodicity_and_seed_determinism();
 	test_coverage_and_energy();
+	test_low_discrepancy_jitter();
 	return 0;
 }

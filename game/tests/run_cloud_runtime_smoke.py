@@ -21,9 +21,13 @@ def main():
     parser.add_argument(
         "--timings", action="store_true",
         help="print periodic GPU pass timings")
-    parser.add_argument(
+    camera_group = parser.add_mutually_exclusive_group()
+    camera_group.add_argument(
         "--ground-view", action="store_true",
         help="aim at the ground receiver to inspect moving cloud shadows")
+    camera_group.add_argument(
+        "--horizon-view", action="store_true",
+        help="aim two degrees above the horizon to inspect temporal stability")
     args = parser.parse_args()
 
     sender_env = os.environ.copy()
@@ -31,6 +35,8 @@ def main():
     sender_env.setdefault("CLOUD_SMOKE_HOLD_SECONDS", "30")
     if args.ground_view:
         sender_env["CLOUD_SMOKE_CAMERA"] = "ground"
+    elif args.horizon_view:
+        sender_env["CLOUD_SMOKE_CAMERA"] = "horizon"
     sender = subprocess.Popen(
         [sys.executable, str(GAME_ROOT / "tests/send_cloud_runtime_smoke.py")],
         cwd=REPO_ROOT,

@@ -213,18 +213,22 @@ Update.StartMaterialsVector(builder, 1)
 builder.PrependUOffsetTRelative(ground_material)
 materials = builder.EndVector()
 
-ground_view = os.environ.get("CLOUD_SMOKE_CAMERA") == "ground"
+camera_mode = os.environ.get("CLOUD_SMOKE_CAMERA", "zenith")
+ground_view = camera_mode == "ground"
+horizon_view = camera_mode == "horizon"
 EditorCamera.Start(builder)
 camera_location = Vec3.CreateVec3(
     builder, 0.0, -800.0 if ground_view else 0.0, 300.0 if ground_view else 100.0)
 EditorCamera.AddLocation(builder, camera_location)
 camera_forward = Vec3.CreateVec3(
-    builder, 0.0, 0.936329 if ground_view else 0.0,
-    -0.351123 if ground_view else 1.0)
+    builder, 0.0,
+    0.936329 if ground_view else (0.999391 if horizon_view else 0.0),
+    -0.351123 if ground_view else (0.034899 if horizon_view else 1.0))
 EditorCamera.AddForward(builder, camera_forward)
 camera_up = Vec3.CreateVec3(
-    builder, 0.0, 0.351123 if ground_view else 1.0,
-    0.936329 if ground_view else 0.0)
+    builder, 0.0,
+    0.351123 if ground_view else (-0.034899 if horizon_view else 1.0),
+    0.936329 if ground_view else (0.999391 if horizon_view else 0.0))
 EditorCamera.AddUp(builder, camera_up)
 editor_camera = EditorCamera.End(builder)
 

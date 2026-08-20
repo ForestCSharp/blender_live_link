@@ -337,7 +337,11 @@ namespace CloudPass
 		params.wind_weather = HMM_V4(wind.X, wind.Y, cloud.wind_speed_m_s, cloud.weather_world_scale_m);
 		params.sun_direction_layer_count = HMM_V4V(sky_pass.active_sun_direction, (f32)cloud.layer_count);
 		params.sun_color_history = HMM_V4V(sky_pass.active_sun_color, pass.history_valid ? 1.0f : 0.0f);
-		params.shadow_extent_misc = HMM_V4(cloud.shadow_extent_m, cloud.shadow_enabled ? 1.0f : 0.0f, 0.0f, 0.0f);
+		params.shadow_extent_misc = HMM_V4(
+			cloud.shadow_extent_m,
+			cloud.shadow_enabled ? 1.0f : 0.0f,
+			CLAMP(state.clouds.history_clip_sigma, 0.25f, 4.0f),
+			CLAMP(state.clouds.opacity_rejection, 0.01f, 1.0f));
 		params.march_quality = HMM_V4(
 			(f32)CLAMP(state.clouds.view_steps, 12, 48),
 			CLAMP(state.clouds.dense_step_scale, 0.5f, 1.0f),
@@ -345,7 +349,9 @@ namespace CloudPass
 			(f32)CLAMP(state.clouds.sun_cone_samples, 1, 8));
 		params.temporal_quality = HMM_V4(
 			CLAMP(state.clouds.history_weight, 0.0f, 0.98f),
-			CLAMP(state.clouds.depth_rejection, 0.01f, 0.5f), 0.0f, 0.0f);
+			CLAMP(state.clouds.depth_rejection, 0.01f, 0.5f),
+			CLAMP(state.clouds.low_density_edge_fade, 0.0f, 0.2f),
+			CLAMP(state.clouds.minimum_density, 0.0f, 0.02f));
 		for (i32 layer_index = 0; layer_index < cloud.layer_count; ++layer_index)
 		{
 			const CloudLayer& layer = cloud.layers[layer_index];

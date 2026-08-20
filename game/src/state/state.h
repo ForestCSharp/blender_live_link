@@ -601,7 +601,11 @@ struct State
 		static constexpr f32 DEFAULT_EMPTY_STEP_SCALE = 2.0f;
 		static constexpr i32 DEFAULT_SUN_CONE_SAMPLES = 6;
 		static constexpr f32 DEFAULT_HISTORY_WEIGHT = 0.94f;
-		static constexpr f32 DEFAULT_DEPTH_REJECTION = 0.08f;
+		static constexpr f32 DEFAULT_DEPTH_REJECTION = 0.4f;
+		static constexpr f32 DEFAULT_LOW_DENSITY_EDGE_FADE = 0.08f;
+		static constexpr f32 DEFAULT_MINIMUM_DENSITY = 0.002f;
+		static constexpr f32 DEFAULT_HISTORY_CLIP_SIGMA = 1.25f;
+		static constexpr f32 DEFAULT_OPACITY_REJECTION = 0.35f;
 
 		bool active = false;
 		bool shadow_lighting_enabled = true;
@@ -618,6 +622,10 @@ struct State
 		i32 sun_cone_samples = DEFAULT_SUN_CONE_SAMPLES;
 		f32 history_weight = DEFAULT_HISTORY_WEIGHT;
 		f32 depth_rejection = DEFAULT_DEPTH_REJECTION;
+		f32 low_density_edge_fade = DEFAULT_LOW_DENSITY_EDGE_FADE;
+		f32 minimum_density = DEFAULT_MINIMUM_DENSITY;
+		f32 history_clip_sigma = DEFAULT_HISTORY_CLIP_SIGMA;
+		f32 opacity_rejection = DEFAULT_OPACITY_REJECTION;
 	} clouds;
 
 	struct DebugCameraState

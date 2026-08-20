@@ -26,14 +26,32 @@ layout(location = 0) out vec4 frag_color;
 
 float view_depth(vec4 world_position)
 {
+	if (world_position.a < 0.5)
+	{
+		return 1.0e30;
+	}
 	return dot(world_position.xyz - cam_pos.xyz, normalize(cam_forward.xyz));
+}
+
+bool is_geometry(vec4 world_position)
+{
+	// Cloud composite uses w = 2 for cloud-only pixels. Pure sky (0) and
+	// cloud-only pixels are one atmospheric background layer for DoF purposes.
+	return world_position.a >= 0.5 && world_position.a < 1.5;
+}
+
+vec4 sample_position_nearest(vec2 sample_uv)
+{
+	ivec2 size = textureSize(position_tex, 0);
+	ivec2 pixel = clamp(ivec2(sample_uv * vec2(size)), ivec2(0), size - ivec2(1));
+	return texelFetch(position_tex, pixel, 0);
 }
 
 float signed_coc_radius(vec4 world_position)
 {
-	if (world_position.a == 0.0)
+	if (world_position.a < 0.5)
 	{
-		return 0.0;
+		return min(max_coc_radius * background_blur_scale, max_coc_radius);
 	}
 
 	float depth = view_depth(world_position);
@@ -47,7 +65,7 @@ float signed_coc_radius(vec4 world_position)
 void main()
 {
 	vec4 color = texture(color_tex, uv);
-	vec4 world_position = texture(position_tex, uv);
+	vec4 world_position = sample_position_nearest(uv);
 	float center_signed_coc = signed_coc_radius(world_position);
 	float center_coc = abs(center_signed_coc);
 
@@ -61,7 +79,7 @@ void main()
 		return;
 	}
 
-	if (world_position.a == 0.0 || center_coc < 0.5 || max_coc_radius <= 0.0)
+	if (center_coc < 0.5 || max_coc_radius <= 0.0)
 	{
 		frag_color = color;
 		return;
@@ -88,6 +106,7 @@ void main()
 
 	vec2 texel_size = 1.0 / screen_size;
 	float center_depth = view_depth(world_position);
+	bool center_is_geometry = is_geometry(world_position);
 	float depth_epsilon = max(focus_range * 0.05, 0.5);
 	vec4 result = color;
 	float total_weight = 1.0;
@@ -95,11 +114,7 @@ void main()
 	for (int i = 1; i < 16; ++i)
 	{
 		vec2 sample_uv = uv + disk_offsets[i] * center_coc * texel_size;
-		vec4 sample_position = texture(position_tex, sample_uv);
-		if (sample_position.a == 0.0)
-		{
-			continue;
-		}
+		vec4 sample_position = sample_position_nearest(sample_uv);
 
 		float sample_signed_coc = signed_coc_radius(sample_position);
 		float sample_coc = abs(sample_signed_coc);
@@ -107,6 +122,12 @@ void main()
 		float sample_weight = 1.0;
 
 		sample_weight *= smoothstep(0.0, center_coc + 1.0, sample_coc + 1.0);
+		// Atmospheric samples (sky and cloud-only) may blur together. Keep them
+		// from bleeding through an opaque silhouette in either direction.
+		if (is_geometry(sample_position) != center_is_geometry)
+		{
+			sample_weight *= 0.05;
+		}
 
 		// Suppress cross-depth bleeding at silhouettes.
 		if (center_signed_coc < 0.0 && sample_depth > center_depth + depth_epsilon)

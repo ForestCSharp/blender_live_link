@@ -104,9 +104,12 @@ public:
 		{
 			in_state.temporal_aa.history_valid = false;
 			in_state.temporal_aa.history_index = 0;
-			settle_frames_remaining = 8;
+			// Cloud ray jitter uses a deterministic 16-phase sequence. Cover one
+			// complete cycle so visual baselines do not capture half-converged
+			// low-density or grazing-angle history.
+			settle_frames_remaining = 16;
 			phase = Phase::Settling;
-			printf("Automated screenshot: temporal history reset; settling for 8 frames\n");
+			printf("Automated screenshot: temporal history reset; settling for 16 frames\n");
 		}
 	}
 

@@ -156,10 +156,16 @@ namespace LiveLinkSystem
 					{
 						// Match Blender's viewport position and viewing direction without
 						// importing viewport roll into the game's Z-up navigation frame.
+						// A vertical view cannot use world Z as its up vector, so retain
+						// Blender's orthogonal up vector for zenith/nadir smoke tests.
+						const HMM_Vec3 navigation_up =
+							fabsf(HMM_DotV3(camera.forward, UnitVectors::Up)) < 0.999f
+							? UnitVectors::Up
+							: camera.up;
 						scene_update.editor_camera = Camera{
 							.location = camera.location,
 							.forward = camera.forward,
-							.up = UnitVectors::Up,
+							.up = navigation_up,
 						};
 					}
 				}

@@ -8,7 +8,8 @@
 
 // Single-pass gather depth-of-field.
 // Reads the post-fog scene color and
-// G-buffer world position; writes the DOF'd scene color.
+// Composite world position (geometry=1, cloud-only=2, sky=0); writes the
+// DOF'd scene color.
 
 // Mirrors dof_combine.frag's fs_params block (std140).
 struct DofCombineFsParams

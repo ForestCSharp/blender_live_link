@@ -20,6 +20,15 @@ layout(location = 2) out vec4 out_reactive;
 
 void sample_cloud_bilateral(vec4 geometry_position, out vec4 cloud_value, out vec4 depth_value)
 {
+	// At the default 1.0x cloud scale this is a resolve, not an upscale. The
+	// ray march already clips against scene depth, so avoid eight redundant
+	// texture reads and preserve the exact temporally resolved pixel.
+	if (all(equal(textureSize(cloud_tex, 0), textureSize(lit_scene_tex, 0))))
+	{
+		cloud_value = texture(cloud_tex, uv);
+		depth_value = texture(cloud_depth_tex, uv);
+		return;
+	}
 	vec2 source_size = vec2(textureSize(cloud_tex, 0));
 	vec2 source_pixel = uv * source_size - 0.5;
 	vec2 source_base = floor(source_pixel);
@@ -64,7 +73,10 @@ void sample_cloud_bilateral(vec4 geometry_position, out vec4 cloud_value, out ve
 void main()
 {
 	vec4 background = texture(lit_scene_tex, uv);
-	vec4 geometry_position = texture(position_tex, uv);
+	ivec2 position_size = textureSize(position_tex, 0);
+	ivec2 position_pixel = clamp(
+		ivec2(uv * vec2(position_size)), ivec2(0), position_size - ivec2(1));
+	vec4 geometry_position = texelFetch(position_tex, position_pixel, 0);
 	vec4 cloud_value;
 	vec4 depth_value;
 	sample_cloud_bilateral(geometry_position, cloud_value, depth_value);
@@ -95,10 +107,21 @@ void main()
 		* BRUNETON_SKY_RADIANCE_TO_LUMINANCE
 		* BRUNETON_SCENE_PHOTOMETRIC_SCALE
 		* cloud.sun_color_history.rgb;
-	cloud_scattering = cloud_scattering * aerial_transmittance + aerial_scattering;
+	// The scene already contains its own atmospheric path. Only replace that
+	// path in proportion to cloud opacity; otherwise a nearly transparent
+	// density sample receives a full cloud-depth aerial term and becomes a
+	// visible gray fringe.
+	float cloud_opacity = clamp(1.0 - cloud_value.a, 0.0, 1.0);
+	cloud_scattering = cloud_scattering * aerial_transmittance
+		+ aerial_scattering * cloud_opacity;
 
 	vec3 composited = cloud_scattering + cloud_value.a * background.rgb;
 	out_color = vec4(SanitizeSceneColor(composited), 1.0);
-	out_position = vec4(cloud_world_position, 1.0);
+	// The position target is also consumed by fog, DoF, and TAA. Preserve an
+	// opaque surface as the authoritative depth at mixed cloud/geometry pixels;
+	// replacing it with cloud depth defeats silhouette rejection in DoF.
+	// w = 2 tags a cloud-only atmospheric pixel, while normal geometry remains 1.
+	out_position = geometry_position.w > 0.5
+		? geometry_position : vec4(cloud_world_position, 2.0);
 	out_reactive = vec4(clamp(1.0 - cloud_value.a, 0.0, 1.0), 0.0, 0.0, 1.0);
 }

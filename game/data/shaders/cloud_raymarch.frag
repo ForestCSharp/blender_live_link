@@ -27,8 +27,10 @@ float sample_volume(sampler2DArray tex, vec3 uvw, float slices)
 	return mix(a, b, blend);
 }
 
-float cloud_density_at(vec3 world_position, int layer_index, bool detailed)
+float cloud_density_at(
+	vec3 world_position, int layer_index, bool detailed, out float coarse_density)
 {
+	coarse_density = 0.0;
 	CloudLayerGpu layer = cloud.layers[layer_index];
 	float altitude = layer.altitude_thickness_coverage_density.x;
 	float thickness = layer.altitude_thickness_coverage_density.y;
@@ -54,13 +56,29 @@ float cloud_density_at(vec3 world_position, int layer_index, bool detailed)
 		/ max(layer.scales_erosion_anvil.x, 100.0);
 	float shape = sample_volume(base_shape_tex, shape_coord, 128.0);
 	shape = cloud_remap(shape * profile, 1.0 - coverage, 1.0, 0.0, 1.0);
-	if (shape <= 0.0 || !detailed) return max(shape, 0.0) * layer.altitude_thickness_coverage_density.w;
+	if (shape <= 0.0) return 0.0;
+	coarse_density = shape * layer.altitude_thickness_coverage_density.w;
+	if (coarse_density <= cloud.temporal_quality.w) return 0.0;
+	if (!detailed) return coarse_density;
 
 	vec3 detail_coord = vec3(world_position.xy + wind * 1.13 + seed_offset, world_position.z)
 		/ max(layer.scales_erosion_anvil.y, 10.0);
 	float detail = sample_volume(erosion_tex, detail_coord, 32.0);
-	float eroded = cloud_remap(shape, detail * layer.scales_erosion_anvil.z, 1.0, 0.0, 1.0);
-	return max(eroded, 0.0) * layer.altitude_thickness_coverage_density.w;
+	float eroded = max(cloud_remap(
+		shape, detail * layer.scales_erosion_anvil.z, 1.0, 0.0, 1.0), 0.0);
+	// Suppress isolated sub-voxel remnants without imposing another hard
+	// cutoff. This keeps wisps while making their extinction approach zero
+	// smoothly at heavily eroded silhouettes.
+	float edge_fade = cloud.temporal_quality.z;
+	float edge_weight = edge_fade > 1.0e-5
+		? smoothstep(0.0, edge_fade, eroded) : 1.0;
+	return eroded * edge_weight * layer.altitude_thickness_coverage_density.w;
+}
+
+float cloud_density_at(vec3 world_position, int layer_index, bool detailed)
+{
+	float ignored_coarse_density;
+	return cloud_density_at(world_position, layer_index, detailed, ignored_coarse_density);
 }
 
 void main()
@@ -81,8 +99,15 @@ void main()
 		out_depth_reactive = vec4(0.0);
 		return;
 	}
-	vec4 scene_position = texture(position_tex, uv);
-	float geometry_distance = dot(scene_position.xyz, scene_position.xyz) > 1.0e-6
+	// Position is a categorical geometry/sky boundary as well as a world-space
+	// value. Never filter it across silhouettes: a blended ground/sky position
+	// produces an unstable false ray limit exactly where clouds meet terrain.
+	ivec2 position_size = textureSize(position_tex, 0);
+	ivec2 position_pixel = clamp(
+		ivec2(uv * vec2(position_size)), ivec2(0), position_size - ivec2(1));
+	vec4 scene_position = texelFetch(position_tex, position_pixel, 0);
+	float geometry_coverage = scene_position.w > 0.5 ? 1.0 : 0.0;
+	float geometry_distance = geometry_coverage > 0.5
 		? length(scene_position.xyz - ray_origin) : 1.0e8;
 	vec3 sun_direction = normalize(cloud.sun_direction_layer_count.xyz);
 	int layer_count = clamp(int(cloud.sun_direction_layer_count.w + 0.5), 0, MAX_CLOUD_LAYERS);
@@ -91,8 +116,12 @@ void main()
 	float transmittance = 1.0;
 	float weighted_depth = 0.0;
 	float depth_weight = 0.0;
+	float fallback_depth = 0.0;
+	float weighted_wind_multiplier = 0.0;
+	float fallback_wind_multiplier = 1.0;
 	float cos_angle = dot(sun_direction, -ray_direction);
 	const int MAX_STEPS_PER_LAYER = 64;
+	uint frame_index = uint(max(cloud.planet_center_time.z, 0.0));
 
 	for (int layer_index = 0; layer_index < MAX_CLOUD_LAYERS; ++layer_index)
 	{
@@ -103,33 +132,46 @@ void main()
 		float outer_radius = inner_radius + layer.altitude_thickness_coverage_density.y;
 		vec2 outer = cloud_sphere_interval(ray_origin, ray_direction, planet_center, outer_radius);
 		vec2 inner = cloud_sphere_interval(ray_origin, ray_direction, planet_center, inner_radius);
+		bool geometry_clips_layer = geometry_coverage > 0.5 && geometry_distance < outer.y;
 		float start_distance = max(outer.x, 0.0);
 		if (length(ray_origin - planet_center) > inner_radius && inner.x > start_distance)
 			start_distance = inner.x;
 		float end_distance = min(outer.y, geometry_distance);
 		if (end_distance <= start_distance) continue;
+		if (fallback_depth <= 0.0)
+		{
+			fallback_depth = mix(start_distance, end_distance, 0.5);
+			fallback_wind_multiplier = layer.wind_phase.x;
+		}
 
 		float view_steps = clamp(cloud.march_quality.x, 12.0, 48.0);
 		float dense_step_scale = clamp(cloud.march_quality.y, 0.5, 1.0);
 		float empty_step_scale = clamp(cloud.march_quality.z, 1.0, 4.0);
 		int sun_cone_samples = clamp(int(cloud.march_quality.w + 0.5), 1, 8);
+		vec2 jitter_pixel = gl_FragCoord.xy + vec2(float(layer_index) * 17.0,
+			float(layer_index) * 31.0);
+		// A geometry-clipped interval changes discontinuously at the rasterized
+		// silhouette. Keep its spatial jitter but freeze the temporal phase so the
+		// final cloud sample does not sparkle against an otherwise stable edge.
+		uint jitter_frame = geometry_clips_layer ? 0u : frame_index;
+		float view_jitter = cloud_low_discrepancy_jitter(jitter_pixel, jitter_frame, 0u);
+		float cone_jitter = cloud_low_discrepancy_jitter(jitter_pixel, jitter_frame, 1u);
+		float minimum_density = cloud.temporal_quality.w;
 		float step_size = (end_distance - start_distance) / view_steps;
-		float jitter = fract(sin(dot(gl_FragCoord.xy + cloud.planet_center_time.zz,
-			vec2(12.9898, 78.233))) * 43758.5453);
-		float distance_along_ray = start_distance + jitter * step_size;
+		float distance_along_ray = start_distance + view_jitter * step_size;
 		for (int step_index = 0;
 			step_index < MAX_STEPS_PER_LAYER && distance_along_ray < end_distance;
 			++step_index)
 		{
 			vec3 sample_position = ray_origin + ray_direction * distance_along_ray;
 			float coarse_density = cloud_density_at(sample_position, layer_index, false);
-			if (coarse_density <= 0.002)
+			if (coarse_density <= minimum_density)
 			{
 				distance_along_ray += step_size * empty_step_scale;
 				continue;
 			}
 			float density = cloud_density_at(sample_position, layer_index, true);
-			if (density <= 0.002)
+			if (density <= minimum_density)
 			{
 				distance_along_ray += step_size;
 				continue;
@@ -141,8 +183,11 @@ void main()
 			{
 				if (light_index >= sun_cone_samples) break;
 				float cone = float(light_index + 1);
-				vec3 cone_offset = vec3(fract(jitter * 7.13 + cone) - 0.5,
-					fract(jitter * 11.71 + cone * 0.37) - 0.5, 0.0) * light_step * cone * 0.18;
+				vec3 cone_offset = vec3(
+					fract(cone_jitter * 7.13 + cone) - 0.5,
+					fract(cone_jitter * 11.71 + cone * 0.37) - 0.5,
+					fract(cone_jitter * 5.37 + cone * 0.61803398875) - 0.5)
+					* light_step * cone * 0.18;
 				light_density += cloud_density_at(sample_position + sun_direction * light_step * cone + cone_offset,
 					layer_index, light_index < 3);
 			}
@@ -174,13 +219,18 @@ void main()
 				* layer.ambient_multi_profile_seed.x * mix(0.3, 0.7, sample_height_fraction);
 			vec3 luminance = direct + ambient;
 
+			// Do not integrate the last stochastic sample beyond the opaque surface.
+			// This matters most at long ground-plane intersections where one nominal
+			// cloud step can cover hundreds of metres.
+			float integration_step = min(step_size, end_distance - distance_along_ray);
 			float extinction = max(density * 0.0018, 1.0e-7);
-			float step_transmittance = exp(-extinction * step_size);
+			float step_transmittance = exp(-extinction * integration_step);
 			vec3 integrated_step = luminance * density
 				* (1.0 - step_transmittance) / extinction;
 			float opacity_contribution = transmittance * (1.0 - step_transmittance);
 			integrated += transmittance * integrated_step * 0.0018;
 			weighted_depth += distance_along_ray * opacity_contribution;
+			weighted_wind_multiplier += layer.wind_phase.x * opacity_contribution;
 			depth_weight += opacity_contribution;
 			transmittance *= step_transmittance;
 			if (transmittance < 0.01) break;
@@ -188,7 +238,14 @@ void main()
 		}
 	}
 
-	float mean_depth = depth_weight > 1.0e-5 ? weighted_depth / depth_weight : 0.0;
+	// Keep a stable shell depth even when this frame's jittered samples miss a
+	// wispy edge. Temporal reprojection can then accumulate the cloud/clear
+	// transition instead of dropping history for one frame.
+	float mean_depth = depth_weight > 1.0e-5
+		? weighted_depth / depth_weight : fallback_depth;
+	float effective_wind_multiplier = depth_weight > 1.0e-5
+		? weighted_wind_multiplier / depth_weight : fallback_wind_multiplier;
 	out_scattering_transmittance = vec4(SanitizeSceneColor(integrated), clamp(transmittance, 0.0, 1.0));
-	out_depth_reactive = vec4(mean_depth, 1.0 - transmittance, depth_weight > 0.0 ? 1.0 : 0.0, 1.0);
+	out_depth_reactive = vec4(mean_depth, 1.0 - transmittance,
+		effective_wind_multiplier, geometry_coverage);
 }

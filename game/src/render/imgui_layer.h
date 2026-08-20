@@ -787,6 +787,20 @@ namespace ImGuiLayer
 					quality_changed |= ImGui::SliderFloat(
 						"Depth Rejection", &state.clouds.depth_rejection,
 						0.01f, 0.5f, "%.3f");
+					quality_changed |= ImGui::SliderFloat(
+						"Low-Density Edge Fade", &state.clouds.low_density_edge_fade,
+						0.0f, 0.2f, "%.3f");
+					quality_changed |= ImGui::SliderFloat(
+						"Minimum Density", &state.clouds.minimum_density,
+						0.0f, 0.02f, "%.4f");
+					quality_changed |= ImGui::SliderFloat(
+						"History Clip Sigma", &state.clouds.history_clip_sigma,
+						0.25f, 4.0f, "%.2f");
+					quality_changed |= ImGui::SliderFloat(
+						"Opacity Rejection", &state.clouds.opacity_rejection,
+						0.01f, 1.0f, "%.2f");
+					ImGui::TextDisabled(
+						"Edge Fade/Minimum Density trim wisps; Clip Sigma/Opacity Rejection tune stability");
 					if (ImGui::Button("Reset Cloud Quality"))
 					{
 						state.clouds.resolution_scale = State::CloudState::DEFAULT_RESOLUTION_SCALE;
@@ -796,6 +810,11 @@ namespace ImGuiLayer
 						state.clouds.sun_cone_samples = State::CloudState::DEFAULT_SUN_CONE_SAMPLES;
 						state.clouds.history_weight = State::CloudState::DEFAULT_HISTORY_WEIGHT;
 						state.clouds.depth_rejection = State::CloudState::DEFAULT_DEPTH_REJECTION;
+						state.clouds.low_density_edge_fade =
+							State::CloudState::DEFAULT_LOW_DENSITY_EDGE_FADE;
+						state.clouds.minimum_density = State::CloudState::DEFAULT_MINIMUM_DENSITY;
+						state.clouds.history_clip_sigma = State::CloudState::DEFAULT_HISTORY_CLIP_SIGMA;
+						state.clouds.opacity_rejection = State::CloudState::DEFAULT_OPACITY_REJECTION;
 						resolution_changed = true;
 						quality_changed = true;
 					}
@@ -881,7 +900,7 @@ namespace ImGuiLayer
 					CloudPass::pass.history_valid ? "valid" : "invalid");
 				draw_texture(frame_data.linear_sampler, "Current density / radiance",
 					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(0), 256.0f);
-				draw_texture(frame_data.linear_sampler, "Weighted mean cloud depth",
+				draw_texture(frame_data.linear_sampler, "Weighted depth / opacity / wind / geometry mask",
 					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(1), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Temporal radiance / transmittance",
 					get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().get_color_output(0), 256.0f);

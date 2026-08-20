@@ -44,6 +44,28 @@ inline float cloud_energy_step_cpu(float source, float extinction, float step_le
 	return std::isfinite(result) ? result : 0.0f;
 }
 
+inline std::uint32_t cloud_reverse_4_bits_cpu(std::uint32_t value)
+{
+	value &= 15u;
+	return ((value & 1u) << 3u) | ((value & 2u) << 1u)
+		| ((value & 4u) >> 1u) | ((value & 8u) >> 3u);
+}
+
+inline float cloud_fract_cpu(float value)
+{
+	return value - std::floor(value);
+}
+
+inline float cloud_low_discrepancy_jitter_cpu(
+	float pixel_x, float pixel_y, std::uint32_t frame_index, std::uint32_t dimension)
+{
+	const float inner = cloud_fract_cpu(pixel_x * 0.06711056f + pixel_y * 0.00583715f);
+	const float spatial = cloud_fract_cpu(52.9829189f * inner);
+	const std::uint32_t phase = cloud_reverse_4_bits_cpu(
+		(frame_index + dimension * 5u) & 15u);
+	return cloud_fract_cpu(spatial + ((float)phase + 0.5f) / 16.0f);
+}
+
 inline std::uint32_t cloud_periodic_hash_cpu(
 	std::uint32_t x, std::uint32_t y, std::uint32_t z,
 	std::uint32_t period, std::uint32_t seed)
