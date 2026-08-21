@@ -9,6 +9,15 @@
 #include "handmade_math/HandmadeMath.h"
 
 #include "render/frame_render_graph.h"
+#include "render/fullscreen_pipeline.h"
+
+struct TestComputePushConstants
+{
+	u32 x;
+	u32 y;
+};
+
+static_assert(TypedComputeEffect<TestComputePushConstants>::PUSH_CONSTANT_SIZE == 8);
 
 int main()
 {
@@ -44,5 +53,29 @@ int main()
 	assert(selected.image == &first);
 	assert(frame_graph_select(false, { .image = &first }, { .image = &second }).image
 		== &second);
+
+	const DescriptorBindingSpec bindings[] = {
+		{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+		{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+	};
+	DescriptorWriter writer = {
+		.set = reinterpret_cast<VkDescriptorSet>(1),
+		.specs = bindings,
+		.spec_count = 2,
+		.allow_cache = false,
+	};
+	assert(writer.find(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).stages
+		== VK_SHADER_STAGE_COMPUTE_BIT);
+	writer.storage_image(0, reinterpret_cast<VkImageView>(2));
+	writer.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		reinterpret_cast<VkBuffer>(3), 64);
+	assert(writer.write_count == 2);
+	assert(writer.writes[0].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	assert(writer.image_infos[0].imageLayout == VK_IMAGE_LAYOUT_GENERAL);
+	assert(writer.writes[1].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	assert(writer.buffer_infos[0].range == 64);
+	assert(!writer.allow_cache);
 	return 0;
 }

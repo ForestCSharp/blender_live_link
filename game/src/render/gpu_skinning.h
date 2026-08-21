@@ -2,8 +2,8 @@
 
 #include "core/types.h"
 #include "core/timings.h"
+#include "render/fullscreen_pipeline.h"
 #include "render/vulkan_context.h"
-#include "render/shader_module.h"
 #include "state/state.h"
 
 // GPU skinning cache: a compute pass bakes
@@ -29,60 +29,24 @@ namespace GpuSkinning
 	};
 	static_assert(sizeof(SkinningParams) == 16, "Must match gpu_skinning.comp's push constant block");
 
-	inline VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-	inline VkPipeline pipeline = VK_NULL_HANDLE;
+	inline TypedComputeEffect<SkinningParams> effect;
 
 	inline void init(VulkanContext* ctx)
 	{
-		// Set layout: b0 source vertices, b1 skinning weights, b2 skin matrix
-		// arena, b3 cache output — all compute SSBOs
+		DescriptorBindingSpec bindings[4] = {};
+		for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
 		{
-			VkDescriptorSetLayoutBinding bindings[4] = {};
-			for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
-			{
-				bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
-					.binding = binding_idx,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.descriptorCount = 1,
-					.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				};
-			}
-			VkDescriptorSetLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 4,
-				.pBindings = bindings,
+			bindings[binding_idx] = {
+				.binding = binding_idx,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			};
-			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &set_layout));
 		}
-
-		VkPushConstantRange push_constant_range = {
-			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-			.offset = 0,
-			.size = sizeof(SkinningParams),
-		};
-		VkPipelineLayoutCreateInfo layout_create_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &set_layout,
-			.pushConstantRangeCount = 1,
-			.pPushConstantRanges = &push_constant_range,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &pipeline_layout));
-
-		VkShaderModule compute_module = create_shader_module_from_file(ctx->device, "bin/shaders/gpu_skinning.comp.spv");
-		VkComputePipelineCreateInfo pipeline_create_info = {
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-				.module = compute_module,
-				.pName = "main",
-			},
-			.layout = pipeline_layout,
-		};
-		VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
-		vkDestroyShaderModule(ctx->device, compute_module, nullptr);
+		effect.init(ctx, {
+			.shader_path = "bin/shaders/gpu_skinning.comp.spv",
+			.bindings = bindings,
+			.binding_count = 4,
+		});
 	}
 
 	inline void ensure_cache(Mesh& in_mesh)
@@ -122,30 +86,20 @@ namespace GpuSkinning
 
 		ensure_cache(in_mesh);
 
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
-			VkDescriptorSet set = vulkan_allocate_transient_descriptor_set(ctx, set_layout);
-
-			VkDescriptorBufferInfo buffer_infos[] = {
-				descriptor_buffer(in_mesh.vertex_buffer.get_gpu_buffer()),
-				descriptor_buffer(in_mesh.skinned_vertex_buffer.get_gpu_buffer()),
-				descriptor_buffer(get_skin_matrix_arena_buffer(in_state).get_gpu_buffer()),
-				descriptor_buffer(in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer()),
-			};
-			VkWriteDescriptorSet writes[4] = {};
-			for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
-			{
-				writes[binding_idx] = descriptor_write_buffer(
-					set,
-					binding_idx,
-					VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					&buffer_infos[binding_idx]
-				);
-			}
-		vulkan_update_descriptor_sets(ctx, 4, writes, 0, nullptr, false);
-
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, nullptr);
+		VkBuffer buffers[] = {
+			in_mesh.vertex_buffer.get_gpu_buffer(),
+			in_mesh.skinned_vertex_buffer.get_gpu_buffer(),
+			get_skin_matrix_arena_buffer(in_state).get_gpu_buffer(),
+			in_mesh.skinned_vertex_cache_buffer.get_gpu_buffer(),
+		};
+		DescriptorWriter writer = effect.writer(ctx);
+		for (u32 binding_idx = 0; binding_idx < 4; ++binding_idx)
+		{
+			writer.buffer(binding_idx, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				buffers[binding_idx]);
+		}
+		writer.commit();
+		effect.bind(ctx, writer.set);
 
 		for (u32 base_vertex = 0; base_vertex < in_mesh.vertex_count; base_vertex += MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE)
 		{
@@ -158,8 +112,7 @@ namespace GpuSkinning
 				.base_vertex = (i32) base_vertex,
 				.skin_matrix_offset = in_mesh.skin_matrix_arena_offset,
 			};
-			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vulkan_cmd_dispatch(ctx, group_count, 1, 1);
+			effect.dispatch(ctx, params, group_count, 1, 1);
 		}
 
 		in_mesh.skinned_vertex_cache_valid = true;
@@ -232,8 +185,6 @@ namespace GpuSkinning
 
 	inline void shutdown(VulkanContext* ctx)
 	{
-		vkDestroyPipeline(ctx->device, pipeline, nullptr);
-		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, set_layout, nullptr);
+		effect.shutdown(ctx);
 	}
 }

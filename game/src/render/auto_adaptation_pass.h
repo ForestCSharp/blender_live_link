@@ -6,9 +6,9 @@
 #include "core/timings.h"
 #include "render/auto_adaptation_math.h"
 #include "render/bruneton_atmosphere_pass.h"
+#include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 #include "render/gpu_image.h"
-#include "render/shader_module.h"
 #include "render/vulkan_context.h"
 #include "state/state.h"
 
@@ -64,19 +64,12 @@ namespace AutoAdaptationPass
 	};
 	static_assert(sizeof(ReducePushConstants) == 8);
 
-	struct ComputePipeline
-	{
-		VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-		VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-		VkPipeline pipeline = VK_NULL_HANDLE;
-	};
-
 	struct Pass
 	{
-		ComputePipeline histogram_pipeline;
-		ComputePipeline reduce_pipeline;
-		ComputePipeline solar_guard_pipeline;
-		ComputePipeline update_pipeline;
+		ComputeEffect histogram_pipeline;
+		TypedComputeEffect<ReducePushConstants> reduce_pipeline;
+		TypedComputeEffect<SolarGuardPushConstants> solar_guard_pipeline;
+		TypedComputeEffect<UpdatePushConstants> update_pipeline;
 		GpuBuffer<AutoAdaptationMath::HistogramBin> histogram;
 		GpuBuffer<MeasurementBufferData> measurement;
 		GpuBuffer<StateBufferData> state;
@@ -105,53 +98,6 @@ namespace AutoAdaptationPass
 		return result;
 	}
 
-	inline void create_pipeline(
-		VulkanContext* ctx,
-		ComputePipeline& out_pipeline,
-		const VkDescriptorSetLayoutBinding* in_bindings,
-		u32 in_binding_count,
-		const char* in_shader_path,
-		u32 in_push_constant_size = 0)
-	{
-		VkDescriptorSetLayoutCreateInfo set_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = in_binding_count,
-			.pBindings = in_bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(
-			ctx->device, &set_info, nullptr, &out_pipeline.set_layout));
-
-		VkPushConstantRange push_range = {
-			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-			.offset = 0,
-			.size = in_push_constant_size,
-		};
-		VkPipelineLayoutCreateInfo layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &out_pipeline.set_layout,
-			.pushConstantRangeCount = in_push_constant_size > 0 ? 1u : 0u,
-			.pPushConstantRanges = in_push_constant_size > 0 ? &push_range : nullptr,
-		};
-		VK_CHECK(vkCreatePipelineLayout(
-			ctx->device, &layout_info, nullptr, &out_pipeline.pipeline_layout));
-
-		VkShaderModule module = create_shader_module_from_file(ctx->device, in_shader_path);
-		VkComputePipelineCreateInfo pipeline_info = {
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-				.module = module,
-				.pName = "main",
-			},
-			.layout = out_pipeline.pipeline_layout,
-		};
-		VK_CHECK(vulkan_create_compute_pipelines(
-			ctx, 1, &pipeline_info, &out_pipeline.pipeline));
-		vkDestroyShaderModule(ctx->device, module, nullptr);
-	}
-
 	inline void init(VulkanContext* ctx, VkSampler in_sampler)
 	{
 		pass.sampler = in_sampler;
@@ -165,53 +111,60 @@ namespace AutoAdaptationPass
 			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 		};
 		VK_CHECK(vkCreateSampler(ctx->device, &nearest_info, nullptr, &pass.nearest_sampler));
-		const VkDescriptorSetLayoutBinding histogram_bindings[] = {
+		const DescriptorBindingSpec histogram_bindings[] = {
 			{
 				.binding = 0,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 		};
-		const VkDescriptorSetLayoutBinding buffer_bindings[] = {
+		const DescriptorBindingSpec buffer_bindings[] = {
 			{
 				.binding = 0,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 		};
-		const VkDescriptorSetLayoutBinding solar_guard_bindings[] = {
-			{ .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
-			{ .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
-			{ .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
-			{ .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+		const DescriptorBindingSpec solar_guard_bindings[] = {
+			{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 2, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 3, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
 		};
-		create_pipeline(ctx, pass.histogram_pipeline, histogram_bindings, 2,
-			"bin/shaders/auto_adaptation_histogram.comp.spv");
-		create_pipeline(ctx, pass.reduce_pipeline, buffer_bindings, 2,
-			"bin/shaders/auto_adaptation_reduce.comp.spv", sizeof(ReducePushConstants));
-		create_pipeline(ctx, pass.solar_guard_pipeline, solar_guard_bindings, 4,
-			"bin/shaders/auto_adaptation_solar_guard.comp.spv",
-			sizeof(SolarGuardPushConstants));
-		create_pipeline(ctx, pass.update_pipeline, buffer_bindings, 2,
-			"bin/shaders/auto_adaptation_update.comp.spv", sizeof(UpdatePushConstants));
+		pass.histogram_pipeline.init(ctx, {
+			.shader_path = "bin/shaders/auto_adaptation_histogram.comp.spv",
+			.bindings = histogram_bindings,
+			.binding_count = 2,
+		});
+		pass.reduce_pipeline.init(ctx, {
+			.shader_path = "bin/shaders/auto_adaptation_reduce.comp.spv",
+			.bindings = buffer_bindings,
+			.binding_count = 2,
+		});
+		pass.solar_guard_pipeline.init(ctx, {
+			.shader_path = "bin/shaders/auto_adaptation_solar_guard.comp.spv",
+			.bindings = solar_guard_bindings,
+			.binding_count = 4,
+		});
+		pass.update_pipeline.init(ctx, {
+			.shader_path = "bin/shaders/auto_adaptation_update.comp.spv",
+			.bindings = buffer_bindings,
+			.binding_count = 2,
+		});
 
 		AutoAdaptationMath::HistogramBin initial_histogram[AutoAdaptationMath::HISTOGRAM_BIN_COUNT] = {};
 		MeasurementBufferData initial_measurement = {};
@@ -321,32 +274,15 @@ namespace AutoAdaptationPass
 
 	inline VkDescriptorSet allocate_buffer_set(
 		VulkanContext* ctx,
-		const ComputePipeline& pipeline,
+		ComputeEffect& effect,
 		VkBuffer buffer0,
 		VkBuffer buffer1)
 	{
-		VkDescriptorSet set = vulkan_allocate_transient_descriptor_set(ctx, pipeline.set_layout);
-		VkDescriptorBufferInfo infos[] = {
-			descriptor_buffer(buffer0),
-			descriptor_buffer(buffer1),
-		};
-		VkWriteDescriptorSet writes[] = {
-			descriptor_write_buffer(set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &infos[0]),
-			descriptor_write_buffer(set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &infos[1]),
-		};
-		vulkan_update_descriptor_sets(ctx, 2, writes, 0, nullptr, false);
-		return set;
-	}
-
-	inline void bind_compute(
-		VulkanContext* ctx,
-		const ComputePipeline& pipeline,
-		VkDescriptorSet set)
-	{
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-			pipeline.pipeline_layout, 0, 1, &set, 0, nullptr);
+		DescriptorWriter writer = effect.writer(ctx);
+		writer.buffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer0)
+			.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer1)
+			.commit();
+		return writer.set;
 	}
 
 	inline void meter(
@@ -395,19 +331,12 @@ namespace AutoAdaptationPass
 			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		});
 		vulkan_apply_pass_resource_usage(ctx, histogram_usage);
-		VkDescriptorSet histogram_set = vulkan_allocate_transient_descriptor_set(
-			ctx, pass.histogram_pipeline.set_layout);
-		VkDescriptorImageInfo image_info = descriptor_sampled(pass.sampler, scene_color.view);
-		VkDescriptorBufferInfo histogram_info = descriptor_buffer(histogram);
-		VkWriteDescriptorSet histogram_writes[] = {
-			descriptor_write_image(histogram_set, 0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_info),
-			descriptor_write_buffer(histogram_set, 1,
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &histogram_info),
-		};
-		vulkan_update_descriptor_sets(ctx, 2, histogram_writes, 0, nullptr, false);
-		bind_compute(ctx, pass.histogram_pipeline, histogram_set);
-		vulkan_cmd_dispatch(ctx, 16, 9, 1);
+		DescriptorWriter histogram_writer = pass.histogram_pipeline.writer(ctx);
+		histogram_writer.sampled(0, pass.sampler, scene_color.view)
+			.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, histogram)
+			.commit();
+		pass.histogram_pipeline.bind_and_dispatch(
+			ctx, histogram_writer.set, 16, 9, 1);
 
 		PassResourceUsage reduce_usage;
 		reduce_usage.buffers.add({
@@ -422,15 +351,13 @@ namespace AutoAdaptationPass
 		});
 		vulkan_apply_pass_resource_usage(ctx, reduce_usage);
 		VkDescriptorSet reduce_set = allocate_buffer_set(
-			ctx, pass.reduce_pipeline, histogram, measurement);
-		bind_compute(ctx, pass.reduce_pipeline, reduce_set);
+			ctx, pass.reduce_pipeline.effect, histogram, measurement);
 		ReducePushConstants reduce_constants = {
 			.auto_exposure_min_ev = CLAMP(state.auto_exposure_min_ev, -16.0f, 16.0f),
 			.auto_exposure_max_ev = CLAMP(state.auto_exposure_max_ev, -16.0f, 16.0f),
 		};
-		vkCmdPushConstants(command_buffer, pass.reduce_pipeline.pipeline_layout,
-			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(reduce_constants), &reduce_constants);
-		vulkan_cmd_dispatch(ctx, 1, 1, 1);
+		pass.reduce_pipeline.bind_and_dispatch(
+			ctx, reduce_set, reduce_constants, 1, 1, 1);
 
 		PassResourceUsage solar_usage;
 		solar_usage.images.add({
@@ -461,37 +388,20 @@ namespace AutoAdaptationPass
 			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			.access = VK_ACCESS_2_UNIFORM_READ_BIT });
 		vulkan_apply_pass_resource_usage(ctx, solar_usage);
-		VkDescriptorSet solar_set = vulkan_allocate_transient_descriptor_set(
-			ctx, pass.solar_guard_pipeline.set_layout);
-		VkDescriptorBufferInfo solar_buffer_infos[] = {
-			descriptor_buffer(measurement),
-			descriptor_buffer(
-				bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index].get_gpu_buffer(),
-				sizeof(BrunetonAtmosphereGpu)),
-		};
-		VkDescriptorImageInfo solar_image_infos[] = {
-			descriptor_sampled(pass.nearest_sampler, position.view),
-			descriptor_sampled(pass.sampler, transmittance.view),
-		};
-		VkWriteDescriptorSet solar_writes[] = {
-			descriptor_write_buffer(solar_set, 0,
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &solar_buffer_infos[0]),
-			descriptor_write_image(solar_set, 1,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &solar_image_infos[0]),
-			descriptor_write_buffer(solar_set, 2,
-				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &solar_buffer_infos[1]),
-			descriptor_write_image(solar_set, 3,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &solar_image_infos[1]),
-		};
-		vulkan_update_descriptor_sets(ctx, 4, solar_writes, 0, nullptr, false);
-		bind_compute(ctx, pass.solar_guard_pipeline, solar_set);
+		DescriptorWriter solar_writer = pass.solar_guard_pipeline.writer(ctx);
+		solar_writer.buffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, measurement)
+			.sampled(1, pass.nearest_sampler, position.view)
+			.buffer(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index]
+					.get_gpu_buffer(), sizeof(BrunetonAtmosphereGpu))
+			.sampled(3, pass.sampler, transmittance.view)
+			.commit();
 		solar_constants.extent_and_ev_limits = HMM_V4(
 			(f32)position.extent.width, (f32)position.extent.height,
 			reduce_constants.auto_exposure_min_ev,
 			reduce_constants.auto_exposure_max_ev);
-		vkCmdPushConstants(command_buffer, pass.solar_guard_pipeline.pipeline_layout,
-			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(solar_constants), &solar_constants);
-		vulkan_cmd_dispatch(ctx, 1, 1, 1);
+		pass.solar_guard_pipeline.bind_and_dispatch(
+			ctx, solar_writer.set, solar_constants, 1, 1, 1);
 
 		pass.metered_this_frame = true;
 		vulkan_end_debug_label(ctx);
@@ -524,8 +434,7 @@ namespace AutoAdaptationPass
 		});
 		vulkan_apply_pass_resource_usage(ctx, update_usage);
 		VkDescriptorSet update_set = allocate_buffer_set(
-			ctx, pass.update_pipeline, measurement, state_buffer_handle);
-		bind_compute(ctx, pass.update_pipeline, update_set);
+			ctx, pass.update_pipeline.effect, measurement, state_buffer_handle);
 		UpdatePushConstants constants = {
 			.delta_time = CLAMP(delta_time, 0.0f, AutoAdaptationMath::MAX_FRAME_DELTA),
 			.auto_exposure_enabled = state.auto_exposure_enabled ? 1 : 0,
@@ -542,9 +451,8 @@ namespace AutoAdaptationPass
 			.auto_white_balance_strength = CLAMP(
 				state.auto_white_balance_strength, 0.0f, 1.0f),
 		};
-		vkCmdPushConstants(command_buffer, pass.update_pipeline.pipeline_layout,
-			VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), &constants);
-		vulkan_cmd_dispatch(ctx, 1, 1, 1);
+		pass.update_pipeline.bind_and_dispatch(
+			ctx, update_set, constants, 1, 1, 1);
 		pass.pending_reset_mask = 0;
 
 		const u32 frame = ctx->frame_index;
@@ -587,16 +495,10 @@ namespace AutoAdaptationPass
 		pass.state.destroy_gpu_buffer();
 		pass.measurement.destroy_gpu_buffer();
 		pass.histogram.destroy_gpu_buffer();
-		ComputePipeline* pipelines[] = {
-			&pass.update_pipeline, &pass.solar_guard_pipeline,
-			&pass.reduce_pipeline, &pass.histogram_pipeline,
-		};
-		for (ComputePipeline* pipeline : pipelines)
-		{
-			vkDestroyPipeline(ctx->device, pipeline->pipeline, nullptr);
-			vkDestroyPipelineLayout(ctx->device, pipeline->pipeline_layout, nullptr);
-			vkDestroyDescriptorSetLayout(ctx->device, pipeline->set_layout, nullptr);
-		}
+		pass.update_pipeline.shutdown(ctx);
+		pass.solar_guard_pipeline.shutdown(ctx);
+		pass.reduce_pipeline.shutdown(ctx);
+		pass.histogram_pipeline.shutdown(ctx);
 		vkDestroySampler(ctx->device, pass.nearest_sampler, nullptr);
 	}
 }

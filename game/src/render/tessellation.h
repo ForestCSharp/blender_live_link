@@ -3,7 +3,7 @@
 #include <cmath>
 
 #include "core/timings.h"
-#include "render/shader_module.h"
+#include "render/fullscreen_pipeline.h"
 #include "state/state.h"
 
 namespace Tessellation
@@ -43,19 +43,11 @@ namespace Tessellation
 	};
 	static_assert(sizeof(PlanParams) == 144, "PlanParams shader layout mismatch");
 
-	struct PipelineState
-	{
-		VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-		VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-		VkPipeline pipeline = VK_NULL_HANDLE;
-		u32 binding_count = 0;
-	};
-
-	inline PipelineState clear_counters;
-	inline PipelineState measure_mesh_factor;
-	inline PipelineState plan_patches;
-	inline PipelineState emit_vertices;
-	inline PipelineState emit_indices;
+	inline ComputeEffect clear_counters;
+	inline TypedComputeEffect<PlanParams> measure_mesh_factor;
+	inline TypedComputeEffect<PlanParams> plan_patches;
+	inline TypedComputeEffect<ComputeParams> emit_vertices;
+	inline TypedComputeEffect<ComputeParams> emit_indices;
 	inline bool initialized = false;
 
 	inline u32 vertex_count_for_factor(u32 factor)
@@ -76,91 +68,53 @@ namespace Tessellation
 			HMM_MulM4(HMM_QToM4(transform.rotation), HMM_Scale(transform.scale)));
 	}
 
-	inline void create_pipeline(VulkanContext* ctx, PipelineState& out, u32 binding_count,
-		const char* shader_path, u32 push_constant_size)
+	template<typename EffectT>
+	inline void init_effect(VulkanContext* ctx, EffectT& out, u32 binding_count,
+		const char* shader_path)
 	{
-		out.binding_count = binding_count;
-		DynamicArray<VkDescriptorSetLayoutBinding> bindings;
+		DynamicArray<DescriptorBindingSpec> bindings;
 		for (u32 binding_idx = 0; binding_idx < binding_count; ++binding_idx)
 		{
-			bindings.add((VkDescriptorSetLayoutBinding) {
+			bindings.add({
 				.binding = binding_idx,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT,
 			});
 		}
-		VkDescriptorSetLayoutCreateInfo set_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = binding_count,
-			.pBindings = bindings.data(),
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &set_info, nullptr, &out.set_layout));
-
-		VkPushConstantRange push_range = {
-			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-			.offset = 0,
-			.size = push_constant_size,
-		};
-		VkPipelineLayoutCreateInfo layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &out.set_layout,
-			.pushConstantRangeCount = push_constant_size > 0 ? 1u : 0u,
-			.pPushConstantRanges = push_constant_size > 0 ? &push_range : nullptr,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_info, nullptr, &out.pipeline_layout));
-
-		VkShaderModule module = create_shader_module_from_file(ctx->device, shader_path);
-		VkComputePipelineCreateInfo pipeline_info = {
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-				.module = module,
-				.pName = "main",
-			},
-			.layout = out.pipeline_layout,
-		};
-		VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_info, &out.pipeline));
-		vkDestroyShaderModule(ctx->device, module, nullptr);
+		out.init(ctx, {
+			.shader_path = shader_path,
+			.bindings = bindings.data(),
+			.binding_count = binding_count,
+		});
 	}
 
 	inline void init(VulkanContext* ctx)
 	{
 		if (initialized) { return; }
-		create_pipeline(ctx, clear_counters, 1, "bin/shaders/tessellation_clear_counters.comp.spv", 0);
-		create_pipeline(ctx, measure_mesh_factor, 3, "bin/shaders/tessellation_measure_mesh_factor.comp.spv", sizeof(PlanParams));
-		create_pipeline(ctx, plan_patches, 4, "bin/shaders/tessellation_plan_patches.comp.spv", sizeof(PlanParams));
-		create_pipeline(ctx, emit_vertices, 5, "bin/shaders/tessellation_emit_vertices_gpu.comp.spv", sizeof(ComputeParams));
-		create_pipeline(ctx, emit_indices, 4, "bin/shaders/tessellation_emit_indices_gpu.comp.spv", sizeof(ComputeParams));
+		init_effect(ctx, clear_counters, 1,
+			"bin/shaders/tessellation_clear_counters.comp.spv");
+		init_effect(ctx, measure_mesh_factor, 3,
+			"bin/shaders/tessellation_measure_mesh_factor.comp.spv");
+		init_effect(ctx, plan_patches, 4,
+			"bin/shaders/tessellation_plan_patches.comp.spv");
+		init_effect(ctx, emit_vertices, 5,
+			"bin/shaders/tessellation_emit_vertices_gpu.comp.spv");
+		init_effect(ctx, emit_indices, 4,
+			"bin/shaders/tessellation_emit_indices_gpu.comp.spv");
 		initialized = true;
 	}
 
-	inline VkDescriptorSet bind_set(VulkanContext* ctx, PipelineState& pipeline_state,
-			const VkBuffer* buffers, u32 buffer_count)
+	inline void bind_set(VulkanContext* ctx, ComputeEffect& effect,
+		const VkBuffer* buffers, u32 buffer_count)
+	{
+		assert(buffer_count == effect.descriptors.binding_specs.length());
+		DescriptorWriter writer = effect.writer(ctx);
+		for (u32 idx = 0; idx < buffer_count; ++idx)
 		{
-			assert(buffer_count == pipeline_state.binding_count);
-			VkDescriptorSet set =
-				vulkan_allocate_transient_descriptor_set(ctx, pipeline_state.set_layout);
-			VkDescriptorBufferInfo infos[5] = {};
-			VkWriteDescriptorSet writes[5] = {};
-			for (u32 idx = 0; idx < buffer_count; ++idx)
-			{
-				infos[idx] = descriptor_buffer(buffers[idx]);
-				writes[idx] = descriptor_write_buffer(
-					set,
-					idx,
-					VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					&infos[idx]
-				);
-			}
-		vulkan_update_descriptor_sets(ctx, buffer_count, writes, 0, nullptr, false);
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_state.pipeline);
-		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-			pipeline_state.pipeline_layout, 0, 1, &set, 0, nullptr);
-		return set;
+			writer.buffer(idx, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffers[idx]);
+		}
+		writer.commit();
+		effect.bind(ctx, writer.set);
 	}
 
 	inline void compute_barrier(VulkanContext* ctx, VkPipelineStageFlags2 dst_stages,
@@ -362,7 +316,7 @@ namespace Tessellation
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		{ VkBuffer buffers[] = { slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, clear_counters, buffers, 1); vulkan_cmd_dispatch(ctx, 1, 1, 1); }
+			bind_set(ctx, clear_counters, buffers, 1); clear_counters.dispatch(ctx, 1, 1, 1); }
 		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 		if (state.tessellation.mode == ETessellationMode::AdaptiveAngularPerMesh)
@@ -371,9 +325,9 @@ namespace Tessellation
 			{
 				PlanParams params = make_plan_params(state, object, camera, fov, slot, triangle_count, base);
 				VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-				bind_set(ctx, measure_mesh_factor, buffers, 3);
-				vkCmdPushConstants(command_buffer, measure_mesh_factor.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-				vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
+				bind_set(ctx, measure_mesh_factor.effect, buffers, 3);
+				measure_mesh_factor.dispatch(ctx, params,
+					MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
 			}
 			compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 		}
@@ -382,9 +336,9 @@ namespace Tessellation
 		{
 			PlanParams params = make_plan_params(state, object, camera, fov, slot, triangle_count, base);
 			VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, plan_patches, buffers, 4);
-			vkCmdPushConstants(command_buffer, plan_patches.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
+			bind_set(ctx, plan_patches.effect, buffers, 4);
+			plan_patches.dispatch(ctx, params,
+				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
 		}
 		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
@@ -392,13 +346,13 @@ namespace Tessellation
 		{
 			ComputeParams params = { .count = (i32) patch_capacity, .base_index = (i32) base, .phong_strength = state.tessellation.phong_strength };
 			VkBuffer vertex_buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.vertex_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, emit_vertices, vertex_buffers, 5);
-			vkCmdPushConstants(command_buffer, emit_vertices.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+			bind_set(ctx, emit_vertices.effect, vertex_buffers, 5);
+			emit_vertices.dispatch(ctx, params,
+				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
 			VkBuffer index_buffers[] = { slot.patch_buffer.get_gpu_buffer(), slot.index_buffer.get_gpu_buffer(), slot.wire_index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, emit_indices, index_buffers, 4);
-			vkCmdPushConstants(command_buffer, emit_indices.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-			vulkan_cmd_dispatch(ctx, MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+			bind_set(ctx, emit_indices.effect, index_buffers, 4);
+			emit_indices.dispatch(ctx, params,
+				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
 		}
 		compute_barrier(ctx,
 			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT
@@ -473,13 +427,11 @@ namespace Tessellation
 	inline void shutdown(VulkanContext* ctx)
 	{
 		if (!initialized) { return; }
-		PipelineState* states[] = { &clear_counters, &measure_mesh_factor, &plan_patches, &emit_vertices, &emit_indices };
-		for (PipelineState* pipeline_state : states)
-		{
-			vkDestroyPipeline(ctx->device, pipeline_state->pipeline, nullptr);
-			vkDestroyPipelineLayout(ctx->device, pipeline_state->pipeline_layout, nullptr);
-			vkDestroyDescriptorSetLayout(ctx->device, pipeline_state->set_layout, nullptr);
-		}
+		emit_indices.shutdown(ctx);
+		emit_vertices.shutdown(ctx);
+		plan_patches.shutdown(ctx);
+		measure_mesh_factor.shutdown(ctx);
+		clear_counters.shutdown(ctx);
 		initialized = false;
 	}
 }

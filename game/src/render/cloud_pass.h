@@ -49,9 +49,7 @@ namespace CloudPass
 		GpuImage base_shape;
 		GpuImage erosion;
 		GpuImage weather;
-		VkDescriptorSetLayout noise_layout = VK_NULL_HANDLE;
-		VkPipelineLayout noise_pipeline_layout = VK_NULL_HANDLE;
-		VkPipeline noise_pipeline = VK_NULL_HANDLE;
+		TypedComputeEffect<NoisePushConstants> noise_effect;
 
 		VkDescriptorSetLayout sampled_layout = VK_NULL_HANDLE;
 		PerFrameDescriptorSets raymarch_sets;
@@ -124,52 +122,6 @@ namespace CloudPass
 		return result;
 	}
 
-	inline void create_noise_pipeline(VulkanContext* ctx)
-	{
-		VkDescriptorSetLayoutBinding bindings[3] = {};
-		for (u32 binding = 0; binding < 3; ++binding)
-		{
-			bindings[binding] = {
-				.binding = binding,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-			};
-		}
-		VkDescriptorSetLayoutCreateInfo set_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 3,
-			.pBindings = bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &set_info, nullptr, &pass.noise_layout));
-		VkPushConstantRange push_range = {
-			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-			.offset = 0,
-			.size = sizeof(NoisePushConstants),
-		};
-		VkPipelineLayoutCreateInfo layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &pass.noise_layout,
-			.pushConstantRangeCount = 1,
-			.pPushConstantRanges = &push_range,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_info, nullptr, &pass.noise_pipeline_layout));
-		VkShaderModule module = create_shader_module_from_file(ctx->device, "bin/shaders/cloud_noise.comp.spv");
-		VkComputePipelineCreateInfo info = {
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-				.module = module,
-				.pName = "main",
-			},
-			.layout = pass.noise_pipeline_layout,
-		};
-		VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &info, &pass.noise_pipeline));
-		vkDestroyShaderModule(ctx->device, module, nullptr);
-	}
-
 	inline void init(VulkanContext* ctx)
 	{
 		pass.base_shape = gpu_image_create(ctx->allocator, ctx->device, {
@@ -190,7 +142,19 @@ namespace CloudPass
 			.aspect = VK_IMAGE_ASPECT_COLOR_BIT, .array_layers = MAX_CLOUD_LAYERS,
 			.label = "Cloud Weather Fields",
 		});
-		create_noise_pipeline(ctx);
+		const DescriptorBindingSpec noise_bindings[] = {
+			{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 2, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+		};
+		pass.noise_effect.init(ctx, {
+			.shader_path = "bin/shaders/cloud_noise.comp.spv",
+			.bindings = noise_bindings,
+			.binding_count = 3,
+		});
 
 		VkSamplerCreateInfo sampler_info = {
 			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -282,26 +246,20 @@ namespace CloudPass
 				.layout = VK_IMAGE_LAYOUT_GENERAL, .discard = true });
 		vulkan_apply_pass_resource_usage(ctx, usage);
 
-		VkDescriptorSet set = vulkan_allocate_transient_descriptor_set(ctx, pass.noise_layout);
-		VkDescriptorImageInfo infos[3] = {};
-		VkWriteDescriptorSet writes[3] = {};
+		DescriptorWriter noise_writer = pass.noise_effect.writer(ctx);
 		for (u32 index = 0; index < 3; ++index)
 		{
-			infos[index] = { .imageView = images[index]->view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-			writes[index] = descriptor_write_image(set, index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &infos[index]);
+			noise_writer.storage_image(index, images[index]->view);
 		}
-		vulkan_update_descriptor_sets(ctx, 3, writes, 0, nullptr, false);
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pass.noise_pipeline);
-		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-			pass.noise_pipeline_layout, 0, 1, &set, 0, nullptr);
+		noise_writer.commit();
+		pass.noise_effect.bind(ctx, noise_writer.set);
 		const NoisePushConstants dispatches[] = {
 			{ seed, 0, 128, 128 }, { seed, 1, 32, 32 }, { seed, 2, 512, (u32)layer_count },
 		};
 		for (const NoisePushConstants& push : dispatches)
 		{
-			vkCmdPushConstants(command_buffer, pass.noise_pipeline_layout,
-				VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-			vulkan_cmd_dispatch(ctx, (push.size + 7) / 8, (push.size + 7) / 8, push.layers);
+			pass.noise_effect.dispatch(ctx, push,
+				(push.size + 7) / 8, (push.size + 7) / 8, push.layers);
 		}
 		for (GpuImage* image : images)
 			gpu_image_transition(command_buffer, *image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -422,13 +380,11 @@ namespace CloudPass
 		vkDestroyPipeline(ctx->device, pass.temporal_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, pass.composite_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, pass.shadow_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, pass.noise_pipeline, nullptr);
+		pass.noise_effect.shutdown(ctx);
 		vkDestroyPipelineLayout(ctx->device, pass.atmosphere_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, pass.basic_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, pass.noise_pipeline_layout, nullptr);
 		pass.params.shutdown();
 		vkDestroyDescriptorSetLayout(ctx->device, pass.sampled_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, pass.noise_layout, nullptr);
 		vkDestroySampler(ctx->device, pass.repeat_sampler, nullptr);
 		gpu_image_destroy(ctx->allocator, ctx->device, pass.base_shape);
 		gpu_image_destroy(ctx->allocator, ctx->device, pass.erosion);

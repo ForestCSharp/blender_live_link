@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "core/types.h"
+#include "render/fullscreen_pipeline.h"
 #include "render/vulkan_context.h"
 #include "render/render_types.h"
 #include "render/render_pass.h"
@@ -173,9 +174,7 @@ struct LightingCapture
 
 	// Probe radiance projection compute (per-frame sets: sh9/sg9 buffers
 	// change on layout rebuilds)
-	VkDescriptorSetLayout projection_set_layout = VK_NULL_HANDLE;
-	VkPipelineLayout projection_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline projection_pipeline = VK_NULL_HANDLE;
+	TypedComputeEffect<ProbeProjectionPushConstants> projection_effect;
 	static constexpr i32 PROJECTION_SLOTS_PER_FRAME = 8;	// <=2 modes * 4 probes
 	VkDescriptorSet projection_slot_sets[MAX_FRAMES_IN_FLIGHT][PROJECTION_SLOTS_PER_FRAME] = {};
 	i32 projection_slot_cursor = 0;
@@ -516,32 +515,19 @@ struct LightingCapture
 			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &cube_to_oct_set_layout));
 		}
 		{
-			VkDescriptorSetLayoutBinding bindings[3] = {
-				{
-					.binding = 0,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.descriptorCount = 1,
-					.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				},
-				{
-					.binding = 1,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.descriptorCount = 1,
-					.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				},
-				{
-					.binding = 2,
-					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-					.descriptorCount = 1,
-					.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				},
+			const DescriptorBindingSpec bindings[] = {
+				{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+				{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+				{ .binding = 2, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					.stages = VK_SHADER_STAGE_COMPUTE_BIT },
 			};
-			VkDescriptorSetLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 3,
-				.pBindings = bindings,
-			};
-			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &projection_set_layout));
+			projection_effect.init(ctx, {
+				.shader_path = "bin/shaders/probe_radiance_projection.comp.spv",
+				.bindings = bindings,
+				.binding_count = 3,
+			});
 		}
 		{
 			VkDescriptorSetLayoutBinding binding = {
@@ -601,7 +587,8 @@ struct LightingCapture
 			}
 			for (i32 slot_idx = 0; slot_idx < PROJECTION_SLOTS_PER_FRAME; ++slot_idx)
 			{
-				allocate_info.pSetLayouts = &projection_set_layout;
+				allocate_info.pSetLayouts =
+					&projection_effect.effect.descriptors.layout;
 				VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &projection_slot_sets[frame_idx][slot_idx]));
 			}
 		}
@@ -681,21 +668,6 @@ struct LightingCapture
 		}
 		{
 			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				.offset = 0,
-				.size = sizeof(ProbeProjectionPushConstants),
-			};
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &projection_set_layout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_range,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &projection_pipeline_layout));
-		}
-		{
-			VkPushConstantRange push_range = {
 				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 				.offset = 0,
 				.size = sizeof(SpecularPrefilterPushConstants),
@@ -768,22 +740,6 @@ struct LightingCapture
 				prefilter_formats, 1, VK_FORMAT_UNDEFINED, false
 			);
 		}
-		{
-			VkShaderModule compute_module = create_shader_module_from_file(ctx->device, "bin/shaders/probe_radiance_projection.comp.spv");
-			VkComputePipelineCreateInfo pipeline_create_info = {
-				.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-				.stage = {
-					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-					.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-					.module = compute_module,
-					.pName = "main",
-				},
-				.layout = projection_pipeline_layout,
-			};
-			VK_CHECK(vulkan_create_compute_pipelines(ctx, 1, &pipeline_create_info, &projection_pipeline));
-			vkDestroyShaderModule(ctx->device, compute_module, nullptr);
-		}
-
 		// ---- Static resources ----
 		const u32 white_pixel = 0xFFFFFFFFu;
 		default_image = gpu_image_create_from_data(ctx, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &white_pixel, sizeof(white_pixel));
@@ -1476,46 +1432,21 @@ struct LightingCapture
 			const i32 slot = projection_slot_cursor++;
 			VkDescriptorSet slot_set = projection_slot_sets[frame_index][slot];
 
-			VkDescriptorBufferInfo buffer_infos[] = {
-				{ .buffer = in_sh9_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
-				{ .buffer = in_sg9_buffer, .offset = 0, .range = VK_WHOLE_SIZE },
-			};
-			VkDescriptorImageInfo cube_info = {
-				.sampler = ::lighting_pass.linear_sampler,
-				.imageView = lighting_pass.get_color_output(0).view,
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			};
-			VkWriteDescriptorSet writes[3] = {};
-			for (u32 buffer_idx = 0; buffer_idx < 2; ++buffer_idx)
-			{
-				writes[buffer_idx] = (VkWriteDescriptorSet) {
-					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = slot_set,
-					.dstBinding = buffer_idx,
-					.descriptorCount = 1,
-					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-					.pBufferInfo = &buffer_infos[buffer_idx],
-				};
-			}
-			writes[2] = (VkWriteDescriptorSet) {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = slot_set,
-				.dstBinding = 2,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &cube_info,
-			};
-			vulkan_update_descriptor_sets(ctx, 3, writes);
+			DescriptorWriter writer = projection_effect.effect.descriptors.writer(
+				ctx, slot_set, true);
+			writer.buffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, in_sh9_buffer)
+				.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, in_sg9_buffer)
+				.sampled(2, ::lighting_pass.linear_sampler,
+					lighting_pass.get_color_output(0).view)
+				.commit();
 
 			ProbeProjectionPushConstants push_constants = {
 				.probe_index = in_probe_idx,
 				.radiance_mode = (i32) in_radiance_mode,
 				.sample_count = 1024,
 			};
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, projection_pipeline);
-			vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, projection_pipeline_layout, 0, 1, &slot_set, 0, nullptr);
-			vkCmdPushConstants(command_buffer, projection_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants), &push_constants);
-			vulkan_cmd_dispatch(ctx, 1, 1, 1);
+			projection_effect.bind_and_dispatch(
+				ctx, slot_set, push_constants, 1, 1, 1);
 		};
 
 		bool dispatched_projection = false;
@@ -1557,7 +1488,7 @@ struct LightingCapture
 
 		vkDestroyPipeline(ctx->device, brdf_lut_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, specular_prefilter_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, projection_pipeline, nullptr);
+		projection_effect.shutdown(ctx);
 		vkDestroyPipeline(ctx->device, cube_to_oct_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, radial_depth_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, capture_lighting_pipeline, nullptr);
@@ -1566,13 +1497,11 @@ struct LightingCapture
 		vkDestroyPipeline(ctx->device, capture_geometry_pipeline, nullptr);
 		vkDestroyPipelineLayout(ctx->device, brdf_lut_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, specular_prefilter_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, projection_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, cube_to_oct_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, radial_depth_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, capture_sky_pipeline_layout, nullptr);
 		vkDestroyPipelineLayout(ctx->device, capture_geometry_pipeline_layout, nullptr);
 		vkDestroyDescriptorSetLayout(ctx->device, specular_prefilter_set_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, projection_set_layout, nullptr);
 		vkDestroyDescriptorSetLayout(ctx->device, cube_to_oct_set_layout, nullptr);
 		vkDestroyDescriptorPool(ctx->device, pool, nullptr);
 
