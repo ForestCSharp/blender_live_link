@@ -94,32 +94,6 @@ inline const char* ETonemappingMethodNames[(i32) ETonemappingMethod::MAX] = {
 	"Khronos PBR Neutral",
 };
 
-enum class ERenderPass : i32
-{
-	ShadowDepth,
-	ShadowBlur,
-	ShadowCascadeDebug,
-	Geometry,
-	SSAO,
-	SSAO_Blur,
-	ScreenSpaceShadows,
-	Lighting,
-	CloudRaymarch,
-	CloudTemporal,
-	CloudComposite,
-	CloudShadow,
-	Fog,
-	DofCombine,
-	WireOverlay,
-	TemporalAA,
-	Tonemapping,
-	FXAA,
-	PresentationComposite,
-	CopyToSwapchain,
-
-	COUNT,
-};
-
 #include "live_link/live_link_types.h"
 
 enum class MechLoadoutSelectionType : u8
@@ -227,10 +201,7 @@ struct State
 		bool render_resolution_dirty = false;
 	} window;
 
-	struct RenderPassState
-	{
-		RenderPassEntry passes[(i32) ERenderPass::COUNT];
-	} render_passes;
+	RenderTargetRegistry render_targets;
 
 	struct InputState
 	{
@@ -710,14 +681,9 @@ void scene_record_index_counts(State& in_state)
 	in_state.data_oriented.frame.skinned_mesh_object_count = (i32) in_state.scene.indexes.skinned_mesh_object_ids.length();
 }
 
-RenderPassEntry& get_render_pass_entry(ERenderPass in_pass)
+RenderPass& get_render_target(RenderTargetId in_target)
 {
-	return state.render_passes.passes[(i32) in_pass];
-}
-
-RenderPass& get_render_pass(ERenderPass in_pass)
-{
-	return get_render_pass_entry(in_pass).final_pass();
+	return state.render_targets.get(in_target);
 }
 
 void scene_mark_indexes_dirty(State& in_state)

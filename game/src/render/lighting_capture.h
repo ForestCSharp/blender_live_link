@@ -441,8 +441,6 @@ struct LightingCapture
 
 		// ---- Passes ----
 		geometry_pass.init((RenderPassDesc) {
-			.initial_width = desc.cubemap_render_size,
-			.initial_height = desc.cubemap_render_size,
 			.pass_count = NUM_CUBE_FACES,
 			.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
 			.outputs = {
@@ -457,44 +455,38 @@ struct LightingCapture
 				.store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 				.clear_value = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(desc.cubemap_render_size, desc.cubemap_render_size),
 			.type = ERenderPassType::Multi,
 			.debug_label = "GI Capture Geometry",
 		});
 
 		lighting_pass.init((RenderPassDesc) {
-			.initial_width = desc.cubemap_render_size,
-			.initial_height = desc.cubemap_render_size,
 			.num_outputs = 1,
 			.outputs = {
 				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(desc.cubemap_render_size, desc.cubemap_render_size),
 			.type = ERenderPassType::Cubemap,
 			.debug_label = "GI Capture Lighting",
 		});
 
 		radial_depth_pass.init((RenderPassDesc) {
-			.initial_width = desc.cubemap_render_size,
-			.initial_height = desc.cubemap_render_size,
 			.num_outputs = 1,
 			.outputs = {
 				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR, .store_op = VK_ATTACHMENT_STORE_OP_STORE, .clear_value = {{{ 1.0f, 1.0f, 1.0f, 1.0f }}} },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(desc.cubemap_render_size, desc.cubemap_render_size),
 			.type = ERenderPassType::Cubemap,
 			.debug_label = "GI Radial Depth",
 		});
 
 		cube_to_oct_pass.init((RenderPassDesc) {
-			.initial_width = desc.octahedral_total_size,
-			.initial_height = desc.octahedral_total_size,
 			.num_outputs = 2,
 			.outputs = {
 				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(desc.octahedral_total_size, desc.octahedral_total_size),
 			.type = ERenderPassType::Single,
 			.debug_label = "GI Cube To Octahedral",
 		});

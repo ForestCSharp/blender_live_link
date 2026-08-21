@@ -11,6 +11,7 @@
 #include "render/copy_to_swapchain_pass.h"
 #include "render/dof_combine_pass.h"
 #include "render/fog_pass.h"
+#include "render/frame_render_graph.h"
 #include "render/frame_data.h"
 #include "render/fxaa_pass.h"
 #include "render/geometry_pass.h"
@@ -43,9 +44,9 @@ namespace RenderSystem
 	inline bool dump_tonemapping_validation(State& in_state, const std::string& prefix)
 	{
 		GpuImage& tonemapped =
-			get_render_pass(ERenderPass::Tonemapping).get_color_output(0);
+			get_render_target(RenderTargetId::Tonemapping).get_color_output(0);
 		GpuImage& composite =
-			get_render_pass(ERenderPass::PresentationComposite).get_color_output(0);
+			get_render_target(RenderTargetId::PresentationComposite).get_color_output(0);
 		return vulkan_context_dump_image_pfm(
 			&in_state.vk, &tonemapped, (prefix + ".tonemapped.pfm").c_str())
 			&& vulkan_context_dump_image_pfm(
@@ -56,12 +57,12 @@ namespace RenderSystem
 	{
 		const bool shadow_succeeded = vulkan_context_dump_image_pfm(
 			&in_state.vk,
-			&get_render_pass(ERenderPass::CloudShadow).get_color_output(0),
+			&get_render_target(RenderTargetId::CloudShadow).get_color_output(0),
 			path.c_str());
 		const std::string lighting_path = path + ".lighting.pfm";
 		const bool lighting_succeeded = vulkan_context_dump_image_pfm(
 			&in_state.vk,
-			&get_render_pass(ERenderPass::Lighting).get_color_output(0),
+			&get_render_target(RenderTargetId::Lighting).get_color_output(0),
 			lighting_path.c_str());
 		return shadow_succeeded && lighting_succeeded;
 	}
@@ -101,31 +102,24 @@ namespace RenderSystem
 		in_state.window.height = framebuffer_height;
 		update_render_resolution(in_state);
 		const f32 cloud_resolution_scale = CLAMP(in_state.clouds.resolution_scale, 0.5f, 1.0f);
-		get_render_pass_entry(ERenderPass::CloudRaymarch).final_pass().desc.width_scale = cloud_resolution_scale;
-		get_render_pass_entry(ERenderPass::CloudRaymarch).final_pass().desc.height_scale = cloud_resolution_scale;
-		get_render_pass_entry(ERenderPass::CloudTemporal).intermediate_pass().desc.width_scale = cloud_resolution_scale;
-		get_render_pass_entry(ERenderPass::CloudTemporal).intermediate_pass().desc.height_scale = cloud_resolution_scale;
-		get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().desc.width_scale = cloud_resolution_scale;
-		get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().desc.height_scale = cloud_resolution_scale;
+		for (RenderTargetId id : {
+			RenderTargetId::CloudRaymarch,
+			RenderTargetId::CloudHistory0,
+			RenderTargetId::CloudHistory1 })
+		{
+			RenderPass& target = in_state.render_targets.get(id);
+			target.desc.extent.width_scale = cloud_resolution_scale;
+			target.desc.extent.height_scale = cloud_resolution_scale;
+		}
 	
 		// Old pass targets are retired against this frame slot; no device-wide
 		// wait is required for render-scale or offscreen target replacement.
 		ImGuiLayer::handle_swapchain_recreated(&in_state.vk);
 		ImGuiLayer::clear_textures();
 	
-		for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
-		{
-			RenderPassEntry& entry = in_state.render_passes.passes[pass_index];
-			if (entry.final_pass().desc.type == ERenderPassType::Swapchain
-				|| entry.final_pass().desc.use_output_resolution)
-			{
-				entry.handle_resize(in_state.window.width, in_state.window.height);
-			}
-			else
-			{
-				entry.handle_resize(in_state.window.render_width, in_state.window.render_height);
-			}
-		}
+		in_state.render_targets.handle_resize(
+			in_state.window.render_width, in_state.window.render_height,
+			in_state.window.width, in_state.window.height);
 		tonemapping_pass_handle_resize(
 			&in_state.vk,
 			in_state.window.render_width,
@@ -263,9 +257,7 @@ namespace RenderSystem
 			// Fixed-size cascaded shadow map: one moments image with a layer per
 			// cascade. Clear {1,1,0,0} = "fully lit" EVSM moments so unrendered
 			// cascades never darken receivers.
-			get_render_pass_entry(ERenderPass::ShadowDepth).init_final((RenderPassDesc) {
-				.initial_width = ShadowDepthPass::ShadowMapResolution,
-				.initial_height = ShadowDepthPass::ShadowMapResolution,
+			in_state.render_targets.init(RenderTargetId::ShadowDepth, (RenderPassDesc) {
 				.pass_count = MAX_SHADOW_CASCADES,
 				.num_outputs = 1,
 				.outputs = {
@@ -282,7 +274,8 @@ namespace RenderSystem
 					.store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 					.clear_value = { .depthStencil = { .depth = Render::DEPTH_CLEAR_VALUE } },
 				},
-				.resize_with_window = false,
+				.extent = render_target_extent_fixed(
+					ShadowDepthPass::ShadowMapResolution, ShadowDepthPass::ShadowMapResolution),
 				.type = ERenderPassType::Array,
 				.debug_label = "Shadow Depth",
 			});
@@ -292,8 +285,6 @@ namespace RenderSystem
 			const auto make_shadow_blur_desc = [](const char* in_debug_label)
 			{
 				return (RenderPassDesc) {
-					.initial_width = ShadowDepthPass::ShadowMapResolution,
-					.initial_height = ShadowDepthPass::ShadowMapResolution,
 					.pass_count = MAX_SHADOW_CASCADES,
 					.num_outputs = 1,
 					.outputs = {
@@ -304,16 +295,15 @@ namespace RenderSystem
 							.clear_value = {{{ 1.0f, 1.0f, 0.0f, 0.0f }}},
 						},
 					},
-					.resize_with_window = false,
+					.extent = render_target_extent_fixed(
+						ShadowDepthPass::ShadowMapResolution, ShadowDepthPass::ShadowMapResolution),
 					.type = ERenderPassType::Array,
 					.debug_label = in_debug_label,
 				};
 			};
-			get_render_pass_entry(ERenderPass::ShadowBlur).init_intermediate(make_shadow_blur_desc("Shadow Blur Horizontal"));
-			get_render_pass_entry(ERenderPass::ShadowBlur).init_final(make_shadow_blur_desc("Shadow Blur Vertical"));
-			get_render_pass_entry(ERenderPass::ShadowCascadeDebug).init_final((RenderPassDesc) {
-				.initial_width = ShadowDepthPass::ShadowMapResolution,
-				.initial_height = ShadowDepthPass::ShadowMapResolution,
+			in_state.render_targets.init(RenderTargetId::ShadowBlurHorizontal, make_shadow_blur_desc("Shadow Blur Horizontal"));
+			in_state.render_targets.init(RenderTargetId::ShadowBlurred, make_shadow_blur_desc("Shadow Blur Vertical"));
+			in_state.render_targets.init(RenderTargetId::ShadowCascadeDebug, (RenderPassDesc) {
 				.num_outputs = 1,
 				.outputs = {{
 					.format = Render::SCENE_COLOR_FORMAT,
@@ -321,7 +311,8 @@ namespace RenderSystem
 					.store_op = VK_ATTACHMENT_STORE_OP_STORE,
 					.clear_value = {{{ 0.0f, 0.0f, 0.0f, 1.0f }}},
 				}},
-				.resize_with_window = false,
+				.extent = render_target_extent_fixed(
+					ShadowDepthPass::ShadowMapResolution, ShadowDepthPass::ShadowMapResolution),
 				.debug_label = "Shadow Cascade Debug",
 			});
 			ShadowCascadeDebugPass::init(&in_state.vk);
@@ -330,8 +321,8 @@ namespace RenderSystem
 			// never recreated
 			ShadowBlurPass::init_sets(
 				&in_state.vk,
-				get_render_pass(ERenderPass::ShadowDepth).get_color_output(0).view,
-				get_render_pass_entry(ERenderPass::ShadowBlur).intermediate_pass().get_color_output(0).view,
+				get_render_target(RenderTargetId::ShadowDepth).get_color_output(0).view,
+				get_render_target(RenderTargetId::ShadowBlurHorizontal).get_color_output(0).view,
 				frame_data.linear_sampler
 			);
 		
@@ -339,31 +330,20 @@ namespace RenderSystem
 			// lighting samples it.
 			const auto make_ssao_desc = [](const char* in_debug_label)
 			{
-				return (RenderPassDesc) {
-					.num_outputs = 1,
-					.outputs = {
-						{
-							.format = Render::SSAO_FORMAT,
-							.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-							.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-							.clear_value = {{{ 1.0f, 1.0f, 1.0f, 1.0f }}},
-						},
-					},
-					.width_scale = 0.5f,
-					.height_scale = 0.5f,
-					.debug_label = in_debug_label,
-				};
+				return render_target_color_desc(
+					in_debug_label, Render::SSAO_FORMAT, render_target_extent_scaled(0.5f),
+					VK_ATTACHMENT_LOAD_OP_CLEAR, {{{ 1.0f, 1.0f, 1.0f, 1.0f }}});
 			};
-			get_render_pass_entry(ERenderPass::SSAO).init_final(make_ssao_desc("SSAO"));
-			get_render_pass_entry(ERenderPass::SSAO_Blur).init_intermediate(make_ssao_desc("SSAO Blur Horizontal"));
-			get_render_pass_entry(ERenderPass::SSAO_Blur).init_final(make_ssao_desc("SSAO Blur Vertical"));
+			in_state.render_targets.init(RenderTargetId::SSAO, make_ssao_desc("SSAO"));
+			in_state.render_targets.init(RenderTargetId::SSAOBlurHorizontal, make_ssao_desc("SSAO Blur Horizontal"));
+			in_state.render_targets.init(RenderTargetId::SSAOBlurred, make_ssao_desc("SSAO Blur Vertical"));
 		
 			// Screen-space contact shadows share the SSAO target shape (half res,
 			// R8, clear 1 = fully visible)
-			get_render_pass_entry(ERenderPass::ScreenSpaceShadows).init_intermediate(make_ssao_desc("Screen Space Shadows Trace"));
-			get_render_pass_entry(ERenderPass::ScreenSpaceShadows).init_final(make_ssao_desc("Screen Space Shadows Filter"));
+			in_state.render_targets.init(RenderTargetId::ScreenSpaceShadowTrace, make_ssao_desc("Screen Space Shadows Trace"));
+			in_state.render_targets.init(RenderTargetId::ScreenSpaceShadows, make_ssao_desc("Screen Space Shadows Filter"));
 		
-			get_render_pass_entry(ERenderPass::Geometry).init_final((RenderPassDesc) {
+			in_state.render_targets.init(RenderTargetId::Geometry, (RenderPassDesc) {
 				.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
 				.outputs = {
 					// 0: base/emission color — sky-blue clear keeps empty scenes
@@ -406,166 +386,59 @@ namespace RenderSystem
 				.debug_label = "Geometry",
 			});
 		
-			get_render_pass_entry(ERenderPass::Lighting).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "Lighting",
-			});
+			in_state.render_targets.init(RenderTargetId::Lighting,
+				render_target_color_desc("Lighting", Render::SCENE_COLOR_FORMAT));
 
 			const auto make_cloud_pair_desc = [&in_state](const char* label)
 			{
-				return (RenderPassDesc) {
-					.num_outputs = 2,
-					.outputs = {
-						{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-							.store_op = VK_ATTACHMENT_STORE_OP_STORE },
-						{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-							.store_op = VK_ATTACHMENT_STORE_OP_STORE },
-					},
-					.width_scale = in_state.clouds.resolution_scale,
-					.height_scale = in_state.clouds.resolution_scale,
-					.debug_label = label,
-				};
+				return render_target_mrt_desc(label, Render::SCENE_COLOR_FORMAT, 2,
+					render_target_extent_scaled(in_state.clouds.resolution_scale),
+					VK_ATTACHMENT_LOAD_OP_CLEAR);
 			};
-			get_render_pass_entry(ERenderPass::CloudRaymarch).init_final(
+			in_state.render_targets.init(RenderTargetId::CloudRaymarch,
 				make_cloud_pair_desc("Cloud Ray March"));
-			get_render_pass_entry(ERenderPass::CloudTemporal).init_intermediate(
+			in_state.render_targets.init(RenderTargetId::CloudHistory0,
 				make_cloud_pair_desc("Cloud Temporal Set 0"));
-			get_render_pass_entry(ERenderPass::CloudTemporal).init_final(
+			in_state.render_targets.init(RenderTargetId::CloudHistory1,
 				make_cloud_pair_desc("Cloud Temporal Set 1"));
-			get_render_pass_entry(ERenderPass::CloudComposite).init_final((RenderPassDesc) {
-				.num_outputs = 3,
-				.outputs = {
-					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
-					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
-					{ .format = Render::SCENE_COLOR_FORMAT, .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
-				},
-				.debug_label = "Cloud Composite",
-			});
-			get_render_pass_entry(ERenderPass::CloudShadow).init_final((RenderPassDesc) {
-				.initial_width = 512, .initial_height = 512,
+			in_state.render_targets.init(RenderTargetId::CloudComposite,
+				render_target_mrt_desc("Cloud Composite", Render::SCENE_COLOR_FORMAT, 3,
+					{}, VK_ATTACHMENT_LOAD_OP_CLEAR));
+			in_state.render_targets.init(RenderTargetId::CloudShadow, (RenderPassDesc) {
 				.num_outputs = 1,
 				.outputs = {{ .format = VK_FORMAT_R16_SFLOAT,
 					.load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE }},
-				.resize_with_window = false,
+				.extent = render_target_extent_fixed(512, 512),
 				.debug_label = "Cloud Sun Shadow",
 			});
 		
-			get_render_pass_entry(ERenderPass::Fog).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "Fog",
-			});
-		
-			get_render_pass_entry(ERenderPass::DofCombine).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "DOF Combine",
-			});
-		
-			get_render_pass_entry(ERenderPass::WireOverlay).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "Wire Overlay",
-			});
+			in_state.render_targets.init(RenderTargetId::Fog,
+				render_target_color_desc("Fog", Render::SCENE_COLOR_FORMAT));
+			in_state.render_targets.init(RenderTargetId::DofCombine,
+				render_target_color_desc("DOF Combine", Render::SCENE_COLOR_FORMAT));
+			in_state.render_targets.init(RenderTargetId::WireOverlay,
+				render_target_color_desc("Wire Overlay", Render::SCENE_COLOR_FORMAT));
 		
 			// TAA ping-pong: two target sets (intermediate = set 0, final = set 1),
 			// each MRT [resolved, history]; the shader reads the other set's history
 			const auto make_temporal_aa_desc = [](const char* in_debug_label)
 			{
-				return (RenderPassDesc) {
-					.num_outputs = 2,
-					.outputs = {
-						{
-							.format = Render::SCENE_COLOR_FORMAT,
-							.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-							.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-						},
-						{
-							.format = Render::SCENE_COLOR_FORMAT,
-							.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-							.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-						},
-					},
-					.type = ERenderPassType::Single,
-					.debug_label = in_debug_label,
-				};
+				return render_target_mrt_desc(
+					in_debug_label, Render::SCENE_COLOR_FORMAT, 2);
 			};
-			get_render_pass_entry(ERenderPass::TemporalAA).init_intermediate(make_temporal_aa_desc("Temporal AA (Set 0)"));
-			get_render_pass_entry(ERenderPass::TemporalAA).init_final(make_temporal_aa_desc("Temporal AA (Set 1)"));
+			in_state.render_targets.init(RenderTargetId::TemporalAAHistory0, make_temporal_aa_desc("Temporal AA (Set 0)"));
+			in_state.render_targets.init(RenderTargetId::TemporalAAHistory1, make_temporal_aa_desc("Temporal AA (Set 1)"));
 		
-			get_render_pass_entry(ERenderPass::Tonemapping).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "Tonemapping",
-			});
+			in_state.render_targets.init(RenderTargetId::Tonemapping,
+				render_target_color_desc("Tonemapping", Render::SCENE_COLOR_FORMAT));
+			in_state.render_targets.init(RenderTargetId::FXAA,
+				render_target_color_desc("FXAA", Render::SCENE_COLOR_FORMAT));
+			in_state.render_targets.init(RenderTargetId::PresentationComposite,
+				render_target_color_desc("Presentation Composite", Render::SCENE_COLOR_FORMAT,
+					render_target_extent_output()));
 		
-			get_render_pass_entry(ERenderPass::FXAA).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.type = ERenderPassType::Single,
-				.debug_label = "FXAA",
-			});
-
-			get_render_pass_entry(ERenderPass::PresentationComposite).init_final((RenderPassDesc) {
-				.num_outputs = 1,
-				.outputs = {
-					{
-						.format = Render::SCENE_COLOR_FORMAT,
-						.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-						.store_op = VK_ATTACHMENT_STORE_OP_STORE,
-					},
-				},
-				.use_output_resolution = true,
-				.type = ERenderPassType::Single,
-				.debug_label = "Presentation Composite",
-			});
-		
-			get_render_pass_entry(ERenderPass::CopyToSwapchain).init_final((RenderPassDesc) {
+			in_state.render_targets.init(RenderTargetId::Swapchain, (RenderPassDesc) {
+				.extent = render_target_extent_output(),
 				.type = ERenderPassType::Swapchain,
 				.debug_label = "Copy To Swapchain",
 			});
@@ -656,8 +529,8 @@ namespace RenderSystem
 			}
 		
 			// Descriptor writes happen before any of this frame's binds are recorded
-			RenderPass& geometry_render_pass = get_render_pass(ERenderPass::Geometry);
-			RenderPass& lighting_render_pass = get_render_pass(ERenderPass::Lighting);
+			RenderPass& geometry_render_pass = get_render_target(RenderTargetId::Geometry);
+			RenderPass& lighting_render_pass = get_render_target(RenderTargetId::Lighting);
 			frame_data_update(
 				&in_state.vk,
 				per_frame_data,
@@ -667,16 +540,15 @@ namespace RenderSystem
 				in_state.images.items.data(),
 				(i32) in_state.images.items.length()
 			);
-			RenderPass& tonemapping_render_pass = get_render_pass(ERenderPass::Tonemapping);
-			RenderPass& cloud_raymarch_render_pass = get_render_pass(ERenderPass::CloudRaymarch);
-			RenderPassEntry& cloud_temporal_entry = get_render_pass_entry(ERenderPass::CloudTemporal);
-			RenderPass& cloud_composite_render_pass = get_render_pass(ERenderPass::CloudComposite);
-			RenderPass& cloud_shadow_render_pass = get_render_pass(ERenderPass::CloudShadow);
+			RenderPass& tonemapping_render_pass = get_render_target(RenderTargetId::Tonemapping);
+			RenderPass& cloud_raymarch_render_pass = get_render_target(RenderTargetId::CloudRaymarch);
+			RenderPass& cloud_composite_render_pass = get_render_target(RenderTargetId::CloudComposite);
+			RenderPass& cloud_shadow_render_pass = get_render_target(RenderTargetId::CloudShadow);
 			const i32 cloud_history_output_index = CloudPass::pass.history_index;
 			const i32 cloud_history_previous_index = (cloud_history_output_index + 1) % 2;
 			const auto get_cloud_history_pass = [&](i32 set_index) -> RenderPass& {
-				return set_index == 0 ? cloud_temporal_entry.intermediate_pass()
-					: cloud_temporal_entry.final_pass();
+				return get_render_target(set_index == 0
+					? RenderTargetId::CloudHistory0 : RenderTargetId::CloudHistory1);
 			};
 			const bool cloud_render_active = in_state.clouds.active
 				&& in_state.scene.active_cloud_controller_id.has_value()
@@ -743,15 +615,15 @@ namespace RenderSystem
 			}
 			CloudPass::initialize_shadow(&in_state.vk,
 				cloud_shadow_render_pass.get_color_output(0));
-			VkImageView pre_fog_scene_color_view = cloud_render_active
-				? cloud_composite_render_pass.get_color_output(0).view
-				: lighting_render_pass.get_color_output(0).view;
-			VkImageView pre_fog_position_view = cloud_render_active
-				? cloud_composite_render_pass.get_color_output(1).view
-				: geometry_render_pass.get_color_output(1).view;
+			FrameGraphImage pre_fog_scene_color = frame_graph_select(cloud_render_active,
+				frame_graph_color(cloud_composite_render_pass),
+				frame_graph_color(lighting_render_pass));
+			FrameGraphImage pre_fog_position = frame_graph_select(cloud_render_active,
+				frame_graph_color(cloud_composite_render_pass, 1),
+				frame_graph_color(geometry_render_pass, 1));
 			// Height fog runs when an enabled fog controller exists; downstream
 			// passes read its output instead of the lighting target
-			RenderPass& fog_render_pass = get_render_pass(ERenderPass::Fog);
+			RenderPass& fog_render_pass = get_render_target(RenderTargetId::Fog);
 			const bool fog_render_active = in_state.fog.active && in_state.fog.debug_active
 				&& in_state.fog.active_fog_controller_id.has_value()
 				&& in_state.scene.objects.contains(*in_state.fog.active_fog_controller_id);
@@ -782,20 +654,19 @@ namespace RenderSystem
 				fog_pass_update(
 					&in_state.vk,
 					fog_fs_params,
-					pre_fog_scene_color_view,
-					pre_fog_position_view,
+					pre_fog_scene_color.view(),
+					pre_fog_position.view(),
 					bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
 					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 				);
 			}
 		
-			VkImageView post_fog_scene_color_view = fog_render_active
-				? fog_render_pass.get_color_output(0).view
-				: pre_fog_scene_color_view;
+			FrameGraphImage post_fog_scene_color = frame_graph_select(fog_render_active,
+				frame_graph_color(fog_render_pass), pre_fog_scene_color);
 		
 			// DOF gathers from the post-fog color; tonemapping reads whichever pass
 			// ran last
-			RenderPass& dof_combine_render_pass = get_render_pass(ERenderPass::DofCombine);
+			RenderPass& dof_combine_render_pass = get_render_target(RenderTargetId::DofCombine);
 			if (in_state.dof.enable)
 			{
 				DofCombineFsParams dof_combine_fs_params = {
@@ -812,17 +683,16 @@ namespace RenderSystem
 				dof_combine_pass_update(
 					&in_state.vk,
 					dof_combine_fs_params,
-					post_fog_scene_color_view,
-					pre_fog_position_view
+					post_fog_scene_color.view(),
+					pre_fog_position.view()
 				);
 			}
 		
-			VkImageView post_dof_scene_color_view = in_state.dof.enable
-				? dof_combine_render_pass.get_color_output(0).view
-				: post_fog_scene_color_view;
+			FrameGraphImage post_dof_scene_color = frame_graph_select(in_state.dof.enable,
+				frame_graph_color(dof_combine_render_pass), post_fog_scene_color);
 		
 			// Shaded wireframe copies the post-DOF color and blends wires on top
-			RenderPass& wire_overlay_render_pass = get_render_pass(ERenderPass::WireOverlay);
+			RenderPass& wire_overlay_render_pass = get_render_target(RenderTargetId::WireOverlay);
 			if (in_state.wireframe.shaded_wireframe)
 			{
 				WireOverlayMeshFsParams wire_fs_params = {
@@ -838,22 +708,22 @@ namespace RenderSystem
 				WireOverlayPass::update(
 					&in_state.vk,
 					wire_fs_params,
-					post_dof_scene_color_view,
+					post_dof_scene_color.view(),
 					geometry_render_pass.get_color_output(1).view
 				);
 			}
 		
-			VkImageView post_wire_scene_color_view = in_state.wireframe.shaded_wireframe
-				? wire_overlay_render_pass.get_color_output(0).view
-				: post_dof_scene_color_view;
+			FrameGraphImage post_wire_scene_color = frame_graph_select(
+				in_state.wireframe.shaded_wireframe,
+				frame_graph_color(wire_overlay_render_pass), post_dof_scene_color);
 		
 			// TAA ping-pong: write into set history_index, read the other set's
 			// history output
-			RenderPassEntry& temporal_aa_entry = get_render_pass_entry(ERenderPass::TemporalAA);
 			const i32 temporal_aa_output_index = in_state.temporal_aa.history_index;
 			const i32 temporal_aa_previous_index = (temporal_aa_output_index + 1) % 2;
 			const auto get_temporal_aa_pass = [&](i32 in_set_idx) -> RenderPass& {
-				return in_set_idx == 0 ? temporal_aa_entry.intermediate_pass() : temporal_aa_entry.final_pass();
+				return get_render_target(in_set_idx == 0
+					? RenderTargetId::TemporalAAHistory0 : RenderTargetId::TemporalAAHistory1);
 			};
 			if (in_state.temporal_aa.enable)
 			{
@@ -871,8 +741,8 @@ namespace RenderSystem
 				TemporalAAPass::update(
 					&in_state.vk,
 					temporal_aa_fs_params,
-					post_wire_scene_color_view,
-					pre_fog_position_view,
+					post_wire_scene_color.view(),
+					pre_fog_position.view(),
 					get_temporal_aa_pass(temporal_aa_previous_index).get_color_output(1).view,
 					cloud_render_active
 						? cloud_composite_render_pass.get_color_output(2).view
@@ -880,25 +750,17 @@ namespace RenderSystem
 				);
 			}
 		
-			GpuImage* pre_tonemap_scene_color = in_state.temporal_aa.enable
-				? &get_temporal_aa_pass(temporal_aa_output_index).get_color_output(0)
-				: in_state.wireframe.shaded_wireframe
-					? &wire_overlay_render_pass.get_color_output(0)
-					: in_state.dof.enable
-						? &dof_combine_render_pass.get_color_output(0)
-						: fog_render_active
-							? &fog_render_pass.get_color_output(0)
-							: cloud_render_active
-								? &cloud_composite_render_pass.get_color_output(0)
-								: &lighting_render_pass.get_color_output(0);
-			VkImageView pre_tonemap_scene_color_view = pre_tonemap_scene_color->view;
+			FrameGraphImage pre_tonemap_scene_color = frame_graph_select(
+				in_state.temporal_aa.enable,
+				frame_graph_color(get_temporal_aa_pass(temporal_aa_output_index)),
+				post_wire_scene_color);
 			const bool bloom_active = in_state.bloom.enable && in_state.bloom.intensity > 0.0f;
 			const f32 bloom_intensity = bloom_active
 				? CLAMP(in_state.bloom.intensity, 0.0f, State::BloomState::MAX_INTENSITY)
 				: 0.0f;
 			tonemapping_pass_update(
 				&in_state.vk,
-				pre_tonemap_scene_color_view,
+				pre_tonemap_scene_color.view(),
 				geometry_render_pass.get_color_output(1).view,
 				BloomPass::mip_view(0),
 				bloom_intensity,
@@ -907,7 +769,7 @@ namespace RenderSystem
 		
 			// FXAA reads the tonemapped target. Presentation composite upscales the
 			// selected result at output resolution before UI and display encoding.
-			RenderPass& fxaa_render_pass = get_render_pass(ERenderPass::FXAA);
+			RenderPass& fxaa_render_pass = get_render_target(RenderTargetId::FXAA);
 			const bool fxaa_active = in_state.temporal_aa.enable_fxaa;
 			if (fxaa_active)
 			{
@@ -915,17 +777,18 @@ namespace RenderSystem
 			}
 			const bool show_cloud_shadow_fullscreen =
 				in_state.clouds.debug_show_shadow_map_fullscreen;
-			const VkImageView presentation_input = show_cloud_shadow_fullscreen
-				? cloud_shadow_render_pass.get_color_output(0).view
+			FrameGraphImage presentation_input = show_cloud_shadow_fullscreen
+				? frame_graph_color(cloud_shadow_render_pass)
 				: in_state.images.enable_debug_fullscreen && in_state.images.items.length() > 0
-					? in_state.images.items[CLAMP(in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)].view
-					: (fxaa_active
-						? fxaa_render_pass.get_color_output(0).view
-						: tonemapping_render_pass.get_color_output(0).view);
-			copy_to_swapchain_pass_update_presentation_input(&in_state.vk, presentation_input);
+					? FrameGraphImage { .image = &in_state.images.items[CLAMP(
+						in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)] }
+					: frame_graph_select(fxaa_active, frame_graph_color(fxaa_render_pass),
+						frame_graph_color(tonemapping_render_pass));
+			copy_to_swapchain_pass_update_presentation_input(
+				&in_state.vk, presentation_input.view());
 			frame_data_write_copy_input(
 				&in_state.vk,
-				get_render_pass(ERenderPass::PresentationComposite).get_color_output(0).view);
+				get_render_target(RenderTargetId::PresentationComposite).get_color_output(0).view);
 			// Incrementally capture and project GI probes after GPU skinning and the
 			// atmosphere update, before the main pass chain samples the probe atlas.
 			{
@@ -995,11 +858,14 @@ namespace RenderSystem
 				}
 			}
 		
-			RenderPass& shadow_render_pass = get_render_pass(ERenderPass::ShadowDepth);
-			RenderPassEntry& shadow_blur_entry = get_render_pass_entry(ERenderPass::ShadowBlur);
-			RenderPass& ssao_render_pass = get_render_pass(ERenderPass::SSAO);
-			RenderPassEntry& ssao_blur_entry = get_render_pass_entry(ERenderPass::SSAO_Blur);
-			RenderPassEntry& screen_space_shadows_entry = get_render_pass_entry(ERenderPass::ScreenSpaceShadows);
+			RenderPass& shadow_render_pass = get_render_target(RenderTargetId::ShadowDepth);
+			RenderPass& shadow_blur_horizontal = get_render_target(RenderTargetId::ShadowBlurHorizontal);
+			RenderPass& shadow_blurred = get_render_target(RenderTargetId::ShadowBlurred);
+			RenderPass& ssao_render_pass = get_render_target(RenderTargetId::SSAO);
+			RenderPass& ssao_blur_horizontal = get_render_target(RenderTargetId::SSAOBlurHorizontal);
+			RenderPass& ssao_blurred = get_render_target(RenderTargetId::SSAOBlurred);
+			RenderPass& screen_space_shadow_trace = get_render_target(RenderTargetId::ScreenSpaceShadowTrace);
+			RenderPass& screen_space_shadows = get_render_target(RenderTargetId::ScreenSpaceShadows);
 		
 			// Screen-space contact shadows trace toward the shadow-casting sun
 			Object* screen_space_shadow_sun = in_state.shadow.rendering_enable && in_state.shadow.screen_space.enable
@@ -1029,15 +895,15 @@ namespace RenderSystem
 			// Lighting samples the blurred moments (soft penumbra) unless the blur is
 			// disabled; blur is enabled by default.
 			VkImageView shadow_moments_view = in_state.shadow.blur_enable
-				? shadow_blur_entry.final_pass().get_color_output(0).view
+				? shadow_blurred.get_color_output(0).view
 				: shadow_render_pass.get_color_output(0).view;
 			lighting_pass_update(
 				&in_state.vk,
 				lighting_fs_params,
 				geometry_render_pass.color_outputs.data(),
 				shadow_moments_view,
-				ssao_blur_entry.final_pass().get_color_output(0).view,
-				screen_space_shadows_entry.final_pass().get_color_output(0).view,
+				ssao_blurred.get_color_output(0).view,
+				screen_space_shadows.get_color_output(0).view,
 				in_state.lighting.point_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
 				in_state.lighting.spot_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
 				in_state.lighting.sun_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
@@ -1067,11 +933,11 @@ namespace RenderSystem
 				geometry_render_pass.get_color_output(1).view,	// world position
 				geometry_render_pass.get_color_output(2).view,	// world normal
 				ssao_render_pass.get_color_output(0).view,
-				ssao_blur_entry.intermediate_pass().get_color_output(0).view
+				ssao_blur_horizontal.get_color_output(0).view
 			);
 		
 			{
-				RenderPass& screen_space_trace_pass = screen_space_shadows_entry.intermediate_pass();
+				RenderPass& screen_space_trace_pass = screen_space_shadow_trace;
 				const HMM_Vec3 screen_space_sun_dir = screen_space_shadows_valid
 					? HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), screen_space_shadow_sun->current_transform.rotation))
 					: HMM_V3(0.0f, 0.0f, -1.0f);
@@ -1089,11 +955,11 @@ namespace RenderSystem
 				);
 			}
 		
+			FrameRenderGraph graph(&in_state.vk);
+
 			// Shadow cascades: one moments slice per active cascade. Skipped entirely
-			// without a valid shadow sun, and under depth_freeze the stale map keeps
-			// being sampled with its frozen matrices; the transition below still runs
-			// so the (cleared or stale) moments image is legal to have bound — the
-			// lighting shader only samples it when shadow_map_enable is set.
+			// without a valid shadow sun; under depth_freeze the stale map remains a
+			// persistent graph resource sampled with its frozen matrices.
 			if (shadow_map_updated)
 			{
 				shadow_render_pass.execute(&in_state.vk, [&](i32 in_cascade_idx)
@@ -1101,38 +967,28 @@ namespace RenderSystem
 					ShadowDepthPass::render_cascade(&in_state.vk, in_state, in_cascade_idx);
 				}, ShadowDepthPass::get_active_cascade_count(in_state));
 			}
-			gpu_image_transition(
-				vulkan_current_command_buffer(&in_state.vk),
-				shadow_render_pass.get_color_output(0),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			);
-		
 			// Separable blur over the moments — the source of EVSM's soft penumbra.
-			// Runs only when the shadow map re-rendered (frozen maps keep their old
-			// blur). The final target's transition runs even when the blur is skipped
-			// so the (possibly stale/cleared) image bound to the lighting set stays
-			// legal.
+			// Runs only when the shadow map re-rendered; graph reads transition stale
+			// or freshly rendered targets when a consumer actually selects them.
 			if (shadow_map_updated && in_state.shadow.blur_enable)
 			{
+				graph.make_sampled(frame_graph_color(shadow_render_pass));
 				ShadowBlurPass::execute_separable(
 					&in_state.vk,
-					shadow_blur_entry,
+					shadow_blur_horizontal,
+					shadow_blurred,
 					ShadowDepthPass::get_active_cascade_count(in_state)
 				);
 			}
-			gpu_image_transition(
-				vulkan_current_command_buffer(&in_state.vk),
-				shadow_blur_entry.final_pass().get_color_output(0),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			);
-		
 			in_state.shadow.debug_cascade_index = CLAMP(
 				in_state.shadow.debug_cascade_index,
 				0,
 				MAX(0, ShadowDepthPass::get_active_cascade_count(in_state) - 1)
 			);
-			RenderPass& shadow_debug_pass = get_render_pass(ERenderPass::ShadowCascadeDebug);
-			shadow_debug_pass.execute_sampled(&in_state.vk, [&](i32)
+			RenderPass& shadow_debug_pass = get_render_target(RenderTargetId::ShadowCascadeDebug);
+			graph.sampled(frame_graph_color(in_state.shadow.blur_enable
+				? shadow_blurred : shadow_render_pass));
+			graph.execute(shadow_debug_pass, [&](i32)
 			{
 				ShadowCascadeDebugPass::render(
 					&in_state.vk,
@@ -1142,10 +998,11 @@ namespace RenderSystem
 					in_state.shadow.debug_view_mode
 				);
 			});
+			graph.make_sampled(frame_graph_color(shadow_debug_pass));
 		
 			// Geometry: scene meshes -> G-buffer at render resolution, camera-frustum
 			// culled on the CPU; skinned meshes bypass the frustum test.
-			geometry_render_pass.execute_sampled(&in_state.vk, [&](i32)
+			graph.execute(geometry_render_pass, [&](i32)
 			{
 				geometry_pass_bind(&in_state.vk);
 		
@@ -1182,15 +1039,19 @@ namespace RenderSystem
 			});
 			// SSAO reads G-buffer position/normal (already SHADER_READ_ONLY), then
 			// its raw output is blurred; lighting samples the blurred result
-			ssao_render_pass.execute_sampled(&in_state.vk, [&](i32)
+			graph.sampled(frame_graph_color(geometry_render_pass, 1));
+			graph.sampled(frame_graph_color(geometry_render_pass, 2));
+			graph.execute(ssao_render_pass, [&](i32)
 			{
 				ssao_pass_draw(&in_state.vk);
 			});
+			graph.make_sampled(frame_graph_color(ssao_render_pass));
 			BlurPass::execute_separable(
 				&in_state.vk,
-				ssao_blur_entry,
-				ssao_pass.blur_horizontal_sets[in_state.vk.frame_index],
-				ssao_pass.blur_vertical_sets[in_state.vk.frame_index],
+				ssao_blur_horizontal,
+				ssao_blurred,
+				ssao_pass.blur_horizontal_sets.current(&in_state.vk),
+				ssao_pass.blur_vertical_sets.current(&in_state.vk),
 				4
 			);
 		
@@ -1199,18 +1060,17 @@ namespace RenderSystem
 			// samples it when screen_space_shadows_enable is set)
 			if (screen_space_shadows_valid)
 			{
-				ScreenSpaceShadowsPass::execute(&in_state.vk, screen_space_shadows_entry);
+				graph.make_sampled(frame_graph_color(geometry_render_pass, 1));
+				graph.make_sampled(frame_graph_color(geometry_render_pass, 2));
+				ScreenSpaceShadowsPass::execute(
+					&in_state.vk, screen_space_shadow_trace, screen_space_shadows);
 			}
-			gpu_image_transition(
-				vulkan_current_command_buffer(&in_state.vk),
-				screen_space_shadows_entry.final_pass().get_color_output(0),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			);
 			// Update one interleaved quarter before deferred lighting so opaque
 			// surfaces receive this frame's cloud transmittance.
 			if (cloud_shadow_render_active)
 			{
-				cloud_shadow_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(frame_graph_color(geometry_render_pass, 1));
+				graph.execute(cloud_shadow_render_pass, [&](i32)
 				{
 					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.shadow_pipeline,
 						CloudPass::pass.basic_pipeline_layout,
@@ -1219,7 +1079,16 @@ namespace RenderSystem
 				CloudPass::pass.shadow_update_count += 1;
 			}
 		
-			lighting_render_pass.execute_sampled(&in_state.vk, [&](i32)
+			for (i32 output_index = 0; output_index < geometry_render_pass.desc.num_outputs; ++output_index)
+			{
+				graph.sampled(frame_graph_color(geometry_render_pass, output_index));
+			}
+			graph.sampled(frame_graph_color(in_state.shadow.blur_enable
+				? shadow_blurred : shadow_render_pass));
+			graph.sampled(frame_graph_color(ssao_blurred));
+			graph.sampled(frame_graph_color(screen_space_shadows));
+			graph.sampled(frame_graph_color(cloud_shadow_render_pass));
+			graph.execute(lighting_render_pass, [&](i32)
 			{
 				lighting_pass_draw(&in_state.vk);
 			});
@@ -1228,27 +1097,31 @@ namespace RenderSystem
 			{
 				const i32 cloud_timing = gpu_timestamps_begin_scope(&in_state.vk, "Cloud System");
 				vulkan_begin_debug_label(&in_state.vk, "Cloud System");
-				cloud_raymarch_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(frame_graph_color(geometry_render_pass, 1));
+				graph.execute(cloud_raymarch_render_pass, [&](i32)
 				{
 					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.raymarch_pipeline,
 						CloudPass::pass.atmosphere_pipeline_layout,
 						CloudPass::pass.raymarch_sets.current(&in_state.vk), true);
 				});
-				for (i32 set_index = 0; set_index < 2; ++set_index)
-				{
-					for (i32 output_index = 0; output_index < 2; ++output_index)
-						gpu_image_transition(vulkan_current_command_buffer(&in_state.vk),
-							get_cloud_history_pass(set_index).get_color_output(output_index),
-							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				}
 				RenderPass& cloud_history_target = get_cloud_history_pass(cloud_history_output_index);
-				cloud_history_target.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(frame_graph_color(cloud_raymarch_render_pass, 0));
+				graph.sampled(frame_graph_color(cloud_raymarch_render_pass, 1));
+				graph.sampled(frame_graph_color(
+					get_cloud_history_pass(cloud_history_previous_index), 0));
+				graph.sampled(frame_graph_color(
+					get_cloud_history_pass(cloud_history_previous_index), 1));
+				graph.execute(cloud_history_target, [&](i32)
 				{
 					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.temporal_pipeline,
 						CloudPass::pass.basic_pipeline_layout,
 						CloudPass::pass.temporal_sets.current(&in_state.vk), false);
 				});
-				cloud_composite_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(frame_graph_color(lighting_render_pass));
+				graph.sampled(frame_graph_color(geometry_render_pass, 1));
+				graph.sampled(frame_graph_color(cloud_history_target, 0));
+				graph.sampled(frame_graph_color(cloud_history_target, 1));
+				graph.execute(cloud_composite_render_pass, [&](i32)
 				{
 					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.composite_pipeline,
 						CloudPass::pass.atmosphere_pipeline_layout,
@@ -1264,44 +1137,43 @@ namespace RenderSystem
 			// post-fog color (or the lighting output directly when fog is off)
 			if (fog_render_active)
 			{
-				fog_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(pre_fog_scene_color);
+				graph.sampled(pre_fog_position);
+				graph.execute(fog_render_pass, [&](i32)
 				{
 					fog_pass_draw(&in_state.vk);
 				});
 			}
 			if (in_state.dof.enable)
 			{
-				dof_combine_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(post_fog_scene_color);
+				graph.sampled(pre_fog_position);
+				graph.execute(dof_combine_render_pass, [&](i32)
 				{
 					dof_combine_pass_draw(&in_state.vk);
 				});
 			}
 			if (in_state.wireframe.shaded_wireframe)
 			{
-				wire_overlay_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(post_dof_scene_color);
+				graph.sampled(frame_graph_color(geometry_render_pass, 1));
+				graph.execute(wire_overlay_render_pass, [&](i32)
 				{
 					WireOverlayPass::draw(&in_state.vk, in_state, view_projection_matrix);
 				});
 			}
 		
-			// TAA: both ping-pong sets get an unconditional transition so the bound
-			// history descriptor stays legal even on the first frames / when TAA is
-			// toggled; the shader ignores history until history_valid is set
-			for (i32 set_idx = 0; set_idx < 2; ++set_idx)
-			{
-				for (i32 output_idx = 0; output_idx < 2; ++output_idx)
-				{
-					gpu_image_transition(
-						vulkan_current_command_buffer(&in_state.vk),
-						get_temporal_aa_pass(set_idx).get_color_output(output_idx),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					);
-				}
-			}
 			if (in_state.temporal_aa.enable)
 			{
 				RenderPass& temporal_aa_target_pass = get_temporal_aa_pass(temporal_aa_output_index);
-				temporal_aa_target_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(post_wire_scene_color);
+				graph.sampled(pre_fog_position);
+				graph.sampled(frame_graph_color(
+					get_temporal_aa_pass(temporal_aa_previous_index), 1));
+				graph.sampled(cloud_render_active
+					? frame_graph_color(cloud_composite_render_pass, 2)
+					: frame_graph_color(geometry_render_pass, 0));
+				graph.execute(temporal_aa_target_pass, [&](i32)
 				{
 					TemporalAAPass::draw(&in_state.vk);
 				});
@@ -1346,8 +1218,10 @@ namespace RenderSystem
 					sky_pass.active_sun_tint,
 					sky_pass.active_sun_irradiance_w_m2);
 			}
+			graph.make_sampled(pre_tonemap_scene_color);
+			graph.make_sampled(frame_graph_color(geometry_render_pass, 1));
 			AutoAdaptationPass::meter(
-				&in_state.vk, *pre_tonemap_scene_color,
+				&in_state.vk, *pre_tonemap_scene_color.image,
 				geometry_render_pass.get_color_output(1),
 				in_state.tonemapping, solar_guard);
 			AutoAdaptationPass::mark_state_for_fragment_read(&in_state.vk);
@@ -1359,7 +1233,7 @@ namespace RenderSystem
 			{
 				BloomPass::execute(
 					&in_state.vk,
-					pre_tonemap_scene_color_view,
+					pre_tonemap_scene_color.view(),
 					in_state.bloom,
 					in_state.tonemapping,
 					AutoAdaptationPass::state_buffer());
@@ -1378,7 +1252,9 @@ namespace RenderSystem
 				}
 			#endif
 			}
-			tonemapping_render_pass.execute_sampled(&in_state.vk, [&](i32)
+			graph.sampled(pre_tonemap_scene_color);
+			graph.sampled(frame_graph_color(geometry_render_pass, 1));
+			graph.execute(tonemapping_render_pass, [&](i32)
 			{
 				tonemapping_pass_draw(
 					&in_state.vk,
@@ -1394,12 +1270,15 @@ namespace RenderSystem
 			// one upscale and places UI into the same normalized float target.
 			if (fxaa_active)
 			{
-				fxaa_render_pass.execute_sampled(&in_state.vk, [&](i32)
+				graph.sampled(frame_graph_color(tonemapping_render_pass));
+				graph.execute(fxaa_render_pass, [&](i32)
 				{
 					FXAAPass::draw(&in_state.vk, HMM_V2((f32) in_state.window.render_width, (f32) in_state.window.render_height));
 				});
 			}
-			get_render_pass(ERenderPass::PresentationComposite).execute_sampled(&in_state.vk, [&](i32)
+			graph.sampled(presentation_input);
+			graph.sampled(frame_graph_color(tonemapping_render_pass));
+			graph.execute(get_render_target(RenderTargetId::PresentationComposite), [&](i32)
 			{
 				copy_to_swapchain_pass_draw_presentation(
 					&in_state.vk, show_cloud_shadow_fullscreen);
@@ -1411,7 +1290,9 @@ namespace RenderSystem
 					: GT7Tonemapping::HDR_PAPER_WHITE_NITS / GT7Tonemapping::HDR_PEAK_NITS;
 				ImGuiLayer::render(&in_state.vk, paper_white_scale);
 			});
-			get_render_pass(ERenderPass::CopyToSwapchain).execute(&in_state.vk, [&](i32)
+			graph.sampled(frame_graph_color(
+				get_render_target(RenderTargetId::PresentationComposite)));
+			graph.execute(get_render_target(RenderTargetId::Swapchain), [&](i32)
 			{
 				copy_to_swapchain_pass_draw(&in_state.vk);
 			});
@@ -1428,10 +1309,7 @@ namespace RenderSystem
 		GIDebugPass::shutdown(&in_state.vk);
 		gi_scene_cleanup(&in_state.vk, g_gi_scene);
 
-		for (i32 pass_index = 0; pass_index < (i32) ERenderPass::COUNT; ++pass_index)
-		{
-			in_state.render_passes.passes[pass_index].cleanup();
-		}
+		in_state.render_targets.cleanup();
 
 		in_state.render_objects.shutdown();
 		in_state.skin_matrices.shutdown();

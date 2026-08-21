@@ -3,13 +3,13 @@
 #include "core/types.h"
 #include "render/vulkan_context.h"
 #include "render/render_types.h"
-#include "render/shader_module.h"
+#include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 
 // Temporal AA: Decima-style 2-phase
 // jitter, previous-frame reprojection with neighborhood clamp/rejection, and
 // a jitter-axis sharpen. game ping-pongs two target sets through the
-// RenderPassEntry's intermediate (set 0) and final (set 1) passes — each has
+// Two explicit history targets (set 0 and set 1) — each has
 // MRT [resolved, history]; the shader reads the other set's history.
 
 // Mirrors temporal_aa.frag's fs_params (std140)
@@ -157,97 +157,14 @@ namespace TemporalAAPass
 			};
 			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &pipeline_layout));
 
-			VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, "bin/shaders/temporal_aa.vert.spv");
-			VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/temporal_aa.frag.spv");
-
-			VkPipelineShaderStageCreateInfo shader_stages[] = {
-				{
-					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-					.stage = VK_SHADER_STAGE_VERTEX_BIT,
-					.module = vertex_module,
-					.pName = "main",
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-					.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-					.module = fragment_module,
-					.pName = "main",
-				},
-			};
-
-			VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-			VkPipelineDynamicStateCreateInfo dynamic_state = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-				.dynamicStateCount = 2,
-				.pDynamicStates = dynamic_states,
-			};
-			VkPipelineVertexInputStateCreateInfo vertex_input = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-			};
-			VkPipelineInputAssemblyStateCreateInfo input_assembly = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-				.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-			};
-			VkPipelineViewportStateCreateInfo viewport = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-				.viewportCount = 1,
-				.scissorCount = 1,
-			};
-			VkPipelineRasterizationStateCreateInfo rasterization = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-				.polygonMode = VK_POLYGON_MODE_FILL,
-				.cullMode = VK_CULL_MODE_NONE,
-				.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-				.lineWidth = 1.0f,
-			};
-			VkPipelineMultisampleStateCreateInfo multisampling = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-				.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-			};
-			VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-			};
-			VkPipelineColorBlendAttachmentState blend_attachments[2] = {};
-			for (u32 attachment_idx = 0; attachment_idx < 2; ++attachment_idx)
-			{
-				blend_attachments[attachment_idx] = (VkPipelineColorBlendAttachmentState) {
-					.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-									| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-				};
-			}
-			VkPipelineColorBlendStateCreateInfo color_blending = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-				.attachmentCount = 2,
-				.pAttachments = blend_attachments,
-			};
-
 			VkFormat color_formats[2] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
-			VkPipelineRenderingCreateInfo rendering_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-				.colorAttachmentCount = 2,
-				.pColorAttachmentFormats = color_formats,
-			};
-
-			VkGraphicsPipelineCreateInfo pipeline_create_info = {
-				.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-				.pNext = &rendering_create_info,
-				.stageCount = 2,
-				.pStages = shader_stages,
-				.pVertexInputState = &vertex_input,
-				.pInputAssemblyState = &input_assembly,
-				.pViewportState = &viewport,
-				.pRasterizationState = &rasterization,
-				.pMultisampleState = &multisampling,
-				.pDepthStencilState = &depth_stencil,
-				.pColorBlendState = &color_blending,
-				.pDynamicState = &dynamic_state,
-				.layout = pipeline_layout,
-				.renderPass = VK_NULL_HANDLE,
-			};
-			VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
-
-			vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
-			vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
+			pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+				.vertex_shader_path = "bin/shaders/temporal_aa.vert.spv",
+				.fragment_shader_path = "bin/shaders/temporal_aa.frag.spv",
+				.pipeline_layout = pipeline_layout,
+				.color_formats = color_formats,
+				.color_format_count = 2,
+			});
 		}
 	}
 

@@ -104,29 +104,25 @@ struct BrunetonAtmospherePass
 	void init(VulkanContext* ctx)
 	{
 		transmittance_pass.init((RenderPassDesc) {
-			.initial_width = BRUNETON_TRANSMITTANCE_WIDTH,
-			.initial_height = BRUNETON_TRANSMITTANCE_HEIGHT,
 			.num_outputs = 1,
 			.outputs = {{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE }},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(
+				BRUNETON_TRANSMITTANCE_WIDTH, BRUNETON_TRANSMITTANCE_HEIGHT),
 			.type = ERenderPassType::Single,
 			.debug_label = "Bruneton Transmittance",
 		});
 		irradiance_pass.init((RenderPassDesc) {
-			.initial_width = BRUNETON_IRRADIANCE_WIDTH,
-			.initial_height = BRUNETON_IRRADIANCE_HEIGHT,
 			.num_outputs = 2,
 			.outputs = {
 				{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 				{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(
+				BRUNETON_IRRADIANCE_WIDTH, BRUNETON_IRRADIANCE_HEIGHT),
 			.type = ERenderPassType::Single,
 			.debug_label = "Bruneton Irradiance",
 		});
 		scattering_pass.init((RenderPassDesc) {
-			.initial_width = BRUNETON_SCATTERING_WIDTH,
-			.initial_height = BRUNETON_SCATTERING_HEIGHT,
 			.pass_count = BRUNETON_SCATTERING_DEPTH,
 			.num_outputs = 3,
 			.outputs = {
@@ -134,17 +130,17 @@ struct BrunetonAtmospherePass
 				{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 				{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
 			},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(
+				BRUNETON_SCATTERING_WIDTH, BRUNETON_SCATTERING_HEIGHT),
 			.type = ERenderPassType::Array,
 			.debug_label = "Bruneton Scattering",
 		});
 		scattering_density_pass.init((RenderPassDesc) {
-			.initial_width = BRUNETON_SCATTERING_WIDTH,
-			.initial_height = BRUNETON_SCATTERING_HEIGHT,
 			.pass_count = BRUNETON_SCATTERING_DEPTH,
 			.num_outputs = 1,
 			.outputs = {{ .format = BRUNETON_LUT_FORMAT, .store_op = VK_ATTACHMENT_STORE_OP_STORE }},
-			.resize_with_window = false,
+			.extent = render_target_extent_fixed(
+				BRUNETON_SCATTERING_WIDTH, BRUNETON_SCATTERING_HEIGHT),
 			.type = ERenderPassType::Array,
 			.debug_label = "Bruneton Scattering Density",
 		});

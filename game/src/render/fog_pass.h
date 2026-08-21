@@ -39,14 +39,7 @@ static_assert(sizeof(FogFsParams) == 112, "FogFsParams must match fog.frag's fs_
 
 struct FogPass
 {
-	VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-	PerFrameDescriptorSets sets;
-
-	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline pipeline = VK_NULL_HANDLE;
-
-	PerFrameUniform<FogFsParams> fs_params;
-
+	TypedFullscreenEffect<FogFsParams> effect;
 	VkSampler linear_sampler = VK_NULL_HANDLE;	// borrowed from frame_data
 };
 
@@ -56,66 +49,22 @@ void fog_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 {
 	fog_pass.linear_sampler = in_linear_sampler;
 
-	// Set layout: b0 params, b1 lit color, b2 position, b3 atmosphere, b4 transmittance.
-	{
-		VkDescriptorSetLayoutBinding bindings[5] = {};
-		bindings[0] = (VkDescriptorSetLayoutBinding) {
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		};
-		for (u32 binding_idx = 1; binding_idx <= 2; ++binding_idx)
-		{
-			bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
-				.binding = binding_idx,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			};
-		}
-		bindings[3] = (VkDescriptorSetLayoutBinding) {
-			.binding = 3,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		};
-		bindings[4] = (VkDescriptorSetLayoutBinding) {
-			.binding = 4,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		};
-
-		VkDescriptorSetLayoutCreateInfo layout_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 5,
-			.pBindings = bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &fog_pass.set_layout));
-	}
-
-	fog_pass.sets.init_persistent(ctx, fog_pass.set_layout);
-	fog_pass.fs_params.init("FogPass::fs_params");
-
-	// Pipeline
-	{
-		VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &fog_pass.set_layout,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &fog_pass.pipeline_layout));
-
-			VkFormat color_format = Render::SCENE_COLOR_FORMAT;
-			fog_pass.pipeline = vulkan_create_fullscreen_pipeline(ctx, {
-				.vertex_shader_path = "bin/shaders/fog.vert.spv",
-				.fragment_shader_path = "bin/shaders/fog.frag.spv",
-				.pipeline_layout = fog_pass.pipeline_layout,
-				.color_formats = &color_format,
-				.color_format_count = 1,
-			});
-		}
+	const DescriptorBindingSpec bindings[] = {
+		{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+		{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+		{ .binding = 2, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+		{ .binding = 3, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+		{ .binding = 4, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+	};
+	VkFormat color_format = Render::SCENE_COLOR_FORMAT;
+	fog_pass.effect.init(ctx, {
+		.vertex_shader_path = "bin/shaders/fog.vert.spv",
+		.fragment_shader_path = "bin/shaders/fog.frag.spv",
+		.color_formats = &color_format,
+		.color_format_count = 1,
+		.bindings = bindings,
+		.binding_count = (u32)(sizeof(bindings) / sizeof(bindings[0])),
+	}, 0, "FogPass::fs_params");
 }
 
 // Uploads fs_params + rewrites this frame's set (after the fence wait, before
@@ -129,55 +78,21 @@ void fog_pass_update(
 	VkImageView in_atmosphere_transmittance_view
 )
 {
-	VkDescriptorSet& set = fog_pass.sets.current(ctx);
-	VkDescriptorBufferInfo ubo_info =
-		descriptor_buffer(fog_pass.fs_params.update(ctx, in_fs_params), sizeof(FogFsParams));
-	VkDescriptorImageInfo image_infos[] = {
-		descriptor_sampled(fog_pass.linear_sampler, in_lit_color_view),
-		descriptor_sampled(fog_pass.linear_sampler, in_gbuffer_position_view),
-		descriptor_sampled(fog_pass.linear_sampler, in_atmosphere_transmittance_view),
-	};
-
-	VkWriteDescriptorSet writes[5] = {};
-	writes[0] =
-		descriptor_write_buffer(set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &ubo_info);
-	for (u32 image_idx = 0; image_idx < 2; ++image_idx)
-	{
-		writes[image_idx + 1] = descriptor_write_image(
-			set,
-			image_idx + 1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			&image_infos[image_idx]
-		);
-	}
-	VkDescriptorBufferInfo atmosphere_info = descriptor_buffer(
-		in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu));
-	writes[3] = descriptor_write_buffer(
-		set, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &atmosphere_info);
-	writes[4] = descriptor_write_image(
-		set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_infos[2]);
-	vulkan_update_descriptor_sets(ctx, 5, writes);
+	DescriptorWriter writer = fog_pass.effect.writer(ctx, in_fs_params);
+	writer.sampled(1, fog_pass.linear_sampler, in_lit_color_view)
+		.sampled(2, fog_pass.linear_sampler, in_gbuffer_position_view)
+		.buffer(3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu))
+		.sampled(4, fog_pass.linear_sampler, in_atmosphere_transmittance_view)
+		.commit();
 }
 
 void fog_pass_draw(VulkanContext* ctx)
 {
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
-	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, fog_pass.pipeline);
-	vkCmdBindDescriptorSets(
-		command_buffer,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		fog_pass.pipeline_layout,
-		0, 1, &fog_pass.sets.current(ctx),
-		0, nullptr
-	);
-	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
+	fog_pass.effect.draw(ctx);
 }
 
 void fog_pass_shutdown(VulkanContext* ctx)
 {
-	vkDestroyPipeline(ctx->device, fog_pass.pipeline, nullptr);
-	vkDestroyPipelineLayout(ctx->device, fog_pass.pipeline_layout, nullptr);
-	fog_pass.fs_params.shutdown();
-	vkDestroyDescriptorSetLayout(ctx->device, fog_pass.set_layout, nullptr);
+	fog_pass.effect.shutdown(ctx);
 }

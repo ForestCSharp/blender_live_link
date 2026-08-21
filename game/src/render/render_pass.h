@@ -2,14 +2,11 @@
 
 #include <cassert>
 #include <functional>
-#include <optional>
 
 #include "core/types.h"
 #include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "render/vulkan_context.h"
-
-using std::optional;
 
 // Render-pass framework built on Vulkan dynamic rendering.
 //
@@ -18,11 +15,8 @@ using std::optional;
 // negative-height (Y-flip) viewport, and timing scopes. Pass files own
 // pipelines and record draws in the execute callback.
 //
-// Cross-pass wiring is imperative: execute_sampled handles the
-// common execute-then-sample operation for whole color outputs. Conditional
-// passes and specialized subresources keep explicit transitions (barriers are
-// illegal inside dynamic rendering). There is no dependency graph — passes
-// run in ERenderPass enum order.
+// The top-level ordered frame graph declares cross-pass reads. Specialized
+// internal workflows can still issue explicit usages for subresources.
 
 // Single/Swapchain (Phase 1), Array (Phase 3a shadows), Multi/Cubemap
 // (Phase 3c GI captures)
@@ -39,6 +33,39 @@ static constexpr i32 NUM_CUBE_FACES = 6;
 
 static constexpr i32 RENDER_PASS_MAX_COLOR_OUTPUTS = 4;
 
+// Persistent image targets used by the top-level frame pipeline. Multi-stage
+// effects have explicit identities rather than overloading intermediate/final.
+enum class RenderTargetId : i32
+{
+	ShadowDepth,
+	ShadowBlurHorizontal,
+	ShadowBlurred,
+	ShadowCascadeDebug,
+	Geometry,
+	SSAO,
+	SSAOBlurHorizontal,
+	SSAOBlurred,
+	ScreenSpaceShadowTrace,
+	ScreenSpaceShadows,
+	Lighting,
+	CloudRaymarch,
+	CloudHistory0,
+	CloudHistory1,
+	CloudComposite,
+	CloudShadow,
+	Fog,
+	DofCombine,
+	WireOverlay,
+	TemporalAAHistory0,
+	TemporalAAHistory1,
+	Tonemapping,
+	FXAA,
+	PresentationComposite,
+	Swapchain,
+
+	COUNT,
+};
+
 struct RenderPassOutputDesc
 {
 	VkFormat format = VK_FORMAT_UNDEFINED;
@@ -47,23 +74,94 @@ struct RenderPassOutputDesc
 	VkClearValue clear_value = {};
 };
 
+enum class ERenderTargetExtent
+{
+	Render,
+	Output,
+	Fixed,
+};
+
+struct RenderTargetExtent
+{
+	ERenderTargetExtent type = ERenderTargetExtent::Render;
+	i32 width = -1;
+	i32 height = -1;
+	f32 width_scale = 1.0f;
+	f32 height_scale = 1.0f;
+};
+
+constexpr RenderTargetExtent render_target_extent_fixed(i32 in_width, i32 in_height)
+{
+	return { .type = ERenderTargetExtent::Fixed, .width = in_width, .height = in_height };
+}
+
+constexpr RenderTargetExtent render_target_extent_scaled(f32 in_scale)
+{
+	return { .width_scale = in_scale, .height_scale = in_scale };
+}
+
+constexpr RenderTargetExtent render_target_extent_output()
+{
+	return { .type = ERenderTargetExtent::Output };
+}
+
 struct RenderPassDesc
 {
-	i32 initial_width = -1;
-	i32 initial_height = -1;
 	i32 pass_count = 1;
 
 	i32 num_outputs = 0;
 	RenderPassOutputDesc outputs[RENDER_PASS_MAX_COLOR_OUTPUTS];
 	RenderPassOutputDesc depth_output;	// format == UNDEFINED means no depth
 
-	f32 width_scale = 1.0f;
-	f32 height_scale = 1.0f;
-	bool resize_with_window = true;
-	bool use_output_resolution = false;
+	RenderTargetExtent extent;
 	ERenderPassType type = ERenderPassType::Single;
 	const char* debug_label = nullptr;
 };
+
+inline RenderPassDesc render_target_color_desc(
+	const char* in_label,
+	VkFormat in_format,
+	RenderTargetExtent in_extent = {},
+	VkAttachmentLoadOp in_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+	VkClearValue in_clear_value = {})
+{
+	return {
+		.num_outputs = 1,
+		.outputs = {{
+			.format = in_format,
+			.load_op = in_load_op,
+			.clear_value = in_clear_value,
+		}},
+		.extent = in_extent,
+		.debug_label = in_label,
+	};
+}
+
+inline RenderPassDesc render_target_mrt_desc(
+	const char* in_label,
+	VkFormat in_format,
+	i32 in_output_count,
+	RenderTargetExtent in_extent = {},
+	VkAttachmentLoadOp in_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+	VkClearValue in_clear_value = {})
+{
+	assert(in_output_count > 0 && in_output_count <= RENDER_PASS_MAX_COLOR_OUTPUTS);
+	RenderPassDesc result = {
+		.num_outputs = in_output_count,
+		.extent = in_extent,
+		.debug_label = in_label,
+	};
+	for (i32 output_index = 0; output_index < in_output_count; ++output_index)
+	{
+		result.outputs[output_index] = {
+			.format = in_format,
+			.load_op = in_load_op,
+			.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			.clear_value = in_clear_value,
+		};
+	}
+	return result;
+}
 
 struct RenderPass
 {
@@ -188,9 +286,9 @@ struct RenderPass
 		desc = in_desc;
 		validate_desc();
 
-		if (desc.initial_width > 0 && desc.initial_height > 0)
+		if (desc.extent.type == ERenderTargetExtent::Fixed)
 		{
-			handle_resize(desc.initial_width, desc.initial_height);
+			handle_resize(desc.extent.width, desc.extent.height);
 		}
 	}
 
@@ -211,19 +309,18 @@ struct RenderPass
 	// current frame fence, so render-scale changes do not idle the device.
 	void handle_resize(i32 in_width, i32 in_height)
 	{
-		if (!desc.resize_with_window)
+		if (desc.extent.type == ERenderTargetExtent::Fixed)
 		{
-			// Fixed-size passes allocate once at initial_* and never resize
 			if (current_width > 0)
 			{
 				return;
 			}
-			in_width = desc.initial_width;
-			in_height = desc.initial_height;
+			in_width = desc.extent.width;
+			in_height = desc.extent.height;
 		}
 
-		const i32 new_width = MAX(1, (i32)(in_width * desc.width_scale + 0.5f));
-		const i32 new_height = MAX(1, (i32)(in_height * desc.height_scale + 0.5f));
+		const i32 new_width = MAX(1, (i32)(in_width * desc.extent.width_scale + 0.5f));
+		const i32 new_height = MAX(1, (i32)(in_height * desc.extent.height_scale + 0.5f));
 		if (new_width == current_width && new_height == current_height)
 		{
 			return;
@@ -427,15 +524,6 @@ struct RenderPass
 		vulkan_apply_pass_resource_usage(ctx, usage);
 	}
 
-	void execute_sampled(
-		VulkanContext* ctx,
-		const std::function<void(i32)>& in_callback,
-		i32 in_pass_count = -1)
-	{
-		execute(ctx, in_callback, in_pass_count);
-		make_color_outputs_sampled(ctx);
-	}
-
 	void cleanup()
 	{
 		release_targets();
@@ -444,48 +532,40 @@ struct RenderPass
 	}
 };
 
-// Entry with an optional intermediate pass for separable blurs and similar work.
-struct RenderPassEntry
+struct RenderTargetRegistry
 {
-	RenderPass final;
-	optional<RenderPass> intermediate;
+	RenderPass targets[(i32) RenderTargetId::COUNT];
 
-	RenderPass& final_pass() { return final; }
-
-	RenderPass& intermediate_pass()
+	RenderPass& get(RenderTargetId in_id)
 	{
-		assert(intermediate.has_value());
-		return *intermediate;
+		return targets[(i32) in_id];
 	}
 
-	RenderPass& ensure_intermediate_pass()
+	void init(RenderTargetId in_id, const RenderPassDesc& in_desc)
 	{
-		if (!intermediate.has_value())
-		{
-			intermediate.emplace();
-		}
-		return *intermediate;
+		get(in_id).init(in_desc);
 	}
 
-	void init_final(const RenderPassDesc& in_desc) { final.init(in_desc); }
-	void init_intermediate(const RenderPassDesc& in_desc) { ensure_intermediate_pass().init(in_desc); }
-
-	void handle_resize(i32 in_width, i32 in_height)
+	void handle_resize(
+		i32 in_render_width,
+		i32 in_render_height,
+		i32 in_output_width,
+		i32 in_output_height)
 	{
-		if (intermediate.has_value())
+		for (RenderPass& target : targets)
 		{
-			intermediate->handle_resize(in_width, in_height);
+			const bool output = target.desc.extent.type == ERenderTargetExtent::Output;
+			target.handle_resize(
+				output ? in_output_width : in_render_width,
+				output ? in_output_height : in_render_height);
 		}
-		final.handle_resize(in_width, in_height);
 	}
 
 	void cleanup()
 	{
-		if (intermediate.has_value())
+		for (RenderPass& target : targets)
 		{
-			intermediate->cleanup();
-			intermediate.reset();
+			target.cleanup();
 		}
-		final.cleanup();
 	}
 };

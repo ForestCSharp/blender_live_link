@@ -616,7 +616,7 @@ namespace ImGuiLayer
 					ImGui::SliderInt("Filter Radius", &state.shadow.screen_space.filter_radius, 0, 2);
 					ImGui::Checkbox("Show Screen Space Shadow Mask", &state.shadow.screen_space.debug_show_mask);
 					if (state.shadow.screen_space.debug_show_mask)
-						ImGui::Image(texture(frame_data.linear_sampler, get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0).view), image_size(get_render_pass(ERenderPass::ScreenSpaceShadows).get_color_output(0), 256.0f));
+						ImGui::Image(texture(frame_data.linear_sampler, get_render_target(RenderTargetId::ScreenSpaceShadows).get_color_output(0).view), image_size(get_render_target(RenderTargetId::ScreenSpaceShadows).get_color_output(0), 256.0f));
 				}
 			};
 			const auto draw_lighting_controls = [&]()
@@ -849,7 +849,7 @@ namespace ImGuiLayer
 
 		if (ImGui::CollapsingHeader("Render Texture Viewer"))
 		{
-			GpuImage& shadow_image = get_render_pass(ERenderPass::ShadowDepth).get_color_output(0);
+			GpuImage& shadow_image = get_render_target(RenderTargetId::ShadowDepth).get_color_output(0);
 			const i32 active_cascades = ShadowDepthPass::get_active_cascade_count(state);
 			ImGui::Text("Shadow Cascades");
 			ImGui::Text("%u x %u x %d", shadow_image.extent.width, shadow_image.extent.height, active_cascades);
@@ -859,9 +859,9 @@ namespace ImGuiLayer
 			state.shadow.debug_cascade_index = CLAMP(state.shadow.debug_cascade_index, 0, MAX(0, active_cascades - 1));
 			ImGui::SliderInt("Debug Cascade", &state.shadow.debug_cascade_index, 0, MAX(0, active_cascades - 1));
 			ImGui::Combo("Debug View", &state.shadow.debug_view_mode, "Moments\0Depth\0");
-			draw_texture(frame_data.linear_sampler, "Shadow Cascade Debug", get_render_pass(ERenderPass::ShadowCascadeDebug).get_color_output(0), 256.0f);
+			draw_texture(frame_data.linear_sampler, "Shadow Cascade Debug", get_render_target(RenderTargetId::ShadowCascadeDebug).get_color_output(0), 256.0f);
 
-			RenderPass& geometry = get_render_pass(ERenderPass::Geometry);
+			RenderPass& geometry = get_render_target(RenderTargetId::Geometry);
 			if (ImGui::TreeNode("Main Pass"))
 			{
 				for (i32 output = 0; output < Render::GBUFFER_OUTPUT_COUNT; ++output)
@@ -899,17 +899,17 @@ namespace ImGuiLayer
 					state.clouds.active_layer_count,
 					CloudPass::pass.history_valid ? "valid" : "invalid");
 				draw_texture(frame_data.linear_sampler, "Current density / radiance",
-					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(0), 256.0f);
+					get_render_target(RenderTargetId::CloudRaymarch).get_color_output(0), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Weighted depth / opacity / wind / geometry mask",
-					get_render_pass(ERenderPass::CloudRaymarch).get_color_output(1), 256.0f);
+					get_render_target(RenderTargetId::CloudRaymarch).get_color_output(1), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Temporal radiance / transmittance",
-					get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().get_color_output(0), 256.0f);
+					get_render_target(RenderTargetId::CloudHistory1).get_color_output(0), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Temporal weighted depth / validity",
-					get_render_pass_entry(ERenderPass::CloudTemporal).final_pass().get_color_output(1), 256.0f);
+					get_render_target(RenderTargetId::CloudHistory1).get_color_output(1), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Reactive mask",
-					get_render_pass(ERenderPass::CloudComposite).get_color_output(2), 256.0f);
+					get_render_target(RenderTargetId::CloudComposite).get_color_output(2), 256.0f);
 				draw_texture(frame_data.linear_sampler, "Shadow transmittance",
-					get_render_pass(ERenderPass::CloudShadow).get_color_output(0), 256.0f);
+					get_render_target(RenderTargetId::CloudShadow).get_color_output(0), 256.0f);
 				if (CloudPass::pass.caches_generated)
 				{
 					draw_texture(frame_data.linear_sampler, "Base shape slice 0",
