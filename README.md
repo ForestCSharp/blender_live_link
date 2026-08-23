@@ -169,9 +169,10 @@ On Linux the script accepts `blender` on `PATH`, the Flatpak application
 
 Place additional Blender add-on ZIPs in `blend_files/addons/`. The directory is
 gitignored so local or licensed add-ons are not committed. Full native and
-Python builds install, enable, and save each `*.zip` in the corresponding
-Blender profile before launching Blender. Game-only and package-only builds do
-not install them.
+Python builds install each `*.zip` into the corresponding Blender profile, then
+enable the installed modules and save preferences during the GUI launch. The
+GUI phase is required by add-ons such as Hard Ops that initialize GPU resources
+when enabled. Game-only and package-only builds do not install them.
 
 ### Game Only
 

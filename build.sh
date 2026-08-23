@@ -269,7 +269,7 @@ install_additional_addons() {
 	fi
 
 	log_build "Blender branch: installing ${#addon_zips[@]} additional add-on(s) from $ADDITIONAL_ADDONS_DIR"
-	"${blender_command[@]}" --background --python "$ADDITIONAL_ADDONS_INSTALLER" -- "${addon_zips[@]}" || return
+	"${blender_command[@]}" --factory-startup --background --python "$ADDITIONAL_ADDONS_INSTALLER" -- "${addon_zips[@]}" || return
 }
 
 install_and_launch_installed_blender() {
@@ -285,7 +285,7 @@ install_and_launch_installed_blender() {
 		sleep 0.5
 		# open blender to specified map file
 		log_build "Blender branch: launching installed Blender"
-		start "" blender.exe $run_args || return
+		start "" blender.exe "$run_args" --python "$ADDITIONAL_ADDONS_INSTALLER" || return
 	elif [[ $OS = Mac ]]; then
 		log_build "Blender branch: installing extension into /Applications/Blender.app"
 		# install add-on and wait for completion
@@ -294,7 +294,7 @@ install_and_launch_installed_blender() {
 		sleep 0.5
 		# open blender without waiting for completion
 		log_build "Blender branch: launching /Applications/Blender.app"
-		open  /Applications/Blender.app --args $run_args || return
+		open /Applications/Blender.app --args "$run_args" --python "$ADDITIONAL_ADDONS_INSTALLER" || return
 	elif [[ $OS = Linux ]]; then
 		resolve_installed_blender || return
 
@@ -303,7 +303,7 @@ install_and_launch_installed_blender() {
 		install_additional_addons "${INSTALLED_BLENDER_COMMAND[@]}" || return
 		sleep 0.5
 		log_build "Blender branch: launching installed Blender"
-		nohup "${INSTALLED_BLENDER_COMMAND[@]}" "$run_args" > /dev/null 2>&1 &
+		nohup "${INSTALLED_BLENDER_COMMAND[@]}" "$run_args" --python "$ADDITIONAL_ADDONS_INSTALLER" > /dev/null 2>&1 &
 	else
 		echo "Error: installed Blender launch is unsupported on $OS."
 		return 1
@@ -342,9 +342,11 @@ install_and_launch_native_blender() {
 	if [[ "$SCREENSHOT_MODE" = true ]]; then
 		local quit_expression
 		quit_expression='import bpy, os; p = os.environ["BLENDER_LIVE_LINK_SCREENSHOT_COMPLETE"]; bpy.app.timers.register(lambda: (bpy.ops.wm.quit_blender() and None) if os.path.isfile(p) else 0.25, first_interval=0.25)'
-		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" --python-expr "$quit_expression"
+		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" \
+			--python "$ADDITIONAL_ADDONS_INSTALLER" --python-expr "$quit_expression"
 	else
-		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" &
+		with_native_blender_profile "$NATIVE_BLENDER_BINARY" "$run_args" \
+			--python "$ADDITIONAL_ADDONS_INSTALLER" &
 	fi
 }
 
