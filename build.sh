@@ -31,6 +31,8 @@ else
 fi
 NATIVE_BLENDER_USER_DIR="$SCRIPT_DIR/blend_src/blender_user"
 EXTENSION_ZIP_PATH="$SCRIPT_DIR/blend_src/$BASE_DIR.zip"
+ADDITIONAL_ADDONS_DIR="$SCRIPT_DIR/blend_files/addons"
+ADDITIONAL_ADDONS_INSTALLER="$SCRIPT_DIR/tools/install_blender_addons.py"
 EXTENSION_PACKAGE_EXCLUSIONS=(
 	"$BASE_DIR/flatbuffers/*"
 	"$BASE_DIR/.git/*"
@@ -247,6 +249,29 @@ resolve_installed_blender() {
 	fi
 }
 
+install_additional_addons() {
+	local blender_command=("$@")
+	local addon_zip
+	local addon_zips=()
+
+	for addon_zip in "$ADDITIONAL_ADDONS_DIR"/*.zip; do
+		[[ -f "$addon_zip" ]] || continue
+		addon_zips+=("$addon_zip")
+	done
+
+	if (( ${#addon_zips[@]} == 0 )); then
+		return 0
+	fi
+
+	if [[ ! -f "$ADDITIONAL_ADDONS_INSTALLER" ]]; then
+		echo "Error: Blender add-on installer was not found at $ADDITIONAL_ADDONS_INSTALLER"
+		return 1
+	fi
+
+	log_build "Blender branch: installing ${#addon_zips[@]} additional add-on(s) from $ADDITIONAL_ADDONS_DIR"
+	"${blender_command[@]}" --background --python "$ADDITIONAL_ADDONS_INSTALLER" -- "${addon_zips[@]}" || return
+}
+
 install_and_launch_installed_blender() {
 	local install_args=(--command extension install-file "$EXTENSION_ZIP_PATH" --repo user_default --enable)
 	stop_running_blender_instances || return
@@ -256,6 +281,7 @@ install_and_launch_installed_blender() {
 		# Note: blender.exe should be on system path on windows
 		# install add-on and wait for completion
 		blender.exe "${install_args[@]}" || return
+		install_additional_addons blender.exe || return
 		sleep 0.5
 		# open blender to specified map file
 		log_build "Blender branch: launching installed Blender"
@@ -264,6 +290,7 @@ install_and_launch_installed_blender() {
 		log_build "Blender branch: installing extension into /Applications/Blender.app"
 		# install add-on and wait for completion
 		/Applications/Blender.app/Contents/MacOS/Blender "${install_args[@]}" || return
+		install_additional_addons /Applications/Blender.app/Contents/MacOS/Blender || return
 		sleep 0.5
 		# open blender without waiting for completion
 		log_build "Blender branch: launching /Applications/Blender.app"
@@ -273,6 +300,7 @@ install_and_launch_installed_blender() {
 
 		log_build "Blender branch: installing extension into installed Blender"
 		"${INSTALLED_BLENDER_COMMAND[@]}" "${install_args[@]}" || return
+		install_additional_addons "${INSTALLED_BLENDER_COMMAND[@]}" || return
 		sleep 0.5
 		log_build "Blender branch: launching installed Blender"
 		nohup "${INSTALLED_BLENDER_COMMAND[@]}" "$run_args" > /dev/null 2>&1 &
@@ -307,6 +335,7 @@ install_and_launch_native_blender() {
 
 	echo "Installing extension into local Blender profile at $NATIVE_BLENDER_USER_DIR"
 	with_native_blender_profile "$NATIVE_BLENDER_BINARY" "${install_args[@]}" || return
+	install_additional_addons with_native_blender_profile "$NATIVE_BLENDER_BINARY" || return
 	sleep 0.5
 
 	echo "Launching local Blender at $NATIVE_BLENDER_BINARY"

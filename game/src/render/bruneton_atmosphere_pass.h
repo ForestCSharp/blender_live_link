@@ -8,6 +8,7 @@
 #include "game_object/game_object.h"
 #include "render/frame_data.h"
 #include "render/fullscreen_pipeline.h"
+#include "render/frame_render_graph.h"
 #include "render/gpu_buffer.h"
 #include "render/render_pass.h"
 #include "render/sky_atmosphere_dirty.h"
@@ -225,56 +226,93 @@ struct BrunetonAtmospherePass
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
-	bool precompute_if_needed(VulkanContext* ctx, const SkyAtmosphere& sky)
+	void declare_sampled_resources(
+		FrameRenderGraph& graph,
+		VulkanContext* ctx,
+		VkPipelineStageFlags2 in_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)
+	{
+		graph.uniform(frame_graph_buffer(
+			parameter_buffers[ctx->frame_index].get_gpu_buffer()), in_stage);
+		graph.sampled(frame_graph_color(transmittance_pass), in_stage);
+		for (i32 output_idx = 0; output_idx < 3; ++output_idx)
+			graph.sampled(frame_graph_color(scattering_pass, output_idx), in_stage);
+		graph.sampled(frame_graph_color(scattering_density_pass), in_stage);
+		graph.sampled(frame_graph_color(irradiance_pass, 0), in_stage);
+		graph.sampled(frame_graph_color(irradiance_pass, 1), in_stage);
+	}
+
+	bool precompute_if_needed(
+		FrameRenderGraph& graph, VulkanContext* ctx, const SkyAtmosphere& sky)
 	{
 		if (has_precomputed && bruneton_lut_parameters_equal(last_lut_parameters, sky))
 		{
 			return false;
 		}
 		const auto precompute_start = std::chrono::steady_clock::now();
+		const auto declare_parameters = [&]() {
+			graph.uniform(frame_graph_buffer(
+				parameter_buffers[ctx->frame_index].get_gpu_buffer()),
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		};
 
-		transmittance_pass.execute(ctx, [&](i32) {
+		declare_parameters();
+		graph.execute(transmittance_pass, [&](i32) {
 			bind_and_draw(ctx, transmittance_pipeline, 0, 0);
 		});
-		transmittance_pass.make_color_outputs_sampled(ctx);
+		graph.make_sampled(transmittance_pass);
 
 		irradiance_pass.desc.outputs[0].load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		irradiance_pass.desc.outputs[1].load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
 		irradiance_pass.desc.outputs[1].clear_value = {};
-		irradiance_pass.execute(ctx, [&](i32) {
+		declare_parameters();
+		graph.sampled(frame_graph_color(transmittance_pass));
+		graph.execute(irradiance_pass, [&](i32) {
 			bind_and_draw(ctx, direct_irradiance_pipeline, 0, 0);
 		});
-		irradiance_pass.make_color_outputs_sampled(ctx);
+		graph.make_sampled(irradiance_pass);
 
 		for (i32 output_idx = 0; output_idx < 3; ++output_idx)
 			scattering_pass.desc.outputs[output_idx].load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		scattering_pass.execute(ctx, [&](i32 layer) {
+		declare_parameters();
+		graph.sampled(frame_graph_color(transmittance_pass));
+		graph.execute(scattering_pass, [&](i32 layer) {
 			bind_and_draw(ctx, single_scattering_pipeline, layer, 1);
 		});
-		scattering_pass.make_color_outputs_sampled(ctx);
+		graph.make_sampled(scattering_pass);
 
 		for (i32 order = 2; order <= BRUNETON_SCATTERING_ORDERS; ++order)
 		{
 			scattering_density_pass.desc.outputs[0].load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			scattering_density_pass.execute(ctx, [&](i32 layer) {
+			declare_parameters();
+			graph.sampled(frame_graph_color(transmittance_pass));
+			graph.sampled(frame_graph_color(scattering_pass, 0));
+			graph.sampled(frame_graph_color(scattering_pass, 1));
+			graph.sampled(frame_graph_color(irradiance_pass, 0));
+			graph.execute(scattering_density_pass, [&](i32 layer) {
 				bind_and_draw(ctx, scattering_density_pipeline, layer, order);
 			});
-			scattering_density_pass.make_color_outputs_sampled(ctx);
+			graph.make_sampled(scattering_density_pass);
 
 			irradiance_pass.desc.outputs[0].load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			irradiance_pass.desc.outputs[1].load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-			irradiance_pass.execute(ctx, [&](i32) {
+			declare_parameters();
+			graph.sampled(frame_graph_color(scattering_pass, 0));
+			graph.sampled(frame_graph_color(scattering_pass, 1));
+			graph.execute(irradiance_pass, [&](i32) {
 				bind_and_draw(ctx, indirect_irradiance_pipeline, 0, order - 1);
 			});
-			irradiance_pass.make_color_outputs_sampled(ctx);
+			graph.make_sampled(irradiance_pass);
 
 			scattering_pass.desc.outputs[0].load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			scattering_pass.desc.outputs[1].load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
 			scattering_pass.desc.outputs[2].load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-			scattering_pass.execute(ctx, [&](i32 layer) {
+			declare_parameters();
+			graph.sampled(frame_graph_color(transmittance_pass));
+			graph.sampled(frame_graph_color(scattering_density_pass));
+			graph.execute(scattering_pass, [&](i32 layer) {
 				bind_and_draw(ctx, multiple_scattering_pipeline, layer, order);
 			});
-			scattering_pass.make_color_outputs_sampled(ctx);
+			graph.make_sampled(scattering_pass);
 		}
 
 		last_lut_parameters = sky;

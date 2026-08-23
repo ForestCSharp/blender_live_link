@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 #include "core/timings.h"
+#include "render/frame_render_graph.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/vulkan_context.h"
 #include "state/state.h"
@@ -71,7 +72,11 @@ namespace GpuSkinning
 	}
 
 	// Records the cache dispatch for one mesh into the frame's command buffer
-	inline void update_mesh(VulkanContext* ctx, State& in_state, Mesh& in_mesh)
+	inline void update_mesh(
+		FrameRenderGraph& graph,
+		VulkanContext* ctx,
+		State& in_state,
+		Mesh& in_mesh)
 	{
 		in_mesh.skinned_vertex_cache_valid = false;
 		if (!in_mesh.has_skinned_vertices
@@ -99,28 +104,42 @@ namespace GpuSkinning
 				buffers[binding_idx]);
 		}
 		writer.commit();
-		effect.bind(ctx, writer.set);
-
-		for (u32 base_vertex = 0; base_vertex < in_mesh.vertex_count; base_vertex += MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE)
-		{
-			const u32 remaining_vertices = in_mesh.vertex_count - base_vertex;
-			const u32 dispatch_vertex_count = MIN(remaining_vertices, MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE);
-			const u32 group_count = (dispatch_vertex_count + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
-
-			SkinningParams params = {
-				.vertex_count = (i32) in_mesh.vertex_count,
-				.base_vertex = (i32) base_vertex,
-				.skin_matrix_offset = in_mesh.skin_matrix_arena_offset,
-			};
-			effect.dispatch(ctx, params, group_count, 1, 1);
-		}
+		graph.storage_read(frame_graph_buffer(buffers[0]));
+		graph.storage_read(frame_graph_buffer(buffers[1]));
+		graph.storage_read(frame_graph_buffer(buffers[2]));
+		graph.storage_write(frame_graph_buffer(buffers[3]));
+		graph.compute([&]() {
+			effect.bind(ctx, writer.set);
+			for (u32 base_vertex = 0; base_vertex < in_mesh.vertex_count;
+				base_vertex += MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE)
+			{
+				const u32 remaining_vertices = in_mesh.vertex_count - base_vertex;
+				const u32 dispatch_vertex_count = MIN(remaining_vertices,
+					MAX_COMPUTE_GROUPS_PER_DISPATCH * WORKGROUP_SIZE);
+				const u32 group_count =
+					(dispatch_vertex_count + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
+				SkinningParams params = {
+					.vertex_count = (i32) in_mesh.vertex_count,
+					.base_vertex = (i32) base_vertex,
+					.skin_matrix_offset = in_mesh.skin_matrix_arena_offset,
+				};
+				effect.dispatch(ctx, params, group_count, 1, 1);
+			}
+		});
+		graph.storage_read(frame_graph_buffer(buffers[3]),
+			VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT);
+		graph.vertex(frame_graph_buffer(buffers[3]));
 
 		in_mesh.skinned_vertex_cache_valid = true;
 	}
 
 	// Records all cache dispatches + the barrier making the caches visible to
 	// vertex input/shaders. Call after begin_frame, before any pass executes.
-	inline void update(VulkanContext* ctx, State& in_state, const bool in_required)
+	inline void update(
+		FrameRenderGraph& graph,
+		VulkanContext* ctx,
+		State& in_state,
+		const bool in_required)
 	{
 		scene_ensure_indexes(in_state);
 		in_state.data_oriented.frame.gpu_skinning_candidate_count += (i32) in_state.scene.indexes.skinned_mesh_object_ids.length();
@@ -141,7 +160,6 @@ namespace GpuSkinning
 
 		CPU_TIMING_SCOPE("GPU Skinning Cache");
 
-		bool dispatched_any = false;
 		u32 dispatch_count = 0;
 		for (const i32 unique_id : in_state.scene.indexes.skinned_mesh_object_ids)
 		{
@@ -156,30 +174,12 @@ namespace GpuSkinning
 			}
 
 			Mesh& mesh = found->second.mesh;
-			update_mesh(ctx, in_state, mesh);
+			update_mesh(graph, ctx, in_state, mesh);
 			if (mesh.skinned_vertex_cache_valid)
 			{
 				in_state.data_oriented.frame.gpu_skinning_updated_count += 1;
 			}
-			dispatched_any = dispatched_any || mesh.skinned_vertex_cache_valid;
 			dispatch_count += 1;
-		}
-
-		if (dispatched_any)
-		{
-			VkMemoryBarrier2 memory_barrier = {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-			};
-			VkDependencyInfo dependency_info = {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.memoryBarrierCount = 1,
-				.pMemoryBarriers = &memory_barrier,
-			};
-			vkCmdPipelineBarrier2(vulkan_current_command_buffer(ctx), &dependency_info);
 		}
 	}
 

@@ -144,7 +144,8 @@ inline void sky_pass_init(VulkanContext* ctx)
 
 // Updates the active controller and records a full LUT precompute only when
 // physical atmosphere inputs changed. Camera motion is intentionally absent.
-inline bool sky_pass_update_atmosphere(VulkanContext* ctx, State& state)
+inline bool sky_pass_update_atmosphere(
+	FrameRenderGraph& graph, VulkanContext* ctx, State& state)
 {
 	if (!state.scene.active_sky_controller_id)
 	{
@@ -176,7 +177,7 @@ inline bool sky_pass_update_atmosphere(VulkanContext* ctx, State& state)
 		* solar_irradiance_scale(sun.light.sun.power);
 
 	bruneton_atmosphere_pass.update(ctx, atmosphere);
-	bruneton_atmosphere_pass.precompute_if_needed(ctx, atmosphere);
+	bruneton_atmosphere_pass.precompute_if_needed(graph, ctx, atmosphere);
 
 	const BrunetonProbeSkySignature probe_signature = {
 		.controller_id = controller_id,

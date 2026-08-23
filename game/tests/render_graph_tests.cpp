@@ -48,11 +48,48 @@ int main()
 
 	GpuImage first;
 	GpuImage second;
+	first.extent = { 512, 256 };
+	first.mip_levels = 4;
+	first.array_layers = 3;
+	first.aspects = VK_IMAGE_ASPECT_COLOR_BIT;
+	first.mip_views.resize(4);
+	first.layer_views.resize(3);
+	const FrameGraphImage whole = frame_graph_image(first);
+	assert(whole.extent.width == 512 && whole.extent.height == 256);
+	assert(whole.range.levelCount == 4 && whole.range.layerCount == 3);
+	const FrameGraphImage mip = frame_graph_mip(first, 2);
+	assert(mip.extent.width == 128 && mip.extent.height == 64);
+	assert(mip.range.baseMipLevel == 2 && mip.range.levelCount == 1);
+	assert(mip.range.baseArrayLayer == 0 && mip.range.layerCount == 3);
+	const FrameGraphImage layer = frame_graph_layer(first, 1);
+	assert(layer.range.baseMipLevel == 0 && layer.range.levelCount == 4);
+	assert(layer.range.baseArrayLayer == 1 && layer.range.layerCount == 1);
+
 	const FrameGraphImage selected = frame_graph_select(
-		true, { .image = &first }, { .image = &second });
+		true, whole, { .image = &second });
 	assert(selected.image == &first);
 	assert(frame_graph_select(false, { .image = &first }, { .image = &second }).image
 		== &second);
+	const FrameGraphBuffer buffer = frame_graph_buffer(reinterpret_cast<VkBuffer>(4));
+	assert(buffer.buffer == reinterpret_cast<VkBuffer>(4));
+	FrameRenderGraph graph(nullptr);
+	graph.sampled(mip);
+	graph.storage_write(buffer);
+	assert(graph.pending().images.length() == 1);
+	assert(graph.pending().images[0].range.baseMipLevel == 2);
+	assert(graph.pending().images[0].range.levelCount == 1);
+	assert(graph.pending().images[0].layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	assert(graph.pending().buffers.length() == 1);
+	assert(graph.pending().buffers[0].offset == 0);
+	assert(graph.pending().buffers[0].size == VK_WHOLE_SIZE);
+	assert(graph.pending().buffers[0].access == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	assert(frame_graph_attachment_access(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+		== VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+	assert(frame_graph_attachment_discards(VK_ATTACHMENT_LOAD_OP_CLEAR));
+	assert(frame_graph_attachment_access(VK_ATTACHMENT_LOAD_OP_LOAD)
+		== (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+			| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
+	assert(!frame_graph_attachment_discards(VK_ATTACHMENT_LOAD_OP_LOAD));
 
 	const DescriptorBindingSpec bindings[] = {
 		{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,

@@ -6,6 +6,7 @@
 #include "core/timings.h"
 #include "render/bloom_profile.inl"
 #include "render/frame_data.h"
+#include "render/frame_render_graph.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_image.h"
 #include "render/render_types.h"
@@ -102,81 +103,6 @@ namespace BloomPass
 	inline HMM_Vec4 get_profile_base_gain()
 	{
 		return bloom_pass.profile_base_gain;
-	}
-
-	inline ImageUsage mip_usage(
-		u32 in_mip,
-		VkPipelineStageFlags2 in_stage,
-		VkAccessFlags2 in_access,
-		VkImageLayout in_layout,
-		bool in_discard = false)
-	{
-		return {
-			.image = &bloom_pass.pyramid,
-			.range = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel = in_mip,
-				.levelCount = 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1,
-			},
-			.stage = in_stage,
-			.access = in_access,
-			.layout = in_layout,
-			.discard = in_discard,
-		};
-	}
-
-	inline void begin_mip_render(
-		VulkanContext* ctx,
-		u32 in_mip,
-		VkAttachmentLoadOp in_load_op,
-		bool in_discard)
-	{
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		ImageUsage output_usage = mip_usage(
-			in_mip,
-			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			in_discard);
-		gpu_image_apply_usages(command_buffer, &output_usage, 1);
-
-		VkRenderingAttachmentInfo attachment = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = mip_view((i32)in_mip),
-			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.loadOp = in_load_op,
-			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-		};
-		const u32 width = mip_extent(bloom_pass.base_width, in_mip);
-		const u32 height = mip_extent(bloom_pass.base_height, in_mip);
-		VkRenderingInfo rendering_info = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-			.renderArea = {
-				.offset = {0, 0},
-				.extent = {width, height},
-			},
-			.layerCount = 1,
-			.colorAttachmentCount = 1,
-			.pColorAttachments = &attachment,
-		};
-		vkCmdBeginRendering(command_buffer, &rendering_info);
-
-		VkViewport viewport = {
-			.x = 0.0f,
-			.y = (f32)height,
-			.width = (f32)width,
-			.height = -(f32)height,
-			.minDepth = 0.0f,
-			.maxDepth = 1.0f,
-		};
-		VkRect2D scissor = {
-			.offset = {0, 0},
-			.extent = {width, height},
-		};
-		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-		vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 	}
 
 	inline VkDescriptorSet sampled_set(VulkanContext* ctx, VkImageView in_view)
@@ -290,8 +216,9 @@ namespace BloomPass
 	}
 
 	inline void execute(
+		FrameRenderGraph& graph,
 		VulkanContext* ctx,
-		VkImageView in_source_view,
+		FrameGraphImage in_source,
 		const State::BloomState& in_state,
 		const State::TonemappingState& in_tonemapping_state,
 		VkBuffer in_auto_adaptation_state_buffer)
@@ -307,38 +234,25 @@ namespace BloomPass
 			profile.bands[0].g,
 			profile.bands[0].b,
 			1.0f);
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
 		{
 			CPU_TIMING_SCOPE("Bloom Downsample");
 			const i32 timing_slot = gpu_timestamps_begin_scope(ctx, "Bloom Downsample");
 			vulkan_begin_debug_label(ctx, "Bloom Downsample");
 
-			VkImageView source_view = in_source_view;
-			u32 source_width = bloom_pass.source_width;
-			u32 source_height = bloom_pass.source_height;
+			FrameGraphImage source = in_source;
 			for (i32 mip = 0; mip < bloom_pass.effective_mip_count; ++mip)
 			{
 				if (mip > 0)
-				{
-					ImageUsage input_usage = mip_usage(
-						(u32)mip - 1,
-						VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-						VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-					gpu_image_apply_usages(command_buffer, &input_usage, 1);
-					source_view = mip_view(mip - 1);
-					source_width = mip_extent(bloom_pass.base_width, (u32)mip - 1);
-					source_height = mip_extent(bloom_pass.base_height, (u32)mip - 1);
-				}
+					source = frame_graph_mip(bloom_pass.pyramid, (u32)mip - 1);
 
-				VkDescriptorSet set = sampled_set(ctx, source_view);
-				begin_mip_render(
-					ctx, (u32)mip, VK_ATTACHMENT_LOAD_OP_DONT_CARE, true);
+				graph.sampled(source);
+				graph.storage_read(frame_graph_buffer(in_auto_adaptation_state_buffer),
+					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+				VkDescriptorSet set = sampled_set(ctx, source.view());
 				DownsamplePushConstants constants = {
 					.source_pixel_size = HMM_V2(
-						1.0f / (f32)source_width,
-						1.0f / (f32)source_height),
+						1.0f / (f32)source.extent.width,
+						1.0f / (f32)source.extent.height),
 					.threshold = CLAMP(in_state.threshold, 0.0f, 10.0f),
 					.soft_knee = CLAMP(in_state.soft_knee, 0.0f, 1.0f),
 					.exposure_scale = std::exp2(CLAMP(
@@ -351,18 +265,14 @@ namespace BloomPass
 					.auto_exposure_influence = CLAMP(
 						in_state.auto_exposure_influence, 0.0f, 1.0f),
 				};
-				draw(
-					ctx, bloom_pass.downsample_pipeline, set,
-					&constants, sizeof(constants));
-				vkCmdEndRendering(command_buffer);
+				FrameGraphColorAttachment attachment = {
+					.image = frame_graph_mip(bloom_pass.pyramid, (u32)mip),
+				};
+				graph.render(&attachment, 1, [&]() {
+					draw(ctx, bloom_pass.downsample_pipeline, set,
+						&constants, sizeof(constants));
+				});
 			}
-
-			ImageUsage last_mip_usage = mip_usage(
-				(u32)bloom_pass.effective_mip_count - 1,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			gpu_image_apply_usages(command_buffer, &last_mip_usage, 1);
 
 			vulkan_end_debug_label(ctx);
 			gpu_timestamps_end_scope(ctx, timing_slot);
@@ -381,9 +291,12 @@ namespace BloomPass
 				const i32 fine_mip = coarse_mip - 1;
 				const BloomProfile::RgbWeight coarse_weight_ratio =
 					BloomProfile::reconstruction_ratio(profile, fine_mip);
-				VkDescriptorSet set = sampled_set(ctx, mip_view(coarse_mip));
-				begin_mip_render(
-					ctx, (u32)fine_mip, VK_ATTACHMENT_LOAD_OP_LOAD, false);
+				FrameGraphImage coarse = frame_graph_mip(
+					bloom_pass.pyramid, (u32)coarse_mip);
+				graph.sampled(coarse);
+				graph.storage_read(frame_graph_buffer(in_auto_adaptation_state_buffer),
+					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+				VkDescriptorSet set = sampled_set(ctx, coarse.view());
 				UpsamplePushConstants constants = {
 					.coarse_weight_ratio = HMM_V4(
 						coarse_weight_ratio.r,
@@ -394,22 +307,21 @@ namespace BloomPass
 						1.0f / (f32)mip_extent(bloom_pass.base_width, (u32)coarse_mip),
 						1.0f / (f32)mip_extent(bloom_pass.base_height, (u32)coarse_mip)),
 				};
-				draw(
-					ctx, bloom_pass.upsample_pipeline, set,
-					&constants, sizeof(constants));
-				vkCmdEndRendering(command_buffer);
-
-				ImageUsage fine_read_usage = mip_usage(
-					(u32)fine_mip,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				gpu_image_apply_usages(command_buffer, &fine_read_usage, 1);
+				FrameGraphColorAttachment attachment = {
+					.image = frame_graph_mip(bloom_pass.pyramid, (u32)fine_mip),
+					.load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
+				};
+				graph.render(&attachment, 1, [&]() {
+					draw(ctx, bloom_pass.upsample_pipeline, set,
+						&constants, sizeof(constants));
+				});
 			}
 
 			vulkan_end_debug_label(ctx);
 			gpu_timestamps_end_scope(ctx, timing_slot);
 		}
+
+		graph.sampled(frame_graph_mip(bloom_pass.pyramid, 0));
 	}
 
 	inline void shutdown(VulkanContext* ctx)

@@ -5,6 +5,7 @@
 #include "state/state.h"
 #include "render/bruneton_atmosphere_pass.h"
 #include "render/frame_data.h"
+#include "render/frame_render_graph.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 #include "render/gpu_image.h"
@@ -219,23 +220,17 @@ namespace CloudPass
 		});
 	}
 
-	inline void generate_caches(VulkanContext* ctx, u32 seed, i32 layer_count)
+	inline void generate_caches(
+		FrameRenderGraph& graph, VulkanContext* ctx, u32 seed, i32 layer_count)
 	{
 		layer_count = CLAMP(layer_count, 1, MAX_CLOUD_LAYERS);
 		if (pass.caches_generated && pass.generated_seed == seed
 			&& pass.generated_layer_count == layer_count) return;
 		const i32 timing_slot = gpu_timestamps_begin_scope(ctx, "Cloud Cache Generation");
-		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		GpuImage* images[] = { &pass.base_shape, &pass.erosion, &pass.weather };
-		PassResourceUsage usage;
 		for (GpuImage* image : images)
-			usage.images.add({ .image = image,
-				.range = { .aspectMask = image->aspects, .baseMipLevel = 0, .levelCount = image->mip_levels,
-					.baseArrayLayer = 0, .layerCount = image->array_layers },
-				.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-				.layout = VK_IMAGE_LAYOUT_GENERAL, .discard = true });
-		vulkan_apply_pass_resource_usage(ctx, usage);
+			graph.storage_write(frame_graph_image(*image),
+				VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 
 		DescriptorWriter noise_writer = pass.noise_effect.writer(ctx);
 		for (u32 index = 0; index < 3; ++index)
@@ -243,17 +238,20 @@ namespace CloudPass
 			noise_writer.storage_image(index, images[index]->view);
 		}
 		noise_writer.commit();
-		pass.noise_effect.bind(ctx, noise_writer.set);
 		const NoisePushConstants dispatches[] = {
 			{ seed, 0, 128, 128 }, { seed, 1, 32, 32 }, { seed, 2, 512, (u32)layer_count },
 		};
-		for (const NoisePushConstants& push : dispatches)
-		{
-			pass.noise_effect.dispatch(ctx, push,
-				(push.size + 7) / 8, (push.size + 7) / 8, push.layers);
-		}
+		graph.compute([&]() {
+			pass.noise_effect.bind(ctx, noise_writer.set);
+			for (const NoisePushConstants& push : dispatches)
+			{
+				pass.noise_effect.dispatch(ctx, push,
+					(push.size + 7) / 8, (push.size + 7) / 8, push.layers);
+			}
+		});
 		for (GpuImage* image : images)
-			gpu_image_transition(command_buffer, *image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			graph.sampled(frame_graph_image(*image));
+		graph.apply();
 		gpu_timestamps_end_scope(ctx, timing_slot);
 		pass.caches_generated = true;
 		pass.generated_seed = seed;
@@ -347,16 +345,90 @@ namespace CloudPass
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
-	inline void initialize_shadow(VulkanContext* ctx, GpuImage& shadow)
+	inline void declare_params(
+		FrameRenderGraph& graph, VkBuffer in_params_buffer)
+	{
+		graph.uniform(frame_graph_buffer(in_params_buffer),
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	}
+
+	inline void record_shadow_subgraph(
+		FrameRenderGraph& graph,
+		VulkanContext* ctx,
+		RenderPass& in_shadow_target,
+		FrameGraphImage in_position,
+		VkBuffer in_params_buffer)
+	{
+		declare_params(graph, in_params_buffer);
+		graph.sampled(frame_graph_image(pass.base_shape));
+		graph.sampled(frame_graph_image(pass.erosion));
+		graph.sampled(frame_graph_image(pass.weather));
+		graph.sampled(in_position);
+		graph.execute(in_shadow_target, [&](i32) {
+			bind_and_draw(ctx, pass.shadow_pipeline, pass.basic_pipeline_layout,
+				pass.shadow_sets.current(ctx), false);
+		});
+		pass.shadow_update_count += 1;
+	}
+
+	inline void record_main_subgraph(
+		FrameRenderGraph& graph,
+		VulkanContext* ctx,
+		RenderPass& in_raymarch_target,
+		RenderPass& in_previous_history,
+		RenderPass& in_history_target,
+		RenderPass& in_lighting,
+		FrameGraphImage in_position,
+		RenderPass& in_composite_target,
+		VkBuffer in_params_buffer)
+	{
+		declare_params(graph, in_params_buffer);
+		graph.sampled(frame_graph_image(pass.base_shape));
+		graph.sampled(frame_graph_image(pass.erosion));
+		graph.sampled(frame_graph_image(pass.weather));
+		graph.sampled(in_position);
+		bruneton_atmosphere_pass.declare_sampled_resources(graph, ctx);
+		graph.execute(in_raymarch_target, [&](i32) {
+			bind_and_draw(ctx, pass.raymarch_pipeline, pass.atmosphere_pipeline_layout,
+				pass.raymarch_sets.current(ctx), true);
+		});
+
+		declare_params(graph, in_params_buffer);
+		graph.sampled(frame_graph_color(in_raymarch_target, 0));
+		graph.sampled(frame_graph_color(in_raymarch_target, 1));
+		graph.sampled(frame_graph_color(in_previous_history, 0));
+		graph.sampled(frame_graph_color(in_previous_history, 1));
+		graph.execute(in_history_target, [&](i32) {
+			bind_and_draw(ctx, pass.temporal_pipeline, pass.basic_pipeline_layout,
+				pass.temporal_sets.current(ctx), false);
+		});
+
+		declare_params(graph, in_params_buffer);
+		graph.sampled(frame_graph_color(in_lighting));
+		graph.sampled(in_position);
+		graph.sampled(frame_graph_color(in_history_target, 0));
+		graph.sampled(frame_graph_color(in_history_target, 1));
+		bruneton_atmosphere_pass.declare_sampled_resources(graph, ctx);
+		graph.execute(in_composite_target, [&](i32) {
+			bind_and_draw(ctx, pass.composite_pipeline, pass.atmosphere_pipeline_layout,
+				pass.composite_sets.current(ctx), true);
+		});
+	}
+
+	inline void initialize_shadow(
+		FrameRenderGraph& graph, VulkanContext* ctx, GpuImage& shadow)
 	{
 		if (pass.shadow_initialized) return;
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		gpu_image_transition(command_buffer, shadow, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
 		VkClearColorValue clear = { .float32 = { 1.0f, 1.0f, 1.0f, 1.0f } };
 		VkImageSubresourceRange range = { .aspectMask = shadow.aspects, .baseMipLevel = 0,
 			.levelCount = shadow.mip_levels, .baseArrayLayer = 0, .layerCount = shadow.array_layers };
-		vkCmdClearColorImage(command_buffer, shadow.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
-		gpu_image_transition(command_buffer, shadow, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		graph.transfer_destination(frame_graph_image(shadow), true);
+		graph.transfer([&]() {
+			vkCmdClearColorImage(command_buffer, shadow.image,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+		});
+		graph.make_sampled(frame_graph_image(shadow));
 		pass.shadow_initialized = true;
 		pass.shadow_update_count = 0;
 	}

@@ -165,6 +165,14 @@ On Linux the script accepts `blender` on `PATH`, the Flatpak application
 `org.blender.Blender`, or an executable selected with
 `BLENDER_LIVE_LINK_BLENDER_BINARY=/path/to/blender`.
 
+### Additional Blender Add-ons
+
+Place additional Blender add-on ZIPs in `blend_files/addons/`. The directory is
+gitignored so local or licensed add-ons are not committed. Full native and
+Python builds install, enable, and save each `*.zip` in the corresponding
+Blender profile before launching Blender. Game-only and package-only builds do
+not install them.
+
 ### Game Only
 
 ```sh

@@ -501,29 +501,6 @@ struct RenderPass
 		vulkan_end_debug_label(ctx);
 	}
 
-	void make_color_outputs_sampled(VulkanContext* ctx)
-	{
-		PassResourceUsage usage;
-		usage.images.reserve(color_outputs.length());
-		for (GpuImage& output : color_outputs)
-		{
-			usage.images.add({
-				.image = &output,
-				.range = {
-					.aspectMask = output.aspects,
-					.baseMipLevel = 0,
-					.levelCount = VK_REMAINING_MIP_LEVELS,
-					.baseArrayLayer = 0,
-					.layerCount = VK_REMAINING_ARRAY_LAYERS,
-				},
-				.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			});
-		}
-		vulkan_apply_pass_resource_usage(ctx, usage);
-	}
-
 	void cleanup()
 	{
 		release_targets();

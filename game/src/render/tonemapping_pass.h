@@ -5,6 +5,7 @@
 #include "render/render_types.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/frame_data.h"
+#include "render/frame_render_graph.h"
 #include "render/gt7_tonemapping.h"
 #include "render/aces2_tonemapping.h"
 #include "render/agx_tonemapping.h"
@@ -137,6 +138,10 @@ struct TonemappingPass
 
 	VkImageView scene_color_view = VK_NULL_HANDLE;
 	VkImageView position_view = VK_NULL_HANDLE;
+	FrameGraphImage scene_color;
+	FrameGraphImage position;
+	FrameGraphImage bloom;
+	bool bloom_enabled = false;
 	VkSampler sampler = VK_NULL_HANDLE;
 	VkSampler position_sampler = VK_NULL_HANDLE;
 	VkBuffer auto_adaptation_state_buffer = VK_NULL_HANDLE;
@@ -512,160 +517,35 @@ inline VkDescriptorSet tonemapping_local_descriptor_set(
 	return writer.set;
 }
 
-inline ImageUsage tonemapping_mip_usage(
-	GpuImage* in_image,
-	u32 in_mip,
-	VkPipelineStageFlags2 in_stage,
-	VkAccessFlags2 in_access,
-	VkImageLayout in_layout,
-	bool in_discard = false)
-{
-	return {
-		.image = in_image,
-		.range = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = in_mip,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
-		},
-		.stage = in_stage,
-		.access = in_access,
-		.layout = in_layout,
-		.discard = in_discard,
-	};
-}
-
-inline void tonemapping_begin_mip_render(
-	VulkanContext* ctx,
+inline void tonemapping_render_mip(
+	FrameRenderGraph& graph,
 	GpuImage** in_outputs,
 	u32 in_output_count,
 	u32 in_mip,
-	u32 in_width = 0,
-	u32 in_height = 0)
+	const std::function<void()>& in_callback)
 {
 	assert(in_output_count >= 1 && in_output_count <= 2);
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-	ImageUsage output_usages[2] = {};
-	VkRenderingAttachmentInfo attachments[2] = {};
+	FrameGraphColorAttachment attachments[2] = {};
 	for (u32 output_idx = 0; output_idx < in_output_count; ++output_idx)
 	{
-		output_usages[output_idx] = tonemapping_mip_usage(
-			in_outputs[output_idx],
-			in_mip,
-			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			true);
 		attachments[output_idx] = {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = tonemapping_mip_view(*in_outputs[output_idx], in_mip),
-			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.image = frame_graph_mip(*in_outputs[output_idx], in_mip),
 		};
 	}
-	gpu_image_apply_usages(command_buffer, output_usages, in_output_count);
-
-	const u32 width = in_width > 0
-		? in_width
-		: tonemapping_local_mip_extent(tonemapping_pass.local_base_width, in_mip);
-	const u32 height = in_height > 0
-		? in_height
-		: tonemapping_local_mip_extent(tonemapping_pass.local_base_height, in_mip);
-	VkRenderingInfo rendering_info = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-		.renderArea = {
-			.offset = {0, 0},
-			.extent = {width, height},
-		},
-		.layerCount = 1,
-		.colorAttachmentCount = in_output_count,
-		.pColorAttachments = attachments,
-	};
-	vkCmdBeginRendering(command_buffer, &rendering_info);
-
-	VkViewport viewport = {
-		.x = 0.0f,
-		.y = (f32)height,
-		.width = (f32)width,
-		.height = -(f32)height,
-		.minDepth = 0.0f,
-		.maxDepth = 1.0f,
-	};
-	VkRect2D scissor = {
-		.offset = {0, 0},
-		.extent = {width, height},
-	};
-	vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-	vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-}
-
-inline void tonemapping_end_mip_render(VulkanContext* ctx)
-{
-	vkCmdEndRendering(vulkan_current_command_buffer(ctx));
+	graph.render(attachments, in_output_count, in_callback);
 }
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
-inline void tonemapping_begin_debug_panel_render(
-	VulkanContext* ctx,
-	u32 in_layer)
+inline void tonemapping_render_debug_panel(
+	FrameRenderGraph& graph,
+	u32 in_layer,
+	const std::function<void()>& in_callback)
 {
 	assert(in_layer < tonemapping_pass.local_debug_panels.array_layers);
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-	ImageUsage output_usage = {
-		.image = &tonemapping_pass.local_debug_panels,
-		.range = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = in_layer,
-			.layerCount = 1,
-		},
-		.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		.discard = true,
+	FrameGraphColorAttachment attachment = {
+		.image = frame_graph_layer(tonemapping_pass.local_debug_panels, in_layer),
 	};
-	gpu_image_apply_usages(command_buffer, &output_usage, 1);
-	VkRenderingAttachmentInfo attachment = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = tonemapping_pass.local_debug_panels.layer_views[in_layer],
-		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-	};
-	VkRenderingInfo rendering_info = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-		.renderArea = {
-			.offset = {0, 0},
-			.extent = {
-				tonemapping_pass.local_debug_panel_width,
-				tonemapping_pass.local_debug_panel_height,
-			},
-		},
-		.layerCount = 1,
-		.colorAttachmentCount = 1,
-		.pColorAttachments = &attachment,
-	};
-	vkCmdBeginRendering(command_buffer, &rendering_info);
-	VkViewport viewport = {
-		.x = 0.0f,
-		.y = (f32)tonemapping_pass.local_debug_panel_height,
-		.width = (f32)tonemapping_pass.local_debug_panel_width,
-		.height = -(f32)tonemapping_pass.local_debug_panel_height,
-		.minDepth = 0.0f,
-		.maxDepth = 1.0f,
-	};
-	VkRect2D scissor = {
-		.offset = {0, 0},
-		.extent = {
-			tonemapping_pass.local_debug_panel_width,
-			tonemapping_pass.local_debug_panel_height,
-		},
-	};
-	vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-	vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+	graph.render(&attachment, 1, in_callback);
 }
 #endif
 
@@ -694,34 +574,62 @@ inline void tonemapping_draw_local_stage(
 
 void tonemapping_pass_update(
 	VulkanContext* ctx,
-	VkImageView in_scene_color_view,
-	VkImageView in_position_view,
-	VkImageView in_bloom_view,
+	FrameGraphImage in_scene_color,
+	FrameGraphImage in_position,
+	FrameGraphImage in_bloom,
 	f32 in_bloom_intensity,
 	VkSampler in_sampler,
 	VkBuffer in_auto_adaptation_state_buffer)
 {
-	tonemapping_pass.scene_color_view = in_scene_color_view;
-	tonemapping_pass.position_view = in_position_view;
+	tonemapping_pass.scene_color = in_scene_color;
+	tonemapping_pass.position = in_position;
+	tonemapping_pass.bloom = in_bloom;
+	tonemapping_pass.bloom_enabled = in_bloom_intensity > 0.0f;
+	tonemapping_pass.scene_color_view = in_scene_color.view();
+	tonemapping_pass.position_view = in_position.view();
 	tonemapping_pass.sampler = in_sampler;
 	tonemapping_pass.auto_adaptation_state_buffer = in_auto_adaptation_state_buffer;
 
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
 	DescriptorWriter writer = tonemapping_pass.final_descriptors.writer(ctx);
-	writer.sampled(0, in_sampler, in_scene_color_view)
-		.sampled(1, in_sampler, in_scene_color_view)
-		.sampled(2, in_sampler, in_scene_color_view)
+	writer.sampled(0, in_sampler, in_scene_color.view())
+		.sampled(1, in_sampler, in_scene_color.view())
+		.sampled(2, in_sampler, in_scene_color.view())
 		.sampled(3, in_sampler,
-			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view)
+			in_bloom_intensity > 0.0f ? in_bloom.view() : in_scene_color.view())
 		.sampled(4, in_sampler, tonemapping_pass.tonemapping_lut.view)
-		.sampled(5, tonemapping_pass.position_sampler, in_position_view)
+		.sampled(5, tonemapping_pass.position_sampler, in_position.view())
 		.buffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			in_auto_adaptation_state_buffer);
 	writer.commit();
 }
 
+void tonemapping_pass_declare_final_resources(
+	FrameRenderGraph& graph,
+	const State::TonemappingState& in_state)
+{
+	graph.sampled(tonemapping_pass.scene_color);
+	graph.sampled(tonemapping_pass.position);
+	graph.sampled(frame_graph_image(tonemapping_pass.tonemapping_lut));
+	if (tonemapping_pass.bloom_enabled)
+		graph.sampled(tonemapping_pass.bloom);
+	if (in_state.local_enabled)
+	{
+		const u32 mip = (u32)MAX(
+			tonemapping_pass.effective_reconstruction_mip - 1, 0);
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_exposure_pyramid, mip));
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_reconstruction_pyramid, mip));
+	}
+	graph.storage_read(frame_graph_buffer(
+			tonemapping_pass.auto_adaptation_state_buffer),
+		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+}
+
 void tonemapping_pass_prepare_local(
+	FrameRenderGraph& graph,
 	VulkanContext* ctx,
 	const State::TonemappingState& in_state)
 {
@@ -743,8 +651,6 @@ void tonemapping_pass_prepare_local(
 		(u32)MAX(tonemapping_pass.effective_reconstruction_mip - 1, 0);
 	const u32 coarsest_mip =
 		(u32)MAX(tonemapping_pass.effective_coarsest_mip - 1, 0);
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
 	// Half-resolution synthetic exposures and their well-exposedness weights.
 	{
 		CPU_TIMING_SCOPE("Tonemapping Local Proxy");
@@ -763,7 +669,6 @@ void tonemapping_pass_prepare_local(
 			&tonemapping_pass.local_exposure_pyramid,
 			&tonemapping_pass.local_weight_pyramid,
 		};
-		tonemapping_begin_mip_render(ctx, outputs, 2, 0);
 		TonemappingLocalProxyPushConstants constants = {
 			.source_pixel_size = HMM_V2(
 				0.5f / (f32)tonemapping_pass.local_base_width,
@@ -780,13 +685,17 @@ void tonemapping_pass_prepare_local(
 			.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
 				&& in_state.auto_white_balance_enabled ? 1 : 0,
 		};
-		tonemapping_draw_local_stage(
-			ctx,
-			tonemapping_pass.local_proxy_pipeline,
-			set,
-			&constants,
-			sizeof(constants));
-		tonemapping_end_mip_render(ctx);
+		graph.sampled(tonemapping_pass.scene_color);
+		graph.sampled(frame_graph_image(tonemapping_pass.tonemapping_lut));
+		graph.sampled(tonemapping_pass.position);
+		graph.storage_read(frame_graph_buffer(
+				tonemapping_pass.auto_adaptation_state_buffer),
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		tonemapping_render_mip(graph, outputs, 2, 0, [&]() {
+			tonemapping_draw_local_stage(
+				ctx, tonemapping_pass.local_proxy_pipeline, set,
+				&constants, sizeof(constants));
+		});
 
 		vulkan_end_debug_label(ctx);
 		gpu_timestamps_end_scope(ctx, timing_slot);
@@ -801,19 +710,13 @@ void tonemapping_pass_prepare_local(
 		vulkan_begin_debug_label(ctx, "Tonemapping Local Pyramid");
 		for (u32 mip = 1; mip <= coarsest_mip; ++mip)
 		{
-			ImageUsage input_usages[] = {
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_exposure_pyramid, mip - 1,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_weight_pyramid, mip - 1,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-			};
-			gpu_image_apply_usages(command_buffer, input_usages, 2);
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_exposure_pyramid, mip - 1));
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_weight_pyramid, mip - 1));
+			graph.storage_read(frame_graph_buffer(
+					tonemapping_pass.auto_adaptation_state_buffer),
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 
 			VkImageView views[] = {
 				tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, mip - 1),
@@ -824,7 +727,6 @@ void tonemapping_pass_prepare_local(
 				&tonemapping_pass.local_exposure_pyramid,
 				&tonemapping_pass.local_weight_pyramid,
 			};
-			tonemapping_begin_mip_render(ctx, outputs, 2, mip);
 			TonemappingLocalDownsamplePushConstants constants = {
 				.source_pixel_size = HMM_V2(
 					1.0f / (f32)tonemapping_local_mip_extent(
@@ -832,13 +734,11 @@ void tonemapping_pass_prepare_local(
 					1.0f / (f32)tonemapping_local_mip_extent(
 						tonemapping_pass.local_base_height, mip - 1)),
 			};
-			tonemapping_draw_local_stage(
-				ctx,
-				tonemapping_pass.local_downsample_pipeline,
-				set,
-				&constants,
-				sizeof(constants));
-			tonemapping_end_mip_render(ctx);
+			tonemapping_render_mip(graph, outputs, 2, mip, [&]() {
+				tonemapping_draw_local_stage(
+					ctx, tonemapping_pass.local_downsample_pipeline, set,
+					&constants, sizeof(constants));
+			});
 		}
 		vulkan_end_debug_label(ctx);
 		gpu_timestamps_end_scope(ctx, timing_slot);
@@ -850,19 +750,13 @@ void tonemapping_pass_prepare_local(
 		const i32 timing_slot =
 			gpu_timestamps_begin_scope(ctx, "Tonemapping Local Reconstruct");
 		vulkan_begin_debug_label(ctx, "Tonemapping Local Reconstruct");
-		ImageUsage coarse_inputs[] = {
-			tonemapping_mip_usage(
-				&tonemapping_pass.local_exposure_pyramid, coarsest_mip,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-			tonemapping_mip_usage(
-				&tonemapping_pass.local_weight_pyramid, coarsest_mip,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-		};
-		gpu_image_apply_usages(command_buffer, coarse_inputs, 2);
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_exposure_pyramid, coarsest_mip));
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_weight_pyramid, coarsest_mip));
+		graph.storage_read(frame_graph_buffer(
+			tonemapping_pass.auto_adaptation_state_buffer),
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 
 		VkImageView coarse_views[] = {
 			tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, coarsest_mip),
@@ -873,40 +767,28 @@ void tonemapping_pass_prepare_local(
 		GpuImage* reconstruction_output[] = {
 			&tonemapping_pass.local_reconstruction_pyramid,
 		};
-		tonemapping_begin_mip_render(
-			ctx, reconstruction_output, 1, coarsest_mip);
-		tonemapping_draw_local_stage(
-			ctx, tonemapping_pass.local_blend_pipeline, coarse_set);
-		tonemapping_end_mip_render(ctx);
+		tonemapping_render_mip(
+			graph, reconstruction_output, 1, coarsest_mip, [&]() {
+				tonemapping_draw_local_stage(
+					ctx, tonemapping_pass.local_blend_pipeline, coarse_set);
+			});
 
 		for (u32 coarse_mip = coarsest_mip;
 			coarse_mip > reconstruction_mip;
 			--coarse_mip)
 		{
 			const u32 fine_mip = coarse_mip - 1;
-			ImageUsage reconstruct_inputs[] = {
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_exposure_pyramid, fine_mip,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_weight_pyramid, fine_mip,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_exposure_pyramid, coarse_mip,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				tonemapping_mip_usage(
-					&tonemapping_pass.local_reconstruction_pyramid, coarse_mip,
-					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-					VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-			};
-			gpu_image_apply_usages(command_buffer, reconstruct_inputs, 4);
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_exposure_pyramid, fine_mip));
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_weight_pyramid, fine_mip));
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_exposure_pyramid, coarse_mip));
+			graph.sampled(frame_graph_mip(
+				tonemapping_pass.local_reconstruction_pyramid, coarse_mip));
+			graph.storage_read(frame_graph_buffer(
+				tonemapping_pass.auto_adaptation_state_buffer),
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 
 			VkImageView reconstruct_views[] = {
 				tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, fine_mip),
@@ -916,38 +798,26 @@ void tonemapping_pass_prepare_local(
 			};
 			VkDescriptorSet reconstruct_set =
 				tonemapping_local_descriptor_set(ctx, reconstruct_views, 4);
-			tonemapping_begin_mip_render(
-				ctx, reconstruction_output, 1, fine_mip);
 			TonemappingLocalReconstructPushConstants constants = {
 				.boost_local_contrast =
 					in_state.local_contrast_boost ? 1 : 0,
 			};
-			tonemapping_draw_local_stage(
-				ctx,
-				tonemapping_pass.local_reconstruct_pipeline,
-				reconstruct_set,
-				&constants,
-				sizeof(constants));
-			tonemapping_end_mip_render(ctx);
+			tonemapping_render_mip(
+				graph, reconstruction_output, 1, fine_mip, [&]() {
+					tonemapping_draw_local_stage(
+						ctx, tonemapping_pass.local_reconstruct_pipeline,
+						reconstruct_set, &constants, sizeof(constants));
+				});
 		}
 
 		vulkan_end_debug_label(ctx);
 		gpu_timestamps_end_scope(ctx, timing_slot);
 	}
 
-	ImageUsage final_inputs[] = {
-		tonemapping_mip_usage(
-			&tonemapping_pass.local_exposure_pyramid, reconstruction_mip,
-			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-		tonemapping_mip_usage(
-			&tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip,
-			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-	};
-	gpu_image_apply_usages(command_buffer, final_inputs, 2);
+	graph.sampled(frame_graph_mip(
+		tonemapping_pass.local_exposure_pyramid, reconstruction_mip));
+	graph.sampled(frame_graph_mip(
+		tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip));
 
 	DescriptorWriter final_writer = tonemapping_pass.final_descriptors.writer(ctx);
 	final_writer.sampled(1, tonemapping_pass.sampler,
@@ -961,6 +831,7 @@ void tonemapping_pass_prepare_local(
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 void tonemapping_pass_prepare_local_debug(
+	FrameRenderGraph& graph,
 	VulkanContext* ctx,
 	const State::TonemappingState& in_state,
 	i32 in_selected_full_mip)
@@ -974,8 +845,6 @@ void tonemapping_pass_prepare_local_debug(
 		in_selected_full_mip - 1,
 		(i32)reconstruction_mip,
 		(i32)coarsest_mip);
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
 	CPU_TIMING_SCOPE("Tonemapping Local Debug");
 	const i32 timing_slot =
 		gpu_timestamps_begin_scope(ctx, "Tonemapping Local Debug");
@@ -983,19 +852,13 @@ void tonemapping_pass_prepare_local_debug(
 
 	if (selected_mip < coarsest_mip)
 	{
-		ImageUsage laplacian_inputs[] = {
-			tonemapping_mip_usage(
-				&tonemapping_pass.local_exposure_pyramid, selected_mip,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-			tonemapping_mip_usage(
-				&tonemapping_pass.local_exposure_pyramid, selected_mip + 1,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-		};
-		gpu_image_apply_usages(command_buffer, laplacian_inputs, 2);
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_exposure_pyramid, selected_mip));
+		graph.sampled(frame_graph_mip(
+			tonemapping_pass.local_exposure_pyramid, selected_mip + 1));
+		graph.storage_read(frame_graph_buffer(
+			tonemapping_pass.auto_adaptation_state_buffer),
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 		VkImageView laplacian_views[] = {
 			tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, selected_mip),
 			tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, selected_mip + 1),
@@ -1005,27 +868,24 @@ void tonemapping_pass_prepare_local_debug(
 		GpuImage* laplacian_output[] = {
 			&tonemapping_pass.local_debug_laplacian_pyramid,
 		};
-		tonemapping_begin_mip_render(ctx, laplacian_output, 1, selected_mip);
-		tonemapping_draw_local_stage(
-			ctx,
-			tonemapping_pass.local_debug_laplacian_pipeline,
-			laplacian_set);
-		tonemapping_end_mip_render(ctx);
+		tonemapping_render_mip(
+			graph, laplacian_output, 1, selected_mip, [&]() {
+				tonemapping_draw_local_stage(
+					ctx, tonemapping_pass.local_debug_laplacian_pipeline,
+					laplacian_set);
+			});
 	}
 
-	ImageUsage guided_inputs[] = {
-		tonemapping_mip_usage(
-			&tonemapping_pass.local_exposure_pyramid, reconstruction_mip,
-			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-		tonemapping_mip_usage(
-			&tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip,
-			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-	};
-	gpu_image_apply_usages(command_buffer, guided_inputs, 2);
+	graph.sampled(tonemapping_pass.scene_color);
+	graph.sampled(frame_graph_mip(
+		tonemapping_pass.local_exposure_pyramid, reconstruction_mip));
+	graph.sampled(frame_graph_mip(
+		tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip));
+	graph.sampled(frame_graph_image(tonemapping_pass.tonemapping_lut));
+	graph.sampled(tonemapping_pass.position);
+	graph.storage_read(frame_graph_buffer(
+		tonemapping_pass.auto_adaptation_state_buffer),
+		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 	VkImageView guided_views[] = {
 		tonemapping_pass.scene_color_view,
 		tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, reconstruction_mip),
@@ -1039,13 +899,6 @@ void tonemapping_pass_prepare_local_debug(
 	GpuImage* guided_output[] = {
 		&tonemapping_pass.local_debug_guided,
 	};
-	tonemapping_begin_mip_render(
-		ctx,
-		guided_output,
-		1,
-		0,
-		tonemapping_pass.local_source_width,
-		tonemapping_pass.local_source_height);
 	const u32 guide_width = tonemapping_local_mip_extent(
 		tonemapping_pass.local_base_width, reconstruction_mip);
 	const u32 guide_height = tonemapping_local_mip_extent(
@@ -1066,99 +919,66 @@ void tonemapping_pass_prepare_local_debug(
 			in_state.local_shadow_recovery,
 			in_state.local_highlight_recovery),
 	};
-	tonemapping_draw_local_stage(
-		ctx,
-		tonemapping_pass.local_debug_guided_pipeline,
-		guided_set,
-		&constants,
-		sizeof(constants));
-	tonemapping_end_mip_render(ctx);
+	tonemapping_render_mip(graph, guided_output, 1, 0, [&]() {
+		tonemapping_draw_local_stage(
+			ctx, tonemapping_pass.local_debug_guided_pipeline, guided_set,
+			&constants, sizeof(constants));
+	});
 
-	DynamicArray<ImageUsage> packed_debug_outputs;
-	if (selected_mip < coarsest_mip)
+	const auto draw_channel = [&](u32 in_panel, FrameGraphImage in_source, i32 in_channel)
 	{
-		packed_debug_outputs.add(tonemapping_mip_usage(
-			&tonemapping_pass.local_debug_laplacian_pyramid, selected_mip,
-			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-	}
-	packed_debug_outputs.add(tonemapping_mip_usage(
-		&tonemapping_pass.local_debug_guided, 0,
-		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-		VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-	gpu_image_apply_usages(
-		command_buffer,
-		packed_debug_outputs.data(),
-		(u32)packed_debug_outputs.length());
-
-	const auto draw_channel = [&](u32 in_panel, VkImageView in_source, i32 in_channel)
-	{
-		VkImageView views[] = { in_source };
+		graph.sampled(in_source);
+		graph.storage_read(frame_graph_buffer(
+				tonemapping_pass.auto_adaptation_state_buffer),
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		VkImageView views[] = { in_source.view() };
 		VkDescriptorSet set = tonemapping_local_descriptor_set(ctx, views, 1);
-		tonemapping_begin_debug_panel_render(ctx, in_panel);
 		TonemappingLocalDebugChannelPushConstants channel_constants = {
 			.channel = in_channel,
 		};
-		tonemapping_draw_local_stage(
-			ctx,
-			tonemapping_pass.local_debug_channel_pipeline,
-			set,
-			&channel_constants,
-			sizeof(channel_constants));
-		tonemapping_end_mip_render(ctx);
+		tonemapping_render_debug_panel(graph, in_panel, [&]() {
+			tonemapping_draw_local_stage(
+				ctx, tonemapping_pass.local_debug_channel_pipeline, set,
+				&channel_constants, sizeof(channel_constants));
+		});
 	};
-	const VkImageView selected_exposure = tonemapping_mip_view(
+	const FrameGraphImage selected_exposure = frame_graph_mip(
 		tonemapping_pass.local_exposure_pyramid, selected_mip);
-	const VkImageView selected_weight = tonemapping_mip_view(
+	const FrameGraphImage selected_weight = frame_graph_mip(
 		tonemapping_pass.local_weight_pyramid, selected_mip);
-	const VkImageView selected_laplacian = selected_mip < coarsest_mip
-		? tonemapping_mip_view(
+	const FrameGraphImage selected_laplacian = selected_mip < coarsest_mip
+		? frame_graph_mip(
 			tonemapping_pass.local_debug_laplacian_pyramid, selected_mip)
-		: VK_NULL_HANDLE;
-	const VkImageView transfer_guide = tonemapping_mip_view(
+		: FrameGraphImage {};
+	const FrameGraphImage transfer_guide = frame_graph_mip(
 		tonemapping_pass.local_exposure_pyramid, reconstruction_mip);
 	for (i32 channel = 0; channel < 3; ++channel)
 	{
 		draw_channel((u32)channel, selected_exposure, channel);
 		draw_channel((u32)(3 + channel), selected_weight, channel);
-		if (selected_laplacian != VK_NULL_HANDLE)
+		if (selected_laplacian)
 		{
 			draw_channel((u32)(6 + channel), selected_laplacian, channel);
 		}
 		draw_channel(
 			(u32)(10 + channel),
-			tonemapping_pass.local_debug_guided.view,
+			frame_graph_image(tonemapping_pass.local_debug_guided),
 			channel);
 	}
 	draw_channel(9, transfer_guide, 1);
 	draw_channel(13, selected_exposure, 3);
-	draw_channel(14, tonemapping_pass.local_debug_guided.view, 3);
+	draw_channel(14, frame_graph_image(tonemapping_pass.local_debug_guided), 3);
 
-	DynamicArray<ImageUsage> panel_outputs;
 	for (u32 layer = 0; layer < TONEMAPPING_DEBUG_PANEL_COUNT; ++layer)
 	{
 		if (selected_mip == coarsest_mip && layer >= 6 && layer <= 8)
 		{
 			continue;
 		}
-		panel_outputs.add({
-			.image = &tonemapping_pass.local_debug_panels,
-			.range = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel = 0,
-				.levelCount = 1,
-				.baseArrayLayer = layer,
-				.layerCount = 1,
-			},
-			.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		});
+		graph.sampled(frame_graph_layer(
+			tonemapping_pass.local_debug_panels, layer));
 	}
-	gpu_image_apply_usages(
-		command_buffer, panel_outputs.data(), (u32)panel_outputs.length());
+	graph.apply();
 
 	TonemappingDebugViewData& debug = tonemapping_pass.debug_view_data;
 	debug = {};

@@ -6,6 +6,7 @@
 #include "core/timings.h"
 #include "render/auto_adaptation_math.h"
 #include "render/bruneton_atmosphere_pass.h"
+#include "render/frame_render_graph.h"
 #include "render/fullscreen_pipeline.h"
 #include "render/gpu_buffer.h"
 #include "render/gpu_image.h"
@@ -286,9 +287,10 @@ namespace AutoAdaptationPass
 	}
 
 	inline void meter(
+		FrameRenderGraph& graph,
 		VulkanContext* ctx,
-		GpuImage& scene_color,
-		GpuImage& position,
+		FrameGraphImage scene_color,
+		FrameGraphImage position,
 		const State::TonemappingState& state,
 		SolarGuardPushConstants solar_constants)
 	{
@@ -302,95 +304,40 @@ namespace AutoAdaptationPass
 		VkBuffer histogram = pass.histogram.get_gpu_buffer();
 		VkBuffer measurement = pass.measurement.get_gpu_buffer();
 
-		PassResourceUsage clear_usage;
-		clear_usage.buffers.add({
-			.buffer = histogram,
-			.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-			.access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		graph.transfer_destination(frame_graph_buffer(histogram));
+		graph.transfer([&]() {
+			vkCmdFillBuffer(command_buffer, histogram, 0, VK_WHOLE_SIZE, 0);
 		});
-		vulkan_apply_pass_resource_usage(ctx, clear_usage);
-		vkCmdFillBuffer(command_buffer, histogram, 0, VK_WHOLE_SIZE, 0);
 
-		PassResourceUsage histogram_usage;
-		histogram_usage.images.add({
-			.image = &scene_color,
-			.range = {
-				.aspectMask = scene_color.aspects,
-				.baseMipLevel = 0,
-				.levelCount = scene_color.mip_levels,
-				.baseArrayLayer = 0,
-				.layerCount = scene_color.array_layers,
-			},
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		});
-		histogram_usage.buffers.add({
-			.buffer = histogram,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		});
-		vulkan_apply_pass_resource_usage(ctx, histogram_usage);
 		DescriptorWriter histogram_writer = pass.histogram_pipeline.writer(ctx);
-		histogram_writer.sampled(0, pass.sampler, scene_color.view)
+		histogram_writer.sampled(0, pass.sampler, scene_color.view())
 			.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, histogram)
 			.commit();
-		pass.histogram_pipeline.bind_and_dispatch(
-			ctx, histogram_writer.set, 16, 9, 1);
+		graph.sampled(scene_color, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.storage_read_write(frame_graph_buffer(histogram));
+		graph.compute([&]() {
+			pass.histogram_pipeline.bind_and_dispatch(
+				ctx, histogram_writer.set, 16, 9, 1);
+		});
 
-		PassResourceUsage reduce_usage;
-		reduce_usage.buffers.add({
-			.buffer = histogram,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-		});
-		reduce_usage.buffers.add({
-			.buffer = measurement,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		});
-		vulkan_apply_pass_resource_usage(ctx, reduce_usage);
 		VkDescriptorSet reduce_set = allocate_buffer_set(
 			ctx, pass.reduce_pipeline.effect, histogram, measurement);
 		ReducePushConstants reduce_constants = {
 			.auto_exposure_min_ev = CLAMP(state.auto_exposure_min_ev, -16.0f, 16.0f),
 			.auto_exposure_max_ev = CLAMP(state.auto_exposure_max_ev, -16.0f, 16.0f),
 		};
-		pass.reduce_pipeline.bind_and_dispatch(
-			ctx, reduce_set, reduce_constants, 1, 1, 1);
-
-		PassResourceUsage solar_usage;
-		solar_usage.images.add({
-			.image = &position,
-			.range = { .aspectMask = position.aspects, .baseMipLevel = 0,
-				.levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		graph.storage_read(frame_graph_buffer(histogram));
+		graph.storage_write(frame_graph_buffer(measurement));
+		graph.compute([&]() {
+			pass.reduce_pipeline.bind_and_dispatch(
+				ctx, reduce_set, reduce_constants, 1, 1, 1);
 		});
+
 		GpuImage& transmittance =
 			bruneton_atmosphere_pass.transmittance_pass.get_color_output(0);
-		solar_usage.images.add({
-			.image = &transmittance,
-			.range = { .aspectMask = transmittance.aspects, .baseMipLevel = 0,
-				.levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		});
-		solar_usage.buffers.add({ .buffer = measurement,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-				| VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT });
-		solar_usage.buffers.add({
-			.buffer = bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index]
-				.get_gpu_buffer(),
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_UNIFORM_READ_BIT });
-		vulkan_apply_pass_resource_usage(ctx, solar_usage);
 		DescriptorWriter solar_writer = pass.solar_guard_pipeline.writer(ctx);
 		solar_writer.buffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, measurement)
-			.sampled(1, pass.nearest_sampler, position.view)
+			.sampled(1, pass.nearest_sampler, position.view())
 			.buffer(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index]
 					.get_gpu_buffer(), sizeof(BrunetonAtmosphereGpu))
@@ -400,8 +347,17 @@ namespace AutoAdaptationPass
 			(f32)position.extent.width, (f32)position.extent.height,
 			reduce_constants.auto_exposure_min_ev,
 			reduce_constants.auto_exposure_max_ev);
-		pass.solar_guard_pipeline.bind_and_dispatch(
-			ctx, solar_writer.set, solar_constants, 1, 1, 1);
+		graph.sampled(position, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.sampled(frame_graph_image(transmittance),
+			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.storage_read_write(frame_graph_buffer(measurement));
+		graph.uniform(frame_graph_buffer(
+			bruneton_atmosphere_pass.parameter_buffers[ctx->frame_index]
+				.get_gpu_buffer()), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.compute([&]() {
+			pass.solar_guard_pipeline.bind_and_dispatch(
+				ctx, solar_writer.set, solar_constants, 1, 1, 1);
+		});
 
 		pass.metered_this_frame = true;
 		vulkan_end_debug_label(ctx);
@@ -409,6 +365,7 @@ namespace AutoAdaptationPass
 	}
 
 	inline void update_after_tonemapping(
+		FrameRenderGraph& graph,
 		VulkanContext* ctx,
 		State::TonemappingState& state,
 		f32 delta_time)
@@ -421,18 +378,6 @@ namespace AutoAdaptationPass
 		VkBuffer measurement = pass.measurement.get_gpu_buffer();
 		VkBuffer state_buffer_handle = pass.state.get_gpu_buffer();
 
-		PassResourceUsage update_usage;
-		update_usage.buffers.add({
-			.buffer = measurement,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-		});
-		update_usage.buffers.add({
-			.buffer = state_buffer_handle,
-			.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		});
-		vulkan_apply_pass_resource_usage(ctx, update_usage);
 		VkDescriptorSet update_set = allocate_buffer_set(
 			ctx, pass.update_pipeline.effect, measurement, state_buffer_handle);
 		UpdatePushConstants constants = {
@@ -451,41 +396,26 @@ namespace AutoAdaptationPass
 			.auto_white_balance_strength = CLAMP(
 				state.auto_white_balance_strength, 0.0f, 1.0f),
 		};
-		pass.update_pipeline.bind_and_dispatch(
-			ctx, update_set, constants, 1, 1, 1);
+		graph.storage_read(frame_graph_buffer(measurement));
+		graph.storage_read_write(frame_graph_buffer(state_buffer_handle));
+		graph.compute([&]() {
+			pass.update_pipeline.bind_and_dispatch(
+				ctx, update_set, constants, 1, 1, 1);
+		});
 		pass.pending_reset_mask = 0;
 
 		const u32 frame = ctx->frame_index;
 		VkBuffer readback = pass.diagnostic_readback[frame].get_gpu_buffer();
-		PassResourceUsage copy_usage;
-		copy_usage.buffers.add({
-			.buffer = state_buffer_handle,
-			.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			.access = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-		});
-		copy_usage.buffers.add({
-			.buffer = readback,
-			.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-			.access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-		});
-		vulkan_apply_pass_resource_usage(ctx, copy_usage);
 		VkBufferCopy copy = { .size = sizeof(StateBufferData) };
-		vkCmdCopyBuffer(command_buffer, state_buffer_handle, readback, 1, &copy);
+		graph.transfer_source(frame_graph_buffer(state_buffer_handle));
+		graph.transfer_destination(frame_graph_buffer(readback));
+		graph.transfer([&]() {
+			vkCmdCopyBuffer(command_buffer, state_buffer_handle, readback, 1, &copy);
+		});
 		pass.readback_pending[frame] = true;
 		pass.metered_this_frame = false;
 		vulkan_end_debug_label(ctx);
 		gpu_timestamps_end_scope(ctx, timing_slot);
-	}
-
-	inline void mark_state_for_fragment_read(VulkanContext* ctx)
-	{
-		PassResourceUsage usage;
-		usage.buffers.add({
-			.buffer = state_buffer(),
-			.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-			.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-		});
-		vulkan_apply_pass_resource_usage(ctx, usage);
 	}
 
 	inline void shutdown(VulkanContext* ctx)

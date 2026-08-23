@@ -468,6 +468,7 @@ namespace RenderSystem
 		}
 		ImGuiLayer::draw_controls(in_state, g_gi_scene);
 		AutoAdaptationPass::prepare_frame(in_state);
+		FrameRenderGraph graph(&in_state.vk);
 		
 			// View + Projection matrix setup (TAA jitters the projection; the
 			// unjittered previous VP is not kept, so reprojection uses the jittered
@@ -497,13 +498,13 @@ namespace RenderSystem
 
 			// Resolve/update the active atmosphere before any lighting, fog, probe,
 			// or exposure descriptors consume this frame's parameters.
-			sky_pass_update_atmosphere(&in_state.vk, in_state);
+			sky_pass_update_atmosphere(graph, &in_state.vk, in_state);
 		
 			// Deform source vertices first, then plan/emit tessellation. GI captures
 			// and all raster passes below consume the resulting MeshRenderView.
-			GpuSkinning::update(&in_state.vk, in_state,
+			GpuSkinning::update(graph, &in_state.vk, in_state,
 				in_state.tessellation.enabled || in_state.wireframe.shaded_wireframe);
-			Tessellation::update(&in_state.vk, in_state, camera, fov);
+			Tessellation::update(graph, &in_state.vk, in_state, camera, fov);
 		
 			// Per-frame UBO sun data serves shadow/fog compatibility. The direct sky
 			// uses its selected atmosphere controller, while geometry lighting comes
@@ -563,6 +564,7 @@ namespace RenderSystem
 					.light.sun.cast_shadows;
 			const bool cloud_shadow_lighting_active = cloud_shadow_render_active
 				&& in_state.clouds.shadow_lighting_enabled;
+			VkBuffer cloud_params_buffer = VK_NULL_HANDLE;
 			if (cloud_render_active)
 			{
 				Object& cloud_controller =
@@ -578,12 +580,12 @@ namespace RenderSystem
 					in_state.clouds.history_reset_requested = false;
 				}
 				CloudPass::generate_caches(
-					&in_state.vk, cloud_system.seed, cloud_system.layer_count);
+					graph, &in_state.vk, cloud_system.seed, cloud_system.layer_count);
 				in_state.clouds.elapsed_time_seconds += MAX(in_delta_time, 0.0f);
 				CloudGpuParams cloud_params = CloudPass::build_params(
 					in_state, cloud_controller, view_projection_matrix,
 					camera.location, camera.forward, in_delta_time);
-				VkBuffer cloud_params_buffer = CloudPass::pass.params.update(&in_state.vk, cloud_params);
+				cloud_params_buffer = CloudPass::pass.params.update(&in_state.vk, cloud_params);
 				CloudPass::write_sampled_set(&in_state.vk,
 					CloudPass::pass.raymarch_sets.current(&in_state.vk), cloud_params_buffer,
 					CloudPass::pass.base_shape.view, CloudPass::pass.repeat_sampler,
@@ -613,7 +615,7 @@ namespace RenderSystem
 			{
 				CloudPass::pass.history_valid = false;
 			}
-			CloudPass::initialize_shadow(&in_state.vk,
+			CloudPass::initialize_shadow(graph, &in_state.vk,
 				cloud_shadow_render_pass.get_color_output(0));
 			FrameGraphImage pre_fog_scene_color = frame_graph_select(cloud_render_active,
 				frame_graph_color(cloud_composite_render_pass),
@@ -760,9 +762,9 @@ namespace RenderSystem
 				: 0.0f;
 			tonemapping_pass_update(
 				&in_state.vk,
-				pre_tonemap_scene_color.view(),
-				geometry_render_pass.get_color_output(1).view,
-				BloomPass::mip_view(0),
+				pre_tonemap_scene_color,
+				frame_graph_color(geometry_render_pass, 1),
+				frame_graph_mip(BloomPass::get_pyramid(), 0),
 				bloom_intensity,
 				frame_data.linear_sampler,
 				AutoAdaptationPass::state_buffer());
@@ -780,8 +782,8 @@ namespace RenderSystem
 			FrameGraphImage presentation_input = show_cloud_shadow_fullscreen
 				? frame_graph_color(cloud_shadow_render_pass)
 				: in_state.images.enable_debug_fullscreen && in_state.images.items.length() > 0
-					? FrameGraphImage { .image = &in_state.images.items[CLAMP(
-						in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)] }
+					? frame_graph_image(in_state.images.items[CLAMP(
+						in_state.images.debug_index, 0, (i32) in_state.images.items.length() - 1)])
 					: frame_graph_select(fxaa_active, frame_graph_color(fxaa_render_pass),
 						frame_graph_color(tonemapping_render_pass));
 			copy_to_swapchain_pass_update_presentation_input(
@@ -793,7 +795,7 @@ namespace RenderSystem
 			// atmosphere update, before the main pass chain samples the probe atlas.
 			{
 				CPU_TIMING_SCOPE("GI Scene Update");
-				gi_scene_update(&in_state.vk, g_gi_scene, in_state);
+				gi_scene_update(graph, &in_state.vk, g_gi_scene, in_state);
 			}
 		
 			// Cascade matrices are CPU-side inputs to both the shadow draw and the
@@ -955,8 +957,6 @@ namespace RenderSystem
 				);
 			}
 		
-			FrameRenderGraph graph(&in_state.vk);
-
 			// Shadow cascades: one moments slice per active cascade. Skipped entirely
 			// without a valid shadow sun; under depth_freeze the stale map remains a
 			// persistent graph resource sampled with its frozen matrices.
@@ -1069,14 +1069,9 @@ namespace RenderSystem
 			// surfaces receive this frame's cloud transmittance.
 			if (cloud_shadow_render_active)
 			{
-				graph.sampled(frame_graph_color(geometry_render_pass, 1));
-				graph.execute(cloud_shadow_render_pass, [&](i32)
-				{
-					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.shadow_pipeline,
-						CloudPass::pass.basic_pipeline_layout,
-						CloudPass::pass.shadow_sets.current(&in_state.vk), false);
-				});
-				CloudPass::pass.shadow_update_count += 1;
+				CloudPass::record_shadow_subgraph(
+					graph, &in_state.vk, cloud_shadow_render_pass,
+					frame_graph_color(geometry_render_pass, 1), cloud_params_buffer);
 			}
 		
 			for (i32 output_index = 0; output_index < geometry_render_pass.desc.num_outputs; ++output_index)
@@ -1097,36 +1092,13 @@ namespace RenderSystem
 			{
 				const i32 cloud_timing = gpu_timestamps_begin_scope(&in_state.vk, "Cloud System");
 				vulkan_begin_debug_label(&in_state.vk, "Cloud System");
-				graph.sampled(frame_graph_color(geometry_render_pass, 1));
-				graph.execute(cloud_raymarch_render_pass, [&](i32)
-				{
-					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.raymarch_pipeline,
-						CloudPass::pass.atmosphere_pipeline_layout,
-						CloudPass::pass.raymarch_sets.current(&in_state.vk), true);
-				});
 				RenderPass& cloud_history_target = get_cloud_history_pass(cloud_history_output_index);
-				graph.sampled(frame_graph_color(cloud_raymarch_render_pass, 0));
-				graph.sampled(frame_graph_color(cloud_raymarch_render_pass, 1));
-				graph.sampled(frame_graph_color(
-					get_cloud_history_pass(cloud_history_previous_index), 0));
-				graph.sampled(frame_graph_color(
-					get_cloud_history_pass(cloud_history_previous_index), 1));
-				graph.execute(cloud_history_target, [&](i32)
-				{
-					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.temporal_pipeline,
-						CloudPass::pass.basic_pipeline_layout,
-						CloudPass::pass.temporal_sets.current(&in_state.vk), false);
-				});
-				graph.sampled(frame_graph_color(lighting_render_pass));
-				graph.sampled(frame_graph_color(geometry_render_pass, 1));
-				graph.sampled(frame_graph_color(cloud_history_target, 0));
-				graph.sampled(frame_graph_color(cloud_history_target, 1));
-				graph.execute(cloud_composite_render_pass, [&](i32)
-				{
-					CloudPass::bind_and_draw(&in_state.vk, CloudPass::pass.composite_pipeline,
-						CloudPass::pass.atmosphere_pipeline_layout,
-						CloudPass::pass.composite_sets.current(&in_state.vk), true);
-				});
+				CloudPass::record_main_subgraph(
+					graph, &in_state.vk, cloud_raymarch_render_pass,
+					get_cloud_history_pass(cloud_history_previous_index),
+					cloud_history_target, lighting_render_pass,
+					frame_graph_color(geometry_render_pass, 1),
+					cloud_composite_render_pass, cloud_params_buffer);
 				CloudPass::pass.history_valid = true;
 				CloudPass::pass.history_index = cloud_history_previous_index;
 				gpu_timestamps_end_scope(&in_state.vk, cloud_timing);
@@ -1218,13 +1190,10 @@ namespace RenderSystem
 					sky_pass.active_sun_tint,
 					sky_pass.active_sun_irradiance_w_m2);
 			}
-			graph.make_sampled(pre_tonemap_scene_color);
-			graph.make_sampled(frame_graph_color(geometry_render_pass, 1));
 			AutoAdaptationPass::meter(
-				&in_state.vk, *pre_tonemap_scene_color.image,
-				geometry_render_pass.get_color_output(1),
+				graph, &in_state.vk, pre_tonemap_scene_color,
+				frame_graph_color(geometry_render_pass, 1),
 				in_state.tonemapping, solar_guard);
-			AutoAdaptationPass::mark_state_for_fragment_read(&in_state.vk);
 
 			// Bloom reconstructs an exposure-aware HDR pyramid after the temporal
 			// resolve. Local tonemapping still derives its guide from the original
@@ -1232,8 +1201,8 @@ namespace RenderSystem
 			if (bloom_active)
 			{
 				BloomPass::execute(
-					&in_state.vk,
-					pre_tonemap_scene_color.view(),
+					graph, &in_state.vk,
+					pre_tonemap_scene_color,
 					in_state.bloom,
 					in_state.tonemapping,
 					AutoAdaptationPass::state_buffer());
@@ -1241,19 +1210,19 @@ namespace RenderSystem
 		
 			if (in_state.tonemapping.local_enabled)
 			{
-				tonemapping_pass_prepare_local(&in_state.vk, in_state.tonemapping);
+				tonemapping_pass_prepare_local(
+					graph, &in_state.vk, in_state.tonemapping);
 			#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 				if (in_state.debug_ui.show_local_tonemapping_debug)
 				{
 					tonemapping_pass_prepare_local_debug(
-						&in_state.vk,
+						graph, &in_state.vk,
 						in_state.tonemapping,
 						in_state.debug_ui.local_tonemapping_debug_mip);
 				}
 			#endif
 			}
-			graph.sampled(pre_tonemap_scene_color);
-			graph.sampled(frame_graph_color(geometry_render_pass, 1));
+			tonemapping_pass_declare_final_resources(graph, in_state.tonemapping);
 			graph.execute(tonemapping_render_pass, [&](i32)
 			{
 				tonemapping_pass_draw(
@@ -1264,7 +1233,7 @@ namespace RenderSystem
 					in_state.bloom.auto_exposure_influence);
 			});
 			AutoAdaptationPass::update_after_tonemapping(
-				&in_state.vk, in_state.tonemapping, in_delta_time);
+				graph, &in_state.vk, in_state.tonemapping, in_delta_time);
 		
 			// FXAA filters at render resolution. Presentation composite performs the
 			// one upscale and places UI into the same normalized float target.

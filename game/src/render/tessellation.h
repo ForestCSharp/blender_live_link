@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "core/timings.h"
+#include "render/frame_render_graph.h"
 #include "render/fullscreen_pipeline.h"
 #include "state/state.h"
 
@@ -115,24 +116,6 @@ namespace Tessellation
 		}
 		writer.commit();
 		effect.bind(ctx, writer.set);
-	}
-
-	inline void compute_barrier(VulkanContext* ctx, VkPipelineStageFlags2 dst_stages,
-		VkAccessFlags2 dst_access)
-	{
-		VkMemoryBarrier2 barrier = {
-			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-			.dstStageMask = dst_stages,
-			.dstAccessMask = dst_access,
-		};
-		VkDependencyInfo info = {
-			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-			.memoryBarrierCount = 1,
-			.pMemoryBarriers = &barrier,
-		};
-		vkCmdPipelineBarrier2(vulkan_current_command_buffer(ctx), &info);
 	}
 
 	inline void cleanup_slot(TessellatedGeometry::GpuSlot& slot)
@@ -267,7 +250,8 @@ namespace Tessellation
 		return TessellatedGeometry::GPU_SLOT_COUNT;
 	}
 
-	inline bool prepare_mesh(VulkanContext* ctx, State& state, Object& object, const Camera& camera, f32 fov)
+	inline bool prepare_mesh(FrameRenderGraph& graph, VulkanContext* ctx,
+		State& state, Object& object, const Camera& camera, f32 fov)
 	{
 		Mesh& mesh = object.mesh;
 		TessellatedGeometry& tessellated = mesh.tessellated_geometry;
@@ -315,50 +299,94 @@ namespace Tessellation
 		slot.readback_requested = false; slot.has_counts = false; slot.counters = {};
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-		{ VkBuffer buffers[] = { slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, clear_counters, buffers, 1); clear_counters.dispatch(ctx, 1, 1, 1); }
-		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		const VkBuffer source_vertex_buffer = source_vertices(mesh);
+		const VkBuffer source_index_buffer = mesh.index_buffer.get_gpu_buffer();
+		const VkBuffer counters_buffer = slot.counters_buffer.get_gpu_buffer();
+		const VkBuffer patch_buffer = slot.patch_buffer.get_gpu_buffer();
+		const VkBuffer vertex_buffer = slot.vertex_buffer.get_gpu_buffer();
+		const VkBuffer index_buffer = slot.index_buffer.get_gpu_buffer();
+		const VkBuffer wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer();
+
+		graph.storage_write(frame_graph_buffer(counters_buffer));
+		graph.compute([&]() {
+			VkBuffer buffers[] = { counters_buffer };
+			bind_set(ctx, clear_counters, buffers, 1);
+			clear_counters.dispatch(ctx, 1, 1, 1);
+		});
 
 		if (state.tessellation.mode == ETessellationMode::AdaptiveAngularPerMesh)
 		{
-			for (u32 base = 0; base < triangle_count; base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
+			graph.storage_read(frame_graph_buffer(source_vertex_buffer));
+			graph.storage_read(frame_graph_buffer(source_index_buffer));
+			graph.storage_read_write(frame_graph_buffer(counters_buffer));
+			graph.compute([&]() {
+				for (u32 base = 0; base < triangle_count;
+					base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
+				{
+					PlanParams params = make_plan_params(
+						state, object, camera, fov, slot, triangle_count, base);
+					VkBuffer buffers[] = {
+						source_vertex_buffer, source_index_buffer, counters_buffer };
+					bind_set(ctx, measure_mesh_factor.effect, buffers, 3);
+					measure_mesh_factor.dispatch(ctx, params,
+						MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
+				}
+			});
+		}
+
+		graph.storage_read(frame_graph_buffer(source_vertex_buffer));
+		graph.storage_read(frame_graph_buffer(source_index_buffer));
+		graph.storage_write(frame_graph_buffer(patch_buffer));
+		graph.storage_read_write(frame_graph_buffer(counters_buffer));
+		graph.compute([&]() {
+			for (u32 base = 0; base < triangle_count;
+				base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
 			{
-				PlanParams params = make_plan_params(state, object, camera, fov, slot, triangle_count, base);
-				VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-				bind_set(ctx, measure_mesh_factor.effect, buffers, 3);
-				measure_mesh_factor.dispatch(ctx, params,
+				PlanParams params = make_plan_params(
+					state, object, camera, fov, slot, triangle_count, base);
+				VkBuffer buffers[] = { source_vertex_buffer, source_index_buffer,
+					patch_buffer, counters_buffer };
+				bind_set(ctx, plan_patches.effect, buffers, 4);
+				plan_patches.dispatch(ctx, params,
 					MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
 			}
-			compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-		}
+		});
 
-		for (u32 base = 0; base < triangle_count; base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
-		{
-			PlanParams params = make_plan_params(state, object, camera, fov, slot, triangle_count, base);
-			VkBuffer buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, plan_patches.effect, buffers, 4);
-			plan_patches.dispatch(ctx, params,
-				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, triangle_count - base), 1, 1);
-		}
-		compute_barrier(ctx, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-
-		for (u32 base = 0; base < patch_capacity; base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
-		{
-			ComputeParams params = { .count = (i32) patch_capacity, .base_index = (i32) base, .phong_strength = state.tessellation.phong_strength };
-			VkBuffer vertex_buffers[] = { source_vertices(mesh), mesh.index_buffer.get_gpu_buffer(), slot.patch_buffer.get_gpu_buffer(), slot.vertex_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, emit_vertices.effect, vertex_buffers, 5);
-			emit_vertices.dispatch(ctx, params,
-				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
-			VkBuffer index_buffers[] = { slot.patch_buffer.get_gpu_buffer(), slot.index_buffer.get_gpu_buffer(), slot.wire_index_buffer.get_gpu_buffer(), slot.counters_buffer.get_gpu_buffer() };
-			bind_set(ctx, emit_indices.effect, index_buffers, 4);
-			emit_indices.dispatch(ctx, params,
-				MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
-		}
-		compute_barrier(ctx,
-			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT
-				| VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-			VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT
-				| VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+		graph.storage_read(frame_graph_buffer(source_vertex_buffer));
+		graph.storage_read(frame_graph_buffer(source_index_buffer));
+		graph.storage_read(frame_graph_buffer(patch_buffer));
+		graph.storage_write(frame_graph_buffer(vertex_buffer));
+		graph.storage_write(frame_graph_buffer(index_buffer));
+		graph.storage_write(frame_graph_buffer(wire_index_buffer));
+		graph.storage_read_write(frame_graph_buffer(counters_buffer));
+		graph.compute([&]() {
+			for (u32 base = 0; base < patch_capacity;
+				base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
+			{
+				ComputeParams params = { .count = (i32) patch_capacity,
+					.base_index = (i32) base,
+					.phong_strength = state.tessellation.phong_strength };
+				VkBuffer vertex_buffers[] = { source_vertex_buffer, source_index_buffer,
+					patch_buffer, vertex_buffer, counters_buffer };
+				bind_set(ctx, emit_vertices.effect, vertex_buffers, 5);
+				emit_vertices.dispatch(ctx, params,
+					MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+				VkBuffer index_buffers[] = {
+					patch_buffer, index_buffer, wire_index_buffer, counters_buffer };
+				bind_set(ctx, emit_indices.effect, index_buffers, 4);
+				emit_indices.dispatch(ctx, params,
+					MIN(MAX_COMPUTE_GROUPS_PER_DISPATCH, patch_capacity - base), 1, 1);
+			}
+		});
+		graph.storage_read(frame_graph_buffer(vertex_buffer),
+			VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT);
+		graph.storage_read(frame_graph_buffer(index_buffer),
+			VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT);
+		graph.storage_read(frame_graph_buffer(wire_index_buffer),
+			VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT);
+		graph.vertex(frame_graph_buffer(vertex_buffer));
+		graph.index(frame_graph_buffer(index_buffer));
+		graph.index(frame_graph_buffer(wire_index_buffer));
 
 		if (!needs_readback)
 		{
@@ -373,7 +401,13 @@ namespace Tessellation
 		else
 		{
 			VkBufferCopy copy = { .size = sizeof(TessellationCounters) };
-			vkCmdCopyBuffer(command_buffer, slot.counters_buffer.get_gpu_buffer(), slot.counters_readback.get_gpu_buffer(), 1, &copy);
+			const VkBuffer readback_buffer = slot.counters_readback.get_gpu_buffer();
+			graph.transfer_source(frame_graph_buffer(counters_buffer));
+			graph.transfer_destination(frame_graph_buffer(readback_buffer));
+			graph.transfer([&]() {
+				vkCmdCopyBuffer(command_buffer, counters_buffer,
+					readback_buffer, 1, &copy);
+			});
 			slot.readback_requested = true;
 			slot.ready_frame_number = ctx->frame_number + MAX_FRAMES_IN_FLIGHT;
 		}
@@ -389,7 +423,8 @@ namespace Tessellation
 		state.tessellation.max_factor_seen = 1; state.tessellation.readback_age = 0;
 	}
 
-	inline void update(VulkanContext* ctx, State& state, const Camera& camera, f32 fov)
+	inline void update(FrameRenderGraph& graph, VulkanContext* ctx,
+		State& state, const Camera& camera, f32 fov)
 	{
 		scene_ensure_indexes(state);
 		consume_readbacks(ctx, state);
@@ -409,7 +444,7 @@ namespace Tessellation
 		{
 			auto found = state.scene.objects.find(object_id);
 			if (found == state.scene.objects.end()) { continue; }
-			prepare_mesh(ctx, state, found->second, camera, fov);
+			prepare_mesh(graph, ctx, state, found->second, camera, fov);
 			state.data_oriented.frame.tessellation_processed_count += 1;
 			auto& tessellated = found->second.mesh.tessellated_geometry;
 			if (tessellated.active)

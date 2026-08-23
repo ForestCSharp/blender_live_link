@@ -734,7 +734,8 @@ struct LightingCapture
 		}
 	}
 
-	void render_specular_prefilter(VulkanContext* ctx, i32 in_atlas_idx)
+	void render_specular_prefilter(
+		FrameRenderGraph& graph, VulkanContext* ctx, i32 in_atlas_idx)
 	{
 		assert(specular_atlas.image != VK_NULL_HANDLE);
 		assert(in_atlas_idx >= 0 && in_atlas_idx < specular_atlas_capacity);
@@ -747,77 +748,40 @@ struct LightingCapture
 			const AtlasViewport atlas_viewport = get_atlas_viewport(
 				mip_total_size, mip_entry_size, in_atlas_idx
 			);
-			ImageUsage attachment_usage = {
-				.image = &specular_atlas,
-				.range = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.baseMipLevel = (u32)mip,
-					.levelCount = 1,
-					.baseArrayLayer = 0,
-					.layerCount = 1,
-				},
-				.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-				.access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			};
-			gpu_image_apply_usages(command_buffer, &attachment_usage, 1);
-
-			VkRenderingAttachmentInfo attachment = {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = specular_atlas.mip_views[mip],
-				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-			};
-			VkRenderingInfo rendering_info = {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-				.renderArea = {
-					.offset = {0, 0},
-					.extent = {(u32)mip_total_size, (u32)mip_total_size},
-				},
-				.layerCount = 1,
-				.colorAttachmentCount = 1,
-				.pColorAttachments = &attachment,
-			};
-			vkCmdBeginRendering(command_buffer, &rendering_info);
-
-			VkViewport viewport = {
-				.x = (f32)atlas_viewport.x,
-				.y = (f32)(atlas_viewport.y + atlas_viewport.h),
-				.width = (f32)atlas_viewport.w,
-				.height = -(f32)atlas_viewport.h,
-				.minDepth = 0.0f,
-				.maxDepth = 1.0f,
-			};
-			VkRect2D scissor = {
-				.offset = {atlas_viewport.x, atlas_viewport.y},
-				.extent = {(u32)atlas_viewport.w, (u32)atlas_viewport.h},
-			};
-			vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-
 			SpecularPrefilterPushConstants push_constants = {
 				.atlas_entry_size = mip_entry_size,
 				.roughness = (f32)mip / (f32)(desc.specular_mip_count - 1),
 				.sample_count = mip == 0 ? 1 : 1024,
 			};
-			specular_prefilter_pipeline.bind(ctx);
-			vkCmdBindDescriptorSets(
-				command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-				specular_prefilter_pipeline_layout.layout, 0, 1, &specular_prefilter_set, 0, nullptr
-			);
-			specular_prefilter_pipeline_layout.push(ctx, push_constants);
-			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
-			vkCmdEndRendering(command_buffer);
-
-			ImageUsage sampled_usage = {
-				.image = &specular_atlas,
-				.range = attachment_usage.range,
-				.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-				.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			graph.sampled(frame_graph_color(lighting_pass));
+			FrameGraphColorAttachment attachment = {
+				.image = frame_graph_mip(specular_atlas, (u32)mip),
+				.load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
 			};
-			gpu_image_apply_usages(command_buffer, &sampled_usage, 1);
+			graph.render(&attachment, 1, [&]() {
+				VkViewport viewport = {
+					.x = (f32)atlas_viewport.x,
+					.y = (f32)(atlas_viewport.y + atlas_viewport.h),
+					.width = (f32)atlas_viewport.w,
+					.height = -(f32)atlas_viewport.h,
+					.minDepth = 0.0f,
+					.maxDepth = 1.0f,
+				};
+				VkRect2D scissor = {
+					.offset = {atlas_viewport.x, atlas_viewport.y},
+					.extent = {(u32)atlas_viewport.w, (u32)atlas_viewport.h},
+				};
+				vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+				vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+				specular_prefilter_pipeline.bind(ctx);
+				vkCmdBindDescriptorSets(
+					command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					specular_prefilter_pipeline_layout.layout,
+					0, 1, &specular_prefilter_set, 0, nullptr);
+				specular_prefilter_pipeline_layout.push(ctx, push_constants);
+				vulkan_cmd_draw(ctx, 3, 1, 0, 0);
+			});
+			graph.sampled(frame_graph_mip(specular_atlas, (u32)mip));
 		}
 	}
 
@@ -831,6 +795,7 @@ struct LightingCapture
 	}
 
 	void render(
+		FrameRenderGraph& graph,
 		VulkanContext* ctx,
 		State& in_state,
 		HMM_Vec3 in_location,
@@ -869,7 +834,7 @@ struct LightingCapture
 		}
 
 		// ---- Face G-buffers ----
-		geometry_pass.execute(ctx, [&](i32 face_idx)
+		graph.execute(geometry_pass, [&](i32 face_idx)
 		{
 			const HMM_Mat4& view_projection = view_projection_matrices[face_idx];
 
@@ -976,16 +941,10 @@ struct LightingCapture
 		});
 
 		// Lighting + radial depth sample the face G-buffers
-		for (i32 face_idx = 0; face_idx < NUM_CUBE_FACES; ++face_idx)
-		{
-			for (i32 output_idx = 0; output_idx < Render::GBUFFER_OUTPUT_COUNT; ++output_idx)
-			{
-				gpu_image_transition(command_buffer, geometry_pass.get_color_output(output_idx, face_idx), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			}
-		}
+		graph.make_sampled(geometry_pass);
 
 		// ---- Lit cubemap ----
-		lighting_pass.execute(ctx, [&](i32 face_idx)
+		graph.execute(lighting_pass, [&](i32 face_idx)
 		{
 			assert(lighting_slot_cursor < LIGHTING_SLOTS_PER_FRAME);
 			const i32 slot = lighting_slot_cursor++;
@@ -1125,11 +1084,11 @@ struct LightingCapture
 			);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
-		gpu_image_transition(command_buffer, lighting_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		render_specular_prefilter(ctx, in_atlas_idx);
+		graph.make_sampled(lighting_pass);
+		render_specular_prefilter(graph, ctx, in_atlas_idx);
 
 		// ---- Radial depth cubemap ----
-		radial_depth_pass.execute(ctx, [&](i32 face_idx)
+		graph.execute(radial_depth_pass, [&](i32 face_idx)
 		{
 			assert(radial_slot_cursor < RADIAL_SLOTS_PER_FRAME);
 			const i32 slot = radial_slot_cursor++;
@@ -1169,10 +1128,10 @@ struct LightingCapture
 			radial_depth_pipeline_layout.push(ctx, push_constants);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
-		gpu_image_transition(command_buffer, radial_depth_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		graph.make_sampled(radial_depth_pass);
 
 		// ---- Octahedral atlas entry ----
-		cube_to_oct_pass.execute(ctx, [&](i32)
+		graph.execute(cube_to_oct_pass, [&](i32)
 		{
 			const AtlasViewport atlas_viewport = get_atlas_viewport(
 				desc.octahedral_total_size,
@@ -1214,8 +1173,7 @@ struct LightingCapture
 			cube_to_oct_pipeline_layout.push(ctx, push_constants);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
-		gpu_image_transition(command_buffer, cube_to_oct_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		gpu_image_transition(command_buffer, cube_to_oct_pass.get_color_output(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		graph.make_sampled(cube_to_oct_pass);
 
 		// ---- SH9 / SG9 projection ----
 		const bool should_project_sh9 =
@@ -1244,8 +1202,14 @@ struct LightingCapture
 				.radiance_mode = (i32) in_radiance_mode,
 				.sample_count = 1024,
 			};
-			projection_effect.bind_and_dispatch(
-				ctx, slot_set, push_constants, 1, 1, 1);
+			graph.sampled(frame_graph_color(lighting_pass),
+				VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+			graph.storage_read_write(frame_graph_buffer(in_sh9_buffer));
+			graph.storage_read_write(frame_graph_buffer(in_sg9_buffer));
+			graph.compute([&]() {
+				projection_effect.bind_and_dispatch(
+					ctx, slot_set, push_constants, 1, 1, 1);
+			});
 		};
 
 		bool dispatched_projection = false;
@@ -1262,19 +1226,11 @@ struct LightingCapture
 
 		if (dispatched_projection)
 		{
-			VkMemoryBarrier2 memory_barrier = {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-			};
-			VkDependencyInfo dependency_info = {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.memoryBarrierCount = 1,
-				.pMemoryBarriers = &memory_barrier,
-			};
-			vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+			const VkPipelineStageFlags2 shader_stages =
+				VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+				| VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+			graph.storage_read(frame_graph_buffer(in_sh9_buffer), shader_stages);
+			graph.storage_read(frame_graph_buffer(in_sg9_buffer), shader_stages);
 		}
 	}
 

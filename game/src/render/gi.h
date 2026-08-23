@@ -596,7 +596,8 @@ void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 // Records this frame's probe captures into the command buffer (a few probes
 // per frame while is_updating). Call after begin_frame + descriptor updates,
 // before the main pass chain executes.
-void gi_scene_update(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
+void gi_scene_update(
+	FrameRenderGraph& graph, VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 {
 	in_gi_scene.lighting_capture.begin_frame(ctx);
 
@@ -630,7 +631,7 @@ void gi_scene_update(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 		const HMM_Vec3 lighting_capture_position = probe_to_update.position.XYZ;
 		const bool should_render_geometry = in_gi_scene.probe_idx_to_update != in_gi_scene.fallback_probe_index;
 		in_gi_scene.lighting_capture.render(
-			ctx,
+			graph, ctx,
 			in_state,
 			lighting_capture_position,
 			probe_to_update.atlas_idx,
