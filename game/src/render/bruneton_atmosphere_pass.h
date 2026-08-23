@@ -85,15 +85,14 @@ struct BrunetonAtmospherePass
 	RenderPass scattering_pass;
 	RenderPass scattering_density_pass;
 
-	VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE;
-	VkDescriptorSet descriptor_sets[MAX_FRAMES_IN_FLIGHT] = {};
-	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline transmittance_pipeline = VK_NULL_HANDLE;
-	VkPipeline direct_irradiance_pipeline = VK_NULL_HANDLE;
-	VkPipeline single_scattering_pipeline = VK_NULL_HANDLE;
-	VkPipeline scattering_density_pipeline = VK_NULL_HANDLE;
-	VkPipeline indirect_irradiance_pipeline = VK_NULL_HANDLE;
-	VkPipeline multiple_scattering_pipeline = VK_NULL_HANDLE;
+	DescriptorSetSchema descriptors;
+	EffectPipelineLayout pipeline_layout;
+	FullscreenPipeline transmittance_pipeline;
+	FullscreenPipeline direct_irradiance_pipeline;
+	FullscreenPipeline single_scattering_pipeline;
+	FullscreenPipeline scattering_density_pipeline;
+	FullscreenPipeline indirect_irradiance_pipeline;
+	FullscreenPipeline multiple_scattering_pipeline;
 	GpuBuffer<BrunetonAtmosphereGpu> parameter_buffers[MAX_FRAMES_IN_FLIGHT];
 
 	SkyAtmosphere last_lut_parameters = {};
@@ -145,39 +144,20 @@ struct BrunetonAtmospherePass
 			.debug_label = "Bruneton Scattering Density",
 		});
 
-		VkDescriptorSetLayoutBinding bindings[9] = {};
-		bindings[0] = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT };
+		DescriptorBindingSpec bindings[9] = {};
+		bindings[0] = { .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
 		for (u32 binding = 1; binding < 9; ++binding)
 		{
 			bindings[binding] = { .binding = binding,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT };
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
 		}
-		VkDescriptorSetLayoutCreateInfo descriptor_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 9,
-			.pBindings = bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &descriptor_layout_info, nullptr, &descriptor_layout));
-
-		VkPushConstantRange push_range = {
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.offset = 0,
-			.size = sizeof(BrunetonPrecomputePushConstants),
-		};
-		VkPipelineLayoutCreateInfo pipeline_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &descriptor_layout,
-			.pushConstantRangeCount = 1,
-			.pPushConstantRanges = &push_range,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_info, nullptr, &pipeline_layout));
+		descriptors.init(ctx, bindings, 9,
+			EDescriptorSetAllocation::PersistentPerFrame);
+		pipeline_layout.init(ctx, &descriptors.layout, 1,
+			sizeof(BrunetonPrecomputePushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
 
 		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)
 		{
-			descriptor_sets[frame_idx] = vulkan_allocate_persistent_descriptor_set(ctx, descriptor_layout);
 			parameter_buffers[frame_idx] = GpuBuffer((GpuBufferDesc<BrunetonAtmosphereGpu>) {
 				.data = nullptr,
 				.size = sizeof(BrunetonAtmosphereGpu),
@@ -190,22 +170,23 @@ struct BrunetonAtmospherePass
 		const VkFormat one_format[] = { BRUNETON_LUT_FORMAT };
 		const VkFormat two_formats[] = { BRUNETON_LUT_FORMAT, BRUNETON_LUT_FORMAT };
 		const VkFormat three_formats[] = { BRUNETON_LUT_FORMAT, BRUNETON_LUT_FORMAT, BRUNETON_LUT_FORMAT };
-		auto create_pipeline = [&](const char* shader, const VkFormat* formats, u32 count, u32 additive_mask = 0) {
-			return vulkan_create_fullscreen_pipeline(ctx, {
+		auto create_pipeline = [&](FullscreenPipeline& pipeline, const char* shader,
+			const VkFormat* formats, u32 count, u32 additive_mask = 0) {
+			pipeline.init(ctx, {
 				.vertex_shader_path = "bin/shaders/bruneton_precompute.vert.spv",
 				.fragment_shader_path = shader,
-				.pipeline_layout = pipeline_layout,
+				.pipeline_layout = pipeline_layout.layout,
 				.color_formats = formats,
 				.color_format_count = count,
 				.additive_blend_mask = additive_mask,
 			});
 		};
-		transmittance_pipeline = create_pipeline("bin/shaders/bruneton_transmittance.frag.spv", one_format, 1);
-		direct_irradiance_pipeline = create_pipeline("bin/shaders/bruneton_direct_irradiance.frag.spv", two_formats, 2);
-		single_scattering_pipeline = create_pipeline("bin/shaders/bruneton_single_scattering.frag.spv", three_formats, 3);
-		scattering_density_pipeline = create_pipeline("bin/shaders/bruneton_scattering_density.frag.spv", one_format, 1);
-		indirect_irradiance_pipeline = create_pipeline("bin/shaders/bruneton_indirect_irradiance.frag.spv", two_formats, 2, 1u << 1);
-		multiple_scattering_pipeline = create_pipeline("bin/shaders/bruneton_multiple_scattering.frag.spv", three_formats, 3, 1u << 2);
+		create_pipeline(transmittance_pipeline, "bin/shaders/bruneton_transmittance.frag.spv", one_format, 1);
+		create_pipeline(direct_irradiance_pipeline, "bin/shaders/bruneton_direct_irradiance.frag.spv", two_formats, 2);
+		create_pipeline(single_scattering_pipeline, "bin/shaders/bruneton_single_scattering.frag.spv", three_formats, 3);
+		create_pipeline(scattering_density_pipeline, "bin/shaders/bruneton_scattering_density.frag.spv", one_format, 1);
+		create_pipeline(indirect_irradiance_pipeline, "bin/shaders/bruneton_indirect_irradiance.frag.spv", two_formats, 2, 1u << 1);
+		create_pipeline(multiple_scattering_pipeline, "bin/shaders/bruneton_multiple_scattering.frag.spv", three_formats, 3, 1u << 2);
 	}
 
 	void update(VulkanContext* ctx, const SkyAtmosphere& sky)
@@ -214,11 +195,6 @@ struct BrunetonAtmospherePass
 		const BrunetonAtmosphereGpu gpu_parameters = bruneton_build_gpu_parameters(sky);
 		parameter_buffers[frame_idx].update_gpu_buffer(&gpu_parameters, sizeof(gpu_parameters));
 
-		VkDescriptorBufferInfo buffer_info = {
-			.buffer = parameter_buffers[frame_idx].get_gpu_buffer(),
-			.offset = 0,
-			.range = sizeof(BrunetonAtmosphereGpu),
-		};
 		VkImageView image_views[8] = {
 			transmittance_pass.get_color_output(0).view,
 			scattering_pass.get_color_output(2).view,
@@ -229,44 +205,23 @@ struct BrunetonAtmospherePass
 			irradiance_pass.get_color_output(0).view,
 			irradiance_pass.get_color_output(1).view,
 		};
-		VkDescriptorImageInfo image_infos[8] = {};
-		VkWriteDescriptorSet writes[9] = {};
-		writes[0] = {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = descriptor_sets[frame_idx],
-			.dstBinding = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pBufferInfo = &buffer_info,
-		};
+		DescriptorWriter writer = descriptors.writer(ctx);
+		writer.buffer(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			parameter_buffers[frame_idx].get_gpu_buffer(), sizeof(BrunetonAtmosphereGpu));
 		for (u32 image_idx = 0; image_idx < 8; ++image_idx)
-		{
-			image_infos[image_idx] = {
-				.sampler = frame_data.linear_sampler,
-				.imageView = image_views[image_idx],
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			};
-			writes[image_idx + 1] = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = descriptor_sets[frame_idx],
-				.dstBinding = image_idx + 1,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &image_infos[image_idx],
-			};
-		}
-		vulkan_update_descriptor_sets(ctx, 9, writes);
+			writer.sampled(image_idx + 1, frame_data.linear_sampler, image_views[image_idx]);
+		writer.commit();
 	}
 
-	void bind_and_draw(VulkanContext* ctx, VkPipeline pipeline, i32 layer, i32 order)
+	void bind_and_draw(VulkanContext* ctx, const FullscreenPipeline& pipeline, i32 layer, i32 order)
 	{
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		pipeline.bind(ctx);
+		VkDescriptorSet set = descriptors.current(ctx);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipeline_layout, 0, 1, &descriptor_sets[ctx->frame_index], 0, nullptr);
+			pipeline_layout.layout, 0, 1, &set, 0, nullptr);
 		BrunetonPrecomputePushConstants push = { layer, order };
-		vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, sizeof(push), &push);
+		pipeline_layout.push(ctx, push);
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
@@ -334,14 +289,14 @@ struct BrunetonAtmospherePass
 
 	void shutdown(VulkanContext* ctx)
 	{
-		vkDestroyPipeline(ctx->device, multiple_scattering_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, indirect_irradiance_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, scattering_density_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, single_scattering_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, direct_irradiance_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, transmittance_pipeline, nullptr);
-		vkDestroyPipelineLayout(ctx->device, pipeline_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, descriptor_layout, nullptr);
+		multiple_scattering_pipeline.shutdown(ctx);
+		indirect_irradiance_pipeline.shutdown(ctx);
+		scattering_density_pipeline.shutdown(ctx);
+		single_scattering_pipeline.shutdown(ctx);
+		direct_irradiance_pipeline.shutdown(ctx);
+		transmittance_pipeline.shutdown(ctx);
+		pipeline_layout.shutdown(ctx);
+		descriptors.shutdown(ctx);
 		for (GpuBuffer<BrunetonAtmosphereGpu>& buffer : parameter_buffers)
 			buffer.destroy_gpu_buffer();
 		scattering_density_pass.cleanup();

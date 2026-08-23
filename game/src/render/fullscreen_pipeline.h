@@ -161,8 +161,14 @@ struct FullscreenPipeline
 
 	void bind(VulkanContext* ctx) const
 	{
+		bind(vulkan_current_command_buffer(ctx));
+	}
+
+	void bind(VkCommandBuffer in_command_buffer) const
+	{
 		assert(pipeline != VK_NULL_HANDLE);
-		vkCmdBindPipeline(vulkan_current_command_buffer(ctx),
+		assert(in_command_buffer != VK_NULL_HANDLE);
+		vkCmdBindPipeline(in_command_buffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	}
 
@@ -409,10 +415,19 @@ struct EffectPipelineLayout
 
 	void push(VulkanContext* ctx, const void* in_push_constants) const
 	{
-		if (push_constant_size == 0) return;
+		push(ctx, in_push_constants, push_constant_size);
+	}
+
+	void push(
+		VulkanContext* ctx,
+		const void* in_push_constants,
+		u32 in_push_constant_size) const
+	{
+		if (in_push_constant_size == 0) return;
 		assert(in_push_constants);
+		assert(in_push_constant_size <= push_constant_size);
 		vkCmdPushConstants(vulkan_current_command_buffer(ctx), layout,
-			push_constant_stages, 0, push_constant_size, in_push_constants);
+			push_constant_stages, 0, in_push_constant_size, in_push_constants);
 	}
 
 	template<typename PushT>

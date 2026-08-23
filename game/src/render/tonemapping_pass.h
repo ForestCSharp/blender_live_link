@@ -102,21 +102,19 @@ struct TonemappingDebugViewData
 
 struct TonemappingPass
 {
-	VkDescriptorSetLayout final_set_layout = VK_NULL_HANDLE;
-	VkDescriptorSetLayout local_set_layout = VK_NULL_HANDLE;
-	PerFrameDescriptorSets final_sets;
-
-	VkPipelineLayout final_pipeline_layout = VK_NULL_HANDLE;
-	VkPipelineLayout local_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline final_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_proxy_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_downsample_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_blend_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_reconstruct_pipeline = VK_NULL_HANDLE;
+	DescriptorSetSchema final_descriptors;
+	DescriptorSetSchema local_descriptors;
+	EffectPipelineLayout final_pipeline_layout;
+	EffectPipelineLayout local_pipeline_layout;
+	FullscreenPipeline final_pipeline;
+	FullscreenPipeline local_proxy_pipeline;
+	FullscreenPipeline local_downsample_pipeline;
+	FullscreenPipeline local_blend_pipeline;
+	FullscreenPipeline local_reconstruct_pipeline;
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
-	VkPipeline local_debug_laplacian_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_debug_guided_pipeline = VK_NULL_HANDLE;
-	VkPipeline local_debug_channel_pipeline = VK_NULL_HANDLE;
+	FullscreenPipeline local_debug_laplacian_pipeline;
+	FullscreenPipeline local_debug_guided_pipeline;
+	FullscreenPipeline local_debug_channel_pipeline;
 #endif
 
 	GpuImage local_exposure_pyramid;
@@ -216,63 +214,22 @@ inline i32 tonemapping_pass_get_effective_reconstruction_mip()
 	return tonemapping_pass.effective_reconstruction_mip;
 }
 
-inline void tonemapping_create_layout(
-	VulkanContext* ctx,
-	u32 in_image_binding_count,
-	VkDescriptorSetLayout* out_layout)
-{
-	VkDescriptorSetLayoutBinding bindings[7] = {};
-	assert(in_image_binding_count <= 6);
-	for (u32 binding_idx = 0; binding_idx < in_image_binding_count; ++binding_idx)
-	{
-		bindings[binding_idx] = {
-			.binding = binding_idx,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		};
-	}
-	bindings[in_image_binding_count] = {
-		.binding = in_image_binding_count,
-		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		.descriptorCount = 1,
-		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-	};
-	VkDescriptorSetLayoutCreateInfo create_info = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = in_image_binding_count + 1,
-		.pBindings = bindings,
-	};
-	VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &create_info, nullptr, out_layout));
-}
-
-inline VkPipelineLayout tonemapping_create_pipeline_layout(
-	VulkanContext* ctx,
-	VkDescriptorSetLayout in_set_layout,
-	u32 in_push_constant_size)
-{
-	VkPushConstantRange push_constant_range = {
-		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		.offset = 0,
-		.size = in_push_constant_size,
-	};
-	VkPipelineLayoutCreateInfo create_info = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &in_set_layout,
-		.pushConstantRangeCount = in_push_constant_size > 0 ? 1u : 0u,
-		.pPushConstantRanges = in_push_constant_size > 0 ? &push_constant_range : nullptr,
-	};
-	VkPipelineLayout result = VK_NULL_HANDLE;
-	VK_CHECK(vkCreatePipelineLayout(ctx->device, &create_info, nullptr, &result));
-	return result;
-}
-
 void tonemapping_pass_init(VulkanContext* ctx)
 {
-	tonemapping_create_layout(ctx, 6, &tonemapping_pass.final_set_layout);
-	tonemapping_create_layout(ctx, 5, &tonemapping_pass.local_set_layout);
-	tonemapping_pass.final_sets.init_persistent(ctx, tonemapping_pass.final_set_layout);
+	DescriptorBindingSpec final_bindings[7] = {};
+	for (u32 binding = 0; binding < 6; ++binding)
+		final_bindings[binding] = {
+			.binding = binding, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+	final_bindings[6] = { .binding = 6, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER };
+	tonemapping_pass.final_descriptors.init(ctx, final_bindings, 7,
+		EDescriptorSetAllocation::PersistentPerFrame);
+	DescriptorBindingSpec local_bindings[6] = {};
+	for (u32 binding = 0; binding < 5; ++binding)
+		local_bindings[binding] = {
+			.binding = binding, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+	local_bindings[5] = { .binding = 5, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER };
+	tonemapping_pass.local_descriptors.init(ctx, local_bindings, 6,
+		EDescriptorSetAllocation::Transient);
 	VkSamplerCreateInfo position_sampler_info = {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 		.magFilter = VK_FILTER_NEAREST,
@@ -339,15 +296,17 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS,
 		hdr_output ? "GT7 + ACES 2 + AgX HDR Tone Mapping LUTs" : "GT7 + ACES 2 + AgX SDR Tone Mapping LUTs");
 
-	tonemapping_pass.final_pipeline_layout = tonemapping_create_pipeline_layout(
-		ctx, tonemapping_pass.final_set_layout, sizeof(TonemappingFinalPushConstants));
-	tonemapping_pass.local_pipeline_layout = tonemapping_create_pipeline_layout(
-		ctx, tonemapping_pass.local_set_layout, sizeof(TonemappingLocalProxyPushConstants));
+	tonemapping_pass.final_pipeline_layout.init(ctx,
+		&tonemapping_pass.final_descriptors.layout, 1,
+		sizeof(TonemappingFinalPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
+	tonemapping_pass.local_pipeline_layout.init(ctx,
+		&tonemapping_pass.local_descriptors.layout, 1,
+		sizeof(TonemappingLocalProxyPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	tonemapping_pass.final_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.final_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping.frag.spv",
-		.pipeline_layout = tonemapping_pass.final_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.final_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
@@ -356,53 +315,53 @@ void tonemapping_pass_init(VulkanContext* ctx)
 		Render::SCENE_COLOR_FORMAT,
 		Render::SCENE_COLOR_FORMAT,
 	};
-	tonemapping_pass.local_proxy_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_proxy_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_proxy.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = two_color_formats,
 		.color_format_count = 2,
 	});
-	tonemapping_pass.local_downsample_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_downsample_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_downsample.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = two_color_formats,
 		.color_format_count = 2,
 	});
-	tonemapping_pass.local_blend_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_blend_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_blend.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
-	tonemapping_pass.local_reconstruct_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_reconstruct_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_reconstruct.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
-	tonemapping_pass.local_debug_laplacian_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_debug_laplacian_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_debug_laplacian.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
-	tonemapping_pass.local_debug_guided_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_debug_guided_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_debug_guided.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
-	tonemapping_pass.local_debug_channel_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+	tonemapping_pass.local_debug_channel_pipeline.init(ctx, {
 		.vertex_shader_path = "bin/shaders/tonemapping.vert.spv",
 		.fragment_shader_path = "bin/shaders/tonemapping_local_debug_channel.frag.spv",
-		.pipeline_layout = tonemapping_pass.local_pipeline_layout,
+		.pipeline_layout = tonemapping_pass.local_pipeline_layout.layout,
 		.color_formats = &Render::SCENE_COLOR_FORMAT,
 		.color_format_count = 1,
 	});
@@ -539,28 +498,18 @@ inline VkDescriptorSet tonemapping_local_descriptor_set(
 	VkSampler in_last_sampler = VK_NULL_HANDLE)
 {
 	assert(in_view_count <= 5);
-	VkDescriptorSet set =
-		vulkan_allocate_transient_descriptor_set(ctx, tonemapping_pass.local_set_layout);
-	VkDescriptorImageInfo image_infos[5] = {};
-	VkWriteDescriptorSet writes[6] = {};
+	DescriptorWriter writer = tonemapping_pass.local_descriptors.writer(ctx);
 	for (u32 view_idx = 0; view_idx < in_view_count; ++view_idx)
 	{
 		const VkSampler view_sampler = in_last_sampler != VK_NULL_HANDLE
 			&& view_idx + 1 == in_view_count
 			? in_last_sampler : tonemapping_pass.sampler;
-		image_infos[view_idx] = descriptor_sampled(view_sampler, in_views[view_idx]);
-		writes[view_idx] = descriptor_write_image(
-			set,
-			view_idx,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			&image_infos[view_idx]);
+		writer.sampled(view_idx, view_sampler, in_views[view_idx]);
 	}
-	VkDescriptorBufferInfo buffer_info = descriptor_buffer(
+	writer.buffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		tonemapping_pass.auto_adaptation_state_buffer);
-	writes[in_view_count] = descriptor_write_buffer(
-		set, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
-	vulkan_update_descriptor_sets(ctx, in_view_count + 1, writes, 0, nullptr, false);
-	return set;
+	writer.commit();
+	return writer.set;
 }
 
 inline ImageUsage tonemapping_mip_usage(
@@ -722,26 +671,23 @@ inline void tonemapping_begin_debug_panel_render(
 
 inline void tonemapping_draw_local_stage(
 	VulkanContext* ctx,
-	VkPipeline in_pipeline,
+	const FullscreenPipeline& in_pipeline,
 	VkDescriptorSet in_set,
 	const void* in_push_constants = nullptr,
 	u32 in_push_constant_size = 0)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_pipeline);
+	in_pipeline.bind(ctx);
 	vkCmdBindDescriptorSets(
 		command_buffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		tonemapping_pass.local_pipeline_layout,
+		tonemapping_pass.local_pipeline_layout.layout,
 		0, 1, &in_set,
 		0, nullptr);
 	if (in_push_constants && in_push_constant_size > 0)
 	{
-		vkCmdPushConstants(
-			command_buffer,
-			tonemapping_pass.local_pipeline_layout,
-			VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, in_push_constant_size, in_push_constants);
+		tonemapping_pass.local_pipeline_layout.push(
+			ctx, in_push_constants, in_push_constant_size);
 	}
 	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
@@ -762,27 +708,17 @@ void tonemapping_pass_update(
 
 	// Bind the source as a valid placeholder for local-only bindings. Local
 	// preparation replaces them before the final draw.
-	VkDescriptorSet& set = tonemapping_pass.final_sets.current(ctx);
-	VkDescriptorImageInfo infos[6] = {
-		descriptor_sampled(in_sampler, in_scene_color_view),
-		descriptor_sampled(in_sampler, in_scene_color_view),
-		descriptor_sampled(in_sampler, in_scene_color_view),
-		descriptor_sampled(
-			in_sampler,
-			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view),
-		descriptor_sampled(in_sampler, tonemapping_pass.tonemapping_lut.view),
-		descriptor_sampled(tonemapping_pass.position_sampler, in_position_view),
-	};
-	VkWriteDescriptorSet writes[7] = {};
-	for (u32 binding = 0; binding < 6; ++binding)
-	{
-		writes[binding] = descriptor_write_image(
-			set, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[binding]);
-	}
-	VkDescriptorBufferInfo buffer_info = descriptor_buffer(in_auto_adaptation_state_buffer);
-	writes[6] = descriptor_write_buffer(
-		set, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info);
-	vulkan_update_descriptor_sets(ctx, 7, writes);
+	DescriptorWriter writer = tonemapping_pass.final_descriptors.writer(ctx);
+	writer.sampled(0, in_sampler, in_scene_color_view)
+		.sampled(1, in_sampler, in_scene_color_view)
+		.sampled(2, in_sampler, in_scene_color_view)
+		.sampled(3, in_sampler,
+			in_bloom_intensity > 0.0f ? in_bloom_view : in_scene_color_view)
+		.sampled(4, in_sampler, tonemapping_pass.tonemapping_lut.view)
+		.sampled(5, tonemapping_pass.position_sampler, in_position_view)
+		.buffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			in_auto_adaptation_state_buffer);
+	writer.commit();
 }
 
 void tonemapping_pass_prepare_local(
@@ -1013,22 +949,14 @@ void tonemapping_pass_prepare_local(
 	};
 	gpu_image_apply_usages(command_buffer, final_inputs, 2);
 
-	VkDescriptorSet& final_set = tonemapping_pass.final_sets.current(ctx);
-	VkDescriptorImageInfo infos[] = {
-		descriptor_sampled(
-			tonemapping_pass.sampler,
-			tonemapping_mip_view(tonemapping_pass.local_exposure_pyramid, reconstruction_mip)),
-		descriptor_sampled(
-			tonemapping_pass.sampler,
-			tonemapping_mip_view(tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip)),
-	};
-	VkWriteDescriptorSet writes[] = {
-		descriptor_write_image(
-			final_set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[0]),
-		descriptor_write_image(
-			final_set, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &infos[1]),
-	};
-	vulkan_update_descriptor_sets(ctx, 2, writes);
+	DescriptorWriter final_writer = tonemapping_pass.final_descriptors.writer(ctx);
+	final_writer.sampled(1, tonemapping_pass.sampler,
+		tonemapping_mip_view(
+			tonemapping_pass.local_exposure_pyramid, reconstruction_mip))
+		.sampled(2, tonemapping_pass.sampler,
+			tonemapping_mip_view(
+				tonemapping_pass.local_reconstruction_pyramid, reconstruction_mip));
+	final_writer.commit();
 }
 
 #if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
@@ -1307,21 +1235,15 @@ void tonemapping_pass_draw(
 			0.0f, 0.0f),
 	};
 
-	vkCmdBindPipeline(
-		command_buffer,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		tonemapping_pass.final_pipeline);
+	tonemapping_pass.final_pipeline.bind(ctx);
+	VkDescriptorSet final_set = tonemapping_pass.final_descriptors.current(ctx);
 	vkCmdBindDescriptorSets(
 		command_buffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		tonemapping_pass.final_pipeline_layout,
-		0, 1, &tonemapping_pass.final_sets.current(ctx),
+		tonemapping_pass.final_pipeline_layout.layout,
+		0, 1, &final_set,
 		0, nullptr);
-	vkCmdPushConstants(
-		command_buffer,
-		tonemapping_pass.final_pipeline_layout,
-		VK_SHADER_STAGE_FRAGMENT_BIT,
-		0, sizeof(constants), &constants);
+	tonemapping_pass.final_pipeline_layout.push(ctx, constants);
 	vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 }
 
@@ -1341,19 +1263,19 @@ void tonemapping_pass_shutdown(VulkanContext* ctx)
 		ctx->allocator, ctx->device, tonemapping_pass.local_debug_guided);
 	gpu_image_destroy(
 		ctx->allocator, ctx->device, tonemapping_pass.local_debug_panels);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_debug_channel_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_debug_guided_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_debug_laplacian_pipeline, nullptr);
+	tonemapping_pass.local_debug_channel_pipeline.shutdown(ctx);
+	tonemapping_pass.local_debug_guided_pipeline.shutdown(ctx);
+	tonemapping_pass.local_debug_laplacian_pipeline.shutdown(ctx);
 #endif
 
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_reconstruct_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_blend_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_downsample_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.local_proxy_pipeline, nullptr);
-	vkDestroyPipeline(ctx->device, tonemapping_pass.final_pipeline, nullptr);
+	tonemapping_pass.local_reconstruct_pipeline.shutdown(ctx);
+	tonemapping_pass.local_blend_pipeline.shutdown(ctx);
+	tonemapping_pass.local_downsample_pipeline.shutdown(ctx);
+	tonemapping_pass.local_proxy_pipeline.shutdown(ctx);
+	tonemapping_pass.final_pipeline.shutdown(ctx);
 	vkDestroySampler(ctx->device, tonemapping_pass.position_sampler, nullptr);
-	vkDestroyPipelineLayout(ctx->device, tonemapping_pass.local_pipeline_layout, nullptr);
-	vkDestroyPipelineLayout(ctx->device, tonemapping_pass.final_pipeline_layout, nullptr);
-	vkDestroyDescriptorSetLayout(ctx->device, tonemapping_pass.local_set_layout, nullptr);
-	vkDestroyDescriptorSetLayout(ctx->device, tonemapping_pass.final_set_layout, nullptr);
+	tonemapping_pass.local_pipeline_layout.shutdown(ctx);
+	tonemapping_pass.final_pipeline_layout.shutdown(ctx);
+	tonemapping_pass.local_descriptors.shutdown(ctx);
+	tonemapping_pass.final_descriptors.shutdown(ctx);
 }

@@ -148,28 +148,27 @@ struct LightingCapture
 	VkPipeline capture_geometry_skinned_pipeline = VK_NULL_HANDLE;
 
 	// Capture sky (Bruneton LUT set + per-probe position push constants)
-	VkPipelineLayout capture_sky_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline capture_sky_pipeline = VK_NULL_HANDLE;
+	EffectPipelineLayout capture_sky_pipeline_layout;
+	FullscreenPipeline capture_sky_pipeline;
 
 	// Capture lighting: layout C reused; RGBA32F pipeline variant + slot ring
-	VkPipeline capture_lighting_pipeline = VK_NULL_HANDLE;
+	FullscreenPipeline capture_lighting_pipeline;
 	static constexpr i32 LIGHTING_SLOTS_PER_FRAME = NUM_CUBE_FACES * 4;	// probes_to_update_per_frame
 	GpuBuffer<LightingFsParams> lighting_slot_ubos[MAX_FRAMES_IN_FLIGHT][LIGHTING_SLOTS_PER_FRAME];
 	VkDescriptorSet lighting_slot_sets[MAX_FRAMES_IN_FLIGHT][LIGHTING_SLOTS_PER_FRAME] = {};
 	i32 lighting_slot_cursor = 0;
 
 	// Radial depth (push constants + per-frame input set)
-	VkDescriptorSetLayout radial_depth_set_layout = VK_NULL_HANDLE;
-	VkPipelineLayout radial_depth_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline radial_depth_pipeline = VK_NULL_HANDLE;
+	EffectPipelineLayout radial_depth_pipeline_layout;
+	FullscreenPipeline radial_depth_pipeline;
 	static constexpr i32 RADIAL_SLOTS_PER_FRAME = NUM_CUBE_FACES * 4;
 	VkDescriptorSet radial_slot_sets[MAX_FRAMES_IN_FLIGHT][RADIAL_SLOTS_PER_FRAME] = {};
 	i32 radial_slot_cursor = 0;
 
 	// Cube -> octahedral (static inputs: the capture cubemaps never resize)
-	VkDescriptorSetLayout cube_to_oct_set_layout = VK_NULL_HANDLE;
-	VkPipelineLayout cube_to_oct_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline cube_to_oct_pipeline = VK_NULL_HANDLE;
+	DescriptorSetSchema cube_to_oct_descriptors;
+	EffectPipelineLayout cube_to_oct_pipeline_layout;
+	FullscreenPipeline cube_to_oct_pipeline;
 	VkDescriptorSet cube_to_oct_set = VK_NULL_HANDLE;
 
 	// Probe radiance projection compute (per-frame sets: sh9/sg9 buffers
@@ -185,12 +184,12 @@ struct LightingCapture
 	i32 specular_atlas_total_size = 0;
 	i32 specular_atlas_capacity = 0;
 	VkSampler specular_sampler = VK_NULL_HANDLE;
-	VkDescriptorSetLayout specular_prefilter_set_layout = VK_NULL_HANDLE;
-	VkPipelineLayout specular_prefilter_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline specular_prefilter_pipeline = VK_NULL_HANDLE;
+	DescriptorSetSchema specular_prefilter_descriptors;
+	EffectPipelineLayout specular_prefilter_pipeline_layout;
+	FullscreenPipeline specular_prefilter_pipeline;
 	VkDescriptorSet specular_prefilter_set = VK_NULL_HANDLE;
-	VkPipelineLayout brdf_lut_pipeline_layout = VK_NULL_HANDLE;
-	VkPipeline brdf_lut_pipeline = VK_NULL_HANDLE;
+	EffectPipelineLayout brdf_lut_pipeline_layout;
+	FullscreenPipeline brdf_lut_pipeline;
 
 	VkDescriptorPool pool = VK_NULL_HANDLE;
 
@@ -201,115 +200,6 @@ struct LightingCapture
 	bool is_initialized = false;
 
 	VkFormat color_format = VK_FORMAT_R32G32B32A32_SFLOAT;
-
-	VkPipeline create_fullscreen_pipeline(
-		VulkanContext* ctx,
-		VkPipelineLayout in_layout,
-		const char* in_vert_path,
-		const char* in_frag_path,
-		const VkFormat* in_color_formats,
-		u32 in_color_count,
-		VkFormat in_depth_format,
-		bool in_depth_write
-	)
-	{
-		VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vert_path);
-		VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, in_frag_path);
-
-		VkPipelineShaderStageCreateInfo shader_stages[] = {
-			{
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_VERTEX_BIT,
-				.module = vertex_module,
-				.pName = "main",
-			},
-			{
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.module = fragment_module,
-				.pName = "main",
-			},
-		};
-
-		VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-		VkPipelineDynamicStateCreateInfo dynamic_state = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-			.dynamicStateCount = 2,
-			.pDynamicStates = dynamic_states,
-		};
-		VkPipelineVertexInputStateCreateInfo vertex_input = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		};
-		VkPipelineInputAssemblyStateCreateInfo input_assembly = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-			.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-		};
-		VkPipelineViewportStateCreateInfo viewport = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-			.viewportCount = 1,
-			.scissorCount = 1,
-		};
-		VkPipelineRasterizationStateCreateInfo rasterization = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-			.polygonMode = VK_POLYGON_MODE_FILL,
-			.cullMode = VK_CULL_MODE_NONE,
-			.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-			.lineWidth = 1.0f,
-		};
-		VkPipelineMultisampleStateCreateInfo multisampling = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-			.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-		};
-		VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-			.depthTestEnable = in_depth_format != VK_FORMAT_UNDEFINED ? VK_TRUE : VK_FALSE,
-			.depthWriteEnable = in_depth_write ? VK_TRUE : VK_FALSE,
-			.depthCompareOp = Render::DEPTH_COMPARE_OP,
-		};
-		VkPipelineColorBlendAttachmentState blend_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
-		for (u32 attachment_idx = 0; attachment_idx < in_color_count; ++attachment_idx)
-		{
-			blend_attachments[attachment_idx] = (VkPipelineColorBlendAttachmentState) {
-				.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-								| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-			};
-		}
-		VkPipelineColorBlendStateCreateInfo color_blending = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-			.attachmentCount = in_color_count,
-			.pAttachments = blend_attachments,
-		};
-
-		VkPipelineRenderingCreateInfo rendering_create_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-			.colorAttachmentCount = in_color_count,
-			.pColorAttachmentFormats = in_color_formats,
-			.depthAttachmentFormat = in_depth_format,
-		};
-
-		VkGraphicsPipelineCreateInfo pipeline_create_info = {
-			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-			.pNext = &rendering_create_info,
-			.stageCount = 2,
-			.pStages = shader_stages,
-			.pVertexInputState = &vertex_input,
-			.pInputAssemblyState = &input_assembly,
-			.pViewportState = &viewport,
-			.pRasterizationState = &rasterization,
-			.pMultisampleState = &multisampling,
-			.pDepthStencilState = &depth_stencil,
-			.pColorBlendState = &color_blending,
-			.pDynamicState = &dynamic_state,
-			.layout = in_layout,
-			.renderPass = VK_NULL_HANDLE,
-		};
-		VkPipeline out_pipeline = VK_NULL_HANDLE;
-		VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &out_pipeline));
-
-		vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
-		vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
-		return out_pipeline;
-	}
 
 	VkPipeline create_capture_geometry_pipeline(VulkanContext* ctx, const char* in_vert_path, bool in_skinned)
 	{
@@ -492,27 +382,12 @@ struct LightingCapture
 
 		// ---- Set layouts ----
 		{
-			VkDescriptorSetLayoutBinding bindings[3] = {};
-			for (u32 binding_idx = 0; binding_idx < 2; ++binding_idx)
-			{
-				bindings[binding_idx] = (VkDescriptorSetLayoutBinding) {
-					.binding = binding_idx,
-					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-					.descriptorCount = 1,
-					.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				};
-			}
-			// cube_to_oct: b0 fs push constants live outside; b1 lighting cube,
-			// b2 depth cube -> shift: b0/b1 here are bindings 1 and 2 in the
-			// shader. Rebuild with explicit bindings 1 and 2:
-			bindings[0].binding = 1;
-			bindings[1].binding = 2;
-			VkDescriptorSetLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 2,
-				.pBindings = bindings,
+			const DescriptorBindingSpec bindings[] = {
+				{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+				{ .binding = 2, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
 			};
-			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &cube_to_oct_set_layout));
+			cube_to_oct_descriptors.init(ctx, bindings, 2,
+				EDescriptorSetAllocation::Transient);
 		}
 		{
 			const DescriptorBindingSpec bindings[] = {
@@ -530,18 +405,11 @@ struct LightingCapture
 			});
 		}
 		{
-			VkDescriptorSetLayoutBinding binding = {
-				.binding = 0,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			const DescriptorBindingSpec binding = {
+				.binding = 0, .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			};
-			VkDescriptorSetLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 1,
-				.pBindings = &binding,
-			};
-			VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &layout_create_info, nullptr, &specular_prefilter_set_layout));
+			specular_prefilter_descriptors.init(ctx, &binding, 1,
+				EDescriptorSetAllocation::Transient);
 		}
 
 		// ---- Pool + sets ----
@@ -598,10 +466,10 @@ struct LightingCapture
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 				.descriptorPool = pool,
 				.descriptorSetCount = 1,
-				.pSetLayouts = &cube_to_oct_set_layout,
+				.pSetLayouts = &cube_to_oct_descriptors.layout,
 			};
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &cube_to_oct_set));
-			allocate_info.pSetLayouts = &specular_prefilter_set_layout;
+			allocate_info.pSetLayouts = &specular_prefilter_descriptors.layout;
 			VK_CHECK(vkAllocateDescriptorSets(ctx->device, &allocate_info, &specular_prefilter_set));
 		}
 
@@ -621,72 +489,17 @@ struct LightingCapture
 			};
 			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &capture_geometry_pipeline_layout));
 		}
-		{
-			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.offset = 0,
-				.size = sizeof(CaptureSkyPushConstants),
-			};
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &bruneton_atmosphere_pass.descriptor_layout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_range,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &capture_sky_pipeline_layout));
-		}
-		{
-			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.offset = 0,
-				.size = sizeof(RadialDepthPushConstants),
-			};
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &frame_data.sampled_input_layout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_range,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &radial_depth_pipeline_layout));
-		}
-		{
-			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.offset = 0,
-				.size = sizeof(CubeToOctPushConstants),
-			};
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &cube_to_oct_set_layout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_range,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &cube_to_oct_pipeline_layout));
-		}
-		{
-			VkPushConstantRange push_range = {
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.offset = 0,
-				.size = sizeof(SpecularPrefilterPushConstants),
-			};
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &specular_prefilter_set_layout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_range,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &specular_prefilter_pipeline_layout));
-		}
-		{
-			VkPipelineLayoutCreateInfo layout_create_info = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			};
-			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &brdf_lut_pipeline_layout));
-		}
+		capture_sky_pipeline_layout.init(ctx,
+			&bruneton_atmosphere_pass.descriptors.layout, 1,
+			sizeof(CaptureSkyPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
+		radial_depth_pipeline_layout.init(ctx, &frame_data.sampled_input_layout, 1,
+			sizeof(RadialDepthPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
+		cube_to_oct_pipeline_layout.init(ctx, &cube_to_oct_descriptors.layout, 1,
+			sizeof(CubeToOctPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
+		specular_prefilter_pipeline_layout.init(ctx,
+			&specular_prefilter_descriptors.layout, 1,
+			sizeof(SpecularPrefilterPushConstants), VK_SHADER_STAGE_FRAGMENT_BIT);
+		brdf_lut_pipeline_layout.init(ctx, nullptr, 0, 0, 0);
 
 		// ---- Pipelines ----
 		capture_geometry_pipeline = create_capture_geometry_pipeline(ctx, "bin/shaders/geometry_capture.vert.spv", false);
@@ -697,48 +510,64 @@ struct LightingCapture
 				Render::GBUFFER_FORMAT, Render::GBUFFER_FORMAT,
 				Render::GBUFFER_FORMAT, Render::GBUFFER_FORMAT,
 			};
-			capture_sky_pipeline = create_fullscreen_pipeline(
-				ctx, capture_sky_pipeline_layout,
-				"bin/shaders/sky_capture.vert.spv", "bin/shaders/sky_capture.frag.spv",
-				sky_formats, 4, Render::SCENE_DEPTH_FORMAT, /*depth write*/ true
-			);
+			capture_sky_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/sky_capture.vert.spv",
+				.fragment_shader_path = "bin/shaders/sky_capture.frag.spv",
+				.pipeline_layout = capture_sky_pipeline_layout.layout,
+				.color_formats = sky_formats,
+				.color_format_count = 4,
+				.depth_format = Render::SCENE_DEPTH_FORMAT,
+				.depth_test_enable = true,
+				.depth_write_enable = true,
+				.depth_compare_op = Render::DEPTH_COMPARE_OP,
+			});
 		}
 		{
 			VkFormat lighting_formats[1] = { color_format };
-			capture_lighting_pipeline = create_fullscreen_pipeline(
-				ctx, ::lighting_pass.pipeline_layout,
-				"bin/shaders/lighting.vert.spv", "bin/shaders/lighting.frag.spv",
-				lighting_formats, 1, VK_FORMAT_UNDEFINED, false
-			);
+			capture_lighting_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/lighting.vert.spv",
+				.fragment_shader_path = "bin/shaders/lighting.frag.spv",
+				.pipeline_layout = ::lighting_pass.pipeline_layout,
+				.color_formats = lighting_formats,
+				.color_format_count = 1,
+			});
 		}
 		{
 			VkFormat radial_formats[1] = { color_format };
-			radial_depth_pipeline = create_fullscreen_pipeline(
-				ctx, radial_depth_pipeline_layout,
-				"bin/shaders/radial_depth.vert.spv", "bin/shaders/radial_depth.frag.spv",
-				radial_formats, 1, VK_FORMAT_UNDEFINED, false
-			);
+			radial_depth_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/radial_depth.vert.spv",
+				.fragment_shader_path = "bin/shaders/radial_depth.frag.spv",
+				.pipeline_layout = radial_depth_pipeline_layout.layout,
+				.color_formats = radial_formats,
+				.color_format_count = 1,
+			});
 		}
 		{
 			VkFormat oct_formats[2] = { color_format, color_format };
-			cube_to_oct_pipeline = create_fullscreen_pipeline(
-				ctx, cube_to_oct_pipeline_layout,
-				"bin/shaders/cubemap_to_octahedral.vert.spv", "bin/shaders/cubemap_to_octahedral.frag.spv",
-				oct_formats, 2, VK_FORMAT_UNDEFINED, false
-			);
+			cube_to_oct_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/cubemap_to_octahedral.vert.spv",
+				.fragment_shader_path = "bin/shaders/cubemap_to_octahedral.frag.spv",
+				.pipeline_layout = cube_to_oct_pipeline_layout.layout,
+				.color_formats = oct_formats,
+				.color_format_count = 2,
+			});
 		}
 		{
 			VkFormat prefilter_formats[1] = { ctx->capabilities.scene_color_format };
-			specular_prefilter_pipeline = create_fullscreen_pipeline(
-				ctx, specular_prefilter_pipeline_layout,
-				"bin/shaders/cubemap_to_octahedral.vert.spv", "bin/shaders/probe_specular_prefilter.frag.spv",
-				prefilter_formats, 1, VK_FORMAT_UNDEFINED, false
-			);
-			brdf_lut_pipeline = create_fullscreen_pipeline(
-				ctx, brdf_lut_pipeline_layout,
-				"bin/shaders/cubemap_to_octahedral.vert.spv", "bin/shaders/brdf_integration.frag.spv",
-				prefilter_formats, 1, VK_FORMAT_UNDEFINED, false
-			);
+			specular_prefilter_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/cubemap_to_octahedral.vert.spv",
+				.fragment_shader_path = "bin/shaders/probe_specular_prefilter.frag.spv",
+				.pipeline_layout = specular_prefilter_pipeline_layout.layout,
+				.color_formats = prefilter_formats,
+				.color_format_count = 1,
+			});
+			brdf_lut_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/cubemap_to_octahedral.vert.spv",
+				.fragment_shader_path = "bin/shaders/brdf_integration.frag.spv",
+				.pipeline_layout = brdf_lut_pipeline_layout.layout,
+				.color_formats = prefilter_formats,
+				.color_format_count = 1,
+			});
 		}
 		// ---- Static resources ----
 		const u32 white_pixel = 0xFFFFFFFFu;
@@ -771,20 +600,11 @@ struct LightingCapture
 			VK_CHECK(vkCreateSampler(ctx->device, &sampler_create_info, nullptr, &specular_sampler));
 			vulkan_set_object_name(ctx, VK_OBJECT_TYPE_SAMPLER, (u64)specular_sampler, "GI Specular Atlas Sampler");
 
-			VkDescriptorImageInfo cube_info = {
-				.sampler = frame_data.linear_sampler,
-				.imageView = lighting_pass.get_color_output(0).view,
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			};
-			VkWriteDescriptorSet cube_write = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = specular_prefilter_set,
-				.dstBinding = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &cube_info,
-			};
-			vulkan_update_descriptor_sets(ctx, 1, &cube_write);
+			DescriptorWriter writer = specular_prefilter_descriptors.writer(
+				ctx, specular_prefilter_set, true);
+			writer.sampled(0, frame_data.linear_sampler,
+				lighting_pass.get_color_output(0).view);
+			writer.commit();
 		}
 
 		brdf_lut = gpu_image_create(ctx->allocator, ctx->device, (GpuImageDesc) {
@@ -821,7 +641,7 @@ struct LightingCapture
 			VkRect2D scissor = { .offset = {0, 0}, .extent = brdf_lut.extent };
 			vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, brdf_lut_pipeline);
+			brdf_lut_pipeline.bind(command_buffer);
 			vkCmdDraw(command_buffer, 3, 1, 0, 0);
 			vkCmdEndRendering(command_buffer);
 			gpu_image_transition(command_buffer, brdf_lut, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -829,31 +649,13 @@ struct LightingCapture
 
 		// cube_to_oct inputs: the capture cubemaps never resize
 		{
-			VkDescriptorImageInfo image_infos[] = {
-				{
-					.sampler = frame_data.linear_sampler,
-					.imageView = lighting_pass.get_color_output(0).view,
-					.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				},
-				{
-					.sampler = frame_data.linear_sampler,
-					.imageView = radial_depth_pass.get_color_output(0).view,
-					.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				},
-			};
-			VkWriteDescriptorSet writes[2] = {};
-			for (u32 write_idx = 0; write_idx < 2; ++write_idx)
-			{
-				writes[write_idx] = (VkWriteDescriptorSet) {
-					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = cube_to_oct_set,
-					.dstBinding = 1 + write_idx,
-					.descriptorCount = 1,
-					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-					.pImageInfo = &image_infos[write_idx],
-				};
-			}
-			vulkan_update_descriptor_sets(ctx, 2, writes);
+			DescriptorWriter writer = cube_to_oct_descriptors.writer(
+				ctx, cube_to_oct_set, true);
+			writer.sampled(1, frame_data.linear_sampler,
+				lighting_pass.get_color_output(0).view)
+				.sampled(2, frame_data.linear_sampler,
+					radial_depth_pass.get_color_output(0).view);
+			writer.commit();
 		}
 
 		// Zero the octahedral atlas once so we never read garbage data
@@ -999,15 +801,12 @@ struct LightingCapture
 				.roughness = (f32)mip / (f32)(desc.specular_mip_count - 1),
 				.sample_count = mip == 0 ? 1 : 1024,
 			};
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, specular_prefilter_pipeline);
+			specular_prefilter_pipeline.bind(ctx);
 			vkCmdBindDescriptorSets(
 				command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-				specular_prefilter_pipeline_layout, 0, 1, &specular_prefilter_set, 0, nullptr
+				specular_prefilter_pipeline_layout.layout, 0, 1, &specular_prefilter_set, 0, nullptr
 			);
-			vkCmdPushConstants(
-				command_buffer, specular_prefilter_pipeline_layout,
-				VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants
-			);
+			specular_prefilter_pipeline_layout.push(ctx, push_constants);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 			vkCmdEndRendering(command_buffer);
 
@@ -1154,12 +953,12 @@ struct LightingCapture
 				&& sky_pass.has_active_atmosphere
 				&& bruneton_atmosphere_pass.has_precomputed)
 			{
-				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, capture_sky_pipeline);
+				capture_sky_pipeline.bind(ctx);
 				vkCmdBindDescriptorSets(
 					command_buffer,
 					VK_PIPELINE_BIND_POINT_GRAPHICS,
-					capture_sky_pipeline_layout,
-					0, 1, &bruneton_atmosphere_pass.descriptor_sets[frame_index],
+					capture_sky_pipeline_layout.layout,
+					0, 1, &bruneton_atmosphere_pass.descriptors.persistent_sets.sets[frame_index],
 					0, nullptr
 				);
 				CaptureSkyPushConstants sky_push = {
@@ -1171,7 +970,7 @@ struct LightingCapture
 					.planet_center_z = HMM_V4(
 						sky_pass.active_parameters.planet_center_z_m, 0.0f, 0.0f, 0.0f),
 				};
-				vkCmdPushConstants(command_buffer, capture_sky_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky_push), &sky_push);
+				capture_sky_pipeline_layout.push(ctx, sky_push);
 				vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 			}
 		});
@@ -1316,7 +1115,7 @@ struct LightingCapture
 				&atmosphere_image_info);
 			vulkan_update_descriptor_sets(ctx, write_count, writes);
 
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, capture_lighting_pipeline);
+			capture_lighting_pipeline.bind(ctx);
 			vkCmdBindDescriptorSets(
 				command_buffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1359,15 +1158,15 @@ struct LightingCapture
 				.max_radial_depth = in_max_radial_depth,
 			};
 
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, radial_depth_pipeline);
+			radial_depth_pipeline.bind(ctx);
 			vkCmdBindDescriptorSets(
 				command_buffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				radial_depth_pipeline_layout,
+				radial_depth_pipeline_layout.layout,
 				0, 1, &slot_set,
 				0, nullptr
 			);
-			vkCmdPushConstants(command_buffer, radial_depth_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
+			radial_depth_pipeline_layout.push(ctx, push_constants);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, radial_depth_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1404,15 +1203,15 @@ struct LightingCapture
 				.use_importance_sampling = 1,
 			};
 
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cube_to_oct_pipeline);
+			cube_to_oct_pipeline.bind(ctx);
 			vkCmdBindDescriptorSets(
 				command_buffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				cube_to_oct_pipeline_layout,
+				cube_to_oct_pipeline_layout.layout,
 				0, 1, &cube_to_oct_set,
 				0, nullptr
 			);
-			vkCmdPushConstants(command_buffer, cube_to_oct_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
+			cube_to_oct_pipeline_layout.push(ctx, push_constants);
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		gpu_image_transition(command_buffer, cube_to_oct_pass.get_color_output(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1486,23 +1285,23 @@ struct LightingCapture
 			return;
 		}
 
-		vkDestroyPipeline(ctx->device, brdf_lut_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, specular_prefilter_pipeline, nullptr);
+		brdf_lut_pipeline.shutdown(ctx);
+		specular_prefilter_pipeline.shutdown(ctx);
 		projection_effect.shutdown(ctx);
-		vkDestroyPipeline(ctx->device, cube_to_oct_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, radial_depth_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, capture_lighting_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, capture_sky_pipeline, nullptr);
+		cube_to_oct_pipeline.shutdown(ctx);
+		radial_depth_pipeline.shutdown(ctx);
+		capture_lighting_pipeline.shutdown(ctx);
+		capture_sky_pipeline.shutdown(ctx);
 		vkDestroyPipeline(ctx->device, capture_geometry_skinned_pipeline, nullptr);
 		vkDestroyPipeline(ctx->device, capture_geometry_pipeline, nullptr);
-		vkDestroyPipelineLayout(ctx->device, brdf_lut_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, specular_prefilter_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, cube_to_oct_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, radial_depth_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, capture_sky_pipeline_layout, nullptr);
+		brdf_lut_pipeline_layout.shutdown(ctx);
+		specular_prefilter_pipeline_layout.shutdown(ctx);
+		cube_to_oct_pipeline_layout.shutdown(ctx);
+		radial_depth_pipeline_layout.shutdown(ctx);
+		capture_sky_pipeline_layout.shutdown(ctx);
 		vkDestroyPipelineLayout(ctx->device, capture_geometry_pipeline_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, specular_prefilter_set_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, cube_to_oct_set_layout, nullptr);
+		specular_prefilter_descriptors.shutdown(ctx);
+		cube_to_oct_descriptors.shutdown(ctx);
 		vkDestroyDescriptorPool(ctx->device, pool, nullptr);
 
 		for (u32 frame_idx = 0; frame_idx < MAX_FRAMES_IN_FLIGHT; ++frame_idx)

@@ -41,10 +41,10 @@ namespace BloomPass
 
 	struct Pass
 	{
-		VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-		VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-		VkPipeline downsample_pipeline = VK_NULL_HANDLE;
-		VkPipeline upsample_pipeline = VK_NULL_HANDLE;
+		DescriptorSetSchema descriptors;
+		EffectPipelineLayout pipeline_layout;
+		FullscreenPipeline downsample_pipeline;
+		FullscreenPipeline upsample_pipeline;
 		GpuImage pyramid;
 		VkSampler linear_sampler = VK_NULL_HANDLE;
 		u32 source_width = 0;
@@ -181,97 +181,64 @@ namespace BloomPass
 
 	inline VkDescriptorSet sampled_set(VulkanContext* ctx, VkImageView in_view)
 	{
-		VkDescriptorSet set =
-			vulkan_allocate_transient_descriptor_set(ctx, bloom_pass.set_layout);
-		VkDescriptorImageInfo image_info =
-			descriptor_sampled(bloom_pass.linear_sampler, in_view);
-		VkDescriptorBufferInfo buffer_info = descriptor_buffer(
-			bloom_pass.auto_adaptation_state_buffer);
-		VkWriteDescriptorSet writes[] = {
-			descriptor_write_image(
-				set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &image_info),
-			descriptor_write_buffer(
-				set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &buffer_info),
-		};
-		vulkan_update_descriptor_sets(ctx, 2, writes, 0, nullptr, false);
-		return set;
+		DescriptorWriter writer = bloom_pass.descriptors.writer(ctx);
+		writer.sampled(0, bloom_pass.linear_sampler, in_view)
+			.buffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				bloom_pass.auto_adaptation_state_buffer);
+		writer.commit();
+		return writer.set;
 	}
 
 	inline void draw(
 		VulkanContext* ctx,
-		VkPipeline in_pipeline,
+		const FullscreenPipeline& in_pipeline,
 		VkDescriptorSet in_set,
 		const void* in_push_constants,
 		u32 in_push_constant_size)
 	{
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, in_pipeline);
+		in_pipeline.bind(ctx);
 		vkCmdBindDescriptorSets(
 			command_buffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			bloom_pass.pipeline_layout,
+			bloom_pass.pipeline_layout.layout,
 			0, 1, &in_set,
 			0, nullptr);
-		vkCmdPushConstants(
-			command_buffer,
-			bloom_pass.pipeline_layout,
-			VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, in_push_constant_size, in_push_constants);
+		bloom_pass.pipeline_layout.push(
+			ctx, in_push_constants, in_push_constant_size);
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
 	inline void init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		bloom_pass.linear_sampler = in_linear_sampler;
-		VkDescriptorSetLayoutBinding bindings[] = {
+		const DescriptorBindingSpec bindings[] = {
 			{
 				.binding = 0,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			},
 			{
 				.binding = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			},
 		};
-		VkDescriptorSetLayoutCreateInfo set_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 2,
-			.pBindings = bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(
-			ctx->device, &set_layout_info, nullptr, &bloom_pass.set_layout));
+		bloom_pass.descriptors.init(ctx, bindings, 2,
+			EDescriptorSetAllocation::Transient);
+		bloom_pass.pipeline_layout.init(ctx, &bloom_pass.descriptors.layout, 1,
+			(u32)MAX(sizeof(DownsamplePushConstants), sizeof(UpsamplePushConstants)),
+			VK_SHADER_STAGE_FRAGMENT_BIT);
 
-		VkPushConstantRange push_constant_range = {
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.offset = 0,
-			.size = (u32)MAX(
-				sizeof(DownsamplePushConstants), sizeof(UpsamplePushConstants)),
-		};
-		VkPipelineLayoutCreateInfo pipeline_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &bloom_pass.set_layout,
-			.pushConstantRangeCount = 1,
-			.pPushConstantRanges = &push_constant_range,
-		};
-		VK_CHECK(vkCreatePipelineLayout(
-			ctx->device, &pipeline_layout_info, nullptr, &bloom_pass.pipeline_layout));
-
-		bloom_pass.downsample_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		bloom_pass.downsample_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/bloom.vert.spv",
 			.fragment_shader_path = "bin/shaders/bloom_downsample.frag.spv",
-			.pipeline_layout = bloom_pass.pipeline_layout,
+			.pipeline_layout = bloom_pass.pipeline_layout.layout,
 			.color_formats = &Render::SCENE_COLOR_FORMAT,
 			.color_format_count = 1,
 		});
-		bloom_pass.upsample_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		bloom_pass.upsample_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/bloom.vert.spv",
 			.fragment_shader_path = "bin/shaders/bloom_upsample.frag.spv",
-			.pipeline_layout = bloom_pass.pipeline_layout,
+			.pipeline_layout = bloom_pass.pipeline_layout.layout,
 			.color_formats = &Render::SCENE_COLOR_FORMAT,
 			.color_format_count = 1,
 			.additive_blending = true,
@@ -448,9 +415,9 @@ namespace BloomPass
 	inline void shutdown(VulkanContext* ctx)
 	{
 		gpu_image_destroy(ctx->allocator, ctx->device, bloom_pass.pyramid);
-		vkDestroyPipeline(ctx->device, bloom_pass.upsample_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, bloom_pass.downsample_pipeline, nullptr);
-		vkDestroyPipelineLayout(ctx->device, bloom_pass.pipeline_layout, nullptr);
-		vkDestroyDescriptorSetLayout(ctx->device, bloom_pass.set_layout, nullptr);
+		bloom_pass.upsample_pipeline.shutdown(ctx);
+		bloom_pass.downsample_pipeline.shutdown(ctx);
+		bloom_pass.pipeline_layout.shutdown(ctx);
+		bloom_pass.descriptors.shutdown(ctx);
 	}
 }

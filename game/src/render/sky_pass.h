@@ -41,7 +41,7 @@ inline void sky_pass_init(VulkanContext* ctx)
 
 	VkDescriptorSetLayout set_layouts[] = {
 		frame_data.per_frame_layout,
-		bruneton_atmosphere_pass.descriptor_layout,
+		bruneton_atmosphere_pass.descriptors.layout,
 	};
 	VkPushConstantRange push_range = {
 		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -216,7 +216,7 @@ inline void sky_pass_draw_composite(VulkanContext* ctx)
 		command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pass.composite_pipeline);
 	VkDescriptorSet sets[] = {
 		frame_data.per_frame_sets[ctx->frame_index],
-		bruneton_atmosphere_pass.descriptor_sets[ctx->frame_index],
+		bruneton_atmosphere_pass.descriptors.current(ctx),
 	};
 	vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 		sky_pass.composite_pipeline_layout, 0, 2, sets, 0, nullptr);

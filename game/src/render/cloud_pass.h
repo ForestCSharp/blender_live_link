@@ -51,19 +51,19 @@ namespace CloudPass
 		GpuImage weather;
 		TypedComputeEffect<NoisePushConstants> noise_effect;
 
-		VkDescriptorSetLayout sampled_layout = VK_NULL_HANDLE;
+		DescriptorSetSchema sampled_descriptors;
 		PerFrameDescriptorSets raymarch_sets;
 		PerFrameDescriptorSets temporal_sets;
 		PerFrameDescriptorSets composite_sets;
 		PerFrameDescriptorSets shadow_sets;
 		PerFrameUniform<CloudGpuParams> params;
 
-		VkPipelineLayout atmosphere_pipeline_layout = VK_NULL_HANDLE;
-		VkPipelineLayout basic_pipeline_layout = VK_NULL_HANDLE;
-		VkPipeline raymarch_pipeline = VK_NULL_HANDLE;
-		VkPipeline temporal_pipeline = VK_NULL_HANDLE;
-		VkPipeline composite_pipeline = VK_NULL_HANDLE;
-		VkPipeline shadow_pipeline = VK_NULL_HANDLE;
+		EffectPipelineLayout atmosphere_pipeline_layout;
+		EffectPipelineLayout basic_pipeline_layout;
+		FullscreenPipeline raymarch_pipeline;
+		FullscreenPipeline temporal_pipeline;
+		FullscreenPipeline composite_pipeline;
+		FullscreenPipeline shadow_pipeline;
 
 		VkSampler repeat_sampler = VK_NULL_HANDLE;
 		bool caches_generated = false;
@@ -167,63 +167,54 @@ namespace CloudPass
 		};
 		VK_CHECK(vkCreateSampler(ctx->device, &sampler_info, nullptr, &pass.repeat_sampler));
 
-		VkDescriptorSetLayoutBinding sampled_bindings[5] = {};
-		sampled_bindings[0] = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT };
+		DescriptorBindingSpec sampled_bindings[5] = {};
+		sampled_bindings[0] = { .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
 		for (u32 binding = 1; binding < 5; ++binding)
 			sampled_bindings[binding] = { .binding = binding,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT };
-		VkDescriptorSetLayoutCreateInfo sampled_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 5, .pBindings = sampled_bindings,
-		};
-		VK_CHECK(vkCreateDescriptorSetLayout(ctx->device, &sampled_info, nullptr, &pass.sampled_layout));
-		pass.raymarch_sets.init_persistent(ctx, pass.sampled_layout);
-		pass.temporal_sets.init_persistent(ctx, pass.sampled_layout);
-		pass.composite_sets.init_persistent(ctx, pass.sampled_layout);
-		pass.shadow_sets.init_persistent(ctx, pass.sampled_layout);
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+		pass.sampled_descriptors.init(ctx, sampled_bindings, 5,
+			EDescriptorSetAllocation::Transient);
+		pass.raymarch_sets.init_persistent(ctx, pass.sampled_descriptors.layout);
+		pass.temporal_sets.init_persistent(ctx, pass.sampled_descriptors.layout);
+		pass.composite_sets.init_persistent(ctx, pass.sampled_descriptors.layout);
+		pass.shadow_sets.init_persistent(ctx, pass.sampled_descriptors.layout);
 		pass.params.init("CloudPass::params");
 
 		VkDescriptorSetLayout atmosphere_layouts[] = {
-			frame_data.per_frame_layout, pass.sampled_layout, bruneton_atmosphere_pass.descriptor_layout };
-		VkPipelineLayoutCreateInfo atmosphere_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 3, .pSetLayouts = atmosphere_layouts,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &atmosphere_layout_info, nullptr, &pass.atmosphere_pipeline_layout));
-		VkDescriptorSetLayout basic_layouts[] = { frame_data.per_frame_layout, pass.sampled_layout };
-		VkPipelineLayoutCreateInfo basic_layout_info = {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 2, .pSetLayouts = basic_layouts,
-		};
-		VK_CHECK(vkCreatePipelineLayout(ctx->device, &basic_layout_info, nullptr, &pass.basic_pipeline_layout));
+			frame_data.per_frame_layout, pass.sampled_descriptors.layout,
+			bruneton_atmosphere_pass.descriptors.layout };
+		pass.atmosphere_pipeline_layout.init(ctx, atmosphere_layouts,
+			3, 0, 0);
+		VkDescriptorSetLayout basic_layouts[] = {
+			frame_data.per_frame_layout, pass.sampled_descriptors.layout };
+		pass.basic_pipeline_layout.init(ctx, basic_layouts,
+			2, 0, 0);
 
 		const VkFormat pair_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
 		const VkFormat triple_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
 		const VkFormat shadow_format = VK_FORMAT_R16_SFLOAT;
-		pass.raymarch_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		pass.raymarch_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_raymarch.vert.spv",
 			.fragment_shader_path = "bin/shaders/cloud_raymarch.frag.spv",
-			.pipeline_layout = pass.atmosphere_pipeline_layout,
+			.pipeline_layout = pass.atmosphere_pipeline_layout.layout,
 			.color_formats = pair_formats, .color_format_count = 2,
 		});
-		pass.temporal_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		pass.temporal_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_temporal.vert.spv",
 			.fragment_shader_path = "bin/shaders/cloud_temporal.frag.spv",
-			.pipeline_layout = pass.basic_pipeline_layout,
+			.pipeline_layout = pass.basic_pipeline_layout.layout,
 			.color_formats = pair_formats, .color_format_count = 2,
 		});
-		pass.composite_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		pass.composite_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_composite.vert.spv",
 			.fragment_shader_path = "bin/shaders/cloud_composite.frag.spv",
-			.pipeline_layout = pass.atmosphere_pipeline_layout,
+			.pipeline_layout = pass.atmosphere_pipeline_layout.layout,
 			.color_formats = triple_formats, .color_format_count = 3,
 		});
-		pass.shadow_pipeline = vulkan_create_fullscreen_pipeline(ctx, {
+		pass.shadow_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_shadow.vert.spv",
 			.fragment_shader_path = "bin/shaders/cloud_shadow.frag.spv",
-			.pipeline_layout = pass.basic_pipeline_layout,
+			.pipeline_layout = pass.basic_pipeline_layout.layout,
 			.color_formats = &shadow_format, .color_format_count = 1,
 		});
 	}
@@ -335,28 +326,24 @@ namespace CloudPass
 		VkImageView image1, VkSampler sampler1, VkImageView image2, VkSampler sampler2,
 		VkImageView image3, VkSampler sampler3, VkImageView image4, VkSampler sampler4)
 	{
-		VkDescriptorBufferInfo buffer_info = descriptor_buffer(params_buffer, sizeof(CloudGpuParams));
-		VkDescriptorImageInfo images[] = {
-			descriptor_sampled(sampler1, image1), descriptor_sampled(sampler2, image2),
-			descriptor_sampled(sampler3, image3), descriptor_sampled(sampler4, image4),
-		};
-		VkWriteDescriptorSet writes[5] = {
-			descriptor_write_buffer(set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &buffer_info),
-		};
-		for (u32 index = 0; index < 4; ++index)
-			writes[index + 1] = descriptor_write_image(set, index + 1,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &images[index]);
-		vulkan_update_descriptor_sets(ctx, 5, writes);
+		DescriptorWriter writer = pass.sampled_descriptors.writer(ctx, set, true);
+		writer.buffer(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			params_buffer, sizeof(CloudGpuParams))
+			.sampled(1, sampler1, image1)
+			.sampled(2, sampler2, image2)
+			.sampled(3, sampler3, image3)
+			.sampled(4, sampler4, image4);
+		writer.commit();
 	}
 
-	inline void bind_and_draw(VulkanContext* ctx, VkPipeline pipeline,
-		VkPipelineLayout layout, VkDescriptorSet sampled_set, bool atmosphere)
+	inline void bind_and_draw(VulkanContext* ctx, const FullscreenPipeline& pipeline,
+		const EffectPipelineLayout& layout, VkDescriptorSet sampled_set, bool atmosphere)
 	{
 		VkDescriptorSet sets[] = { frame_data.per_frame_sets[ctx->frame_index], sampled_set,
-			bruneton_atmosphere_pass.descriptor_sets[ctx->frame_index] };
-		vkCmdBindPipeline(vulkan_current_command_buffer(ctx), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			bruneton_atmosphere_pass.descriptors.current(ctx) };
+		pipeline.bind(ctx);
 		vkCmdBindDescriptorSets(vulkan_current_command_buffer(ctx), VK_PIPELINE_BIND_POINT_GRAPHICS,
-			layout, 0, atmosphere ? 3 : 2, sets, 0, nullptr);
+			layout.layout, 0, atmosphere ? 3 : 2, sets, 0, nullptr);
 		vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 	}
 
@@ -376,15 +363,15 @@ namespace CloudPass
 
 	inline void shutdown(VulkanContext* ctx)
 	{
-		vkDestroyPipeline(ctx->device, pass.raymarch_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, pass.temporal_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, pass.composite_pipeline, nullptr);
-		vkDestroyPipeline(ctx->device, pass.shadow_pipeline, nullptr);
+		pass.raymarch_pipeline.shutdown(ctx);
+		pass.temporal_pipeline.shutdown(ctx);
+		pass.composite_pipeline.shutdown(ctx);
+		pass.shadow_pipeline.shutdown(ctx);
 		pass.noise_effect.shutdown(ctx);
-		vkDestroyPipelineLayout(ctx->device, pass.atmosphere_pipeline_layout, nullptr);
-		vkDestroyPipelineLayout(ctx->device, pass.basic_pipeline_layout, nullptr);
+		pass.atmosphere_pipeline_layout.shutdown(ctx);
+		pass.basic_pipeline_layout.shutdown(ctx);
 		pass.params.shutdown();
-		vkDestroyDescriptorSetLayout(ctx->device, pass.sampled_layout, nullptr);
+		pass.sampled_descriptors.shutdown(ctx);
 		vkDestroySampler(ctx->device, pass.repeat_sampler, nullptr);
 		gpu_image_destroy(ctx->allocator, ctx->device, pass.base_shape);
 		gpu_image_destroy(ctx->allocator, ctx->device, pass.erosion);
