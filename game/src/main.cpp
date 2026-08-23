@@ -80,7 +80,6 @@ using std::optional;
 #include "render/copy_to_swapchain_pass.h"
 #include "automation/automated_screenshot.h"
 #include "animation/animation_system.h"
-#include "input/input_api.h"
 
 #include "render/imgui_layer.h"
 #include "input/input_system.h"

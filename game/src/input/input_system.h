@@ -3,9 +3,16 @@
 #include <cstdio>
 
 #include "animation/animation_system.h"
-#include "input/input_api.h"
-#include "render/imgui_layer.h"
 #include "state/state.h"
+
+#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
+#include "imgui/backends/imgui_impl_glfw.h"
+
+namespace ImGuiLayer
+{
+	extern bool initialized;
+}
+#endif
 
 namespace InputSystem
 {

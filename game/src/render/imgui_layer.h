@@ -9,7 +9,7 @@
 #include "render/gt7_tonemapping.h"
 #include "ui/stats_ui.h"
 #include "ui/cpu_profiler_ui.h"
-#include "input/input_api.h"
+#include "input/input_system.h"
 #include "render/cloud_pass.h"
 
 namespace ImGuiLayer

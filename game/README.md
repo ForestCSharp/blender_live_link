@@ -255,9 +255,9 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   application-level values onto `State`; screenshot, buffer, and Vulkan code
   consume the same immutable configuration snapshot for their private options.
 - Live Link message ownership types live in `live_link/live_link_types.h`,
-  separate from the global runtime state that queues them. Input declarations
-  used by the ImGui layer live in the small `input/input_api.h` boundary to keep
-  unity-build include ordering acyclic.
+  separate from the global runtime state that queues them. `input/input_system.h`
+  exposes its mouse-lock API directly; its callback bridge forward-declares the
+  ImGui initialization flag to avoid a cyclic header dependency.
 - `GpuBuffer` is lazy: the live-link thread only *describes*
   buffers; the first draw on the main thread creates them (VMA, host-visible
   + persistently mapped — fine on Apple Silicon UMA).
