@@ -448,6 +448,14 @@ namespace InputSystem
 			{
 				for (auto& [reset_uid, reset_object] : in_state.scene.objects)
 				{
+					// A live Jolt character owns its transform. Preserve it across the
+					// scene reset so the follow camera never observes a one-frame
+					// teleport to the authored initial transform.
+					if (reset_object.has_character && reset_object.character.jph_character != nullptr)
+					{
+						continue;
+					}
+
 					reset_object.current_transform = reset_object.initial_transform;
 					if (reset_object.has_rigid_body && reset_object.rigid_body.jolt_body != nullptr)
 					{
