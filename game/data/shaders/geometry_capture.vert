@@ -3,7 +3,7 @@
 // Probe-capture variant of geometry.vert: the camera changes per cube face,
 // so view_projection rides in push constants instead of the per-frame UBO.
 
-#include "shader_common.h"
+#include "geometry_common.h"
 
 layout(location = 0) in vec4 in_position;
 layout(location = 1) in vec4 in_normal;
@@ -26,9 +26,15 @@ layout(location = 3) flat out int out_material_index;
 void main()
 {
 	ObjectData obj = object_data_array[pc.object_index];
+	GeometryVertexSample vertex = geometry_static_vertex(in_position, in_normal);
+	GeometryWorldVertex world_vertex = geometry_world_vertex(
+		obj.model_matrix,
+		obj.rotation_matrix,
+		vertex.local_position,
+		vertex.local_normal);
 
-	out_world_position = obj.model_matrix * in_position;
-	out_world_normal = obj.rotation_matrix * in_normal;
+	out_world_position = world_vertex.position;
+	out_world_normal = world_vertex.normal;
 	out_texcoord = in_texcoord;
 	out_material_index = obj.material_index;
 

@@ -1,18 +1,12 @@
 #version 450
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+#include "auto_adaptation.h"
 
-struct HistogramBin
-{
-	uint count;
-	uint sum_x;
-	uint sum_y;
-	uint padding;
-};
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, set = 0, binding = 0) readonly buffer HistogramBuffer
 {
-	HistogramBin bins[256];
+	HistogramBin bins[AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT];
 };
 
 layout(std430, set = 0, binding = 1) writeonly buffer MeasurementBuffer
@@ -28,10 +22,6 @@ layout(push_constant) uniform PushConstants
 	float auto_exposure_max_ev;
 } pc;
 
-const float MIDDLE_GRAY = 0.18;
-const float MIN_EV = -16.0;
-const float MAX_EV = 16.0;
-const float FIXED_SCALE = 65535.0;
 const float VIRTUAL_D65_Y = 0.01;
 const vec2 D65_XY = vec2(0.3127, 0.3290);
 const vec3 D65_XYZ = vec3(0.95047, 1.0, 1.08883);
@@ -43,7 +33,8 @@ const mat3 BRADFORD = mat3(
 void main()
 {
 	uint total_count = 0u;
-	for (uint bin = 0u; bin < 256u; ++bin) total_count += bins[bin].count;
+	for (uint bin = 0u; bin < AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT; ++bin)
+		total_count += bins[bin].count;
 	if (total_count == 0u)
 	{
 		measurement.exposure_white = vec4(0.0, D65_XY, 0.0);
@@ -54,14 +45,14 @@ void main()
 
 	uint low_remaining = uint(floor(float(total_count) * 0.02));
 	uint high_remaining = total_count - uint(ceil(float(total_count) * 0.98));
-	uint accepted[256];
-	for (uint bin = 0u; bin < 256u; ++bin)
+	uint accepted[AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT];
+	for (uint bin = 0u; bin < AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT; ++bin)
 	{
 		uint removed = min(low_remaining, bins[bin].count);
 		accepted[bin] = bins[bin].count - removed;
 		low_remaining -= removed;
 	}
-	for (int bin = 255; bin >= 0; --bin)
+	for (int bin = int(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT) - 1; bin >= 0; --bin)
 	{
 		uint removed = min(high_remaining, accepted[bin]);
 		accepted[bin] -= removed;
@@ -73,16 +64,20 @@ void main()
 	float weighted_y = 0.0;
 	float luminance_weight = 0.0;
 	uint accepted_count = 0u;
-	for (uint bin = 0u; bin < 256u; ++bin)
+	for (uint bin = 0u; bin < AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT; ++bin)
 	{
 		if (accepted[bin] == 0u || bins[bin].count == 0u) continue;
-		float ev = MIN_EV + float(bin) * (MAX_EV - MIN_EV) / 256.0;
+		float ev = AUTO_ADAPTATION_MIN_EV + float(bin)
+			* (AUTO_ADAPTATION_MAX_EV - AUTO_ADAPTATION_MIN_EV)
+			/ float(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT);
 		float count = float(accepted[bin]);
 		accepted_count += accepted[bin];
 		weighted_ev += ev * count;
-		float weight = MIDDLE_GRAY * exp2(ev) * count;
-		float average_x = float(bins[bin].sum_x) / (float(bins[bin].count) * FIXED_SCALE);
-		float average_y = float(bins[bin].sum_y) / (float(bins[bin].count) * FIXED_SCALE);
+		float weight = AUTO_ADAPTATION_MIDDLE_GRAY * exp2(ev) * count;
+		float average_x = float(bins[bin].sum_x)
+			/ (float(bins[bin].count) * AUTO_ADAPTATION_FIXED_SCALE);
+		float average_y = float(bins[bin].sum_y)
+			/ (float(bins[bin].count) * AUTO_ADAPTATION_FIXED_SCALE);
 		weighted_x += average_x * weight;
 		weighted_y += average_y * weight;
 		luminance_weight += weight;

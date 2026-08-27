@@ -5,10 +5,7 @@
 // stores radial-depth moments.
 
 #include "octahedral_helpers.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include "sampling.h"
 
 layout(push_constant) uniform fs_params
 {
@@ -25,42 +22,6 @@ layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 frag_color;
 layout(location = 1) out vec4 radial_depth;
-
-float radical_inverse_vdc(uint bits)
-{
-	bits = (bits << 16u) | (bits >> 16u);
-	bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
-	bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
-	bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
-	bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
-	return float(bits) * 2.3283064365386963e-10; // / 0x100000000
-}
-
-vec2 hammersley(uint i, uint N)
-{
-	return vec2(float(i)/float(N), radical_inverse_vdc(i));
-}
-
-vec3 importance_sample_diffuse(vec2 u, vec3 N)
-{
-	float phi = 2.0 * M_PI * u.x;
-	float cos_theta = sqrt(1.0 - u.y);
-	float sin_theta = sqrt(u.y);
-
-	// spherical to cartesian
-	vec3 H;
-	H.x = cos(phi) * sin_theta;
-	H.y = sin(phi) * sin_theta;
-	H.z = cos_theta;
-
-	// tangent space to world
-	vec3 up        = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-	vec3 tangent   = normalize(cross(up, N));
-	vec3 bitangent = cross(N, tangent);
-
-	vec3 sample_vec = tangent * H.x + bitangent * H.y + N * H.z;
-	return normalize(sample_vec);
-}
 
 #define CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT 64u
 #define CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT 32.0
@@ -97,7 +58,7 @@ vec4 compute_cube_moments(vec3 dir)
 
 	for (uint i = 0u; i < sample_count; ++i)
 	{
-		vec2 u = hammersley(i, sample_count);
+		vec2 u = sampling_hammersley(i, sample_count);
 		vec3 sample_dir = importance_sample_radial_depth(u, dir, CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT);
 		sum_moments += texture(cubemap_depth_tex, sample_dir);
 	}
@@ -123,8 +84,8 @@ void main()
 			const uint SAMPLE_COUNT = 1024u;
 			for (uint i = 0u; i < SAMPLE_COUNT; ++i)
 			{
-				vec2 u = hammersley(i, SAMPLE_COUNT);
-				vec3 sample_vec = importance_sample_diffuse(u, normal);
+				vec2 u = sampling_hammersley(i, SAMPLE_COUNT);
+				vec3 sample_vec = sampling_cosine_hemisphere(u, normal);
 
 				irradiance += texture(cubemap_lighting_tex, sample_vec).rgb * max(dot(normal, sample_vec), 0.0);
 			}

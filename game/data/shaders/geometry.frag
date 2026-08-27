@@ -1,6 +1,6 @@
 #version 450
 
-#include "shader_common.h"
+#include "geometry_common.h"
 
 layout(location = 0) in vec4 in_world_position;
 layout(location = 1) in vec4 in_world_normal;
@@ -37,72 +37,10 @@ void main()
 		out_roughness_metallic_emissive = vec4(1.0, 0.0, 1.0, 0.0);
 		return;
 	}
-	if (in_material_index >= 0)
-	{
-		Material material = material_data_array[in_material_index];
-
-		// Base Color
-		if (material.base_color_image_index >= 0)
-		{
-			out_color = texture(sampler2D(SCENE_TEXTURE(material.base_color_image_index), scene_sampler), in_texcoord);
-		}
-		else
-		{
-			out_color = material.base_color;
-		}
-
-		// Metallic
-		if (material.metallic_image_index >= 0)
-		{
-			out_roughness_metallic_emissive.g = texture(sampler2D(SCENE_TEXTURE(material.metallic_image_index), scene_sampler), in_texcoord).r;
-		}
-		else
-		{
-			out_roughness_metallic_emissive.g = material.metallic;
-		}
-
-		// Roughness
-		if (material.roughness_image_index >= 0)
-		{
-			out_roughness_metallic_emissive.r = texture(sampler2D(SCENE_TEXTURE(material.roughness_image_index), scene_sampler), in_texcoord).r;
-		}
-		else
-		{
-			out_roughness_metallic_emissive.r = material.roughness;
-		}
-
-		// Emission Color and Strength
-		if (material.emission_strength > 0.0)
-		{
-			out_roughness_metallic_emissive.b = material.emission_strength;
-			if (material.emission_color_image_index >= 0)
-			{
-				out_color.rgb = texture(sampler2D(SCENE_TEXTURE(material.emission_color_image_index), scene_sampler), in_texcoord).rgb;
-				out_color.a = 1.0;
-			}
-			else
-			{
-				out_color.rgb = material.emission_color.rgb;
-				out_color.a = 1.0;
-			}
-		}
-		else
-		{
-			out_roughness_metallic_emissive.b = 0.0;
-		}
-
-		out_roughness_metallic_emissive.a = 0.0;
-		out_position = in_world_position;
-		out_normal = normalize(in_world_normal);
-	}
-	else
-	{
-		// Material-less objects use a lit grey fallback and retain valid
-		// geometry data so scenes remain legible before materials are
-		// assigned.
-		out_color = vec4(0.6, 0.6, 0.6, 1.0);
-		out_roughness_metallic_emissive = vec4(0.5, 0.0, 0.0, 0.0);
-		out_position = in_world_position;
-		out_normal = normalize(in_world_normal);
-	}
+	GeometryMaterialSample material_sample = geometry_sample_material(
+		in_material_index, in_texcoord);
+	out_color = material_sample.color;
+	out_roughness_metallic_emissive = material_sample.roughness_metallic_emissive;
+	out_position = in_world_position;
+	out_normal = normalize(in_world_normal);
 }

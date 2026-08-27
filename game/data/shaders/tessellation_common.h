@@ -90,6 +90,41 @@ struct TessellationIndex
 	uint value;
 };
 
+vec3 tess_world_position(mat4 model_matrix, vec3 local_position)
+{
+	return (model_matrix * vec4(local_position, 1.0)).xyz;
+}
+
+float tess_raw_lod_for_edge_at_distance(
+	float edge_length,
+	float distance_to_camera,
+	vec3 projection_parameters)
+{
+	float safe_distance = max(distance_to_camera, 0.001);
+	float sine_half_angle = clamp(
+		edge_length / (2.0 * safe_distance), 0.0, 1.0);
+	float angular_length = 2.0 * asin(sine_half_angle);
+	float pixel_length = (angular_length / max(projection_parameters.x, 0.001))
+		* projection_parameters.y;
+	return max(
+		pixel_length / max(projection_parameters.z, 1.0), 1.0);
+}
+
+float tess_raw_lod_for_edge(
+	vec3 a,
+	vec3 b,
+	vec3 camera_position,
+	vec3 projection_parameters)
+{
+	vec3 midpoint = (a + b) * 0.5;
+	float distance_to_camera = max(
+		length(midpoint - camera_position), 0.001);
+	return tess_raw_lod_for_edge_at_distance(
+		length(b - a),
+		distance_to_camera,
+		projection_parameters);
+}
+
 /**
  * Returns the number of vertices in a triangular tessellation grid for the requested factor.
  * The factor is clamped to the supported shader range before the triangular-number count is computed.

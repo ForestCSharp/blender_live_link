@@ -1,6 +1,6 @@
 #version 450
 
-#include "shader_common.h"
+#include "geometry_common.h"
 
 layout(location = 0) in vec4 in_position;
 layout(location = 1) in vec4 in_normal;
@@ -24,13 +24,19 @@ layout(location = 5) flat out int out_is_skinned_mesh;
 void main()
 {
 	ObjectData obj = object_data_array[pc.object_index];
+	GeometryVertexSample vertex = geometry_static_vertex(in_position, in_normal);
+	GeometryWorldVertex world_vertex = geometry_world_vertex(
+		obj.model_matrix,
+		obj.rotation_matrix,
+		vertex.local_position,
+		vertex.local_normal);
 
-	out_world_position = obj.model_matrix * in_position;
-	out_world_normal = obj.rotation_matrix * in_normal;
+	out_world_position = world_vertex.position;
+	out_world_normal = world_vertex.normal;
 	out_texcoord = in_texcoord;
 	out_material_index = obj.material_index;
-	out_skin_debug_color = vec4(0.0);
-	out_is_skinned_mesh = 0;
+	out_skin_debug_color = vertex.skin_debug_color;
+	out_is_skinned_mesh = vertex.is_skinned;
 
 	gl_Position = per_frame.view_projection * out_world_position;
 }

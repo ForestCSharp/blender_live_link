@@ -5,6 +5,7 @@
 // coefficient or lobe.
 
 #include "probe_radiance.h"
+#include "sampling.h"
 
 layout(push_constant) uniform cs_params
 {
@@ -36,29 +37,6 @@ const int SG9_FIT_ITERATIONS = 4;
 shared vec3 shared_sg9_axes[SG9_NUM_LOBES];
 shared float shared_sg9_sharpness[SG9_NUM_LOBES];
 
-float radical_inverse_vdc(uint bits)
-{
-	bits = (bits << 16u) | (bits >> 16u);
-	bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
-	bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
-	bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
-	bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
-	return float(bits) * 2.3283064365386963e-10;
-}
-
-vec2 hammersley(uint i, uint N)
-{
-	return vec2(float(i) / float(N), radical_inverse_vdc(i));
-}
-
-vec3 sample_sphere(vec2 u)
-{
-	float z = 1.0 - 2.0 * u.x;
-	float r = sqrt(max(0.0, 1.0 - z * z));
-	float phi = 2.0 * M_PI * u.y;
-	return vec3(r * cos(phi), r * sin(phi), z);
-}
-
 float sg9_basis_sum(vec3 dir)
 {
 	float sum_basis = 0.0;
@@ -87,7 +65,7 @@ void main()
 		vec3 accumulated = vec3(0.0);
 		for (uint i = 0u; i < num_samples; ++i)
 		{
-			vec3 dir = sample_sphere(hammersley(i, num_samples));
+			vec3 dir = sampling_uniform_sphere(sampling_hammersley(i, num_samples));
 			vec3 radiance = texture(cubemap_lighting_tex, dir).rgb;
 			accumulated += radiance * sh9_basis(int(coefficient_index), dir);
 		}
@@ -117,7 +95,7 @@ void main()
 
 				for (uint i = 0u; i < num_samples; ++i)
 				{
-					vec3 dir = sample_sphere(hammersley(i, num_samples));
+					vec3 dir = sampling_uniform_sphere(sampling_hammersley(i, num_samples));
 					float basis = sg_lobe_diffuse_response(current_axis, current_sharpness, dir);
 					float responsibility = basis / sg9_basis_sum(dir);
 					float weight = responsibility;
@@ -152,7 +130,7 @@ void main()
 		float accumulated_weight = 0.0;
 		for (uint i = 0u; i < num_samples; ++i)
 		{
-			vec3 dir = sample_sphere(hammersley(i, num_samples));
+			vec3 dir = sampling_uniform_sphere(sampling_hammersley(i, num_samples));
 			vec3 radiance = texture(cubemap_lighting_tex, dir).rgb;
 			float basis = sg_lobe_diffuse_response(final_axis, final_sharpness, dir);
 			float responsibility = basis / sg9_basis_sum(dir);

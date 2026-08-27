@@ -7,6 +7,7 @@
 #include "gi_helpers.h"
 #include "octahedral_helpers.h"
 #include "probe_radiance.h"
+#include "evsm.h"
 #define BRUNETON_PARAMETER_BINDING 20
 #include "bruneton_parameters.h"
 
@@ -231,19 +232,6 @@ vec3 sample_sun_light(
 // ---- EVSM shadow sampling (enabled in the shadow step) ----
 
 #if defined(SHADOWS_ENABLED)
-
-const float EVSM_POSITIVE_EXPONENT = 5.0;
-const float EVSM_NEGATIVE_EXPONENT = 5.0;
-
-// Keep this warp synchronized with the shadow-depth write pass.
-vec2 evsm_warp_depth(float depth)
-{
-	float centered_depth = depth * 2.0 - 1.0;
-	return vec2(
-		exp(EVSM_POSITIVE_EXPONENT * centered_depth),
-		-exp(-EVSM_NEGATIVE_EXPONENT * centered_depth)
-	);
-}
 
 float reduce_light_bleeding(float p_max, float reduction_amount)
 {

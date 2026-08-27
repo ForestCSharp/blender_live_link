@@ -1,6 +1,6 @@
 #version 450
 
-#include "shader_common.h"
+#include "geometry_common.h"
 
 layout(location = 0) in vec4 in_position;
 layout(location = 1) in vec4 in_normal;

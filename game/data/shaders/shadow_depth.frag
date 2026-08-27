@@ -3,19 +3,9 @@
 // Writes EVSM4 moments for lighting. The depth attachment is used only while
 // rendering this pass and is not sampled afterward.
 
+#include "evsm.h"
+
 layout(location = 0) out vec4 frag_color;
-
-const float EVSM_POSITIVE_EXPONENT = 5.0;
-const float EVSM_NEGATIVE_EXPONENT = 5.0;
-
-vec2 evsm_warp_depth(float depth)
-{
-	float centered_depth = depth * 2.0 - 1.0;
-	return vec2(
-		exp(EVSM_POSITIVE_EXPONENT * centered_depth),
-		-exp(-EVSM_NEGATIVE_EXPONENT * centered_depth)
-	);
-}
 
 void main()
 {

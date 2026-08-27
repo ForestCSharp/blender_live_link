@@ -1,27 +1,16 @@
 #version 450
 
+#include "auto_adaptation.h"
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 
-struct HistogramBin
-{
-	uint count;
-	uint sum_x;
-	uint sum_y;
-	uint padding;
-};
-
 layout(std430, set = 0, binding = 1) buffer HistogramBuffer
 {
-	HistogramBin bins[256];
+	HistogramBin bins[AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT];
 };
 
-const uvec2 METER_SIZE = uvec2(256, 144);
-const float MIDDLE_GRAY = 0.18;
-const float MIN_EV = -16.0;
-const float MAX_EV = 16.0;
-const float FIXED_SCALE = 65535.0;
 const mat3 LINEAR_SRGB_TO_XYZ = mat3(
 	vec3(0.4124564, 0.2126729, 0.0193339),
 	vec3(0.3575761, 0.7151522, 0.1191920),
@@ -30,8 +19,8 @@ const mat3 LINEAR_SRGB_TO_XYZ = mat3(
 void main()
 {
 	uvec2 pixel = gl_GlobalInvocationID.xy;
-	if (any(greaterThanEqual(pixel, METER_SIZE))) return;
-	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(METER_SIZE);
+	if (any(greaterThanEqual(pixel, AUTO_ADAPTATION_METER_SIZE))) return;
+	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(AUTO_ADAPTATION_METER_SIZE);
 	vec3 color = textureLod(scene_color, uv, 0.0).rgb;
 	if (any(isnan(color)) || any(isinf(color)) || any(lessThan(color, vec3(0.0)))) return;
 	vec3 xyz = LINEAR_SRGB_TO_XYZ * color;
@@ -41,12 +30,16 @@ void main()
 		|| isnan(luminance) || isinf(luminance)
 		|| isnan(xyz_sum) || isinf(xyz_sum)) return;
 
-	float ev = log2(luminance / MIDDLE_GRAY);
-	float normalized = (ev - MIN_EV) / (MAX_EV - MIN_EV);
-	uint bin_index = uint(clamp(floor(normalized * 256.0), 0.0, 255.0));
+	float ev = log2(luminance / AUTO_ADAPTATION_MIDDLE_GRAY);
+	float normalized = (ev - AUTO_ADAPTATION_MIN_EV)
+		/ (AUTO_ADAPTATION_MAX_EV - AUTO_ADAPTATION_MIN_EV);
+	uint bin_index = uint(clamp(
+		floor(normalized * float(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT)),
+		0.0,
+		float(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT - 1u)));
 	float x = clamp(xyz.x / xyz_sum, 0.0, 1.0);
 	float y = clamp(xyz.y / xyz_sum, 0.0, 1.0);
 	atomicAdd(bins[bin_index].count, 1u);
-	atomicAdd(bins[bin_index].sum_x, uint(round(x * FIXED_SCALE)));
-	atomicAdd(bins[bin_index].sum_y, uint(round(y * FIXED_SCALE)));
+	atomicAdd(bins[bin_index].sum_x, uint(round(x * AUTO_ADAPTATION_FIXED_SCALE)));
+	atomicAdd(bins[bin_index].sum_y, uint(round(y * AUTO_ADAPTATION_FIXED_SCALE)));
 }
