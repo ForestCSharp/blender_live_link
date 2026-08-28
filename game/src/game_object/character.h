@@ -19,6 +19,8 @@ struct CharacterSettings
 	bool player_controlled = false;
 	float move_speed = 20.0f;
 	float jump_speed = 10.0f;
+	float height = 6.0f;
+	float radius = 1.0f;
 };
 
 struct Character
@@ -35,9 +37,8 @@ Character character_create(JoltState& in_jolt_state, const CharacterSettings& in
 {
 	// Create Character's Jolt Shape
 
-	//FCS TODO: Add to character component 
-	const float character_height = 3.0f;
-	const float character_radius = 0.5f;
+	const float character_height = in_settings.height;
+	const float character_radius = in_settings.radius;
 
 	JPH::RefConst<JPH::Shape> character_shape = JPH::RotatedTranslatedShapeSettings(
 		JPH::Vec3::sZero(), 

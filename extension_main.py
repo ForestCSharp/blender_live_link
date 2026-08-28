@@ -2469,6 +2469,8 @@ class Component_Character(Component):
     player_controlled: BoolProperty(name="Player Controlled", default=False)
     move_speed: FloatProperty(name="Move Speed", default=20.0)
     jump_speed: FloatProperty(name="Jump Speed", default=10.0)
+    height: FloatProperty(name="Height", default=6.0, min=0.0)
+    radius: FloatProperty(name="Radius", default=1.0, min=0.0)
     hide_mesh_in_game: BoolProperty(
         name="Hide Mesh in Game",
         description="Hide this object's mesh in-game while keeping character collision and gameplay active",
@@ -2482,6 +2484,8 @@ class Component_Character(Component):
         GameplayComponentCharacter.AddPlayerControlled(builder, self.player_controlled)
         GameplayComponentCharacter.AddMoveSpeed(builder, self.move_speed)
         GameplayComponentCharacter.AddJumpSpeed(builder, self.jump_speed)
+        GameplayComponentCharacter.AddHeight(builder, self.height)
+        GameplayComponentCharacter.AddRadius(builder, self.radius)
         return GameplayComponentCharacter.End(builder)
 
     def get_flatbuffers_value_type(self):

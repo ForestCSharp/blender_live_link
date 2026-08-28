@@ -164,6 +164,8 @@ table GameplayComponentCharacter
 	player_controlled	: bool;
 	move_speed			: float;
 	jump_speed			: float;
+	height				: float = 6.0;
+	radius				: float = 1.0;
 }
 
 table GameplayComponentCameraControl

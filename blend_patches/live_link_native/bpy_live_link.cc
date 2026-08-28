@@ -1266,7 +1266,9 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
           builder,
           py_bool_attr(player, "player_controlled", false),
           py_float_attr(player, "move_speed", 20.0f),
-          py_float_attr(player, "jump_speed", 10.0f));
+          py_float_attr(player, "jump_speed", 10.0f),
+          py_float_attr(player, "height", 6.0f),
+          py_float_attr(player, "radius", 1.0f));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentCharacter, value.Union()));
     }
@@ -2732,6 +2734,8 @@ void compare_component(DiffList &diffs,
       compare_exact(diffs, path + ".character.player_controlled", native_character->player_controlled(), python_character->player_controlled());
       compare_float(diffs, path + ".character.move_speed", native_character->move_speed(), python_character->move_speed());
       compare_float(diffs, path + ".character.jump_speed", native_character->jump_speed(), python_character->jump_speed());
+      compare_float(diffs, path + ".character.height", native_character->height(), python_character->height());
+      compare_float(diffs, path + ".character.radius", native_character->radius(), python_character->radius());
     }
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCameraControl &&

@@ -613,6 +613,8 @@ namespace LiveLinkSystem
 										.player_controlled = character_component->player_controlled(),
 										.move_speed = character_component->move_speed(),
 										.jump_speed = character_component->jump_speed(),
+										.height = character_component->height(),
+										.radius = character_component->radius(),
 									},
 								};
 								break;
