@@ -16,6 +16,9 @@ from pathlib import Path
 import bpy
 from mathutils import Matrix
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ci_linked_collection_smoke import validate as validate_linked_collection_export
+
 
 DELETED_OBJECT_UIDS = (424242, 424243, 424244)
 
@@ -74,6 +77,7 @@ def validate_compression_registries(extension_module) -> None:
         ("PART", "part"),
         ("ATTACHMENT_POINT", "attachment_point"),
         ("SKY_ATMOSPHERE", "sky_atmosphere"),
+        ("CLOUD_SYSTEM", "cloud_system"),
     ]
     actual_components = [
         (component_class.type_name, group_name)
@@ -125,6 +129,22 @@ def validate_compression_registries(extension_module) -> None:
             raise AssertionError("Exceptional depsgraph suspension did not restore state")
     finally:
         callback.enabled = previous_enabled
+
+    key = (101, 202, 303)
+    candidate = extension_module.InstanceUidRegistry.candidate_for_key(key)
+    registry = extension_module.InstanceUidRegistry()
+    registry.prepare([key], {candidate})
+    if registry.uid_for_key(key) == candidate:
+        raise AssertionError("Occurrence UID allocation did not probe around a direct UID")
+
+    collision_registry = extension_module.InstanceUidRegistry()
+    collision_registry.prepare([key], set())
+    old_uid = collision_registry.uid_for_key(key)
+    collision_registry.prepare([key], {old_uid})
+    if collision_registry.uid_for_key(key) == old_uid:
+        raise AssertionError("A later direct UID collision did not reassign the occurrence")
+    if collision_registry.take_retired_uids() != {old_uid}:
+        raise AssertionError("Reassigned occurrence UID was not queued for deletion")
 
 
 def parse_update(extension_module, payload: bytes):
@@ -311,6 +331,7 @@ def create_synthetic_scene():
     light_object = bpy.data.objects.new("CI Sun", light_data)
     bpy.context.scene.collection.objects.link(light_object)
     add_component(light_object, "FOG_CONTROLLER")
+    add_component(light_object, "CLOUD_SYSTEM")
     sky_component = add_component(light_object, "SKY_ATMOSPHERE")
     sky_component.sky_atmosphere.enabled = True
     sky_component.sky_atmosphere.planet_center_z_m = -6358766.0
@@ -353,6 +374,21 @@ def decoded_name(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8")
     return str(value)
+
+
+def update_objects_by_name(update):
+    return {
+        decoded_name(update.Objects(index).Name()): update.Objects(index)
+        for index in range(update.ObjectsLength())
+    }
+
+
+def component_of_type(exported_object, component_type):
+    for component_index in range(exported_object.ComponentsLength()):
+        container = exported_object.Components(component_index)
+        if container.ValueType() == component_type:
+            return container.Value()
+    return None
 
 
 def validate_synthetic_export(extension_module, capture_path: Path) -> None:
@@ -669,6 +705,12 @@ def main() -> None:
     validate_compression_registries(extension_module)
     disable_live_update_scheduling(extension_module)
     validate_synthetic_export(extension_module, capture_path)
+    validate_linked_collection_export(
+        extension_module,
+        capture_path,
+        parse_update,
+        capture_path.with_suffix(".blend"),
+    )
     validate_repository_blend_file(extension_module, blend_file)
     print("BLENDER_LIVE_LINK_CI_OK")
 

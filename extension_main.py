@@ -20,10 +20,12 @@ import socket
 import struct
 import traceback
 import time
+import zlib
 
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 from io import StringIO
-from mathutils import Vector
+from mathutils import Matrix as MathMatrix, Vector
 
 # ignore SIGPIPE so that writing to a closed socket raises a Python exception
 import signal
@@ -83,6 +85,113 @@ EXPORT_TIMING_KEYS = (
     "image_flatbuffer_pack",
     "flatbuffer_finish",
 )
+
+INSTANCE_UID_MIN = 0x40000000
+INSTANCE_UID_MAX = 0x7FFFFFFF
+
+# Datablocks belonging to the temporary collection-evaluation scene. Their
+# creation and teardown must never be mistaken for authored scene changes.
+EVALUATION_SCENE_PREFIX = "__LiveLinkEvaluation__"
+# Blender uses session_uid 0 for "unset"; no real datablock ever has it.
+UNSET_SESSION_UID = 0
+
+
+@dataclass
+class ExportOccurrence:
+    """One authored object as it appears in the exported scene."""
+
+    source_object: object
+    evaluation_object: object
+    unique_id: int
+    name: str
+    matrix_world: object
+    visibility: bool
+    dependency_graph: object
+    reference_uid_map: dict = field(default_factory=dict)
+    occurrence_key: tuple = field(default_factory=tuple)
+    instancer_path: tuple = field(default_factory=tuple)
+    dependency_ids: frozenset = field(default_factory=frozenset)
+
+    @property
+    def matrix_world_values(self):
+        return tuple(float(self.matrix_world[row][column]) for row in range(4) for column in range(4))
+
+    def remap_uid(self, blender_object):
+        if blender_object is None:
+            return -1
+        source_uid = blender_object.session_uid
+        return self.reference_uid_map.get(source_uid, source_uid)
+
+
+@dataclass(frozen=True)
+class OccurrenceSnapshot:
+    unique_id: int
+    matrix_world_values: tuple
+    visibility: bool
+    dependency_ids: frozenset
+    instancer_path: tuple
+
+    @classmethod
+    def from_occurrence(cls, occurrence):
+        return cls(
+            unique_id=occurrence.unique_id,
+            matrix_world_values=occurrence.matrix_world_values,
+            visibility=occurrence.visibility,
+            dependency_ids=occurrence.dependency_ids,
+            instancer_path=occurrence.instancer_path,
+        )
+
+
+class InstanceUidRegistry:
+    """Stable positive int32 IDs for collection-expanded object occurrences."""
+
+    def __init__(self):
+        self.key_to_uid = {}
+        self.uid_to_key = {}
+        self.retired_uids = set()
+
+    def clear(self):
+        self.key_to_uid.clear()
+        self.uid_to_key.clear()
+        self.retired_uids.clear()
+
+    @staticmethod
+    def candidate_for_key(key):
+        payload = b''.join(struct.pack('<I', int(value) & 0xFFFFFFFF) for value in key)
+        return INSTANCE_UID_MIN | (zlib.crc32(payload) & (INSTANCE_UID_MIN - 1))
+
+    @staticmethod
+    def next_candidate(candidate):
+        return INSTANCE_UID_MIN if candidate >= INSTANCE_UID_MAX else candidate + 1
+
+    def prepare(self, keys, reserved_uids):
+        reserved_uids = {int(uid) for uid in reserved_uids}
+
+        # A direct Blender UID always wins. Reallocate an old occurrence if a
+        # newly-created direct object claims its synthetic slot.
+        for key, uid in list(self.key_to_uid.items()):
+            if uid not in reserved_uids:
+                continue
+            self.retired_uids.add(uid)
+            del self.key_to_uid[key]
+            self.uid_to_key.pop(uid, None)
+
+        for key in sorted(set(keys)):
+            if key in self.key_to_uid:
+                continue
+            candidate = self.candidate_for_key(key)
+            while candidate in reserved_uids or candidate in self.uid_to_key:
+                candidate = self.next_candidate(candidate)
+            self.key_to_uid[key] = candidate
+            self.uid_to_key[candidate] = key
+
+    def uid_for_key(self, key):
+        return self.key_to_uid[key]
+
+    def take_retired_uids(self):
+        retired = set(self.retired_uids)
+        self.retired_uids.clear()
+        return retired
 
 
 class ExportStats(dict):
@@ -147,6 +256,12 @@ def build_int32_vector(builder, decoded_values, start_vector):
 def print(*args, **kwargs):
     # Standard print to stdout
     builtins.print(*args, **kwargs)
+
+    # Console operators can force a depsgraph refresh. Never invoke them from
+    # background mode or while a temporary collection-evaluation scene is
+    # active; doing so can invalidate evaluated data that is being exported.
+    if bpy.app.background or bpy.context.scene.name.startswith(EVALUATION_SCENE_PREFIX):
+        return
     
     # Get the formatted string from print
     output = ' '.join(str(arg) for arg in args)
@@ -227,8 +342,8 @@ def get_editor_camera_snapshot(context=None):
 def is_mesh_export_object(obj):
     return obj is not None and obj.type in {'MESH', 'CURVE'}
 
-def object_visible_in_game(obj):
-    if not obj.visible_get():
+def object_visible_in_game(obj, view_layer=None):
+    if not obj.visible_get(view_layer=view_layer):
         return False
 
     settings = getattr(obj, "live_link_settings", None)
@@ -248,6 +363,15 @@ def object_visible_in_game(obj):
 class LiveLinkConnection():
     def __init__(self):
         self.update_sequence = 0
+        self.instance_uid_registry = InstanceUidRegistry()
+        self.export_snapshot = {}
+        # bpy.context is overridden to the temporary evaluation scene while a
+        # collection instance is expanded, so the host scene and its view layer
+        # are recorded here for the paths that must not follow that override.
+        self.active_export_scene = None
+        self.active_export_view_layer = None
+        # Memo for one export pass; None outside a pass. See get_armature_actions.
+        self.export_pass_armature_actions = None
         self.create_socket()
         
     def __del__(self):
@@ -344,15 +468,30 @@ class LiveLinkConnection():
     def mesh_needs_triangulation(self, mesh):
         return any(polygon.loop_total != 3 for polygon in mesh.polygons)
 
+    def export_scene_for_object(self, blender_object):
+        """Scene and view layer that own blender_object during this export.
+
+        Frame stepping and depsgraph flushes only reach objects belonging to
+        the scene they are issued against. Collection occurrences are sampled
+        from temporary copies in the evaluation scene while direct objects are
+        sampled from the host scene, so the overridden bpy.context cannot serve
+        both.
+        """
+        host_scene = self.active_export_scene
+        if host_scene is not None and host_scene.objects.get(blender_object.name) == blender_object:
+            return host_scene, self.active_export_view_layer or bpy.context.view_layer
+        return bpy.context.scene, bpy.context.view_layer
+
     def get_mesh(self, obj, dependency_graph, use_rest_pose=False, export_stats=None):
         disabled_modifiers = []
         mesh_eval_start = time.perf_counter()
+        _, view_layer = self.export_scene_for_object(obj)
         if use_rest_pose:
             for modifier in obj.modifiers:
                 if modifier.type == 'ARMATURE' and modifier.show_viewport:
                     disabled_modifiers.append(modifier)
                     modifier.show_viewport = False
-            bpy.context.view_layer.update()
+            view_layer.update()
 
         try:
             if obj.type == 'MESH' and obj.mode == 'EDIT':
@@ -378,7 +517,7 @@ class LiveLinkConnection():
             for modifier in disabled_modifiers:
                 modifier.show_viewport = True
             if disabled_modifiers:
-                bpy.context.view_layer.update()
+                view_layer.update()
 
     def get_mesh_armature(self, in_object):
         if not in_object or in_object.type != 'MESH':
@@ -432,9 +571,384 @@ class LiveLinkConnection():
 
         return objects_to_export
 
-    def resolve_attachment_point(self, marker, attachment, dependency_graph):
+    @staticmethod
+    def _object_enabled(blender_object):
+        settings = getattr(blender_object, "live_link_settings", None)
+        return settings is None or settings.enable_live_link
+
+    @staticmethod
+    def _collection_instance(blender_object):
+        if blender_object is None or blender_object.instance_type != 'COLLECTION':
+            return None
+        return blender_object.instance_collection
+
+    def _scope_export_objects(self, collection):
+        all_objects = sorted(collection.all_objects, key=lambda obj: (obj.session_uid, obj.name))
+        enabled = [obj for obj in all_objects if self._object_enabled(obj)]
+        required_ids = {obj.session_uid for obj in enabled}
+        for obj in enabled:
+            if obj.type == 'MESH':
+                armature = self.get_mesh_armature(obj)
+                if armature is not None:
+                    required_ids.add(armature.session_uid)
+        return [obj for obj in all_objects if obj.session_uid in required_ids]
+
+    @staticmethod
+    def _collection_dependency_uids(collection):
+        dependency_uids = set()
+
+        def visit(current):
+            uid = int(current.session_uid)
+            if uid in dependency_uids:
+                return
+            dependency_uids.add(uid)
+            for child in current.children:
+                visit(child)
+
+        visit(collection)
+        return tuple(sorted(dependency_uids))
+
+    def _walk_instance_collections(self, root_objects):
+        collections = {}
+        instance_keys = set()
+
+        def walk(collection, path, ancestors):
+            collection_uid = collection.session_uid
+            if collection_uid in ancestors:
+                print(
+                    "Live Link collection instance cycle skipped: "
+                    + " -> ".join(str(value) for value in (*ancestors, collection_uid))
+                )
+                return
+            collections[collection_uid] = collection
+            next_ancestors = (*ancestors, collection_uid)
+            for source in self._scope_export_objects(collection):
+                key = (*path, source.session_uid)
+                instance_keys.add(key)
+                nested_collection = self._collection_instance(source)
+                if nested_collection is not None and self._object_enabled(source):
+                    walk(nested_collection, key, next_ancestors)
+
+        for root in root_objects:
+            collection = self._collection_instance(root)
+            if collection is not None and self._object_enabled(root):
+                walk(collection, (root.session_uid,), ())
+
+        return list(collections.values()), instance_keys
+
+    @contextmanager
+    def export_evaluation_context(self, root_objects):
+        active_depsgraph = bpy.context.evaluated_depsgraph_get()
+        active_view_layer = bpy.context.view_layer
+        active_scene = bpy.context.scene
+        collections, instance_keys = self._walk_instance_collections(root_objects)
+        direct_uids = {obj.session_uid for obj in active_scene.objects}
+        self.instance_uid_registry.prepare(instance_keys, direct_uids)
+
+        self.active_export_scene = active_scene
+        self.active_export_view_layer = active_view_layer
+        self.export_pass_armature_actions = {}
+
+        if not collections:
+            try:
+                yield active_depsgraph, active_depsgraph, active_view_layer, active_view_layer, {}
+            finally:
+                self.active_export_scene = None
+                self.active_export_view_layer = None
+                self.export_pass_armature_actions = None
+            return
+
+        source_scene = active_scene
+        evaluation_scene = None
+        evaluation_objects = {}
+        temporary_objects = []
+        with suspend_depsgraph_updates():
+            try:
+                evaluation_scene = bpy.data.scenes.new(EVALUATION_SCENE_PREFIX)
+                evaluation_scene.frame_start = source_scene.frame_start
+                evaluation_scene.frame_end = source_scene.frame_end
+                evaluation_scene.render.fps = source_scene.render.fps
+                evaluation_scene.render.fps_base = source_scene.render.fps_base
+                evaluation_scene.frame_set(
+                    source_scene.frame_current,
+                    subframe=source_scene.frame_subframe,
+                )
+                for collection in sorted(collections, key=lambda item: (item.session_uid, item.name)):
+                    try:
+                        evaluation_scene.collection.children.link(collection)
+                    except RuntimeError:
+                        # A collection may already be reachable through another linked collection.
+                        pass
+
+                source_objects = {
+                    source.session_uid: source
+                    for collection in collections
+                    for source in collection.all_objects
+                }
+                for source_uid, source in sorted(source_objects.items()):
+                    needs_copy = source.type == 'ARMATURE' or (
+                        is_mesh_export_object(source) and self.get_mesh_armature(source) is not None
+                    )
+                    if not needs_copy:
+                        continue
+                    evaluation_object = source.copy()
+                    evaluation_object.name = f"{EVALUATION_SCENE_PREFIX}{source.name}"
+                    evaluation_object.hide_viewport = False
+                    evaluation_object.hide_render = False
+                    evaluation_scene.collection.objects.link(evaluation_object)
+                    evaluation_objects[source_uid] = evaluation_object
+                    temporary_objects.append(evaluation_object)
+
+                for source_uid, evaluation_object in evaluation_objects.items():
+                    source = source_objects[source_uid]
+                    if source.parent is not None:
+                        evaluation_object.parent = evaluation_objects.get(
+                            source.parent.session_uid,
+                            source.parent,
+                        )
+                    for modifier in evaluation_object.modifiers:
+                        if modifier.type == 'ARMATURE':
+                            if modifier.object is not None:
+                                modifier.object = evaluation_objects.get(
+                                    modifier.object.session_uid,
+                                    modifier.object,
+                                )
+                            modifier.show_viewport = False
+
+                evaluation_view_layer = evaluation_scene.view_layers[0]
+                with bpy.context.temp_override(
+                    scene=evaluation_scene,
+                    view_layer=evaluation_view_layer,
+                ):
+                    evaluation_depsgraph = bpy.context.evaluated_depsgraph_get()
+                    yield (
+                        active_depsgraph,
+                        evaluation_depsgraph,
+                        active_view_layer,
+                        evaluation_view_layer,
+                        evaluation_objects,
+                    )
+            finally:
+                if evaluation_scene is not None:
+                    bpy.data.scenes.remove(evaluation_scene)
+                for temporary_object in temporary_objects:
+                    if temporary_object.name in bpy.data.objects:
+                        bpy.data.objects.remove(temporary_object)
+                # Building and tearing down the evaluation scene tags the
+                # depsgraph. Flush it here, while depsgraph callbacks are still
+                # suspended, so the exporter never observes its own bookkeeping
+                # as an authored change and reschedules itself indefinitely.
+                try:
+                    active_view_layer.update()
+                except RuntimeError:
+                    pass
+                self.active_export_scene = None
+                self.active_export_view_layer = None
+                self.export_pass_armature_actions = None
+
+    @staticmethod
+    def _id_uid(blender_id):
+        return getattr(blender_id, "session_uid", None) if blender_id is not None else None
+
+    def _object_dependency_ids(self, blender_object, instancer_path=(), collection_path=()):
+        dependency_ids = {int(value) for value in instancer_path}
+        dependency_ids.update(int(value) for value in collection_path)
+
+        def add(blender_id):
+            uid = self._id_uid(blender_id)
+            if uid is not None:
+                dependency_ids.add(int(uid))
+
+        add(blender_object)
+        add(getattr(blender_object, "data", None))
+        add(getattr(getattr(blender_object, "animation_data", None), "action", None))
+        for material_slot in getattr(blender_object, "material_slots", []):
+            material = material_slot.material
+            add(material)
+            node_tree = getattr(material, "node_tree", None) if material else None
+            if node_tree:
+                # The node tree is reported separately from its material, so it
+                # has to be a tracked dependency in its own right.
+                add(node_tree)
+                for node in node_tree.nodes:
+                    add(getattr(node, "image", None))
+        armature = self.get_mesh_armature(blender_object)
+        if armature is not None:
+            add(armature)
+            add(armature.data)
+            for action in self.get_armature_actions(armature):
+                add(action)
+        return frozenset(dependency_ids)
+
+    def _make_direct_occurrence(self, blender_object, dependency_graph, view_layer=None):
+        uid = blender_object.session_uid
+        # A direct object lives in the host scene, so it must be resolved
+        # against the host view layer. visible_get() silently returns False for
+        # an object with no base in the view layer it is given, which would
+        # hide the whole scene while the evaluation-scene override is active.
+        return ExportOccurrence(
+            source_object=blender_object,
+            evaluation_object=blender_object,
+            unique_id=uid,
+            name=blender_object.name,
+            matrix_world=blender_object.matrix_world.copy(),
+            visibility=object_visible_in_game(blender_object, view_layer=view_layer),
+            dependency_graph=dependency_graph,
+            reference_uid_map={},
+            occurrence_key=("DIRECT", uid),
+            instancer_path=(),
+            dependency_ids=self._object_dependency_ids(blender_object),
+        )
+
+    def _expand_collection_occurrences(
+        self,
+        root,
+        collection,
+        parent_matrix,
+        uid_path,
+        name_path,
+        inherited_visible,
+        dependency_graph,
+        evaluation_view_layer,
+        evaluation_objects,
+        ancestors=(),
+        dependency_collection_path=(),
+    ):
+        collection_uid = collection.session_uid
+        if collection_uid in ancestors:
+            print(
+                "Live Link collection instance cycle skipped: "
+                + "/".join((*name_path, collection.name))
+            )
+            return []
+
+        scope_objects = self._scope_export_objects(collection)
+        scope_map = {
+            source.session_uid: self.instance_uid_registry.uid_for_key((*uid_path, source.session_uid))
+            for source in scope_objects
+        }
+        collection_basis = (
+            parent_matrix
+            @ MathMatrix.Translation(tuple(-value for value in collection.instance_offset))
+        )
+        collection_dependencies = tuple(sorted({
+            *dependency_collection_path,
+            *self._collection_dependency_uids(collection),
+        }))
+        next_ancestors = (*ancestors, collection_uid)
+        occurrences = []
+
+        for source in scope_objects:
+            source_key = (*uid_path, source.session_uid)
+            occurrence_uid = scope_map[source.session_uid]
+            occurrence_matrix = collection_basis @ source.matrix_world
+            source_visible = object_visible_in_game(source, view_layer=evaluation_view_layer)
+            occurrence_visible = bool(inherited_visible and source_visible)
+            occurrence_name_path = (*name_path, source.name)
+            occurrences.append(ExportOccurrence(
+                source_object=source,
+                evaluation_object=evaluation_objects.get(source.session_uid, source),
+                unique_id=occurrence_uid,
+                name="/".join(occurrence_name_path),
+                matrix_world=occurrence_matrix.copy(),
+                visibility=occurrence_visible,
+                dependency_graph=dependency_graph,
+                reference_uid_map=dict(scope_map),
+                occurrence_key=("INSTANCE", *source_key),
+                instancer_path=uid_path,
+                dependency_ids=self._object_dependency_ids(
+                    source,
+                    instancer_path=uid_path,
+                    collection_path=collection_dependencies,
+                ),
+            ))
+
+            nested_collection = self._collection_instance(source)
+            if nested_collection is not None and self._object_enabled(source):
+                nested_visible = bool(
+                    inherited_visible
+                    and object_visible_in_game(source, view_layer=evaluation_view_layer)
+                )
+                occurrences.extend(self._expand_collection_occurrences(
+                    root=root,
+                    collection=nested_collection,
+                    parent_matrix=occurrence_matrix,
+                    uid_path=source_key,
+                    name_path=occurrence_name_path,
+                    inherited_visible=nested_visible,
+                    dependency_graph=dependency_graph,
+                    evaluation_view_layer=evaluation_view_layer,
+                    evaluation_objects=evaluation_objects,
+                    ancestors=next_ancestors,
+                    dependency_collection_path=collection_dependencies,
+                ))
+
+        return occurrences
+
+    def collect_export_occurrences(
+        self,
+        changed_objects,
+        active_depsgraph,
+        instance_depsgraph,
+        active_view_layer,
+        instance_view_layer,
+        evaluation_objects,
+    ):
+        changed_objects = list(changed_objects)
+        # The export closure is scoped to the host scene, not to the temporary
+        # evaluation scene bpy.context may currently point at.
+        host_scene = self.active_export_scene or bpy.context.scene
+        direct_objects = self.collect_export_objects(changed_objects, host_scene.objects)
+        direct_ids = {obj.session_uid for obj in direct_objects}
+        occurrences = [
+            self._make_direct_occurrence(obj, active_depsgraph, view_layer=active_view_layer)
+            for obj in direct_objects
+        ]
+
+        for root in changed_objects:
+            collection = self._collection_instance(root)
+            if collection is None or not self._object_enabled(root):
+                continue
+            if root.session_uid not in direct_ids:
+                occurrences.append(
+                    self._make_direct_occurrence(
+                        root,
+                        active_depsgraph,
+                        view_layer=active_view_layer,
+                    )
+                )
+            try:
+                root_visible = object_visible_in_game(root, view_layer=active_view_layer)
+            except RuntimeError:
+                root_visible = not root.hide_viewport
+            occurrences.extend(self._expand_collection_occurrences(
+                root=root,
+                collection=collection,
+                parent_matrix=root.matrix_world.copy(),
+                uid_path=(root.session_uid,),
+                name_path=(root.name,),
+                inherited_visible=root_visible,
+                dependency_graph=instance_depsgraph,
+                evaluation_view_layer=instance_view_layer,
+                evaluation_objects=evaluation_objects,
+            ))
+
+        deduplicated = []
+        seen_uids = set()
+        for occurrence in occurrences:
+            if occurrence.unique_id in seen_uids:
+                continue
+            seen_uids.add(occurrence.unique_id)
+            deduplicated.append(occurrence)
+        return deduplicated
+
+    def resolve_attachment_point(self, marker, attachment, dependency_graph, export_occurrence=None):
         owner = attachment.owner_part
-        owner_id = owner.session_uid if owner else -1
+        owner_id = (
+            export_occurrence.remap_uid(owner)
+            if export_occurrence is not None
+            else (owner.session_uid if owner else -1)
+        )
         binding_type = AttachmentBindingType.AttachmentBindingType.Object
         armature_id = -1
         bone_name = ""
@@ -460,7 +974,11 @@ class LiveLinkConnection():
                 armature = marker.parent
                 bone_name = marker.parent_bone or ""
                 binding_type = AttachmentBindingType.AttachmentBindingType.Bone
-                armature_id = armature.session_uid
+                armature_id = (
+                    export_occurrence.remap_uid(armature)
+                    if export_occurrence is not None
+                    else armature.session_uid
+                )
                 if owner_armature != armature:
                     error = "bone parent is not the Body part's armature"
                 elif not bone_name:
@@ -535,6 +1053,15 @@ class LiveLinkConnection():
         return False
 
     def get_armature_actions(self, armature_obj):
+        # Resolving an armature's actions scans every fcurve of every action in
+        # the file, and the occurrence index asks for it once per skinned mesh.
+        # Memoize for the duration of one export pass only: caching across ticks
+        # would hold bpy references that Blender can free underneath us.
+        cache = self.export_pass_armature_actions
+        cache_key = armature_obj.session_uid if cache is not None else None
+        if cache is not None and cache_key in cache:
+            return cache[cache_key]
+
         active_action = None
         if armature_obj.animation_data:
             active_action = armature_obj.animation_data.action
@@ -551,10 +1078,13 @@ class LiveLinkConnection():
                 remaining_actions.append(action)
 
         remaining_actions.sort(key=lambda action: action.name)
-        return active_actions + remaining_actions
+        resolved = active_actions + remaining_actions
+        if cache is not None:
+            cache[cache_key] = resolved
+        return resolved
 
     def make_flatbuffer_animation(self, builder, armature_obj, action, bones, export_stats=None):
-        scene = bpy.context.scene
+        scene, view_layer = self.export_scene_for_object(armature_obj)
         frame_rate = scene.render.fps / scene.render.fps_base
         frame_start = int(np.floor(action.frame_range[0]))
         frame_end = int(np.ceil(action.frame_range[1]))
@@ -576,7 +1106,7 @@ class LiveLinkConnection():
             armature_obj.animation_data.action = action
             for frame_idx, frame in enumerate(range(frame_start, frame_end + 1)):
                 scene.frame_set(frame)
-                bpy.context.view_layer.update()
+                view_layer.update()
 
                 for bone_idx, bone in enumerate(bones):
                     pose_bone = armature_obj.pose.bones.get(bone.name)
@@ -590,7 +1120,7 @@ class LiveLinkConnection():
         finally:
             armature_obj.animation_data.action = old_action
             scene.frame_set(old_frame, subframe=old_subframe)
-            bpy.context.view_layer.update()
+            view_layer.update()
             self.add_export_timing(export_stats, "animation_sampling", time.perf_counter() - animation_sampling_start)
 
         animation_name_fb = builder.CreateString(action.name)
@@ -606,16 +1136,22 @@ class LiveLinkConnection():
         Animation.AddSkinMatrices(builder, skin_matrices_fb)
         return Animation.End(builder)
  
-    def make_flatbuffer_object(self, builder, obj, dependency_graph, referenced_materials, export_stats=None):
+    def make_flatbuffer_object(self, builder, occurrence, dependency_graph, referenced_materials, export_stats=None):
+        obj = occurrence.source_object
         # Allocate string for object name
-        object_name = builder.CreateString(obj.name)
+        object_name = builder.CreateString(occurrence.name)
 
         # Mesh Data
         mesh_fb = None
         if is_mesh_export_object(obj):
             mesh_armature = self.get_mesh_armature(obj)
-            mesh = self.get_mesh(obj, dependency_graph, mesh_armature is not None, export_stats)
-
+            evaluation_object = occurrence.evaluation_object
+            mesh = self.get_mesh(
+                evaluation_object,
+                dependency_graph,
+                mesh_armature is not None and evaluation_object == obj,
+                export_stats,
+            )
             vertex_count = len(mesh.vertices)
             loop_count = len(mesh.loops)
 
@@ -772,7 +1308,7 @@ class LiveLinkConnection():
 
             # Optional armature id
             if mesh_armature is not None:
-                Mesh.AddArmatureId(builder, mesh_armature.session_uid)
+                Mesh.AddArmatureId(builder, occurrence.remap_uid(mesh_armature))
                 Mesh.AddMeshToArmature(builder, mesh_to_armature_fb)
                 Mesh.AddArmatureToMesh(builder, armature_to_mesh_fb)
             else:
@@ -823,7 +1359,13 @@ class LiveLinkConnection():
 
             animations_fb = []
             for action in actions:
-                animations_fb.append(self.make_flatbuffer_animation(builder, obj, action, obj.data.bones, export_stats))
+                animations_fb.append(self.make_flatbuffer_animation(
+                    builder,
+                    occurrence.evaluation_object,
+                    action,
+                    obj.data.bones,
+                    export_stats,
+                ))
 
             armature_animations_fb = build_offset_vector(
                 builder,
@@ -905,6 +1447,7 @@ class LiveLinkConnection():
             obj,
             dependency_graph,
             self,
+            export_occurrence=occurrence,
         )
         
         # Begin New Object 
@@ -914,16 +1457,14 @@ class LiveLinkConnection():
         Object.AddName(builder, object_name)
 
         # Session UID (note that this is a fairly new addition to the python API)
-        session_uid = obj.session_uid
-        Object.AddUniqueId(builder, session_uid)
+        Object.AddUniqueId(builder, occurrence.unique_id)
 
         # Character collision meshes can remain live-linked while opting out
         # of in-game rendering.
-        is_visible = object_visible_in_game(obj)
-        Object.AddVisibility(builder, is_visible)
+        Object.AddVisibility(builder, occurrence.visibility)
 
         # Get world-space location, rotation, and scale
-        obj_matrix_world = obj.matrix_world
+        obj_matrix_world = occurrence.matrix_world
         obj_location, obj_rotation, obj_scale = obj_matrix_world.decompose()
 
         # Object Location
@@ -971,14 +1512,21 @@ class LiveLinkConnection():
 
         return live_link_object
 
-    def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
-        editor_camera = get_editor_camera_snapshot()
+    def _serialize_occurrences(
+        self,
+        occurrences,
+        deleted_uids,
+        dependency_graph,
+        reset,
+        update_reason,
+        editor_camera,
+    ):
         if native_live_link_available() and not scene_uses_python_export_fallback():
             self.update_sequence += 1
             output = self.make_update_native(
-                in_object_list,
-                in_deleted_object_uids,
-                dependency_graph=bpy.context.evaluated_depsgraph_get(),
+                occurrences,
+                deleted_uids,
+                dependency_graph=dependency_graph,
                 reset=reset,
                 update_reason=update_reason,
                 sequence=self.update_sequence,
@@ -990,14 +1538,99 @@ class LiveLinkConnection():
                 f"bytes={len(output)}"
             )
             return output
-
-        return self.make_update_python(
-            in_object_list,
-            in_deleted_object_uids,
+        return self._make_update_python_occurrences(
+            occurrences,
+            deleted_uids,
             reset=reset,
             update_reason=update_reason,
             editor_camera=editor_camera,
         )
+
+    def make_update(self, in_object_list, in_deleted_object_uids, reset=False, update_reason="unknown"):
+        editor_camera = get_editor_camera_snapshot()
+        objects = list(in_object_list)
+        with self.export_evaluation_context(objects) as evaluation:
+            active_dg, instance_dg, active_view_layer, instance_view_layer, evaluation_objects = evaluation
+            occurrences = self.collect_export_occurrences(
+                objects,
+                active_dg,
+                instance_dg,
+                active_view_layer,
+                instance_view_layer,
+                evaluation_objects,
+            )
+            deleted_uids = set(int(uid) for uid in in_deleted_object_uids)
+            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
+            deleted_uids = sorted(deleted_uids)
+
+            return self._serialize_occurrences(
+                occurrences,
+                deleted_uids,
+                dependency_graph=active_dg,
+                reset=reset,
+                update_reason=update_reason,
+                editor_camera=editor_camera,
+            )
+
+    def send_scene_changes(self, dirty_ids, update_reason, force_full=False):
+        all_scene_objects = list(bpy.context.scene.objects)
+        editor_camera = get_editor_camera_snapshot()
+        dirty_ids = {int(uid) for uid in dirty_ids}
+
+        with self.export_evaluation_context(all_scene_objects) as evaluation:
+            active_dg, instance_dg, active_view_layer, instance_view_layer, evaluation_objects = evaluation
+            all_occurrences = self.collect_export_occurrences(
+                all_scene_objects,
+                active_dg,
+                instance_dg,
+                active_view_layer,
+                instance_view_layer,
+                evaluation_objects,
+            )
+            current_snapshot = {
+                occurrence.occurrence_key: OccurrenceSnapshot.from_occurrence(occurrence)
+                for occurrence in all_occurrences
+            }
+            previous_snapshot = self.export_snapshot
+            deleted_uids = {
+                snapshot.unique_id
+                for key, snapshot in previous_snapshot.items()
+                if (
+                    key not in current_snapshot
+                    or current_snapshot[key].unique_id != snapshot.unique_id
+                )
+            }
+            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
+
+            selected = []
+            for occurrence in all_occurrences:
+                current = current_snapshot[occurrence.occurrence_key]
+                previous = previous_snapshot.get(occurrence.occurrence_key)
+                signature_changed = (
+                    previous is None
+                    or previous.unique_id != current.unique_id
+                    or previous.matrix_world_values != current.matrix_world_values
+                    or previous.visibility != current.visibility
+                )
+                dependency_changed = bool(current.dependency_ids.intersection(dirty_ids))
+                if force_full or signature_changed or dependency_changed:
+                    selected.append(occurrence)
+
+            if not selected and not deleted_uids and not force_full:
+                return True
+
+            output = self._serialize_occurrences(
+                selected,
+                sorted(deleted_uids),
+                dependency_graph=active_dg,
+                reset=False,
+                update_reason=update_reason,
+                editor_camera=editor_camera,
+            )
+            sent = self.send(output)
+            if sent:
+                self.export_snapshot = current_snapshot
+            return sent
 
     def make_update_native(
         self,
@@ -1050,24 +1683,33 @@ class LiveLinkConnection():
         editor_camera = get_editor_camera_snapshot()
         old_sequence = self.update_sequence
         try:
-            dependency_graph = bpy.context.evaluated_depsgraph_get()
-            native_bytes = self.make_update_native(
-                objects,
-                [],
-                dependency_graph=dependency_graph,
-                reset=False,
-                update_reason="compare_native_python_native",
-                sequence=old_sequence + 1,
-                editor_camera=editor_camera,
-            )
-            python_bytes = self.make_update_python(
-                objects,
-                [],
-                reset=False,
-                update_reason="compare_native_python_python",
-                increment_sequence=False,
-                editor_camera=editor_camera,
-            )
+            with self.export_evaluation_context(objects) as evaluation:
+                active_dg, instance_dg, active_view_layer, instance_view_layer, evaluation_objects = evaluation
+                occurrences = self.collect_export_occurrences(
+                    objects,
+                    active_dg,
+                    instance_dg,
+                    active_view_layer,
+                    instance_view_layer,
+                    evaluation_objects,
+                )
+                native_bytes = self.make_update_native(
+                    occurrences,
+                    [],
+                    dependency_graph=active_dg,
+                    reset=False,
+                    update_reason="compare_native_python_native",
+                    sequence=old_sequence + 1,
+                    editor_camera=editor_camera,
+                )
+                python_bytes = self._make_update_python_occurrences(
+                    occurrences,
+                    [],
+                    reset=False,
+                    update_reason="compare_native_python_python",
+                    increment_sequence=False,
+                    editor_camera=editor_camera,
+                )
         finally:
             self.update_sequence = old_sequence
 
@@ -1079,10 +1721,41 @@ class LiveLinkConnection():
         print("\nLive Link Native/Python Compare: SEMANTIC MISMATCH " + message)
         return False, message.split("\n", 1)[0]
 
-    # Creates an update for objects in in_object_list using Python FlatBuffers generation.
     def make_update_python(
         self,
         in_object_list,
+        in_deleted_object_uids,
+        reset=False,
+        update_reason="unknown",
+        increment_sequence=True,
+        editor_camera=None,
+    ):
+        objects = list(in_object_list)
+        with self.export_evaluation_context(objects) as evaluation:
+            active_dg, instance_dg, active_view_layer, instance_view_layer, evaluation_objects = evaluation
+            occurrences = self.collect_export_occurrences(
+                objects,
+                active_dg,
+                instance_dg,
+                active_view_layer,
+                instance_view_layer,
+                evaluation_objects,
+            )
+            deleted_uids = set(int(uid) for uid in in_deleted_object_uids)
+            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
+            return self._make_update_python_occurrences(
+                occurrences,
+                sorted(deleted_uids),
+                reset=reset,
+                update_reason=update_reason,
+                increment_sequence=increment_sequence,
+                editor_camera=editor_camera,
+            )
+
+    # Creates an update for already-collected occurrences using Python FlatBuffers generation.
+    def _make_update_python_occurrences(
+        self,
+        occurrences,
         in_deleted_object_uids,
         reset=False,
         update_reason="unknown",
@@ -1096,15 +1769,12 @@ class LiveLinkConnection():
         else:
             sequence = self.update_sequence + 1
 
-        # Evaluate Depsgraph
-        dependency_graph = bpy.context.evaluated_depsgraph_get()
-
         # init flatbuffers builder
         builder = flatbuffers.Builder(0)
         export_stats = ExportStats(
             sequence=sequence,
             reason=update_reason,
-            input_object_count=len(in_object_list),
+            input_object_count=len(occurrences),
             deleted_object_count=len(in_deleted_object_uids),
             reset=reset,
         )
@@ -1112,21 +1782,14 @@ class LiveLinkConnection():
         # referenced materials, keyed by session_uid and updated in self.make_flatbuffer_object
         referenced_materials = {}
 
-        # A live-linked skinned mesh needs its armature even when the armature
-        # is hidden or was not explicitly included in the changed-object batch.
-        objects_to_export = self.collect_export_objects(
-            in_object_list,
-            bpy.context.scene.objects,
-        )
-
         live_link_objects = []
-        export_stats["exported_object_count"] = len(objects_to_export)
-        for blender_object in objects_to_export:
+        export_stats["exported_object_count"] = len(occurrences)
+        for occurrence in occurrences:
             live_link_objects.append(
                 self.make_flatbuffer_object(
                     builder,
-                    blender_object,
-                    dependency_graph,
+                    occurrence,
+                    occurrence.dependency_graph,
                     referenced_materials,
                     export_stats
                 )
@@ -1400,12 +2063,15 @@ class LiveLinkConnection():
             f.write(update)
 
     def send_reset(self, update_reason="manual_reset"):
-        return self.send(self.make_update([], [], True, update_reason=update_reason))
+        sent = self.send(self.make_update([], [], True, update_reason=update_reason))
+        if sent:
+            self.export_snapshot.clear()
+        return sent
 
 live_link_connection = []
 
-batched_updates = set()
-batched_deleted = set()
+batched_dirty_ids = set()
+batched_force_full = False
 
 @contextmanager
 def suspend_depsgraph_updates():
@@ -1417,25 +2083,29 @@ def suspend_depsgraph_updates():
         depsgraph_update_post_callback.enabled = previous_enabled
 
 def queue_object_updates(objects, update_reason):
-    batched_updates.update(objects)
+    for blender_object in objects:
+        uid = getattr(blender_object, "session_uid", None)
+        if uid is not None:
+            batched_dirty_ids.add(int(uid))
     schedule_send(update_reason=update_reason)
 
 def queue_object_update(obj, update_reason):
     queue_object_updates((obj,), update_reason)
 
 def clear_batched_depsgraph_updates(update_reason="unknown"):
+    global batched_force_full
     if bpy.app.timers.is_registered(send_updates_timer):
         bpy.app.timers.unregister(send_updates_timer)
 
-    if batched_updates or batched_deleted:
+    if batched_dirty_ids or batched_force_full:
         print(
             "\nLive Link Clear Queued Depsgraph Updates: "
             f"reason={update_reason} "
-            f"queued_updates={len(batched_updates)} "
-            f"queued_deleted={len(batched_deleted)}"
+            f"dirty_ids={len(batched_dirty_ids)} "
+            f"force_full={batched_force_full}"
         )
-        batched_updates.clear()
-        batched_deleted.clear()
+        batched_dirty_ids.clear()
+        batched_force_full = False
 
 def send_full_scene_update(update_reason="full_update"):
     clear_batched_depsgraph_updates(update_reason=f"{update_reason}_before_send")
@@ -1448,10 +2118,10 @@ def send_full_scene_update(update_reason="full_update"):
     sent = False
     with suspend_depsgraph_updates():
         try:
-            sent = live_link_connection.send_object_list(
-                updated_objects=list(bpy.context.scene.objects),
-                deleted_object_uids=[],
+            sent = live_link_connection.send_scene_changes(
+                dirty_ids=set(),
                 update_reason=update_reason,
+                force_full=True,
             )
         finally:
             clear_batched_depsgraph_updates(update_reason=f"{update_reason}_after_send")
@@ -1506,30 +2176,35 @@ def schedule_automatic_initial_full_update(update_reason="startup"):
 
 @persistent
 def automatic_initial_full_update_load_post(_):
-    depsgraph_update_post_callback.previous_objects = set(
-        obj.session_uid for obj in bpy.context.scene.objects
-    )
+    live_link_connection.instance_uid_registry.clear()
+    live_link_connection.export_snapshot.clear()
+    clear_batched_depsgraph_updates(update_reason="blend_file_loaded")
     schedule_automatic_initial_full_update(update_reason="blend_file_loaded")
 
 # Actually sends batched updates
 def send_updates_timer(): 
-    global batched_updates, batched_deleted 
+    global batched_force_full
 
     # No new updates in SEND_DELAY seconds → send batched data
-    if batched_updates or batched_deleted:
-        update_reason = f"depsgraph_timer(updates={len(batched_updates)},deleted={len(batched_deleted)})"
+    if batched_dirty_ids or batched_force_full:
+        update_reason = (
+            f"depsgraph_timer(dirty_ids={len(batched_dirty_ids)},"
+            f"force_full={batched_force_full})"
+        )
         print(f"\nLive Link Timer Send: reason={update_reason}")
 
         with suspend_depsgraph_updates():
-            live_link_connection.send_object_list(
-                updated_objects=list(batched_updates),
-                deleted_object_uids=list(batched_deleted),
+            sent = live_link_connection.send_scene_changes(
+                dirty_ids=set(batched_dirty_ids),
                 update_reason=update_reason,
+                force_full=batched_force_full,
             )
 
-        # Clear batch
-        batched_updates.clear()
-        batched_deleted.clear()
+        if sent:
+            batched_dirty_ids.clear()
+            batched_force_full = False
+        else:
+            return 0.25
 
     return None
 
@@ -1541,12 +2216,12 @@ def schedule_send(update_reason="depsgraph_update"):
     # Schedule new timer
     SEND_DELAY = 0.25
     bpy.app.timers.register(send_updates_timer, first_interval=SEND_DELAY)
-    if batched_updates or batched_deleted:
+    if batched_dirty_ids or batched_force_full:
         print(
             "\nLive Link Schedule Send: "
             f"reason={update_reason} "
-            f"queued_updates={len(batched_updates)} "
-            f"queued_deleted={len(batched_deleted)}"
+            f"dirty_ids={len(batched_dirty_ids)} "
+            f"force_full={batched_force_full}"
         )
 
 # Callback when depsgraph has finished updating
@@ -1555,35 +2230,61 @@ def depsgraph_update_post_callback(scene, depsgraph):
     if not depsgraph_update_post_callback.enabled:
         return
 
-    current_objects = set(obj.session_uid for obj in scene.objects)
-
     if depsgraph_update_post_callback.suppress_next:
         depsgraph_update_post_callback.suppress_next = False
-        depsgraph_update_post_callback.previous_objects = current_objects
         clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
         return
 
-    # Determine if any objects were deleted
-    # Track the objects at the last update
-    if hasattr(depsgraph_update_post_callback, "previous_objects"):
-        previous_objects = depsgraph_update_post_callback.previous_objects
-        # Find the difference (deleted objects)
-        deleted_object_uids = []
-        deleted_object_uids = list(previous_objects - current_objects)
-        batched_deleted.update(deleted_object_uids)
-    
-    # Store the current object names for the next update
-    depsgraph_update_post_callback.previous_objects = current_objects
-
-    # Accumulate updated objects
-    updated_objects = []
+    global batched_force_full
+    saw_update = False
+    relevant_types = tuple(
+        blender_type
+        for blender_type in (
+            bpy.types.Object,
+            bpy.types.Collection,
+            bpy.types.Mesh,
+            bpy.types.Curve,
+            getattr(bpy.types, "Curves", None),
+            bpy.types.Armature,
+            bpy.types.Material,
+            bpy.types.Image,
+            bpy.types.Action,
+            # Shading edits report the node tree alongside its material. Without
+            # it every material tweak falls into the conservative branch below
+            # and re-sends the whole scene, images included.
+            bpy.types.NodeTree,
+        )
+        if blender_type is not None
+    )
+    ignored_types = (bpy.types.Scene, bpy.types.World)
     for update in depsgraph.updates:
-        update_id = update.id
-        if isinstance(update_id, bpy.types.Object):
-            if update.is_updated_transform or update.is_updated_geometry:
-                updated_objects.append(scene.objects[update_id.name])
+        saw_update = True
+        # depsgraph.updates reports evaluated copies, and every evaluated
+        # datablock carries session_uid 0. Resolve back to the original so the
+        # queued ids are the ones occurrence dependency sets are built from.
+        update_id = getattr(update.id, "original", None) or update.id
+        if isinstance(update_id, ignored_types):
+            continue
+        # The temporary evaluation scene and its object copies are exporter
+        # bookkeeping, not authored changes.
+        if getattr(update_id, "name", "").startswith(EVALUATION_SCENE_PREFIX):
+            continue
+        if not isinstance(update_id, relevant_types):
+            # A node tree or another dependency not represented in occurrence
+            # dependency sets can still affect evaluated output.
+            batched_force_full = True
+            continue
+        uid = getattr(update_id, "session_uid", None)
+        if uid == UNSET_SESSION_UID:
+            # Unset: the removed temporary evaluation datablocks report this.
+            continue
+        if uid is None:
+            batched_force_full = True
+        else:
+            batched_dirty_ids.add(int(uid))
 
-    queue_object_updates(updated_objects, update_reason="depsgraph_update_post")
+    if saw_update:
+        schedule_send(update_reason="depsgraph_update_post")
 
 # Enable depsgraph_update_post_callback. Will be disabled to prevent recursion within depsgraph_update_post_callback
 depsgraph_update_post_callback.enabled = True
@@ -1728,7 +2429,14 @@ class Component(PropertyGroup):
         return (cls.type_name, cls.label, '')
 
     # Adds component to flatbuffers component list
-    def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
+    def create_flatbuffers_object(
+        self,
+        builder,
+        source_object=None,
+        dependency_graph=None,
+        exporter=None,
+        export_occurrence=None,
+    ):
         # Functions to generate value_type and value (implemneted by child classes) 
         value_type = self.get_flatbuffers_value_type()
         value = self.create_flatbuffers_value(
@@ -1736,6 +2444,7 @@ class Component(PropertyGroup):
             source_object=source_object,
             dependency_graph=dependency_graph,
             exporter=exporter,
+            export_occurrence=export_occurrence,
         )
 
         # Create the container that contains our union and return that
@@ -2123,8 +2832,20 @@ class Component_AttachmentPoint(Component):
         update=gameplay_component_property_update,
     )
 
-    def create_flatbuffers_value(self, builder, source_object=None, dependency_graph=None, exporter=None):
-        resolved = exporter.resolve_attachment_point(source_object, self, dependency_graph)
+    def create_flatbuffers_value(
+        self,
+        builder,
+        source_object=None,
+        dependency_graph=None,
+        exporter=None,
+        export_occurrence=None,
+    ):
+        resolved = exporter.resolve_attachment_point(
+            source_object,
+            self,
+            dependency_graph,
+            export_occurrence=export_occurrence,
+        )
         bone_name = builder.CreateString(resolved["bone_name"]) if resolved["bone_name"] else None
         local_transform = exporter.make_flatbuffer_matrix(builder, resolved["local_transform"])
 
@@ -2178,13 +2899,21 @@ class ComponentContainer(PropertyGroup):
     cloud_system:   PointerProperty(type=Component_CloudSystem)
 
     # Simply forwards to relevant component data to create flatbuffer object
-    def create_flatbuffers_object(self, builder, source_object=None, dependency_graph=None, exporter=None):
+    def create_flatbuffers_object(
+        self,
+        builder,
+        source_object=None,
+        dependency_graph=None,
+        exporter=None,
+        export_occurrence=None,
+    ):
        component_data = getattr(self, TYPE_TO_GROUP[self.type])
        return component_data.create_flatbuffers_object(
            builder,
            source_object=source_object,
            dependency_graph=dependency_graph,
            exporter=exporter,
+           export_occurrence=export_occurrence,
        )
 
 # ------------------------------------------------------------
@@ -2192,7 +2921,11 @@ class ComponentContainer(PropertyGroup):
 # ------------------------------------------------------------
 
 class LiveLinkObjectSettings(bpy.types.PropertyGroup):
-    enable_live_link: bpy.props.BoolProperty(name="Enable Live Link", default=True)
+    enable_live_link: bpy.props.BoolProperty(
+        name="Enable Live Link",
+        default=True,
+        update=gameplay_component_property_update,
+    )
 
     add_type: EnumProperty(
         name="Add Type",
@@ -2203,7 +2936,14 @@ class LiveLinkObjectSettings(bpy.types.PropertyGroup):
     components: CollectionProperty(type=ComponentContainer)
 
 #  Creates the flatbuffer array for the components under an object's live_link_settings
-def builder_create_gameplay_components(builder, live_link_settings, source_object, dependency_graph, exporter):
+def builder_create_gameplay_components(
+    builder,
+    live_link_settings,
+    source_object,
+    dependency_graph,
+    exporter,
+    export_occurrence=None,
+):
     out_flatbuffers_object = None
 
     if len(live_link_settings.components) > 0:
@@ -2214,6 +2954,7 @@ def builder_create_gameplay_components(builder, live_link_settings, source_objec
                 source_object=source_object,
                 dependency_graph=dependency_graph,
                 exporter=exporter,
+                export_occurrence=export_occurrence,
             ))
 
         out_flatbuffers_object = build_offset_vector(

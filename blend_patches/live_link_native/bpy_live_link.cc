@@ -313,6 +313,164 @@ Depsgraph *depsgraph_from_py(PyObject *py_depsgraph)
   return static_cast<Depsgraph *>(ptr->data);
 }
 
+using ReferenceUidMap = std::unordered_map<int32_t, int32_t>;
+
+struct ExportRecordData {
+  PyObject *py_object = nullptr;
+  Object *object = nullptr;
+  Object *evaluation_object = nullptr;
+  Depsgraph *depsgraph = nullptr;
+  int32_t unique_id = -1;
+  std::string name;
+  bool visibility = true;
+  float matrix_world[4][4];
+  ReferenceUidMap reference_uid_map;
+  bool raw_object_input = false;
+};
+
+int32_t remap_object_uid(const ReferenceUidMap &reference_uid_map, const Object *object)
+{
+  if (!object) {
+    return -1;
+  }
+  const int32_t source_uid = int32_t(object->id.session_uid);
+  const auto found = reference_uid_map.find(source_uid);
+  return found == reference_uid_map.end() ? source_uid : found->second;
+}
+
+std::string id_full_name(const ID &id)
+{
+  char name[MAX_ID_FULL_NAME];
+  BKE_id_full_name_get(name, &id, 0);
+  return name;
+}
+
+bool matrix_world_from_record(PyObject *record, float r_matrix[4][4])
+{
+  PyPtr values(PyObject_GetAttrString(record, "matrix_world_values"));
+  if (!values) {
+    return false;
+  }
+  PyPtr sequence(PySequence_Fast(values, "matrix_world_values must be a sequence"));
+  if (!sequence || PySequence_Fast_GET_SIZE(sequence.value) != 16) {
+    if (!PyErr_Occurred()) {
+      PyErr_SetString(PyExc_ValueError, "matrix_world_values must contain exactly 16 floats");
+    }
+    return false;
+  }
+  for (int row = 0; row < 4; row++) {
+    for (int column = 0; column < 4; column++) {
+      const double value = PyFloat_AsDouble(
+          PySequence_Fast_GET_ITEM(sequence.value, row * 4 + column));
+      if (PyErr_Occurred() || !std::isfinite(value)) {
+        if (!PyErr_Occurred()) {
+          PyErr_SetString(PyExc_ValueError, "matrix_world_values must be finite");
+        }
+        return false;
+      }
+      /* Python matrices use [row][column], Blender's float[4][4] uses
+       * [column][row]. */
+      r_matrix[column][row] = float(value);
+    }
+  }
+  return true;
+}
+
+bool reference_uid_map_from_record(PyObject *record, ReferenceUidMap &r_map)
+{
+  PyPtr mapping(PyObject_GetAttrString(record, "reference_uid_map"));
+  if (!mapping) {
+    return false;
+  }
+  if (!PyDict_Check(mapping.value)) {
+    PyErr_SetString(PyExc_TypeError, "reference_uid_map must be a dict");
+    return false;
+  }
+  PyObject *key = nullptr;
+  PyObject *value = nullptr;
+  Py_ssize_t position = 0;
+  while (PyDict_Next(mapping.value, &position, &key, &value)) {
+    const long source_uid = PyLong_AsLong(key);
+    const long export_uid = PyLong_AsLong(value);
+    if (PyErr_Occurred()) {
+      return false;
+    }
+    r_map[int32_t(source_uid)] = int32_t(export_uid);
+  }
+  return true;
+}
+
+bool export_record_from_py(PyObject *value,
+                           Depsgraph *default_depsgraph,
+                           ExportRecordData &r_record)
+{
+  PyPtr source_object(PyObject_GetAttrString(value, "source_object"));
+  if (!source_object) {
+    PyErr_Clear();
+    r_record.raw_object_input = true;
+    r_record.py_object = value;
+    r_record.object = object_from_py(value);
+    if (!r_record.object) {
+      return false;
+    }
+    r_record.depsgraph = default_depsgraph;
+    r_record.evaluation_object = r_record.object;
+    r_record.unique_id = int32_t(r_record.object->id.session_uid);
+    r_record.name = id_name(r_record.object->id);
+    r_record.visibility = object_visible_in_game_get(value, r_record.object, default_depsgraph);
+    Object *object_eval = default_depsgraph ?
+                              DEG_get_evaluated(default_depsgraph, r_record.object) :
+                              r_record.object;
+    copy_m4_m4(r_record.matrix_world, object_eval->object_to_world().ptr());
+    return true;
+  }
+
+  r_record.py_object = source_object.value;
+  r_record.object = object_from_py(source_object.value);
+  if (!r_record.object) {
+    return false;
+  }
+
+  PyPtr evaluation_object(PyObject_GetAttrString(value, "evaluation_object"));
+  if (!evaluation_object) {
+    return false;
+  }
+  r_record.evaluation_object = object_from_py(evaluation_object.value);
+  if (!r_record.evaluation_object) {
+    return false;
+  }
+
+  PyPtr dependency_graph(PyObject_GetAttrString(value, "dependency_graph"));
+  if (!dependency_graph) {
+    return false;
+  }
+  r_record.depsgraph = depsgraph_from_py(dependency_graph.value);
+  if (!r_record.depsgraph) {
+    return false;
+  }
+
+  PyPtr unique_id(PyObject_GetAttrString(value, "unique_id"));
+  if (!unique_id) {
+    return false;
+  }
+  const long uid = PyLong_AsLong(unique_id.value);
+  if (PyErr_Occurred() || uid <= 0 || uid > INT32_MAX) {
+    if (!PyErr_Occurred()) {
+      PyErr_SetString(PyExc_ValueError, "Export occurrence unique_id must be a positive int32");
+    }
+    return false;
+  }
+  r_record.unique_id = int32_t(uid);
+  r_record.name = py_string_attr(value, "name", id_name(r_record.object->id));
+  r_record.visibility = py_bool_attr(value, "visibility", true);
+  if (!matrix_world_from_record(value, r_record.matrix_world) ||
+      !reference_uid_map_from_record(value, r_record.reference_uid_map))
+  {
+    return false;
+  }
+  return true;
+}
+
 std::vector<int32_t> deleted_ids_from_py(PyObject *deleted_object_uids)
 {
   PyPtr sequence(PySequence_Fast(deleted_object_uids, "deleted_object_uids must be a sequence"));
@@ -878,28 +1036,30 @@ flatbuffers::Offset<ll::Animation> export_animation(flatbuffers::FlatBufferBuild
 
 flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builder,
                                           Object *object,
+                                          Object *evaluation_object,
                                           Object *mesh_armature,
                                           Main *bmain,
                                           Depsgraph *depsgraph,
+                                          const ReferenceUidMap &reference_uid_map,
                                           ReferencedMaterials &referenced_materials)
 {
-  if (!depsgraph || !object) {
+  if (!depsgraph || !object || !evaluation_object) {
     return 0;
   }
 
   std::vector<DisabledModifierState> disabled_armature_modifiers;
-  if (mesh_armature) {
-    disabled_armature_modifiers = disable_armature_modifiers(object);
+  if (mesh_armature && evaluation_object == object) {
+    disabled_armature_modifiers = disable_armature_modifiers(evaluation_object);
     if (!disabled_armature_modifiers.empty()) {
-      tag_object_geometry_update(bmain, depsgraph, object);
+      tag_object_geometry_update(bmain, depsgraph, evaluation_object);
     }
   }
 
-  Object *object_eval = DEG_get_evaluated(depsgraph, object);
+  Object *object_eval = DEG_get_evaluated(depsgraph, evaluation_object);
   if (!object_eval) {
     restore_modifiers(disabled_armature_modifiers);
     if (!disabled_armature_modifiers.empty()) {
-      tag_object_geometry_update(bmain, depsgraph, object);
+      tag_object_geometry_update(bmain, depsgraph, evaluation_object);
     }
     return 0;
   }
@@ -908,7 +1068,7 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   if (!mesh) {
     restore_modifiers(disabled_armature_modifiers);
     if (!disabled_armature_modifiers.empty()) {
-      tag_object_geometry_update(bmain, depsgraph, object);
+      tag_object_geometry_update(bmain, depsgraph, evaluation_object);
     }
     return 0;
   }
@@ -981,14 +1141,14 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
   BKE_object_to_mesh_clear(object_eval);
   restore_modifiers(disabled_armature_modifiers);
   if (!disabled_armature_modifiers.empty()) {
-    tag_object_geometry_update(bmain, depsgraph, object);
+    tag_object_geometry_update(bmain, depsgraph, evaluation_object);
   }
 
   int32_t armature_id = -1;
   flatbuffers::Offset<ll::Matrix> mesh_to_armature_fb = 0;
   flatbuffers::Offset<ll::Matrix> armature_to_mesh_fb = 0;
   if (mesh_armature) {
-    armature_id = int32_t(mesh_armature->id.session_uid);
+    armature_id = remap_object_uid(reference_uid_map, mesh_armature);
     float mesh_to_armature[4][4];
     float armature_to_mesh[4][4];
     mesh_armature_matrices(object, mesh_armature, mesh_to_armature, armature_to_mesh);
@@ -1060,7 +1220,8 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
     flatbuffers::FlatBufferBuilder &builder,
     PyObject *py_object,
     Object *object,
-    Depsgraph *depsgraph)
+    Depsgraph *depsgraph,
+    const ReferenceUidMap &reference_uid_map)
 {
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components_out;
 
@@ -1317,7 +1478,7 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
 
       PyPtr owner_py(PyObject_GetAttrString(attachment, "owner_part"));
       Object *owner = owner_py && owner_py.value != Py_None ? object_from_py(owner_py) : nullptr;
-      const int32_t owner_id = owner ? int32_t(owner->id.session_uid) : -1;
+      const int32_t owner_id = remap_object_uid(reference_uid_map, owner);
       const ll::PartType part_type = part_type_from_string(
           py_string_attr(attachment, "part_type", "LEGS"));
       ll::AttachmentBindingType binding_type = ll::AttachmentBindingType_Object;
@@ -1371,7 +1532,7 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
         Object *armature = object->parent;
         Object *owner_armature = mesh_armature_object(owner);
         binding_type = ll::AttachmentBindingType_Bone;
-        armature_id = int32_t(armature->id.session_uid);
+        armature_id = remap_object_uid(reference_uid_map, armature);
         bone_name = object->parsubstr;
         if (armature == owner_armature && bone_name[0] != '\0') {
           Object *armature_eval = depsgraph ? DEG_get_evaluated(depsgraph, armature) : armature;
@@ -1461,19 +1622,22 @@ bool object_exports_as_mesh(const Object *object)
 }
 
 flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &builder,
-                                              PyObject *py_object,
-                                              Object *object,
+                                              const ExportRecordData &record,
                                               Main *bmain,
-                                              Depsgraph *depsgraph,
                                               ReferencedMaterials &referenced_materials)
 {
-  Object *object_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
+  PyObject *py_object = record.py_object;
+  Object *object = record.object;
+  Object *evaluation_object = record.evaluation_object;
+  Depsgraph *depsgraph = record.depsgraph;
+  Object *object_eval = depsgraph ? DEG_get_evaluated(depsgraph, evaluation_object) :
+                                    evaluation_object;
 
   float location[3] = {0.0f, 0.0f, 0.0f};
   float quaternion[4] = {1.0f, 0.0f, 0.0f, 0.0f};
   float scale[3] = {1.0f, 1.0f, 1.0f};
-  mat4_to_loc_quat(location, quaternion, object_eval->object_to_world().ptr());
-  mat4_to_size(scale, object_eval->object_to_world().ptr());
+  mat4_to_loc_quat(location, quaternion, record.matrix_world);
+  mat4_to_size(scale, record.matrix_world);
 
   const ll::Vec3 location_fb(location[0], location[1], location[2]);
   const ll::Vec3 scale_fb(scale[0], scale[1], scale[2]);
@@ -1482,12 +1646,19 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   flatbuffers::Offset<ll::Mesh> mesh_fb = 0;
   if (object_exports_as_mesh(object)) {
     mesh_fb = export_mesh(
-        builder, object, mesh_armature_object(object), bmain, depsgraph, referenced_materials);
+        builder,
+        object,
+        evaluation_object,
+        mesh_armature_object(object),
+        bmain,
+        depsgraph,
+        record.reference_uid_map,
+        referenced_materials);
   }
 
   flatbuffers::Offset<ll::Armature> armature_fb = 0;
   if (object->type == OB_ARMATURE) {
-    armature_fb = export_armature(builder, object, bmain, depsgraph);
+    armature_fb = export_armature(builder, evaluation_object, bmain, depsgraph);
   }
 
   flatbuffers::Offset<ll::Light> light_fb = export_light(builder, object_eval);
@@ -1504,13 +1675,13 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   }
 
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
-      export_gameplay_components(builder, py_object, object, depsgraph);
+      export_gameplay_components(builder, py_object, object, depsgraph, record.reference_uid_map);
   const auto components_fb = components.empty() ? 0 : builder.CreateVector(components);
 
   return ll::CreateObject(builder,
-                          builder.CreateString(id_name(object->id)),
-                          int32_t(object->id.session_uid),
-                          object_visible_in_game_get(py_object, object, depsgraph),
+                          builder.CreateString(record.name),
+                          record.unique_id,
+                          record.visibility,
                           &location_fb,
                           &scale_fb,
                           &rotation_fb,
@@ -1709,7 +1880,7 @@ flatbuffers::Offset<ll::Material> export_material(flatbuffers::FlatBufferBuilder
   const MaterialExportData data = extract_material_data(material, referenced_images);
   return ll::CreateMaterial(builder,
                             int32_t(material.id.session_uid),
-                            builder.CreateString(id_name(material.id)),
+                            builder.CreateString(id_full_name(material.id)),
                             &data.base_color,
                             data.base_color_image_id,
                             data.metallic,
@@ -3028,24 +3199,24 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
   std::vector<flatbuffers::Offset<ll::Object>> object_offsets;
   ReferencedMaterials referenced_materials;
   ReferencedImages referenced_images;
-  std::unordered_set<uint32_t> exported_object_ids;
+  std::unordered_set<int32_t> exported_object_ids;
 
   const Py_ssize_t object_count = PySequence_Fast_GET_SIZE(object_sequence);
   object_offsets.reserve(object_count);
   for (Py_ssize_t index = 0; index < object_count; index++) {
-    PyObject *py_object = PySequence_Fast_GET_ITEM(object_sequence.value, index);
-    Object *object = object_from_py(py_object);
-    if (!object) {
+    PyObject *py_value = PySequence_Fast_GET_ITEM(object_sequence.value, index);
+    ExportRecordData record;
+    if (!export_record_from_py(py_value, depsgraph, record)) {
       return nullptr;
     }
-    if (!object_live_link_enabled(py_object)) {
+    if (record.raw_object_input && !object_live_link_enabled(record.py_object)) {
       continue;
     }
-    if (!exported_object_ids.insert(object->id.session_uid).second) {
+    if (!exported_object_ids.insert(record.unique_id).second) {
       continue;
     }
     object_offsets.push_back(
-        export_object(builder, py_object, object, bmain, depsgraph, referenced_materials));
+        export_object(builder, record, bmain, referenced_materials));
   }
 
   std::vector<flatbuffers::Offset<ll::Material>> material_offsets;

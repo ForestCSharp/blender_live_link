@@ -22,6 +22,7 @@ The live link protocol currently covers:
 - Materials and image payloads used by exported meshes.
 - Point, spot, and sun lights.
 - Armatures and baked animation matrices.
+- Local and library-linked collection instances, including nested instances.
 - Rigid body metadata.
 - Gameplay component payloads for character and camera-control experiments.
 - Python exporter and native Blender exporter parity checks.
@@ -276,6 +277,11 @@ stock Blender 5.1.2 in background mode and compiles the Vulkan game without
 launching it on Linux, macOS, and Windows. Each job uploads its extension,
 binary, and diagnostic logs.
 
+The Blender smoke test also generates an external linked-collection library and
+host file. It covers local, linked, nested, hidden, and cyclic collection
+instances; occurrence UID/reference semantics; incremental subtree lifecycle;
+and native/Python semantic parity when the native API is available.
+
 The workflow's manual `workflow_dispatch` trigger also enables an experimental,
 non-blocking Linux renderer smoke test under Xvfb with Lavapipe software Vulkan.
 It consumes the synthetic FlatBuffer captured by the Blender smoke test and
@@ -336,6 +342,31 @@ in the native development build.
   by the extension.
 
 ## Modular Mech Authoring
+
+Reusable mech parts and other catalog assets can live in separate `.blend`
+files. Put the exportable objects in a collection, then use **File > Link** to
+link that collection into the host file and add one or more collection-instance
+Empties. Live Link exports the Empty itself plus a separately transformed copy
+of every enabled object in the collection. The same workflow also works with
+local collection instances.
+
+The collection is the asset boundary: linking individual objects, Geometry
+Nodes instances, particle instances, and other depsgraph-generated placements
+are not expanded. Child collections and nested collection-instance Empties are
+expanded recursively. Cyclic collection references are skipped with a warning.
+
+Use the instance Empty's **Enable Live Link** setting as the gate for the whole
+placement, while source-object **Enable Live Link** settings gate individual
+objects. Hiding an enabled instance does not remove it from the game update; it
+exports with visibility disabled, so it can be shown again without changing its
+identity. For evaluated hidden assets, hide the instance in the host file rather
+than globally disabling source objects with `hide_viewport` in the library file.
+
+Expanded names include their placement path, such as
+`LeftArmInstance/Armature`, and each placement receives stable positive
+session-lifetime object IDs. Armature, skinning, and Attachment Point references
+are remapped within that placement; materials and images remain shared across
+placements.
 
 Add a `Part` component to each catalog object and choose Body, Legs, Left Arm,
 Right Arm, or Head. Parts may use any Blender object type; renderable parts use
