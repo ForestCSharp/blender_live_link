@@ -397,22 +397,18 @@ namespace WireOverlayPass
 			0, nullptr
 		);
 
-		CullResult cull_result = cull_objects(in_state, in_view_projection, 0.0f);
+		DynamicArray<i32>& visible = in_state.cull_scratch.wire;
+		cull_objects(in_state, in_view_projection, 0.0f, visible);
 		u32 drawn_mesh_count = 0;
-		for (i32 object_id : cull_result.object_ids)
+		for (i32 render_object_index : visible)
 		{
-			auto found = in_state.scene.objects.find(object_id);
+			auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
 			if (found == in_state.scene.objects.end())
 			{
 				continue;
 			}
 
 			Object& object = found->second;
-			if (object.render_object_index < 0)
-			{
-				continue;
-			}
-
 			Mesh& mesh = object.mesh;
 			MeshRenderView render_view = mesh_get_render_view(mesh);
 			if (render_view.index_count == 0)
@@ -453,11 +449,11 @@ namespace WireOverlayPass
 				2, 1, &mesh_set,
 				0, nullptr
 			);
-			vkCmdPushConstants(
-				command_buffer,
+			vulkan_cmd_push_constants(
+				ctx,
 				mesh_pipeline_layout,
 				VK_SHADER_STAGE_VERTEX_BIT,
-				0, sizeof(i32), &object.render_object_index
+				0, sizeof(i32), &render_object_index
 			);
 			vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, 0);
 			drawn_mesh_count += 1;

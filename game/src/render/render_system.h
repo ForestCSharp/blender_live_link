@@ -402,7 +402,7 @@ namespace RenderSystem
 			in_state.render_targets.init(RenderTargetId::CloudHistory1,
 				make_cloud_pair_desc("Cloud Temporal Set 1"));
 			in_state.render_targets.init(RenderTargetId::CloudComposite,
-				render_target_mrt_desc("Cloud Composite", Render::SCENE_COLOR_FORMAT, 3,
+				render_target_mrt_desc("Cloud Composite", Render::SCENE_COLOR_FORMAT, 4,
 					{}, VK_ATTACHMENT_LOAD_OP_CLEAR));
 			in_state.render_targets.init(RenderTargetId::CloudShadow, (RenderPassDesc) {
 				.num_outputs = 1,
@@ -552,6 +552,7 @@ namespace RenderSystem
 					? RenderTargetId::CloudHistory0 : RenderTargetId::CloudHistory1);
 			};
 			const bool cloud_render_active = in_state.clouds.active
+				&& in_state.clouds.debug_active
 				&& in_state.scene.active_cloud_controller_id.has_value()
 				&& in_state.scene.objects.contains(*in_state.scene.active_cloud_controller_id)
 				&& sky_pass.has_active_atmosphere
@@ -652,14 +653,19 @@ namespace RenderSystem
 					.atmosphere_enabled = sky_pass.has_active_atmosphere
 						&& bruneton_atmosphere_pass.has_precomputed ? 1 : 0,
 					.atmosphere_planet_center_z = sky_pass.active_parameters.planet_center_z_m,
+					.cloud_enabled = cloud_render_active ? 1 : 0,
 				};
 				fog_pass_update(
 					&in_state.vk,
 					fog_fs_params,
 					pre_fog_scene_color.view(),
-					pre_fog_position.view(),
+					geometry_render_pass.get_color_output(1).view,
 					bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer(),
-					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
+					bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view,
+					lighting_render_pass.get_color_output(0).view,
+					cloud_render_active
+						? cloud_composite_render_pass.get_color_output(3).view
+						: geometry_render_pass.get_color_output(0).view
 				);
 			}
 		
@@ -1008,23 +1014,22 @@ namespace RenderSystem
 		
 				if (in_state.render_objects.valid)
 				{
-					CullResult cull_result = cull_objects(in_state, view_projection_matrix,
-						in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
-					for (i32 mesh_object_id : cull_result.object_ids)
+					DynamicArray<i32>& visible = in_state.cull_scratch.geometry;
+					cull_objects(in_state, view_projection_matrix,
+						in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f,
+						visible);
+					for (i32 render_object_index : visible)
 					{
-						auto found = in_state.scene.objects.find(mesh_object_id);
+						auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
 						if (found == in_state.scene.objects.end())
 						{
 							continue;
 						}
 		
 						Object& object = found->second;
-						if (object.render_object_index >= 0)
-						{
-							geometry_pass_draw_mesh(&in_state.vk, object.mesh, object.render_object_index, in_state.animation.skinning_debug_view);
-							in_state.data_oriented.frame.draw_calls += 1;
-							in_state.data_oriented.frame.draw_mesh_count += 1;
-						}
+						geometry_pass_draw_mesh(&in_state.vk, object.mesh, render_object_index, in_state.animation.skinning_debug_view);
+						in_state.data_oriented.frame.draw_calls += 1;
+						in_state.data_oriented.frame.draw_mesh_count += 1;
 					}
 				}
 		
@@ -1105,12 +1110,15 @@ namespace RenderSystem
 				vulkan_end_debug_label(&in_state.vk);
 			}
 		
-			// Fog reads the lit scene + G-buffer position; tonemapping then reads the
-			// post-fog color (or the lighting output directly when fog is off)
+			// Fog reads the cloud composite plus the original lighting/G-buffer data;
+			// tonemapping then reads the post-fog color (or the pre-fog scene directly
+			// when fog is off).
 			if (fog_render_active)
 			{
 				graph.sampled(pre_fog_scene_color);
-				graph.sampled(pre_fog_position);
+				graph.sampled(frame_graph_color(geometry_render_pass, 1));
+				if (cloud_render_active)
+					graph.sampled(frame_graph_color(cloud_composite_render_pass, 3));
 				graph.execute(fog_render_pass, [&](i32)
 				{
 					fog_pass_draw(&in_state.vk);

@@ -17,6 +17,7 @@ layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_position;
 layout(location = 2) out vec4 out_reactive;
+layout(location = 3) out vec4 out_fog_metadata;
 
 void sample_cloud_bilateral(vec4 geometry_position, out vec4 cloud_value, out vec4 depth_value)
 {
@@ -85,6 +86,7 @@ void main()
 		out_color = background;
 		out_position = geometry_position;
 		out_reactive = vec4(0.0);
+		out_fog_metadata = vec4(0.0);
 		return;
 	}
 
@@ -124,4 +126,5 @@ void main()
 	out_position = geometry_position.w > 0.5
 		? geometry_position : vec4(cloud_world_position, 2.0);
 	out_reactive = vec4(clamp(1.0 - cloud_value.a, 0.0, 1.0), 0.0, 0.0, 1.0);
+	out_fog_metadata = vec4(cloud_world_position, cloud_opacity);
 }

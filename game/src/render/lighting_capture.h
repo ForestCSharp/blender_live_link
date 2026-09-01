@@ -848,27 +848,24 @@ struct LightingCapture
 					0, nullptr
 				);
 
-				CullResult cull_result = cull_objects(
+				DynamicArray<i32>& visible = in_state.cull_scratch.capture;
+				cull_objects(
 					in_state,
 					view_projection,
 					in_state.tessellation.enabled
 						? in_state.tessellation.bounds_padding : 0.0f,
+					visible,
 					cull_to_probe_influence ? &influence_sphere : nullptr);
 				VkPipeline bound_pipeline = VK_NULL_HANDLE;
-				for (i32 object_id : cull_result.object_ids)
+				for (i32 render_object_index : visible)
 				{
-					auto found = in_state.scene.objects.find(object_id);
+					auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
 					if (found == in_state.scene.objects.end())
 					{
 						continue;
 					}
 
 					Object& object = found->second;
-					if (object.render_object_index < 0)
-					{
-						continue;
-					}
-
 					Mesh& mesh = object.mesh;
 					MeshRenderView render_view = mesh_get_render_view(mesh);
 					const bool skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
@@ -886,14 +883,14 @@ struct LightingCapture
 
 					CaptureGeometryPushConstants push_constants = {
 						.view_projection = view_projection,
-						.object_index = object.render_object_index,
+						.object_index = render_object_index,
 						.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
 						.capture_position_and_radius = HMM_V4V(
 							in_location,
 							cull_to_probe_influence ? in_max_radial_depth : 0.0f),
 					};
-					vkCmdPushConstants(
-						command_buffer,
+					vulkan_cmd_push_constants(
+						ctx,
 						capture_geometry_pipeline_layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 						0,
@@ -902,14 +899,14 @@ struct LightingCapture
 
 					VkBuffer vertex_buffer = render_view.vertex_buffer;
 					VkDeviceSize vertex_offset = 0;
-					vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_offset);
+					vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
 					if (skinned)
 					{
 						VkBuffer skinned_vertex_buffer = mesh.skinned_vertex_buffer.get_gpu_buffer();
 						VkDeviceSize skinned_offset = 0;
-						vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+						vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 					}
-					vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+					vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 					vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 				}
 			}

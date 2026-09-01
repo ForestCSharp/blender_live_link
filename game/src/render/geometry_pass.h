@@ -247,8 +247,8 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		._pad0 = 0,
 	};
 
-	vkCmdPushConstants(
-		command_buffer,
+	vulkan_cmd_push_constants(
+		ctx,
 		geometry_pass.pipeline_layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0,
@@ -258,16 +258,16 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 
 	VkBuffer vertex_buffer = render_view.vertex_buffer;
 	VkDeviceSize vertex_buffer_offset = 0;
-	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_buffer_offset);
+	vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_buffer_offset);
 
 	if (skinned)
 	{
 		VkBuffer skinned_vertex_buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
 		VkDeviceSize skinned_offset = 0;
-		vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+		vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 	}
 
-	vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+	vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
 	vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 }

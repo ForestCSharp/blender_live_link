@@ -80,6 +80,8 @@ Cloud System, and a 40 km opaque ground receiver. It starts fullscreen with a
 camera looking straight up and leaves `GAME2_RENDER_SCALE` unset so the normal
 dynamic-resolution default remains active. Pass `--ground-view` to aim at the
 opaque receiver and inspect moving cloud shadows, or `--windowed` when needed.
+Pass `--fog` to include a height-fog controller and exercise the combined
+cloud/fog compositing path.
 The Cloud System debug panel exposes render scale, view-step count, dense/empty
 step scales, sun-cone sample count, temporal history weight, and depth rejection;
 edits invalidate cloud history, and render-scale edits safely recreate targets.

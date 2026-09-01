@@ -737,6 +737,7 @@ namespace ImGuiLayer
 			{
 				if (ImGui::CollapsingHeader("Cloud System"))
 				{
+					ImGui::Checkbox("Enable Cloud System", &state.clouds.debug_active);
 					ImGui::Text("Active: %s", state.clouds.active ? "yes" : "no");
 					ImGui::Text("Active layers: %d / %d",
 						state.clouds.active_layer_count, MAX_CLOUD_LAYERS);

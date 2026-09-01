@@ -257,13 +257,18 @@ static void draw_stats_ui(State& state)
 			stats_ui_cell_u64("Draw Calls", metrics.draw_calls);
 			stats_ui_cell_u64("Dispatch Calls", metrics.dispatch_calls);
 			ImGui::TableNextRow();
+			stats_ui_cell_u64("Bind Vertex Buffers", metrics.bind_vertex_buffer_calls);
+			stats_ui_cell_u64("Bind Index Buffers", metrics.bind_index_buffer_calls);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Push Constants", metrics.push_constant_calls);
 			stats_ui_cell_u64("Descriptor Updates", metrics.descriptor_update_calls);
+			ImGui::TableNextRow();
 			stats_ui_cell_u64("Descriptors Written", metrics.descriptors_written);
-			ImGui::TableNextRow();
 			stats_ui_cell_u64("Uploaded Bytes", metrics.upload_bytes);
-			stats_ui_cell_u64("Immediate Submits", metrics.immediate_submit_count);
 			ImGui::TableNextRow();
+			stats_ui_cell_u64("Immediate Submits", metrics.immediate_submit_count);
 			stats_ui_cell_u64("Queue Idle Waits", metrics.queue_wait_idle_count);
+			ImGui::TableNextRow();
 			stats_ui_cell_u64("Device Idle Waits", metrics.device_wait_idle_count);
 			ImGui::EndTable();
 		}

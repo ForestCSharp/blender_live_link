@@ -120,6 +120,9 @@ struct VulkanMetrics
 	u64 descriptors_written = 0;
 	u64 draw_calls = 0;
 	u64 dispatch_calls = 0;
+	u64 bind_vertex_buffer_calls = 0;
+	u64 bind_index_buffer_calls = 0;
+	u64 push_constant_calls = 0;
 	u64 immediate_submit_count = 0;
 	u64 queue_wait_idle_count = 0;
 	u64 device_wait_idle_count = 0;
@@ -648,6 +651,24 @@ void vulkan_cmd_dispatch(VulkanContext* ctx, u32 x, u32 y, u32 z)
 {
 	ctx->metrics.dispatch_calls += 1;
 	vkCmdDispatch(vulkan_current_command_buffer(ctx), x, y, z);
+}
+
+void vulkan_cmd_bind_vertex_buffers(VulkanContext* ctx, u32 first_binding, u32 binding_count, const VkBuffer* buffers, const VkDeviceSize* offsets)
+{
+	ctx->metrics.bind_vertex_buffer_calls += 1;
+	vkCmdBindVertexBuffers(vulkan_current_command_buffer(ctx), first_binding, binding_count, buffers, offsets);
+}
+
+void vulkan_cmd_bind_index_buffer(VulkanContext* ctx, VkBuffer buffer, VkDeviceSize offset, VkIndexType index_type)
+{
+	ctx->metrics.bind_index_buffer_calls += 1;
+	vkCmdBindIndexBuffer(vulkan_current_command_buffer(ctx), buffer, offset, index_type);
+}
+
+void vulkan_cmd_push_constants(VulkanContext* ctx, VkPipelineLayout layout, VkShaderStageFlags stage_flags, u32 offset, u32 size, const void* values)
+{
+	ctx->metrics.push_constant_calls += 1;
+	vkCmdPushConstants(vulkan_current_command_buffer(ctx), layout, stage_flags, offset, size, values);
 }
 
 VkResult vulkan_device_wait_idle(VulkanContext* ctx)

@@ -36,7 +36,6 @@ struct Character
 Character character_create(JoltState& in_jolt_state, const CharacterSettings& in_settings)
 {
 	// Create Character's Jolt Shape
-
 	const float character_height = in_settings.height;
 	const float character_radius = in_settings.radius;
 

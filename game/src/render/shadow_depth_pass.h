@@ -414,8 +414,10 @@ namespace ShadowDepthPass
 		const HMM_Mat4& light_view_proj = shadow_view_projections[in_cascade_idx];
 
 		// Cull + draw casters
-		CullResult cull_result = cull_objects(in_state, light_view_proj,
-			in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f);
+		DynamicArray<i32>& visible = in_state.cull_scratch.shadow[in_cascade_idx];
+		cull_objects(in_state, light_view_proj,
+			in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f,
+			visible);
 
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 		bound_pipeline = VK_NULL_HANDLE;
@@ -428,20 +430,15 @@ namespace ShadowDepthPass
 			0, nullptr
 		);
 
-		for (i32 object_id : cull_result.object_ids)
+		for (i32 render_object_index : visible)
 		{
-			auto found = in_state.scene.objects.find(object_id);
+			auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
 			if (found == in_state.scene.objects.end())
 			{
 				continue;
 			}
 
 			Object& object = found->second;
-			if (object.render_object_index < 0)
-			{
-				continue;
-			}
-
 			Mesh& mesh = object.mesh;
 			MeshRenderView render_view = mesh_get_render_view(mesh);
 			const bool skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
@@ -459,21 +456,21 @@ namespace ShadowDepthPass
 
 			PushConstants push_constants = {
 				.light_view_projection = light_view_proj,
-				.object_index = object.render_object_index,
+				.object_index = render_object_index,
 				.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
 			};
-			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
+			vulkan_cmd_push_constants(ctx, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
 
 			VkBuffer vertex_buffer = render_view.vertex_buffer;
 			VkDeviceSize vertex_offset = 0;
-			vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_offset);
+			vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
 			if (skinned)
 			{
 				VkBuffer skinned_vertex_buffer = mesh.skinned_vertex_buffer.get_gpu_buffer();
 				VkDeviceSize skinned_offset = 0;
-				vkCmdBindVertexBuffers(command_buffer, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+				vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 			}
-			vkCmdBindIndexBuffer(command_buffer, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+			vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 			vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
 			in_state.data_oriented.frame.draw_calls += 1;
 			in_state.data_oriented.frame.draw_mesh_count += 1;

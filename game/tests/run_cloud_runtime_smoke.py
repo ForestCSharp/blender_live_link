@@ -21,6 +21,9 @@ def main():
     parser.add_argument(
         "--timings", action="store_true",
         help="print periodic GPU pass timings")
+    parser.add_argument(
+        "--fog", action="store_true",
+        help="include a height-fog controller in the cloud scene")
     camera_group = parser.add_mutually_exclusive_group()
     camera_group.add_argument(
         "--ground-view", action="store_true",
@@ -37,6 +40,8 @@ def main():
         sender_env["CLOUD_SMOKE_CAMERA"] = "ground"
     elif args.horizon_view:
         sender_env["CLOUD_SMOKE_CAMERA"] = "horizon"
+    if args.fog:
+        sender_env["CLOUD_SMOKE_FOG"] = "1"
     sender = subprocess.Popen(
         [sys.executable, str(GAME_ROOT / "tests/send_cloud_runtime_smoke.py")],
         cwd=REPO_ROOT,

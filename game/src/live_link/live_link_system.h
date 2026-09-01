@@ -105,12 +105,51 @@ namespace LiveLinkSystem
 	// described here (lazy GpuBuffer), never created.
 	// Parses the complete live-link payload used by game: content resources,
 	// objects/components, deletes, reset, and import statistics.
+	// Writes the payload to GAME2_LIVE_LINK_CAPTURE when it is the largest seen
+	// so far. The full-scene sync is by far the biggest message, so this lands a
+	// self-contained scene that `--no-live-link -f <path>` can replay for
+	// benchmarking without driving Blender.
+	void capture_flatbuffer_payload(const DynamicArray<u8>& in_payload)
+	{
+		const std::optional<std::string>& path = RuntimeConfig::get().live_link_capture;
+		if (!path)
+		{
+			return;
+		}
+
+		static size_t largest_captured_bytes = 0;
+		if (in_payload.length() <= largest_captured_bytes)
+		{
+			return;
+		}
+
+		FILE* file = fopen(path->c_str(), "wb");
+		if (!file)
+		{
+			printf("[live-link] failed to open capture file: %s\n", path->c_str());
+			return;
+		}
+
+		const size_t written = fwrite(in_payload.data(), 1, in_payload.length(), file);
+		fclose(file);
+		if (written != in_payload.length())
+		{
+			printf("[live-link] short write to capture file: %s\n", path->c_str());
+			return;
+		}
+
+		largest_captured_bytes = in_payload.length();
+		printf("[live-link] captured %zu bytes to %s\n", written, path->c_str());
+	}
+
 	void parse_flatbuffer_data(DynamicArray<u8>& flatbuffer_data)
 	{
 		if (flatbuffer_data.length() == 0)
 		{
 			return;
 		}
+
+		capture_flatbuffer_payload(flatbuffer_data);
 	
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());

@@ -192,7 +192,7 @@ namespace CloudPass
 			2, 0, 0);
 
 		const VkFormat pair_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
-		const VkFormat triple_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
+		const VkFormat quad_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
 		const VkFormat shadow_format = VK_FORMAT_R16_SFLOAT;
 		pass.raymarch_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_raymarch.vert.spv",
@@ -210,7 +210,7 @@ namespace CloudPass
 			.vertex_shader_path = "bin/shaders/cloud_composite.vert.spv",
 			.fragment_shader_path = "bin/shaders/cloud_composite.frag.spv",
 			.pipeline_layout = pass.atmosphere_pipeline_layout.layout,
-			.color_formats = triple_formats, .color_format_count = 3,
+			.color_formats = quad_formats, .color_format_count = 4,
 		});
 		pass.shadow_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_shadow.vert.spv",

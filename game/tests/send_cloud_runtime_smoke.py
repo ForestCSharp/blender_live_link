@@ -16,6 +16,7 @@ from compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
 from compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSystem as CloudSystem
 from compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer as Container
+from compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController as FogController
 from compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosphere as Sky
 from compiled_schemas.python.Blender.LiveLink import Light
 from compiled_schemas.python.Blender.LiveLink import LightType
@@ -102,6 +103,30 @@ CloudSystem.AddShadowExtentM(builder, 8000.0)
 CloudSystem.AddLayers(builder, layers)
 cloud = CloudSystem.End(builder)
 
+fog_enabled = os.environ.get("CLOUD_SMOKE_FOG", "0") == "1"
+fog_container = None
+if fog_enabled:
+    FogController.Start(builder)
+    FogController.AddEnabled(builder, True)
+    FogController.AddDensity(
+        builder, float(os.environ.get("CLOUD_SMOKE_FOG_DENSITY", "0.0015")))
+    FogController.AddBaseHeight(builder, 0.0)
+    FogController.AddScaleHeight(
+        builder, float(os.environ.get("CLOUD_SMOKE_FOG_SCALE_HEIGHT", "1500.0")))
+    FogController.AddMaxDistance(
+        builder, float(os.environ.get("CLOUD_SMOKE_FOG_MAX_DISTANCE", "100000.0")))
+    FogController.AddFogColor(builder, Vec3.CreateVec3(builder, 0.55, 0.65, 0.75))
+    FogController.AddAmbientIntensity(builder, 0.4)
+    FogController.AddSunIntensity(builder, 1.0)
+    FogController.AddAnisotropy(builder, 0.2)
+    fog = FogController.End(builder)
+
+    Container.Start(builder)
+    Container.AddValueType(
+        builder, GameplayComponent.GameplayComponent().GameplayComponentFogController)
+    Container.AddValue(builder, fog)
+    fog_container = Container.End(builder)
+
 Sky.Start(builder)
 ground = Vec3.CreateVec3(builder, 0.1, 0.1, 0.1)
 Sky.AddGroundAlbedo(builder, ground)
@@ -117,9 +142,12 @@ Container.AddValueType(builder,
     GameplayComponent.GameplayComponent().GameplayComponentCloudSystem)
 Container.AddValue(builder, cloud)
 cloud_container = Container.End(builder)
-Object.StartComponentsVector(builder, 2)
-builder.PrependUOffsetTRelative(cloud_container)
-builder.PrependUOffsetTRelative(sky_container)
+component_containers = [sky_container, cloud_container]
+if fog_container is not None:
+    component_containers.append(fog_container)
+Object.StartComponentsVector(builder, len(component_containers))
+for component_container in component_containers:
+    builder.PrependUOffsetTRelative(component_container)
 components = builder.EndVector()
 
 Light.Start(builder)
@@ -254,11 +282,16 @@ decoded_ground = next(
     for index in range(decoded.ObjectsLength())
     if decoded.Objects(index).UniqueId() == GROUND_ID
 )
-assert decoded_sun.ComponentsLength() == 2
-assert {decoded_sun.Components(index).ValueType() for index in range(2)} == {
+expected_component_types = {
     GameplayComponent.GameplayComponent().GameplayComponentSkyAtmosphere,
     GameplayComponent.GameplayComponent().GameplayComponentCloudSystem,
 }
+if fog_enabled:
+    expected_component_types.add(
+        GameplayComponent.GameplayComponent().GameplayComponentFogController)
+assert decoded_sun.ComponentsLength() == len(expected_component_types)
+assert {decoded_sun.Components(index).ValueType()
+        for index in range(decoded_sun.ComponentsLength())} == expected_component_types
 assert decoded_ground.Mesh() is not None
 assert decoded_ground.Mesh().PositionsLength() == 12
 assert decoded_ground.Mesh().IndicesLength() == 6

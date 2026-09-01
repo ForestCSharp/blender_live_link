@@ -55,6 +55,9 @@ namespace RuntimeConfig
 		bool force_device_local = false;
 		std::optional<std::string> present_mode;
 		std::optional<std::string> pipeline_cache_path;
+		// Dumps the largest live-link payload seen (the full-scene sync) to this
+		// path, so `--no-live-link -f <path>` can replay the scene without Blender.
+		std::optional<std::string> live_link_capture;
 		bool print_gpu_timings = false;
 	};
 
@@ -124,6 +127,7 @@ namespace RuntimeConfig
 				: std::strcmp(chart, "sky") == 0 ? 3 : 1;
 		config.tonemap_validation_output_mode = string_value("GAME2_TONEMAP_VALIDATION_OUTPUT_MODE");
 		config.tonemap_validation_capture = string_value("GAME2_TONEMAP_VALIDATION_CAPTURE");
+		config.live_link_capture = string_value("GAME2_LIVE_LINK_CAPTURE");
 		config.cloud_shadow_validation_capture = string_value(
 			"GAME2_CLOUD_SHADOW_VALIDATION_CAPTURE");
 		config.bloom = boolean_value("GAME2_BLOOM");

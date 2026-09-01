@@ -1,8 +1,9 @@
 #version 450
 
 // Exponential height fog with an optional ceiling and Henyey-Greenstein sun
-// in-scatter. Reads the lit scene color and G-buffer world position, then
-// writes the fogged scene color.
+// in-scatter. The normal scene path fogs the lighting color at the geometry
+// depth. When clouds are present, the cloud composite and metadata let the
+// two contributions be fogged at their respective depths before recombination.
 
 const float M_PI = 3.14159265358979323846;
 
@@ -30,11 +31,17 @@ layout(set = 0, binding = 0) uniform fs_params
 	float atmosphere_planet_center_z;
 	float _atmosphere_pad0;
 	float _atmosphere_pad1;
+	int cloud_enabled;
+	float _cloud_pad0;
+	float _cloud_pad1;
+	float _cloud_pad2;
 };
 
-layout(set = 0, binding = 1) uniform sampler2D color_tex;
-layout(set = 0, binding = 2) uniform sampler2D position_tex;
+layout(set = 0, binding = 1) uniform sampler2D composite_color_tex;
+layout(set = 0, binding = 2) uniform sampler2D geometry_position_tex;
 layout(set = 0, binding = 4) uniform sampler2D atmosphere_transmittance_tex;
+layout(set = 0, binding = 5) uniform sampler2D background_color_tex;
+layout(set = 0, binding = 6) uniform sampler2D cloud_metadata_tex;
 
 layout(location = 0) in vec2 uv;
 
@@ -103,32 +110,31 @@ float henyey_greenstein_phase(float cos_theta, float g)
 	return (1.0 - g2) / (4.0 * M_PI * denominator * sqrt(denominator));
 }
 
-void main()
+struct FogResult
 {
-	vec4 lit_color = texture(color_tex, uv);
-	vec4 world_position = texture(position_tex, uv);
+	float transmittance;
+	vec3 inscatter;
+};
 
-	if (world_position.a == 0.0 || density <= 0.0 || max_distance <= 0.0)
-	{
-		frag_color = lit_color;
-		return;
-	}
-
-	vec3 camera_to_pixel = world_position.xyz - camera_position;
+FogResult evaluate_fog(vec3 world_position)
+{
+	FogResult result = FogResult(1.0, vec3(0.0));
+	vec3 camera_to_pixel = world_position - camera_position;
 	float pixel_distance = length(camera_to_pixel);
 	if (pixel_distance <= 0.00001)
 	{
-		frag_color = lit_color;
-		return;
+		return result;
 	}
 
 	vec3 ray_dir = camera_to_pixel / pixel_distance;
 	float fog_distance = min(pixel_distance, max_distance);
-	float optical_depth = max(bounded_height_fog_optical_depth(camera_position, ray_dir, fog_distance), 0.0);
-	float transmittance = exp(-min(optical_depth, 80.0));
-	float fog_amount = 1.0 - transmittance;
+	float optical_depth = max(
+		bounded_height_fog_optical_depth(camera_position, ray_dir, fog_distance), 0.0);
+	result.transmittance = exp(-min(optical_depth, 80.0));
+	float fog_amount = 1.0 - result.transmittance;
 
-	float sun_phase = henyey_greenstein_phase(dot(ray_dir, -normalize(sun_direction)), anisotropy) * 4.0 * M_PI;
+	float sun_phase = henyey_greenstein_phase(
+		dot(ray_dir, -normalize(sun_direction)), anisotropy) * 4.0 * M_PI;
 	vec3 ambient_inscatter = fog_color * ambient_intensity;
 	vec3 attenuated_sun_color = sun_color;
 	if (atmosphere_enabled != 0)
@@ -143,8 +149,77 @@ void main()
 	vec3 sun_inscatter = SanitizeSceneColor(
 		SanitizeSceneColor(attenuated_sun_color)
 		* fog_color * sun_intensity * sun_phase);
-	vec3 inscatter = ambient_inscatter + sun_inscatter;
+	result.inscatter = ambient_inscatter + sun_inscatter;
+	return result;
+}
 
+vec3 apply_fog(vec3 scene_color, FogResult fog)
+{
+	return scene_color * fog.transmittance
+		+ fog.inscatter * (1.0 - fog.transmittance);
+}
+
+vec4 sample_nearest(sampler2D image, vec2 sample_uv)
+{
+	ivec2 size = textureSize(image, 0);
+	ivec2 pixel = clamp(
+		ivec2(sample_uv * vec2(size)), ivec2(0), size - ivec2(1));
+	return texelFetch(image, pixel, 0);
+}
+
+void main()
+{
+	vec4 composite_color = texture(composite_color_tex, uv);
+	vec4 background_color = texture(background_color_tex, uv);
+	vec4 geometry_position = sample_nearest(geometry_position_tex, uv);
+
+	if (density <= 0.0 || max_distance <= 0.0)
+	{
+		frag_color = composite_color;
+		return;
+	}
+
+	if (cloud_enabled == 0)
+	{
+		if (geometry_position.a == 0.0)
+		{
+			frag_color = composite_color;
+			return;
+		}
+		frag_color = vec4(
+			apply_fog(composite_color.rgb, evaluate_fog(geometry_position.xyz)),
+			composite_color.a);
+		return;
+	}
+
+	vec4 cloud_metadata = sample_nearest(cloud_metadata_tex, uv);
+	float cloud_opacity = clamp(cloud_metadata.w, 0.0, 1.0);
+	if (cloud_opacity <= 0.00001)
+	{
+		if (geometry_position.a == 0.0)
+		{
+			frag_color = composite_color;
+			return;
+		}
+		frag_color = vec4(
+			apply_fog(composite_color.rgb, evaluate_fog(geometry_position.xyz)),
+			composite_color.a);
+		return;
+	}
+
+	float cloud_transmittance = 1.0 - cloud_opacity;
+	vec3 cloud_scattering = max(
+		composite_color.rgb - cloud_transmittance * background_color.rgb,
+		vec3(0.0));
+	vec3 fogged_cloud = apply_fog(
+		cloud_scattering, evaluate_fog(cloud_metadata.xyz));
+	vec3 fogged_background = background_color.rgb;
+	if (geometry_position.a != 0.0)
+	{
+		fogged_background = apply_fog(
+			background_color.rgb, evaluate_fog(geometry_position.xyz));
+	}
 	frag_color = vec4(
-		lit_color.rgb * transmittance + inscatter * fog_amount, lit_color.a);
+		SanitizeSceneColor(fogged_cloud + cloud_transmittance * fogged_background),
+		composite_color.a);
 }

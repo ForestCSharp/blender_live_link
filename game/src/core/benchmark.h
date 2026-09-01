@@ -202,9 +202,12 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 			pass_index + 1 < state.gpu_pass_ms.length() ? "," : "");
 	}
 	fprintf(output, "  },\n");
-	fprintf(output, "  \"commands\": { \"draws\": %llu, \"dispatches\": %llu, \"descriptor_update_calls\": %llu, \"descriptor_writes\": %llu, \"descriptors_written\": %llu },\n",
+	fprintf(output, "  \"commands\": { \"draws\": %llu, \"dispatches\": %llu, \"bind_vertex_buffers\": %llu, \"bind_index_buffers\": %llu, \"push_constants\": %llu, \"descriptor_update_calls\": %llu, \"descriptor_writes\": %llu, \"descriptors_written\": %llu },\n",
 		(unsigned long long)(end.draw_calls - state.metrics_start.draw_calls),
 		(unsigned long long)(end.dispatch_calls - state.metrics_start.dispatch_calls),
+		(unsigned long long)(end.bind_vertex_buffer_calls - state.metrics_start.bind_vertex_buffer_calls),
+		(unsigned long long)(end.bind_index_buffer_calls - state.metrics_start.bind_index_buffer_calls),
+		(unsigned long long)(end.push_constant_calls - state.metrics_start.push_constant_calls),
 		(unsigned long long)(end.descriptor_update_calls - state.metrics_start.descriptor_update_calls),
 		(unsigned long long)(end.descriptor_writes - state.metrics_start.descriptor_writes),
 		(unsigned long long)(end.descriptors_written - state.metrics_start.descriptors_written));

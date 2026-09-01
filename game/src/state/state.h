@@ -30,6 +30,24 @@ static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 50;
 // render passes.
 static constexpr i32 MAX_SHADOW_CASCADES = 4;
 
+enum CullEntryFlag : u32
+{
+	CullEntryFlag_Renderable = 1u << 0,	// visible and has a mesh
+	CullEntryFlag_Skinned    = 1u << 1,	// bounds are not valid; never culled
+};
+
+// One cull candidate, parallel to State::render_objects.items and indexed by
+// the same render_object_index. Packed to 32 bytes: the cull loop reads the
+// whole entry, so keeping it in one contiguous array beats splitting the
+// fields across parallel arrays.
+struct CullEntry
+{
+	BoundingBox world_bounds = {};	// world space; unset for skinned entries
+	i32 object_id = 0;				// scene unique id
+	u32 flags = 0;					// CullEntryFlag bits
+};
+static_assert(sizeof(CullEntry) == 32, "CullEntry should stay compact");
+
 enum class EShadowCascadePlacementMode : i32
 {
 	Frustum = 0,
@@ -264,6 +282,26 @@ struct State
 	// the CPU never writes a buffer that a frame in flight still reads.
 	// Each ring slot has an independent allocation.
 	ResizableGpuStreamRing<ObjectData> render_objects;
+
+	// Cull inputs, rebuilt alongside render_objects and indexed by the same
+	// render_object_index. World bounds are transformed once per frame here
+	// instead of once per view, because a frame culls 4+ views (geometry, one
+	// per shadow cascade, and one per GI probe face while GI is converging).
+	DynamicArray<CullEntry> cull_entries;
+
+	// mesh_object_ids that had no matching scene object when the snapshot was
+	// built. Reported per cull call so the culling stats stay comparable.
+	i32 cull_missing_object_count = 0;
+
+	// Per-view visible lists. Owned here so cull_objects can clear and refill
+	// them without allocating after the first frame.
+	struct CullScratch
+	{
+		DynamicArray<i32> geometry;
+		DynamicArray<i32> shadow[MAX_SHADOW_CASCADES];
+		DynamicArray<i32> capture;
+		DynamicArray<i32> wire;
+	} cull_scratch;
 
 	// Registered materials. The GPU
 	// buffer is a fixed MAX_MATERIALS-slot stream buffer created at init and
@@ -566,7 +604,7 @@ struct State
 
 	struct CloudState
 	{
-		static constexpr f32 DEFAULT_RESOLUTION_SCALE = 1.0f;
+		static constexpr f32 DEFAULT_RESOLUTION_SCALE = 0.5f;
 		static constexpr i32 DEFAULT_VIEW_STEPS = 40;
 		static constexpr f32 DEFAULT_DENSE_STEP_SCALE = 0.75f;
 		static constexpr f32 DEFAULT_EMPTY_STEP_SCALE = 2.0f;
@@ -579,6 +617,7 @@ struct State
 		static constexpr f32 DEFAULT_OPACITY_REJECTION = 0.35f;
 
 		bool active = false;
+		bool debug_active = true;
 		bool shadow_lighting_enabled = true;
 		bool debug_show_shadow_map_fullscreen = false;
 		bool history_reset_requested = true;
@@ -796,13 +835,17 @@ void build_render_object_snapshot(State& in_state)
 	}
 
 	render_objects.items.clear();
+	in_state.cull_entries.clear();
+	in_state.cull_missing_object_count = 0;
 	render_object_snapshot_ensure_capacity(in_state, (i32) in_state.scene.indexes.mesh_object_ids.length());
+	in_state.cull_entries.reserve(in_state.scene.indexes.mesh_object_ids.length());
 
 	for (i32 mesh_object_id : in_state.scene.indexes.mesh_object_ids)
 	{
 		auto found = in_state.scene.objects.find(mesh_object_id);
 		if (found == in_state.scene.objects.end())
 		{
+			in_state.cull_missing_object_count += 1;
 			continue;
 		}
 
@@ -811,6 +854,24 @@ void build_render_object_snapshot(State& in_state)
 		if (object.has_mesh) in_state.data_oriented.frame.object_update_mesh_dirty_count += 1;
 		object.render_object_index = (i32) render_objects.items.length();
 		render_objects.items.add(object_make_render_data(object));
+
+		// Cache the world-space bounds so every view this frame culls against a
+		// flat array instead of re-transforming eight corners per view.
+		CullEntry entry = {};
+		entry.object_id = mesh_object_id;
+		if (object.visibility && object.has_mesh)
+		{
+			entry.flags |= CullEntryFlag_Renderable;
+			if (object.mesh.has_skinned_vertices)
+			{
+				entry.flags |= CullEntryFlag_Skinned;
+			}
+			else
+			{
+				entry.world_bounds = object_get_bounding_box(object);
+			}
+		}
+		in_state.cull_entries.add(entry);
 	}
 
 	render_objects.upload();
