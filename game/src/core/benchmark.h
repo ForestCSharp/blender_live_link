@@ -219,6 +219,21 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 		(unsigned long long)(end.upload_staging_spills - state.metrics_start.upload_staging_spills),
 		(unsigned long long)end.upload_peak_frame_bytes,
 		(unsigned long long)(end.immediate_submit_count - state.metrics_start.immediate_submit_count));
+	// Per-frame scene/cull/draw counts from the last completed frame. These are
+	// the numbers the GPU-driven work is judged on, so they belong next to the
+	// command counts rather than only in the debug UI.
+	{
+		const auto& frame_stats = ::state.data_oriented.previous_frame;
+		fprintf(output, "  \"scene\": { \"mesh_objects\": %i, \"cull_calls\": %i, \"cull_candidates\": %i, \"cull_visible\": %i, \"cull_frustum_rejected\": %i, \"cull_skinned_visible\": %i, \"draw_calls\": %i, \"draw_meshes\": %i },\n",
+			frame_stats.mesh_object_count,
+			frame_stats.cull_calls,
+			frame_stats.cull_candidate_count,
+			frame_stats.cull_visible_count,
+			frame_stats.cull_frustum_count,
+			frame_stats.cull_skinned_visible_count,
+			frame_stats.draw_calls,
+			frame_stats.draw_mesh_count);
+	}
 	fprintf(output, "  \"idle_waits\": { \"queue\": %llu, \"device\": %llu },\n",
 		(unsigned long long)(end.queue_wait_idle_count - state.metrics_start.queue_wait_idle_count),
 		(unsigned long long)(end.device_wait_idle_count - state.metrics_start.device_wait_idle_count));

@@ -152,14 +152,21 @@ void frame(f32 in_delta_time)
 		update_physics_backed_object_transforms();
 		update_mech_transforms();
 		SceneSystem::refresh_derived_state(state);
-		build_render_object_snapshot(state);
-		pack_lights(state);
-		upload_lights(state);
 	}
 
+	// Must precede build_render_object_snapshot: ObjectData now carries
+	// skin_matrix_arena_offset, which this fills in. Still after
+	// update_mech_transforms so newly spawned runtime parts are indexed.
 	{
 		CPU_TIMING_SCOPE("Skinned Animation Pack");
 		AnimationSystem::pack_skin_matrices(state);
+	}
+
+	{
+		CPU_TIMING_SCOPE("Render Object Snapshot");
+		build_render_object_snapshot(state);
+		pack_lights(state);
+		upload_lights(state);
 	}
 
 	RenderSystem::render(state, in_delta_time);

@@ -10,12 +10,10 @@ layout(location = 2) in vec2 in_texcoord;
 layout(location = 3) in vec4 in_joint_indices;
 layout(location = 4) in vec4 in_joint_weights;
 
+// Pushed once per cube face; the object index arrives as gl_InstanceIndex.
 layout(push_constant) uniform PushConstants
 {
 	mat4 view_projection;
-	int object_index;
-	int skin_matrix_offset;
-	ivec2 _padding0;
 	vec4 capture_position_and_radius;	// used by geometry_capture.frag
 } pc;
 
@@ -26,11 +24,11 @@ layout(location = 3) flat out int out_material_index;
 
 void main()
 {
-	ObjectData obj = object_data_array[pc.object_index];
+	ObjectData obj = object_data_array[gl_InstanceIndex];
 	GeometryVertexSample vertex = geometry_skinned_vertex(
 		in_position,
 		in_normal,
-		pc.skin_matrix_offset,
+		obj.skin_matrix_offset,
 		in_joint_indices,
 		in_joint_weights);
 	GeometryWorldVertex world_vertex = geometry_world_vertex(

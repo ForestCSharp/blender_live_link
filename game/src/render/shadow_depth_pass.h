@@ -29,15 +29,13 @@ namespace ShadowDepthPass
 	inline HMM_Vec3 cascade_view_position = {};
 	inline HMM_Vec3 cascade_view_forward = HMM_V3(0.0f, 1.0f, 0.0f);
 
+	// Pass-constant only: pushed once per cascade. Per-object data reaches the
+	// shader through the ObjectData SSBO, indexed by gl_InstanceIndex.
 	struct PushConstants
 	{
 		HMM_Mat4 light_view_projection;
-		i32 object_index;
-		i32 skin_matrix_offset;
 	};
-	// 72 bytes of payload, padded to 80 by HMM_Mat4's 16-byte alignment —
-	// still under the 128-byte push constant minimum
-	static_assert(sizeof(PushConstants) == 80, "Must fit the 128-byte push constant minimum");
+	static_assert(sizeof(PushConstants) == 64, "Must fit the 128-byte push constant minimum");
 
 	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	inline VkPipeline pipeline = VK_NULL_HANDLE;
@@ -430,6 +428,11 @@ namespace ShadowDepthPass
 			0, nullptr
 		);
 
+		// Constant for the cascade; pushed once instead of once per draw.
+		const PushConstants push_constants = { .light_view_projection = light_view_proj };
+		vulkan_cmd_push_constants(ctx, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+			0, sizeof(push_constants), &push_constants);
+
 		for (i32 render_object_index : visible)
 		{
 			auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
@@ -454,13 +457,6 @@ namespace ShadowDepthPass
 				bound_pipeline = wanted_pipeline;
 			}
 
-			PushConstants push_constants = {
-				.light_view_projection = light_view_proj,
-				.object_index = render_object_index,
-				.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
-			};
-			vulkan_cmd_push_constants(ctx, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
-
 			VkBuffer vertex_buffer = render_view.vertex_buffer;
 			VkDeviceSize vertex_offset = 0;
 			vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
@@ -471,7 +467,7 @@ namespace ShadowDepthPass
 				vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 			}
 			vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-			vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
+			vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);
 			in_state.data_oriented.frame.draw_calls += 1;
 			in_state.data_oriented.frame.draw_mesh_count += 1;
 		}

@@ -10,9 +10,6 @@ layout(location = 3) flat in int in_material_index;
 layout(push_constant) uniform PushConstants
 {
 	mat4 view_projection;
-	int object_index;
-	int skin_matrix_offset;
-	ivec2 _padding0;
 	vec4 capture_position_and_radius;
 } pc;
 

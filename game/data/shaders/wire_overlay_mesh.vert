@@ -14,11 +14,6 @@ struct WireOverlayVertex
 	vec2 _padding;
 };
 
-layout(push_constant) uniform PushConstants
-{
-	int object_index;
-} pc;
-
 layout(set = 2, binding = 0) readonly buffer WireOverlayVerticesBuffer
 {
 	WireOverlayVertex wire_vertices[];
@@ -45,7 +40,7 @@ void main()
 			? vec3(0.0, 1.0, 0.0)
 			: vec3(0.0, 0.0, 1.0);
 
-	wire_world_position = object_data_array[pc.object_index].model_matrix * wire_vertex.position;
+	wire_world_position = object_data_array[gl_InstanceIndex].model_matrix * wire_vertex.position;
 	gl_Position = per_frame.view_projection * wire_world_position;
 
 	float safe_w = abs(gl_Position.w) < 0.000001 ? 0.000001 : gl_Position.w;

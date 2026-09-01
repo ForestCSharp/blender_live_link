@@ -165,17 +165,12 @@ namespace WireOverlayPass
 				fs_set_layout,
 				mesh_set_layout,
 			};
-			VkPushConstantRange push_constant_range = {
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-				.offset = 0,
-				.size = sizeof(i32),
-			};
+			// No push constants: the object index rides in firstInstance and the
+			// shader reads it as gl_InstanceIndex.
 			VkPipelineLayoutCreateInfo layout_create_info = {
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 				.setLayoutCount = 3,
 				.pSetLayouts = set_layouts,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &push_constant_range,
 			};
 			VK_CHECK(vkCreatePipelineLayout(ctx->device, &layout_create_info, nullptr, &mesh_pipeline_layout));
 		}
@@ -449,13 +444,7 @@ namespace WireOverlayPass
 				2, 1, &mesh_set,
 				0, nullptr
 			);
-			vulkan_cmd_push_constants(
-				ctx,
-				mesh_pipeline_layout,
-				VK_SHADER_STAGE_VERTEX_BIT,
-				0, sizeof(i32), &render_object_index
-			);
-			vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, 0);
+			vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, (u32) render_object_index);
 			drawn_mesh_count += 1;
 		}
 	}

@@ -504,10 +504,17 @@ ObjectData object_make_render_data(const Object& in_object)
 		? in_object.mesh.material_indices[0]
 		: -1;
 
+	// Skinning data moved off push constants and into the SSBO so draws can be
+	// addressed purely by firstInstance. Requires pack_skin_matrices() to have
+	// run for this frame already - see the ordering in main.cpp.
+	const bool skinned = in_object.has_mesh && in_object.mesh.has_skinned_vertices;
+
 	return (ObjectData) {
 		.model_matrix = HMM_MulM4(translation_matrix, HMM_MulM4(rotation_matrix, scale_matrix)),
 		.rotation_matrix = rotation_matrix,
 		.material_index = material_index,
+		.skin_matrix_offset = skinned ? in_object.mesh.skin_matrix_arena_offset : -1,
+		.flags = skinned ? OBJECT_FLAG_SKINNED : 0,
 	};
 }
 

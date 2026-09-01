@@ -48,17 +48,21 @@ struct PerFrameData
 	vec4 sun_color;			// rgb = calibrated scene irradiance; w unused
 };
 
-// Per-object data uses a std430-compatible 144-byte stride: two mat4 values,
-// one int, and 12 bytes of padding.
+// Per-object data uses a std430-compatible 144-byte stride: two mat4 values
+// and four ints. Draws address this array through gl_InstanceIndex (set as the
+// draw's firstInstance), so everything the vertex stage needs per object lives
+// here rather than in push constants - indirect draws cannot carry those.
 struct ObjectData
 {
 	mat4 model_matrix;
 	mat4 rotation_matrix;
 	int material_index;		// index into material_data_array, -1 = none
+	int skin_matrix_offset;	// skin matrix arena offset; -1 when not skinned
+	int flags;				// OBJECT_FLAG_* bits
 	int _pad0;
-	int _pad1;
-	int _pad2;
 };
+
+#define OBJECT_FLAG_SKINNED 1
 
 // Light data for the lighting-pass SSBOs uses byte-identical C++ and GLSL
 // layouts. Three-component values use vec4 storage because std430 gives

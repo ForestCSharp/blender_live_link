@@ -10,10 +10,7 @@ layout(location = 4) in vec4 in_joint_weights;
 
 layout(push_constant) uniform PushConstants
 {
-	int object_index;
-	int skin_matrix_offset;
 	int skinning_debug_view;
-	int _pad0;
 } pc;
 
 layout(location = 0) out vec4 out_world_position;
@@ -25,11 +22,11 @@ layout(location = 5) flat out int out_is_skinned_mesh;
 
 void main()
 {
-	ObjectData obj = object_data_array[pc.object_index];
+	ObjectData obj = object_data_array[gl_InstanceIndex];
 	GeometryVertexSample vertex = geometry_skinned_vertex(
 		in_position,
 		in_normal,
-		pc.skin_matrix_offset,
+		obj.skin_matrix_offset,
 		in_joint_indices,
 		in_joint_weights);
 	GeometryWorldVertex world_vertex = geometry_world_vertex(

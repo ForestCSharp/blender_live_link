@@ -6,12 +6,11 @@ layout(location = 0) in vec4 in_position;
 layout(location = 1) in vec4 in_normal;
 layout(location = 2) in vec2 in_texcoord;
 
+// Pass-constant only. The object index arrives as gl_InstanceIndex, which
+// equals the draw's firstInstance because instanceCount is always 1.
 layout(push_constant) uniform PushConstants
 {
-	int object_index;
-	int skin_matrix_offset;	// unused in the static path
 	int skinning_debug_view;
-	int _pad0;
 } pc;
 
 layout(location = 0) out vec4 out_world_position;
@@ -23,7 +22,7 @@ layout(location = 5) flat out int out_is_skinned_mesh;
 
 void main()
 {
-	ObjectData obj = object_data_array[pc.object_index];
+	ObjectData obj = object_data_array[gl_InstanceIndex];
 	GeometryVertexSample vertex = geometry_static_vertex(in_position, in_normal);
 	GeometryWorldVertex world_vertex = geometry_world_vertex(
 		obj.model_matrix,

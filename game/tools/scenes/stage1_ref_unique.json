@@ -1,0 +1,40 @@
+{
+  "build_config": "Release",
+  "device": "Apple M2 Max",
+  "warmup_frames": 300,
+  "measured_frames": 1000,
+  "timings": {
+    "wall_frame": { "samples": 1000, "median_ms": 8.278604, "p95_ms": 8.829460 },
+    "cpu_frame": { "samples": 1000, "median_ms": 8.274750, "p95_ms": 8.825571 },
+    "gpu_frame": { "samples": 1000, "median_ms": 6.083770, "p95_ms": 6.820279 },
+    "cloud_continuous": { "samples": 0, "median_ms": 0.000000, "p95_ms": 0.000000 }
+  },
+  "gpu_passes": {
+    "Shadow Cascade Debug": { "samples": 1000, "median_ms": 0.075458, "p95_ms": 0.096089 },
+    "Geometry": { "samples": 1000, "median_ms": 1.094041, "p95_ms": 3.001152 },
+    "SSAO": { "samples": 1000, "median_ms": 0.472416, "p95_ms": 0.862857 },
+    "SSAO Blur Horizontal": { "samples": 1000, "median_ms": 0.017229, "p95_ms": 0.589345 },
+    "SSAO Blur Vertical": { "samples": 1000, "median_ms": 0.012958, "p95_ms": 0.501135 },
+    "Lighting": { "samples": 1000, "median_ms": 0.594896, "p95_ms": 1.736056 },
+    "DOF Combine": { "samples": 1000, "median_ms": 0.585417, "p95_ms": 1.591313 },
+    "Temporal AA (Set 0)": { "samples": 500, "median_ms": 0.127000, "p95_ms": 0.287929 },
+    "Auto Adaptation Meter": { "samples": 1000, "median_ms": 0.047750, "p95_ms": 0.126797 },
+    "Bloom Downsample": { "samples": 1000, "median_ms": 0.164500, "p95_ms": 0.225833 },
+    "Bloom Upsample": { "samples": 1000, "median_ms": 0.069375, "p95_ms": 0.071708 },
+    "Tonemapping Local Proxy": { "samples": 1000, "median_ms": 0.379875, "p95_ms": 0.452681 },
+    "Tonemapping Local Pyramid": { "samples": 1000, "median_ms": 0.070958, "p95_ms": 0.077546 },
+    "Tonemapping Local Reconstruct": { "samples": 1000, "median_ms": 0.058459, "p95_ms": 0.066085 },
+    "Tonemapping": { "samples": 1000, "median_ms": 0.136625, "p95_ms": 0.147169 },
+    "Auto Adaptation Update": { "samples": 1000, "median_ms": 0.002958, "p95_ms": 0.039085 },
+    "FXAA": { "samples": 1000, "median_ms": 0.006375, "p95_ms": 0.008752 },
+    "Presentation Composite": { "samples": 1000, "median_ms": 0.055167, "p95_ms": 0.061542 },
+    "Copy To Swapchain": { "samples": 1000, "median_ms": 0.006375, "p95_ms": 0.146879 },
+    "Temporal AA (Set 1)": { "samples": 500, "median_ms": 0.125959, "p95_ms": 0.257650 }
+  },
+  "commands": { "draws": 10069117, "dispatches": 4012, "bind_vertex_buffers": 10030000, "bind_index_buffers": 10030000, "push_constants": 10030000, "descriptor_update_calls": 36108, "descriptor_writes": 106318, "descriptors_written": 106318 },
+  "uploads": { "bytes": 0, "requests": 0, "batches": 0, "staging_grows": 0, "staging_spills": 0, "peak_frame_bytes": 0, "immediate_submits": 0 },
+  "scene": { "mesh_objects": 10000, "cull_calls": 1, "cull_candidates": 10000, "cull_visible": 10000, "cull_frustum_rejected": 0, "cull_skinned_visible": 0, "draw_calls": 10000, "draw_meshes": 10000 },
+  "idle_waits": { "queue": 0, "device": 0 },
+  "pipelines": { "count": 61, "creation_ms": 6.003586 },
+  "vma": { "allocations": 30181, "allocation_bytes": 1123439088, "blocks": 89, "block_bytes": 1160069376, "device_usage_bytes": 1160069376, "device_budget_bytes": 27487790694 }
+}

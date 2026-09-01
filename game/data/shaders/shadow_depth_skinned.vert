@@ -11,17 +11,15 @@ layout(location = 4) in vec4 in_joint_weights;
 layout(push_constant) uniform PushConstants
 {
 	mat4 light_view_projection;
-	int object_index;
-	int skin_matrix_offset;
 } pc;
 
 void main()
 {
-	ObjectData obj = object_data_array[pc.object_index];
+	ObjectData obj = object_data_array[gl_InstanceIndex];
 
 	vec4 skinned_position = geometry_skinned_position(
 		in_position,
-		pc.skin_matrix_offset,
+		obj.skin_matrix_offset,
 		in_joint_indices,
 		in_joint_weights);
 

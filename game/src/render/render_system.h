@@ -1010,7 +1010,7 @@ namespace RenderSystem
 			// culled on the CPU; skinned meshes bypass the frustum test.
 			graph.execute(geometry_render_pass, [&](i32)
 			{
-				geometry_pass_bind(&in_state.vk);
+				geometry_pass_bind(&in_state.vk, in_state.animation.skinning_debug_view);
 		
 				if (in_state.render_objects.valid)
 				{
@@ -1027,7 +1027,7 @@ namespace RenderSystem
 						}
 		
 						Object& object = found->second;
-						geometry_pass_draw_mesh(&in_state.vk, object.mesh, render_object_index, in_state.animation.skinning_debug_view);
+						geometry_pass_draw_mesh(&in_state.vk, object.mesh, render_object_index);
 						in_state.data_oriented.frame.draw_calls += 1;
 						in_state.data_oriented.frame.draw_mesh_count += 1;
 					}

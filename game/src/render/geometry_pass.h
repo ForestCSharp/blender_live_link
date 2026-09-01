@@ -12,14 +12,13 @@
 // constants as the old forward pass; materials/bindless textures are baked
 // into the G-buffer here and consumed by the lighting pass.
 
+// Pass-constant only. Per-object data reaches the shader through the ObjectData
+// SSBO, indexed by gl_InstanceIndex (the draw's firstInstance).
 struct GeometryPassPushConstants
 {
-	i32 object_index;
-	i32 skin_matrix_offset;	// arena offset for skinned draws; ignored otherwise
 	i32 skinning_debug_view;
-	i32 _pad0;
 };
-static_assert(sizeof(GeometryPassPushConstants) == 16, "Geometry push constants must match GLSL");
+static_assert(sizeof(GeometryPassPushConstants) == 4, "Geometry push constants must match GLSL");
 
 struct GeometryPass
 {
@@ -206,7 +205,7 @@ void geometry_pass_init(VulkanContext* ctx)
 	geometry_pass.skinned_pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry_skinned.vert.spv", /*in_skinned*/ true);
 }
 
-void geometry_pass_bind(VulkanContext* ctx)
+void geometry_pass_bind(VulkanContext* ctx, bool in_skinning_debug_view)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
@@ -219,10 +218,20 @@ void geometry_pass_bind(VulkanContext* ctx)
 		0, 1, &frame_data.per_frame_sets[ctx->frame_index],
 		0, nullptr
 	);
+
+	// Constant for the whole pass, so it is pushed once here rather than per draw.
+	const GeometryPassPushConstants push_constants = {
+		.skinning_debug_view = in_skinning_debug_view ? 1 : 0,
+	};
+	vulkan_cmd_push_constants(
+		ctx,
+		geometry_pass.pipeline_layout,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, sizeof(push_constants), &push_constants);
 }
 
 // Lazy GPU buffer creation happens here, on the main thread
-void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index, bool in_skinning_debug_view)
+void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
@@ -240,22 +249,6 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		geometry_pass.bound_pipeline = wanted_pipeline;
 	}
 
-	GeometryPassPushConstants push_constants = {
-		.object_index = in_object_index,
-		.skin_matrix_offset = skinned ? in_mesh.skin_matrix_arena_offset : -1,
-		.skinning_debug_view = in_skinning_debug_view ? 1 : 0,
-		._pad0 = 0,
-	};
-
-	vulkan_cmd_push_constants(
-		ctx,
-		geometry_pass.pipeline_layout,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		0,
-		sizeof(push_constants),
-		&push_constants
-	);
-
 	VkBuffer vertex_buffer = render_view.vertex_buffer;
 	VkDeviceSize vertex_buffer_offset = 0;
 	vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_buffer_offset);
@@ -269,7 +262,8 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 
 	vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-	vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
+	// firstInstance carries the object index; the shader reads gl_InstanceIndex.
+	vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) in_object_index);
 }
 
 void geometry_pass_shutdown(VulkanContext* ctx)

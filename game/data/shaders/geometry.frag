@@ -11,10 +11,7 @@ layout(location = 5) flat in int in_is_skinned_mesh;
 
 layout(push_constant) uniform PushConstants
 {
-	int object_index;
-	int skin_matrix_offset;
 	int skinning_debug_view;
-	int _pad0;
 } pc;
 
 // G-buffer attachment layout:

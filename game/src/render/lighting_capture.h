@@ -69,17 +69,16 @@ struct LightingCaptureDesc
 };
 
 // Mirrors the geometry capture vertex/fragment push constants.
+// Pass-constant only: pushed once per cube face. Per-object data reaches the
+// shader through the ObjectData SSBO, indexed by gl_InstanceIndex.
 struct CaptureGeometryPushConstants
 {
 	HMM_Mat4 view_projection;
-	i32 object_index;
-	i32 skin_matrix_offset;
-	i32 _padding0[2];
 	HMM_Vec4 capture_position_and_radius;
 };
-static_assert(sizeof(CaptureGeometryPushConstants) == 96,
+static_assert(sizeof(CaptureGeometryPushConstants) == 80,
 	"Geometry capture push constants must fit Vulkan's guaranteed minimum");
-static_assert(offsetof(CaptureGeometryPushConstants, capture_position_and_radius) == 80,
+static_assert(offsetof(CaptureGeometryPushConstants, capture_position_and_radius) == 64,
 	"Geometry capture radius must match the shader push-constant offset");
 
 // Mirrors sky_capture.frag's push constants
@@ -856,6 +855,19 @@ struct LightingCapture
 						? in_state.tessellation.bounds_padding : 0.0f,
 					visible,
 					cull_to_probe_influence ? &influence_sphere : nullptr);
+				// Constant for the face; pushed once instead of once per draw.
+				const CaptureGeometryPushConstants push_constants = {
+					.view_projection = view_projection,
+					.capture_position_and_radius = HMM_V4V(
+						in_location,
+						cull_to_probe_influence ? in_max_radial_depth : 0.0f),
+				};
+				vulkan_cmd_push_constants(
+					ctx,
+					capture_geometry_pipeline_layout,
+					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+					0, sizeof(push_constants), &push_constants);
+
 				VkPipeline bound_pipeline = VK_NULL_HANDLE;
 				for (i32 render_object_index : visible)
 				{
@@ -881,22 +893,6 @@ struct LightingCapture
 						bound_pipeline = wanted_pipeline;
 					}
 
-					CaptureGeometryPushConstants push_constants = {
-						.view_projection = view_projection,
-						.object_index = render_object_index,
-						.skin_matrix_offset = skinned ? mesh.skin_matrix_arena_offset : -1,
-						.capture_position_and_radius = HMM_V4V(
-							in_location,
-							cull_to_probe_influence ? in_max_radial_depth : 0.0f),
-					};
-					vulkan_cmd_push_constants(
-						ctx,
-						capture_geometry_pipeline_layout,
-						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-						0,
-						sizeof(push_constants),
-						&push_constants);
-
 					VkBuffer vertex_buffer = render_view.vertex_buffer;
 					VkDeviceSize vertex_offset = 0;
 					vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
@@ -907,7 +903,7 @@ struct LightingCapture
 						vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
 					}
 					vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-					vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, 0);
+					vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);
 				}
 			}
 
