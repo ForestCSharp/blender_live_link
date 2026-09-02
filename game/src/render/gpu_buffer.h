@@ -279,6 +279,11 @@ public:
 	u64 length() const { return _length; }
 	u64 resource_generation() const { return generation; }
 
+	// Read-only view of the persistently mapped allocation, or nullptr when the
+	// buffer lives in device-local memory. Lets callers verify already-uploaded
+	// contents without keeping a second CPU copy around.
+	const T* mapped_elements() const { return (const T*) mapped_data; }
+
 protected:
 	// Fills a device-local buffer: direct memcpy when the allocation happens
 	// to be host-visible (UMA), otherwise via a throwaway staging buffer +

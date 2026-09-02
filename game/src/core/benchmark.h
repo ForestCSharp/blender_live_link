@@ -246,6 +246,22 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 	}
 #endif
 
+	// Geometry arena occupancy and dedup effectiveness.
+	{
+		const GeometryArena& arena = g_geometry_arena;
+		fprintf(output, "  \"geometry_arena\": { \"vertex_capacity\": %u, \"vertex_used\": %u, \"index_capacity\": %u, \"index_used\": %u, \"live_slices\": %u, \"unique_geometry\": %zu, \"dedup_hits\": %u, \"grow_count\": %u, \"wasted_vertex_elements\": %llu, \"wasted_index_elements\": %llu },\n",
+			arena.vertex_capacity,
+			arena.vertex_high_water,
+			arena.index_capacity,
+			arena.index_high_water,
+			arena.live_slice_count,
+			arena.shared_by_hash.size(),
+			arena.dedup_hit_count,
+			arena.grow_count,
+			(unsigned long long) arena.wasted_vertex_elements,
+			(unsigned long long) arena.wasted_index_elements);
+	}
+
 	// Per-frame scene/cull/draw counts from the last completed frame. These are
 	// the numbers the GPU-driven work is judged on, so they belong next to the
 	// command counts rather than only in the debug UI.

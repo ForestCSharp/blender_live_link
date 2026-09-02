@@ -237,7 +237,7 @@ static void draw_stats_ui(State& state)
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Vulkan / VMA stats"))
+	if (ImGui::CollapsingHeader("Device & Memory Stats"))
 	{
 		const VulkanMemoryStats memory = vulkan_context_get_memory_stats(&state.vk);
 		const VulkanMetrics& metrics = state.vk.metrics;
@@ -270,6 +270,21 @@ static void draw_stats_ui(State& state)
 			stats_ui_cell_u64("Queue Idle Waits", metrics.queue_wait_idle_count);
 			ImGui::TableNextRow();
 			stats_ui_cell_u64("Device Idle Waits", metrics.device_wait_idle_count);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Arena Vertices Used", g_geometry_arena.vertex_high_water);
+			stats_ui_cell_u64("Arena Vertex Capacity", g_geometry_arena.vertex_capacity);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Arena Indices Used", g_geometry_arena.index_high_water);
+			stats_ui_cell_u64("Arena Index Capacity", g_geometry_arena.index_capacity);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Arena Live Slices", g_geometry_arena.live_slice_count);
+			stats_ui_cell_u64("Arena Unique Geometry", g_geometry_arena.shared_by_hash.size());
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Arena Dedup Hits", g_geometry_arena.dedup_hit_count);
+			stats_ui_cell_u64("Arena Grows", g_geometry_arena.grow_count);
+			ImGui::TableNextRow();
+			stats_ui_cell_u64("Arena Free Vertices", g_geometry_arena.wasted_vertex_elements);
+			stats_ui_cell_u64("Arena Free Indices", g_geometry_arena.wasted_index_elements);
 			ImGui::EndTable();
 		}
 		ImGui::TextDisabled("Pipelines: %llu created in %.3f ms | cache hash: %016llx",

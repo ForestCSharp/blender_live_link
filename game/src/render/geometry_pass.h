@@ -242,11 +242,23 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-	MeshRenderView render_view = mesh_get_render_view(in_mesh);
-	const bool skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
-	if (skinned && in_mesh.skin_matrix_arena_offset < 0)
+	// Resolve arena residency before touching mesh_get_render_view: that call
+	// lazily creates this mesh's own VkBuffers, which an arena-resident mesh
+	// never binds. Asking first is what keeps the per-mesh allocations from
+	// being created at all.
+	MeshArenaSlice arena_slice;
+	const bool from_arena = mesh_get_arena_slice(in_mesh, arena_slice);
+
+	MeshRenderView render_view = {};
+	bool skinned = false;
+	if (!from_arena)
 	{
-		return;
+		render_view = mesh_get_render_view(in_mesh);
+		skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
+		if (skinned && in_mesh.skin_matrix_arena_offset < 0)
+		{
+			return;
+		}
 	}
 
 	VkPipeline wanted_pipeline = skinned ? geometry_pass.skinned_pipeline : geometry_pass.pipeline;
@@ -255,11 +267,6 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
 		geometry_pass.bound_pipeline = wanted_pipeline;
 	}
-
-	// Arena-resident meshes draw from the shared buffer pair with real offsets;
-	// everything else keeps binding its own buffers.
-	MeshArenaSlice arena_slice;
-	const bool from_arena = !skinned && mesh_get_arena_slice(in_mesh, arena_slice);
 
 	VkBuffer vertex_buffer = from_arena
 		? g_geometry_arena.vertex_buffer.get_gpu_buffer()

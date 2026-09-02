@@ -447,11 +447,22 @@ namespace ShadowDepthPass
 
 			Object& object = found->second;
 			Mesh& mesh = object.mesh;
-			MeshRenderView render_view = mesh_get_render_view(mesh);
-			const bool skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
-			if (skinned && mesh.skin_matrix_arena_offset < 0)
+
+			// Ask the arena first; mesh_get_render_view lazily creates per-mesh
+			// VkBuffers that an arena-resident mesh never binds.
+			MeshArenaSlice arena_slice;
+			const bool from_arena = mesh_get_arena_slice(mesh, arena_slice);
+
+			MeshRenderView render_view = {};
+			bool skinned = false;
+			if (!from_arena)
 			{
-				continue;
+				render_view = mesh_get_render_view(mesh);
+				skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
+				if (skinned && mesh.skin_matrix_arena_offset < 0)
+				{
+					continue;
+				}
 			}
 
 			VkPipeline wanted_pipeline = skinned ? skinned_pipeline : pipeline;
@@ -460,9 +471,6 @@ namespace ShadowDepthPass
 				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
 				bound_pipeline = wanted_pipeline;
 			}
-
-			MeshArenaSlice arena_slice;
-			const bool from_arena = !skinned && mesh_get_arena_slice(mesh, arena_slice);
 
 			VkBuffer vertex_buffer = from_arena
 				? g_geometry_arena.vertex_buffer.get_gpu_buffer()
