@@ -219,6 +219,33 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 		(unsigned long long)(end.upload_staging_spills - state.metrics_start.upload_staging_spills),
 		(unsigned long long)end.upload_peak_frame_bytes,
 		(unsigned long long)(end.immediate_submit_count - state.metrics_start.immediate_submit_count));
+	// CPU scope breakdown from the last completed frame. Command counts alone
+	// cannot say where a frame's time goes - removing tens of thousands of API
+	// calls can leave frame time unchanged if the cost is elsewhere.
+#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
+	{
+		const DynamicArray<CpuTimingEvent>& events = cpu_timings_get_previous_frame();
+		fprintf(output, "  \"cpu_scopes\": [\n");
+		bool wrote_any = false;
+		for (const CpuTimingEvent& event : events)
+		{
+			if (event.elapsed_ms <= 0.0)
+			{
+				continue;
+			}
+			if (wrote_any)
+			{
+				fprintf(output, ",\n");
+			}
+			fprintf(output, "    { \"name\": ");
+			benchmark_write_json_string(output, event.name);
+			fprintf(output, ", \"depth\": %i, \"ms\": %.6f }", event.depth, event.elapsed_ms);
+			wrote_any = true;
+		}
+		fprintf(output, "%s  ],\n", wrote_any ? "\n" : "");
+	}
+#endif
+
 	// Per-frame scene/cull/draw counts from the last completed frame. These are
 	// the numbers the GPU-driven work is judged on, so they belong next to the
 	// command counts rather than only in the debug UI.

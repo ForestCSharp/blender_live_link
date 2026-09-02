@@ -32,6 +32,8 @@ The standalone tonemapping and display-output tests can be run without launching
 a window:
 
 ```sh
+clang++ -std=c++20 -O2 tests/geometry_arena_tests.cpp -I src -I extern \
+  -o /tmp/geometry_arena_tests && /tmp/geometry_arena_tests
 clang++ -std=c++20 -O2 tests/auto_adaptation_tests.cpp -I src \
   -o /tmp/auto_adaptation_tests && /tmp/auto_adaptation_tests
 clang++ -std=c++20 -O2 tests/bloom_profile_tests.cpp -I src \

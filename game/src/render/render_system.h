@@ -1288,6 +1288,7 @@ namespace RenderSystem
 
 		in_state.render_targets.cleanup();
 
+		geometry_arena_shutdown();
 		in_state.render_objects.shutdown();
 		in_state.skin_matrices.shutdown();
 		in_state.materials.buffer.destroy_gpu_buffer();

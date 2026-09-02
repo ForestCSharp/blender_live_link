@@ -869,6 +869,9 @@ struct LightingCapture
 					0, sizeof(push_constants), &push_constants);
 
 				VkPipeline bound_pipeline = VK_NULL_HANDLE;
+				VkBuffer bound_vertex_buffer = VK_NULL_HANDLE;
+				VkBuffer bound_skinned_vertex_buffer = VK_NULL_HANDLE;
+				VkBuffer bound_index_buffer = VK_NULL_HANDLE;
 				for (i32 render_object_index : visible)
 				{
 					auto found = in_state.scene.objects.find(in_state.cull_entries[render_object_index].object_id);
@@ -893,17 +896,47 @@ struct LightingCapture
 						bound_pipeline = wanted_pipeline;
 					}
 
-					VkBuffer vertex_buffer = render_view.vertex_buffer;
-					VkDeviceSize vertex_offset = 0;
-					vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
+					MeshArenaSlice arena_slice;
+					const bool from_arena = !skinned && mesh_get_arena_slice(mesh, arena_slice);
+
+					VkBuffer vertex_buffer = from_arena
+						? g_geometry_arena.vertex_buffer.get_gpu_buffer()
+						: render_view.vertex_buffer;
+					VkBuffer index_buffer = from_arena
+						? g_geometry_arena.index_buffer.get_gpu_buffer()
+						: render_view.index_buffer;
+
+					if (bound_vertex_buffer != vertex_buffer)
+					{
+						VkDeviceSize vertex_offset = 0;
+						vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
+						bound_vertex_buffer = vertex_buffer;
+					}
 					if (skinned)
 					{
 						VkBuffer skinned_vertex_buffer = mesh.skinned_vertex_buffer.get_gpu_buffer();
-						VkDeviceSize skinned_offset = 0;
-						vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+						if (bound_skinned_vertex_buffer != skinned_vertex_buffer)
+						{
+							VkDeviceSize skinned_offset = 0;
+							vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+							bound_skinned_vertex_buffer = skinned_vertex_buffer;
+						}
 					}
-					vulkan_cmd_bind_index_buffer(ctx, render_view.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-					vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);
+					if (bound_index_buffer != index_buffer)
+					{
+						vulkan_cmd_bind_index_buffer(ctx, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+						bound_index_buffer = index_buffer;
+					}
+
+					if (from_arena)
+					{
+						vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
+							arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) render_object_index);
+					}
+					else
+					{
+						vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);
+					}
 				}
 			}
 

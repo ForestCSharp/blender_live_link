@@ -167,6 +167,7 @@ void frame(f32 in_delta_time)
 		build_render_object_snapshot(state);
 		pack_lights(state);
 		upload_lights(state);
+		geometry_arena_sync(state);
 	}
 
 	RenderSystem::render(state, in_delta_time);

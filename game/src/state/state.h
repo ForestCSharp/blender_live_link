@@ -877,6 +877,95 @@ void build_render_object_snapshot(State& in_state)
 	render_objects.upload();
 }
 
+// Places eligible static geometry in the shared arena and grows it when the
+// scene outgrows the current allocation.
+//
+// Runs on the main thread (GPU resources are only created there) and before the
+// frame records any draws. Skinned meshes, tessellated meshes and mech runtime
+// parts are deliberately excluded and keep using their own buffers.
+void geometry_arena_sync(State& in_state)
+{
+	CPU_TIMING_SCOPE("Geometry Arena Sync");
+
+	scene_ensure_indexes(in_state);
+
+	if (!geometry_arena_is_ready())
+	{
+		geometry_arena_create_buffers(
+			GEOMETRY_ARENA_INITIAL_VERTICES, GEOMETRY_ARENA_INITIAL_INDICES);
+	}
+
+	// Second pass only happens after a grow, which invalidates every slice and
+	// re-uploads from the CPU-side arrays make_mesh retains for exactly this.
+	for (i32 attempt = 0; attempt < 2; ++attempt)
+	{
+		bool out_of_space = false;
+		u64 required_vertices = 0;
+		u64 required_indices = 0;
+
+		for (i32 mesh_object_id : in_state.scene.indexes.mesh_object_ids)
+		{
+			auto found = in_state.scene.objects.find(mesh_object_id);
+			if (found == in_state.scene.objects.end())
+			{
+				continue;
+			}
+
+			Object& object = found->second;
+			if (!object.has_mesh
+				|| object.storage_kind == ObjectStorageKind::RuntimePart
+				|| !mesh_is_arena_eligible(object.mesh))
+			{
+				continue;
+			}
+
+			required_vertices += object.mesh.vertex_count;
+			required_indices += object.mesh.index_count;
+
+			if (object.mesh.arena_slice.valid)
+			{
+				continue;
+			}
+
+			if (!geometry_arena_acquire(
+				object.mesh.vertices, object.mesh.vertex_count,
+				object.mesh.indices, object.mesh.index_count,
+				object.mesh.arena_slice))
+			{
+				out_of_space = true;
+			}
+		}
+
+		if (!out_of_space || attempt == 1)
+		{
+			// Anything still without a slice after one grow keeps drawing from
+			// its own buffers, so running out of room degrades rather than fails.
+			break;
+		}
+
+		u32 new_vertex_capacity = MAX(g_geometry_arena.vertex_capacity, 1u);
+		while ((u64) new_vertex_capacity < required_vertices)
+		{
+			new_vertex_capacity *= 2;
+		}
+		u32 new_index_capacity = MAX(g_geometry_arena.index_capacity, 1u);
+		while ((u64) new_index_capacity < required_indices)
+		{
+			new_index_capacity *= 2;
+		}
+
+		for (auto& [unique_id, object] : in_state.scene.objects)
+		{
+			object.mesh.arena_slice = {};
+		}
+
+		geometry_arena_create_buffers(new_vertex_capacity, new_index_capacity);
+		g_geometry_arena.grow_count += 1;
+	}
+
+	geometry_arena_update_waste_stats();
+}
+
 // The buffer descriptor writes bind every frame (always valid — capacity is
 // pre-created at init so empty scenes still have a buffer to bind)
 GpuBuffer<ObjectData>& get_render_object_snapshot_buffer(State& in_state)

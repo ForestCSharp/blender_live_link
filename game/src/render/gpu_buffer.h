@@ -181,6 +181,71 @@ public:
 		VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, 0, in_size));
 	}
 
+	// Writes a sub-range without touching the rest of the buffer. update_gpu_buffer
+	// always writes from offset 0 and owns `data`; suballocated buffers (the
+	// geometry arena) need to place one mesh inside a much larger allocation.
+	void write_range(u64 in_element_offset, const T* in_data, u64 in_element_count)
+	{
+		if (in_element_count == 0)
+		{
+			return;
+		}
+
+		const u64 byte_offset = in_element_offset * sizeof(T);
+		const u64 byte_count = in_element_count * sizeof(T);
+		assert(byte_offset + byte_count <= size);
+		get_gpu_buffer();
+
+		if (mapped_data != nullptr)
+		{
+			memcpy((u8*) mapped_data + byte_offset, in_data, byte_count);
+			VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, allocation, byte_offset, byte_count));
+			return;
+		}
+
+		// Device-local allocation: stage the range and copy it in. The immediate
+		// submit waits idle, so the staging buffer is safe to destroy right after.
+		VkBufferCreateInfo staging_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = byte_count,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		};
+		VmaAllocationCreateInfo staging_allocation_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+				| VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+		VkBuffer staging_buffer = VK_NULL_HANDLE;
+		VmaAllocation staging_allocation = VK_NULL_HANDLE;
+		VmaAllocationInfo staging_allocation_info = {};
+		VK_CHECK(vmaCreateBuffer(
+			g_vulkan_context->allocator,
+			&staging_create_info,
+			&staging_allocation_create_info,
+			&staging_buffer,
+			&staging_allocation,
+			&staging_allocation_info));
+
+		memcpy(staging_allocation_info.pMappedData, in_data, byte_count);
+		VK_CHECK(vmaFlushAllocation(g_vulkan_context->allocator, staging_allocation, 0, byte_count));
+		g_vulkan_context->metrics.upload_bytes += byte_count;
+		g_vulkan_context->metrics.upload_requests += 1;
+
+		VkBuffer target = *gpu_buffer;
+		vulkan_context_immediate_submit(g_vulkan_context, [&](VkCommandBuffer in_command_buffer)
+		{
+			VkBufferCopy copy_region = {
+				.srcOffset = 0,
+				.dstOffset = byte_offset,
+				.size = byte_count,
+			};
+			vkCmdCopyBuffer(in_command_buffer, staging_buffer, target, 1, &copy_region);
+		});
+
+		vmaDestroyBuffer(g_vulkan_context->allocator, staging_buffer, staging_allocation);
+	}
+
 	void read_gpu_buffer(T* out_data, u64 in_size)
 	{
 		assert(usage.readback);

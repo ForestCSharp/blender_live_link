@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/gpu_buffer.h"
+#include "render/geometry_arena.h"
 #include "render/render_types.h"
 #include "tessellation_common.h"
 
@@ -178,6 +179,11 @@ struct Mesh
 	bool skinned_vertex_cache_valid = false;
 	TessellatedGeometry tessellated_geometry;
 
+	// Slice of the shared geometry arena holding this mesh's static geometry.
+	// Invalid for skinned meshes and for meshes that did not fit; those fall
+	// back to the per-mesh vertex_buffer/index_buffer path.
+	MeshArenaSlice arena_slice;
+
 	BoundingBox bounding_box;
 };
 
@@ -228,6 +234,42 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 	}
 
 	return out_view;
+}
+
+// True when this mesh can be drawn from the shared arena, filling out_slice with
+// the offsets to hand vkCmdDrawIndexed. False means the caller must bind this
+// mesh's own buffers via mesh_get_render_view instead.
+//
+// Skinned meshes are excluded because they need a second vertex binding, and
+// tessellated meshes because they draw from per-frame GPU-emitted buffers.
+inline bool mesh_get_arena_slice(Mesh& in_mesh, MeshArenaSlice& out_slice)
+{
+	if (!in_mesh.arena_slice.valid || in_mesh.has_skinned_vertices)
+	{
+		return false;
+	}
+
+	const TessellatedGeometry& tessellated = in_mesh.tessellated_geometry;
+	if (tessellated.active && tessellated.index_count > 0
+		&& tessellated.active_gpu_slot < TessellatedGeometry::GPU_SLOT_COUNT)
+	{
+		return false;
+	}
+
+	out_slice = in_mesh.arena_slice;
+	return true;
+}
+
+// True when this mesh is eligible to live in the arena at all. Independent of
+// whether it currently holds a slice, so the per-frame sync can use it to
+// decide what to allocate.
+inline bool mesh_is_arena_eligible(const Mesh& in_mesh)
+{
+	return !in_mesh.has_skinned_vertices
+		&& in_mesh.vertices != nullptr
+		&& in_mesh.indices != nullptr
+		&& in_mesh.vertex_count > 0
+		&& in_mesh.index_count > 0;
 }
 
 // Selects already-deformed vertices for consumers that cannot run the normal

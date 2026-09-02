@@ -125,6 +125,10 @@ i32 mech_clone_part(MechInstance& in_mech, const Object& in_template)
 		}
 
 		instance.mesh = template_mesh;
+		// The copy aliases the template's GpuBuffers, but must not inherit its
+		// arena slice: object_cleanup skips RuntimePart, so a shared slice would
+		// either double-free or leak. Runtime parts stay on the legacy path.
+		instance.mesh.arena_slice = {};
 		instance.mesh.skin_matrix_arena_offset = -1;
 		instance.mesh.skinned_vertex_cache_buffer = {};
 		instance.mesh.skinned_vertex_cache_capacity = 0;

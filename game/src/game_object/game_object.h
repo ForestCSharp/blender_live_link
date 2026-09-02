@@ -598,6 +598,10 @@ void object_cleanup(Object& in_object)
 	{
 		if (in_object.storage_kind != ObjectStorageKind::RuntimePart)
 		{
+			// Runtime mech parts copy the Mesh by value and alias the template's
+			// buffers and arena slice, so only the owning object releases either.
+			geometry_arena_release(in_object.mesh.arena_slice);
+
 			free(in_object.mesh.indices);
 			in_object.mesh.index_buffer.destroy_gpu_buffer();
 
