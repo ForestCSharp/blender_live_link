@@ -159,6 +159,16 @@ vec3 apply_fog(vec3 scene_color, FogResult fog)
 		+ fog.inscatter * (1.0 - fog.transmittance);
 }
 
+// Cloud scattering arrives premultiplied by cloud opacity, so it only occupies
+// `coverage` of the pixel. The in-scatter picked up along that path has to be
+// weighted the same way; adding it at full strength lights up nearly
+// transparent border samples and visibly dilates the cloud silhouette.
+vec3 apply_fog_premultiplied(vec3 scene_color, FogResult fog, float coverage)
+{
+	return scene_color * fog.transmittance
+		+ fog.inscatter * (1.0 - fog.transmittance) * coverage;
+}
+
 vec4 sample_nearest(sampler2D image, vec2 sample_uv)
 {
 	ivec2 size = textureSize(image, 0);
@@ -211,8 +221,8 @@ void main()
 	vec3 cloud_scattering = max(
 		composite_color.rgb - cloud_transmittance * background_color.rgb,
 		vec3(0.0));
-	vec3 fogged_cloud = apply_fog(
-		cloud_scattering, evaluate_fog(cloud_metadata.xyz));
+	vec3 fogged_cloud = apply_fog_premultiplied(
+		cloud_scattering, evaluate_fog(cloud_metadata.xyz), cloud_opacity);
 	vec3 fogged_background = background_color.rgb;
 	if (geometry_position.a != 0.0)
 	{
