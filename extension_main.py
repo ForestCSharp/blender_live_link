@@ -16,7 +16,7 @@ import bmesh
 import builtins
 import math
 import numpy as np
-import socket
+from .live_link_transport import LiveLinkTransport
 import struct
 import traceback
 import time
@@ -372,81 +372,37 @@ class LiveLinkConnection():
         self.active_export_view_layer = None
         # Memo for one export pass; None outside a pass. See get_armature_actions.
         self.export_pass_armature_actions = None
-        self.create_socket()
-        
-    def __del__(self):
-       self.close_socket() 
-
-    def create_socket(self):
-        # Create a new socket object 
-        self.my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.my_socket.settimeout(5.0)
-
-        # Try to disable SIGPIPE on BSD / macOS (SO_NOSIGPIPE) if available
-        # and otherwise rely on the global SIGPIPE ignore above.
-        try:
-            if hasattr(socket, "SO_NOSIGPIPE"):
-                self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_NOSIGPIPE, 1)
-        except Exception:
-            # best-effort: ignore if platform doesn't support it
-            pass
-
-        # Allow immediate reuse of address if you repeatedly restart game/server locally
-        try:
-            self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except Exception:
-            pass
+        self.transport = LiveLinkTransport()
+        self.transport_generation = 0
+        self.needs_full_sync = True
+        self.reset_pending = False
 
     def close_socket(self):
-        try:
-            self.my_socket.shutdown(socket.SHUT_RDWR)
-        except:
-            pass  # Socket might already be closed
-        self.my_socket.close()
+        self.transport.close()
+        self.export_snapshot.clear()
+        self.needs_full_sync = True
+        self.reset_pending = False
 
     def is_connected(self):
-        try:
-            self.my_socket.getpeername()
-            return True
-        except Exception as e:
-            return False
+        return self.transport.state == 'connected'
 
-    def connect(self, log_failure=True):
-        try:
-            # Close old socket
-            self.close_socket()
+    def poll(self):
+        self.transport.poll()
+        if not self.is_connected():
+            self.export_snapshot.clear()
+            self.needs_full_sync = True
+            self.reset_pending = False
+        elif self.transport_generation != self.transport.generation:
+            self.transport_generation = self.transport.generation
+            self.export_snapshot.clear()
+            self.needs_full_sync = True
+            # A separate reset packet removes objects deleted while offline.
+            # The receiver processes reset after objects, so it cannot share
+            # the full-scene packet.
+            self.reset_pending = True
 
-            # Create a new socket if attempting to reconnect
-            self.create_socket()
-            
-            # FCS TODO: Store magic IP and Port numbers in some shared file
-            HOST = '127.0.0.1'
-            PORT = 65432
-            self.my_socket.connect((HOST, PORT))
-            return True
-        except Exception as e:
-            if log_failure:
-                print("Failed to Connect to Running Game")
-            return False
-
-    def send(self, data):
-        is_connected = self.is_connected()
-        if not is_connected:
-            print("Attempt to reconnect")
-            is_connected = self.connect()
-
-        if not is_connected:
-            return False
-
-        try:
-            self.my_socket.sendall(data)
-            return True
-        except Exception as e:
-            print(traceback.format_exc())
-            print("Error: LiveLinkConnection::send")
-            self.close_socket()
-            self.create_socket()
-            return False
+    def send(self, data, on_complete=None):
+        return self.transport.submit(data, on_complete)
 
     def matrix_to_column_major_array(self, matrix):
         matrix_4x4 = matrix.to_4x4()
@@ -1573,6 +1529,11 @@ class LiveLinkConnection():
             )
 
     def send_scene_changes(self, dirty_ids, update_reason, force_full=False):
+        """Prepare one update; True means accepted (or no changes), not sent."""
+        if not self.transport.ready:
+            if not self.is_connected():
+                self.needs_full_sync = True
+            return False
         all_scene_objects = list(bpy.context.scene.objects)
         editor_camera = get_editor_camera_snapshot()
         dirty_ids = {int(uid) for uid in dirty_ids}
@@ -1627,10 +1588,9 @@ class LiveLinkConnection():
                 update_reason=update_reason,
                 editor_camera=editor_camera,
             )
-            sent = self.send(output)
-            if sent:
+            def commit_snapshot():
                 self.export_snapshot = current_snapshot
-            return sent
+            return self.send(output, on_complete=commit_snapshot)
 
     def make_update_native(
         self,
@@ -2055,6 +2015,10 @@ class LiveLinkConnection():
         return output
 
     def send_object_list(self, updated_objects, deleted_object_uids, update_reason="object_list"):
+        if not self.transport.ready:
+            if not self.is_connected():
+                self.needs_full_sync = True
+            return False
         return self.send(self.make_update(updated_objects, deleted_object_uids, update_reason=update_reason))
 
     def save_to_file(self, in_objects, in_filename, update_reason="save_to_file"):
@@ -2063,10 +2027,21 @@ class LiveLinkConnection():
             f.write(update)
 
     def send_reset(self, update_reason="manual_reset"):
-        sent = self.send(self.make_update([], [], True, update_reason=update_reason))
-        if sent:
-            self.export_snapshot.clear()
-        return sent
+        if not self.is_connected():
+            return False
+        self.reset_pending = True
+        return True
+
+    def submit_reset(self):
+        if not self.transport.ready:
+            return False
+        accepted = self.send(
+            self.make_update([], [], True, update_reason="reset"),
+            on_complete=self.export_snapshot.clear,
+        )
+        if accepted:
+            self.reset_pending = False
+        return accepted
 
 live_link_connection = []
 
@@ -2094,135 +2069,82 @@ def queue_object_update(obj, update_reason):
 
 def clear_batched_depsgraph_updates(update_reason="unknown"):
     global batched_force_full
-    if bpy.app.timers.is_registered(send_updates_timer):
-        bpy.app.timers.unregister(send_updates_timer)
+    batched_dirty_ids.clear()
+    batched_force_full = False
 
-    if batched_dirty_ids or batched_force_full:
-        print(
-            "\nLive Link Clear Queued Depsgraph Updates: "
-            f"reason={update_reason} "
-            f"dirty_ids={len(batched_dirty_ids)} "
-            f"force_full={batched_force_full}"
-        )
-        batched_dirty_ids.clear()
-        batched_force_full = False
+
+def ensure_live_link_timer():
+    if not bpy.app.timers.is_registered(live_link_timer):
+        bpy.app.timers.register(live_link_timer, first_interval=0.01)
+
 
 def send_full_scene_update(update_reason="full_update"):
-    clear_batched_depsgraph_updates(update_reason=f"{update_reason}_before_send")
-    print(
-        "\nLive Link Full Update Requested: "
-        f"reason={update_reason} "
-        f"scene_objects={len(bpy.context.scene.objects)}"
-    )
+    live_link_connection.needs_full_sync = True
+    ensure_live_link_timer()
 
-    sent = False
-    with suspend_depsgraph_updates():
-        try:
-            sent = live_link_connection.send_scene_changes(
-                dirty_ids=set(),
-                update_reason=update_reason,
-                force_full=True,
-            )
-        finally:
-            clear_batched_depsgraph_updates(update_reason=f"{update_reason}_after_send")
-
-    if sent:
-        automatic_initial_full_update_timer.pending = False
-    return sent
-
-AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS = 1.0
-
-def automatic_initial_full_update_timer():
-    if not automatic_initial_full_update_timer.pending:
-        return None
-
-    if not live_link_connection.is_connected():
-        if not live_link_connection.connect(log_failure=False):
-            if automatic_initial_full_update_timer.status != "waiting":
-                print("\nLive Link Automatic Initial Update: waiting for game on 127.0.0.1:65432")
-                automatic_initial_full_update_timer.status = "waiting"
-            return AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS
-
-        print("\nLive Link Automatic Initial Update: connected to game")
-        automatic_initial_full_update_timer.status = "connected"
-
-    if send_full_scene_update(update_reason="automatic_initial_full_update"):
-        automatic_initial_full_update_timer.pending = False
-        automatic_initial_full_update_timer.status = "sent"
-        print("Live Link Automatic Initial Update: full scene sent")
-        return None
-
-    if automatic_initial_full_update_timer.status != "retrying":
-        print("Live Link Automatic Initial Update: send failed; retrying")
-        automatic_initial_full_update_timer.status = "retrying"
-    return AUTOMATIC_INITIAL_UPDATE_RETRY_SECONDS
-
-automatic_initial_full_update_timer.pending = False
-automatic_initial_full_update_timer.status = "idle"
 
 def schedule_automatic_initial_full_update(update_reason="startup"):
-    if (automatic_initial_full_update_timer.pending
-        and bpy.app.timers.is_registered(automatic_initial_full_update_timer)):
-        return
+    send_full_scene_update(update_reason)
 
-    automatic_initial_full_update_timer.pending = True
-    automatic_initial_full_update_timer.status = "scheduled"
-
-    if bpy.app.timers.is_registered(automatic_initial_full_update_timer):
-        bpy.app.timers.unregister(automatic_initial_full_update_timer)
-
-    print(f"\nLive Link Automatic Initial Update Scheduled: reason={update_reason}")
-    bpy.app.timers.register(automatic_initial_full_update_timer, first_interval=0.25)
 
 @persistent
 def automatic_initial_full_update_load_post(_):
+    live_link_connection.close_socket()
     live_link_connection.instance_uid_registry.clear()
-    live_link_connection.export_snapshot.clear()
     clear_batched_depsgraph_updates(update_reason="blend_file_loaded")
     schedule_automatic_initial_full_update(update_reason="blend_file_loaded")
 
-# Actually sends batched updates
-def send_updates_timer(): 
-    global batched_force_full
 
-    # No new updates in SEND_DELAY seconds → send batched data
-    if batched_dirty_ids or batched_force_full:
-        update_reason = (
-            f"depsgraph_timer(dirty_ids={len(batched_dirty_ids)},"
-            f"force_full={batched_force_full})"
-        )
-        print(f"\nLive Link Timer Send: reason={update_reason}")
+send_due_at = 0.0
+export_retry_at = 0.0
 
-        with suspend_depsgraph_updates():
-            sent = live_link_connection.send_scene_changes(
-                dirty_ids=set(batched_dirty_ids),
-                update_reason=update_reason,
-                force_full=batched_force_full,
-            )
 
-        if sent:
-            batched_dirty_ids.clear()
-            batched_force_full = False
-        else:
-            return 0.25
+def live_link_timer():
+    global batched_force_full, export_retry_at
+    connection = live_link_connection
+    connection.poll()
+    if not connection.is_connected():
+        # A fresh full scene supersedes all offline dirty IDs.
+        clear_batched_depsgraph_updates()
+        return 0.1
+    if not connection.transport.ready:
+        return 0.01
+    if time.monotonic() < export_retry_at:
+        return 0.1
+    try:
+        if connection.reset_pending:
+            with suspend_depsgraph_updates():
+                connection.submit_reset()
+            return 0.01
+        full = connection.needs_full_sync
+        if full or ((batched_dirty_ids or batched_force_full) and time.monotonic() >= send_due_at):
+            dirty = set(batched_dirty_ids)
+            force_full = full or batched_force_full
+            # Detach this batch before export; later edits belong to the next
+            # payload and must survive the current payload's completion.
+            clear_batched_depsgraph_updates()
+            connection.needs_full_sync = False
+            with suspend_depsgraph_updates():
+                accepted = connection.send_scene_changes(
+                    dirty, "full_sync" if full else "depsgraph_timer", force_full=force_full)
+            if not accepted:
+                connection.needs_full_sync = True
+    except Exception:
+        # Blender removes a timer that raises. Keep networking alive and rate
+        # limit exporter failures without dropping the need to synchronize.
+        traceback.print_exc()
+        connection.needs_full_sync = True
+        export_retry_at = time.monotonic() + 1.0
+    return 0.01 if connection.transport.payload is not None else 0.1
 
-    return None
 
-# Schedules send but doesn't actually send the objects to the game
 def schedule_send(update_reason="depsgraph_update"):
-    # unregister timer if currently active:
-    if bpy.app.timers.is_registered(send_updates_timer):
-        bpy.app.timers.unregister(send_updates_timer)
-    # Schedule new timer
-    SEND_DELAY = 0.25
-    bpy.app.timers.register(send_updates_timer, first_interval=SEND_DELAY)
-    if batched_dirty_ids or batched_force_full:
-        print(
-            "\nLive Link Schedule Send: "
-            f"reason={update_reason} "
-            f"dirty_ids={len(batched_dirty_ids)} "
-            f"force_full={batched_force_full}"
-        )
+    global send_due_at
+    if not live_link_connection.is_connected():
+        live_link_connection.needs_full_sync = True
+        clear_batched_depsgraph_updates()
+    send_due_at = time.monotonic() + 0.25
+    ensure_live_link_timer()
 
 # Callback when depsgraph has finished updating
 @persistent
@@ -2342,7 +2264,10 @@ class OpLiveLinkSendReset(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        live_link_connection.send_reset(update_reason="manual_reset")
+        if not live_link_connection.send_reset(update_reason="manual_reset"):
+            self.report({'WARNING'}, "Live Link is not connected to the game")
+            return {'CANCELLED'}
+        ensure_live_link_timer()
         return {'FINISHED'}
 # End OpLiveLinkSendReset
 
@@ -2355,8 +2280,9 @@ class OpLiveLinkResetConnection(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context): 
-        #global live_link_connection  
-        live_link_connection = LiveLinkConnection()
+        live_link_connection.close_socket()
+        clear_batched_depsgraph_updates()
+        ensure_live_link_timer()
         return {'FINISHED'}
 # End OpLiveLinkResetConnection
 
@@ -3239,8 +3165,12 @@ classes_to_register = [
 # ------------------------------------------------------------
 def register():
     # init live link connection
-    global live_link_connection  
+    global live_link_connection, send_due_at, export_retry_at
     live_link_connection = LiveLinkConnection()
+    send_due_at = export_retry_at = 0.0
+    clear_batched_depsgraph_updates()
+    depsgraph_update_post_callback.enabled = True
+    depsgraph_update_post_callback.suppress_next = False
 
     # Register classes
     for cls in classes_to_register:
@@ -3264,21 +3194,14 @@ def register():
         update=live_link_python_export_fallback_update,
     )
 
-    # Enabled add-ons normally register before the startup file is loaded and
-    # are scheduled by load_post. This also covers enabling the add-on after a
-    # file has already been opened.
-    if getattr(bpy.data, "filepath", ""):
-        schedule_automatic_initial_full_update(update_reason="addon_registered_with_open_file")
+    # Timer runs after registration; load_post restarts it for the loaded file.
+    schedule_automatic_initial_full_update(update_reason="addon_registered")
 
 def unregister():
-    automatic_initial_full_update_timer.pending = False
-    automatic_initial_full_update_timer.status = "idle"
-    if bpy.app.timers.is_registered(automatic_initial_full_update_timer):
-        bpy.app.timers.unregister(automatic_initial_full_update_timer)
-
-    # clean up live link connection
-    global live_link_connection
-    del live_link_connection
+    if bpy.app.timers.is_registered(live_link_timer):
+        bpy.app.timers.unregister(live_link_timer)
+    clear_batched_depsgraph_updates()
+    live_link_connection.close_socket()
 
     # Unregister classes
     for cls in reversed(classes_to_register):

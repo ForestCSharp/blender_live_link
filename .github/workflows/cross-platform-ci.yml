@@ -159,6 +159,14 @@ jobs:
             --repo user_default --enable \
             2>&1 | tee ci-artifacts/install.log
 
+      - name: Test nonblocking transport and Blender lifecycle
+        shell: bash
+        run: |
+          python3 -m unittest discover -s tools -p test_live_link_transport.py
+          "$BLENDER_BIN" --background --factory-startup --python-exit-code 1 \
+            --python "$GITHUB_WORKSPACE/tools/ci_network_smoke.py" \
+            2>&1 | tee ci-artifacts/network-smoke.log
+
       - name: Run Blender extension smoke test
         shell: bash
         run: |

@@ -927,86 +927,65 @@ namespace LiveLinkSystem
 		const i32 backlog = 1;
 		SOCKET_OP(listen(state.live_link.blender_socket, backlog));
 	
-		// accept connections from blender
-		struct sockaddr_storage their_addr;
-		socklen_t addr_size = sizeof their_addr;
-		do
+		freeaddrinfo(res);
+
+		// Read exactly one prefix/body at a time: TCP may split a prefix or
+		// coalesce several updates. Timeouts retain the partial frame.
+		auto receive_exact = [&](u8* destination, size_t count) -> bool
 		{
-			state.live_link.connection_socket = accept(state.live_link.blender_socket, (struct sockaddr *) &their_addr, &addr_size);
-		}
-		while (!socket_is_valid(state.live_link.connection_socket) && state.runtime.game_running);
-	
-		// set recv timeout
-		struct timeval recv_timeout = {
-			.tv_sec = 1,
-			.tv_usec = 0
+			size_t offset = 0;
+			while (state.runtime.game_running && offset < count)
+			{
+				const int received = (int) socket_recv(
+					state.live_link.connection_socket, destination + offset,
+					std::min(count - offset, size_t(4096)), 0);
+				if (received == 0)
+					return false; // EOF: discard this connection's partial frame.
+				if (received < 0)
+				{
+					const int error = socket_get_last_error();
+					if (error == socket_error_again() || error == socket_error_would_block()
+						|| error == socket_error_timed_out())
+						continue;
+					printf("live link: receive error %i; waiting for reconnect\n", error);
+					return false;
+				}
+				offset += (size_t) received;
+			}
+			return offset == count;
 		};
-		socket_set_recv_timeout(state.live_link.connection_socket, recv_timeout);
-	
-		// infinite recv loop
+
 		while (state.runtime.game_running)
 		{
-			DynamicArray<u8> flatbuffer_data;
-	
-			int current_bytes_read = 0;
-			int total_bytes_read = 0;
-			int packets_read = 0;
-			optional<flatbuffers::uoffset_t> flatbuffer_size;
-			do
+			struct sockaddr_storage their_addr;
+			socklen_t addr_size = sizeof their_addr;
+			state.live_link.connection_socket = accept(
+				state.live_link.blender_socket, (struct sockaddr*) &their_addr, &addr_size);
+			if (!socket_is_valid(state.live_link.connection_socket))
+				continue;
+
+			struct timeval recv_timeout = {.tv_sec = 1, .tv_usec = 0};
+			socket_set_recv_timeout(state.live_link.connection_socket, recv_timeout);
+			while (state.runtime.game_running)
 			{
-				const size_t buffer_len = 4096;
-				u8 buffer[buffer_len];
-				const int flags = 0;
-				current_bytes_read = socket_recv(state.live_link.connection_socket, buffer, buffer_len, flags);
-	
-				// Less than zero is an error
-				if (current_bytes_read < 0)
-				{
-					int last_error = socket_get_last_error();
-					if (	last_error == socket_error_again()
-						||	last_error == socket_error_would_block()
-						||	last_error == socket_error_timed_out())
-					{
-						current_bytes_read = 0;
-						continue;
-					}
-					else
-					{
-						printf("recv_error: %i\n", last_error);
-						exit(0);
-					}
-				}
-	
-				// No bytes read this iteration. Try again
-				if (current_bytes_read == 0)
-				{
-					continue;
-				}
-	
-				// current_bytes_read > 0, we've got data!
-				if (current_bytes_read > 0)
-				{
-					// Flatbuffer size will be prefixed to flatbuffer data. Set it when we encounter it
-					if (!flatbuffer_size)
-					{
-						assert(current_bytes_read >= sizeof(flatbuffers::uoffset_t));
-						flatbuffer_size = *(flatbuffers::uoffset_t*)(buffer);
-					}
-	
-					total_bytes_read += current_bytes_read;
-					i32 next_idx = flatbuffer_data.length();
-					flatbuffer_data.add_uninitialized(current_bytes_read);
-					memcpy(&flatbuffer_data[next_idx], buffer, current_bytes_read);
-					++packets_read;
-				}
+				u8 prefix[sizeof(flatbuffers::uoffset_t)];
+				if (!receive_exact(prefix, sizeof(prefix)))
+					break;
+				const auto body_size = flatbuffers::ReadScalar<flatbuffers::uoffset_t>(prefix);
+				// DynamicArray uses signed 32-bit lengths.
+				if (body_size == 0 || body_size > 0x7fffffffu - sizeof(prefix))
+					break;
+				DynamicArray<u8> flatbuffer_data;
+				flatbuffer_data.add_uninitialized((i32)(sizeof(prefix) + body_size));
+				memcpy(flatbuffer_data.data(), prefix, sizeof(prefix));
+				if (!receive_exact(flatbuffer_data.data() + sizeof(prefix), body_size))
+					break;
+				parse_flatbuffer_data(flatbuffer_data);
 			}
-			while (state.runtime.game_running && (current_bytes_read == 0 || (flatbuffer_size && total_bytes_read < flatbuffer_size.value())));
-	
-			printf("We've got some data! Data Length: %td Packets Read: %i\n", flatbuffer_data.length(), packets_read);
-	
-			parse_flatbuffer_data(flatbuffer_data);
+			socket_close(state.live_link.connection_socket);
+			state.live_link.connection_socket = INVALID_SOCKET;
 		}
-	
+
 		printf("Shutting down sockets\n");
 	
 		socket_close(state.live_link.connection_socket);

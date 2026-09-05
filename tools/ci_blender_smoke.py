@@ -60,13 +60,8 @@ def load_extension_module():
 def disable_live_update_scheduling(extension_module) -> None:
     """Keep exporter-driven dependency graph changes from scheduling socket sends."""
     extension_module.depsgraph_update_post_callback.enabled = False
-    extension_module.automatic_initial_full_update_timer.pending = False
-    for callback in (
-        extension_module.send_updates_timer,
-        extension_module.automatic_initial_full_update_timer,
-    ):
-        if bpy.app.timers.is_registered(callback):
-            bpy.app.timers.unregister(callback)
+    if bpy.app.timers.is_registered(extension_module.live_link_timer):
+        bpy.app.timers.unregister(extension_module.live_link_timer)
 
 
 def validate_compression_registries(extension_module) -> None:

@@ -279,8 +279,24 @@ def validate(extension_module, capture_path: Path, parse_update, host_fixture_pa
             raise AssertionError(f"Attachment armature UID escaped {root_name}")
 
     captured = []
-    connection.send = lambda output: captured.append(output) or True
+    connection.transport.state = 'connected'
+    pending_completions = []
+    def capture_send(output, on_complete=None):
+        captured.append(output)
+        if on_complete is not None:
+            pending_completions.append(on_complete)
+        return True
+    connection.send = capture_send
     connection.send_scene_changes(set(), "ci_occurrence_initial", force_full=True)
+    if connection.export_snapshot:
+        raise AssertionError("Snapshot committed before transport completion")
+    pending_completions.pop()()
+    def completed_send(output, on_complete=None):
+        capture_send(output, on_complete)
+        if pending_completions:
+            pending_completions.pop()()
+        return True
+    connection.send = completed_send
     initial = {
         name: obj.UniqueId()
         for name, obj in _objects(parse_update(extension_module, captured[-1])).items()
@@ -332,7 +348,7 @@ def validate(extension_module, capture_path: Path, parse_update, host_fixture_pa
     snapshot = dict(connection.export_snapshot)
     root_b.location.y += 1.0
     bpy.context.view_layer.update()
-    connection.send = lambda _output: False
+    connection.send = lambda _output, on_complete=None: False
     if connection.send_scene_changes({root_b.session_uid}, "ci_failed_send"):
         raise AssertionError("Synthetic failed send unexpectedly succeeded")
     if connection.export_snapshot != snapshot:

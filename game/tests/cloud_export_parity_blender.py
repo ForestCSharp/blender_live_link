@@ -61,6 +61,16 @@ print("CLOUD_EXPORT_PARITY_OK")
 
 if os.environ.get("CLOUD_RUNTIME_SMOKE") == "1":
     from bl_ext.user_default.blender_live_link import extension_main
-    if not extension_main.send_full_scene_update("cloud_runtime_smoke"):
+    import time
+    extension_main.send_full_scene_update("cloud_runtime_smoke")
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        extension_main.live_link_timer()
+        connection = extension_main.live_link_connection
+        if (connection.is_connected() and not connection.needs_full_sync
+                and not connection.reset_pending and connection.transport.ready):
+            break
+        time.sleep(0.01)
+    else:
         raise RuntimeError("Cloud runtime smoke could not send the scene to the game")
     print("CLOUD_RUNTIME_SCENE_SENT")

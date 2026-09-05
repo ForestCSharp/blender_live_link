@@ -332,10 +332,19 @@ in the native development build.
 ## Development Notes
 
 - The game listens on `127.0.0.1:65432`; the Blender extension connects to the
-  same address.
+  same address. Connection attempts and sends are nonblocking. Offline edits
+  are coalesced without exporting; reconnect sends a reset followed by the
+  current full scene. Only one payload is in flight, and later edits are batched.
+  Scene evaluation/export itself still runs on Blender's main thread.
 - The extension has UI operators for sending a full update, sending a reset,
   resetting the connection, saving an update to file, and comparing native vs.
   Python export output when native support is available.
+- Network regression checks: `python3 -m unittest discover -s tools -p
+  test_live_link_transport.py`, plus Blender's `--background --factory-startup
+  --python-exit-code 1 --python tools/ci_network_smoke.py`. The latter checks
+  real refused connections and a receiver that stops reading. The game receiver
+  check is `python3 game/tests/live_link_network_smoke.py --payload <scene.bin>`
+  using a payload from the export smoke test; it requires a graphics session.
 - Native export is available when the local Blender build exposes
   `bpy.app.live_link_make_update`.
 - The Python export fallback can be enabled from the Blender scene setting added
