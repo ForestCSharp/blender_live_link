@@ -401,9 +401,31 @@ namespace RenderSystem
 				make_cloud_pair_desc("Cloud Temporal Set 0"));
 			in_state.render_targets.init(RenderTargetId::CloudHistory1,
 				make_cloud_pair_desc("Cloud Temporal Set 1"));
-			in_state.render_targets.init(RenderTargetId::CloudComposite,
-				render_target_mrt_desc("Cloud Composite", Render::SCENE_COLOR_FORMAT, 4,
-					{}, VK_ATTACHMENT_LOAD_OP_CLEAR));
+			// Attachments 1 and 3 carry world positions, not color: 1 replaces the
+			// G-buffer position for DoF and TAA when clouds are active, and 3 is
+			// the fog metadata. Both need G-buffer precision - fp16 tops out at
+			// 65504 and cloud world positions near the horizon exceed 100 km, and
+			// leaving them at scene-color precision would silently downgrade the
+			// position target from fp32 to fp16 screen-wide whenever clouds run.
+			in_state.render_targets.init(RenderTargetId::CloudComposite, (RenderPassDesc) {
+				.num_outputs = 4,
+				.outputs = {
+					{ .format = Render::SCENE_COLOR_FORMAT,
+						.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					{ .format = Render::GBUFFER_FORMAT,
+						.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					{ .format = Render::SCENE_COLOR_FORMAT,
+						.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+					{ .format = Render::GBUFFER_FORMAT,
+						.load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.store_op = VK_ATTACHMENT_STORE_OP_STORE },
+				},
+				.type = ERenderPassType::Single,
+				.debug_label = "Cloud Composite",
+			});
 			in_state.render_targets.init(RenderTargetId::CloudShadow, (RenderPassDesc) {
 				.num_outputs = 1,
 				.outputs = {{ .format = VK_FORMAT_R16_SFLOAT,
@@ -583,9 +605,17 @@ namespace RenderSystem
 				CloudPass::generate_caches(
 					graph, &in_state.vk, cloud_system.seed, cloud_system.layer_count);
 				in_state.clouds.elapsed_time_seconds += MAX(in_delta_time, 0.0f);
+				// Footprint must come from the raymarch target, which runs at
+				// clouds.resolution_scale - using the full render height would
+				// understate the cone by that factor.
+				const RenderPass& raymarch_extent_source =
+					get_render_target(RenderTargetId::CloudRaymarch);
+				const f32 cloud_pixel_cone_angle = 2.0f * HMM_TanF(fov * 0.5f)
+					/ (f32)MAX(1, raymarch_extent_source.current_height);
 				CloudGpuParams cloud_params = CloudPass::build_params(
 					in_state, cloud_controller, view_projection_matrix,
-					camera.location, camera.forward, in_delta_time);
+					camera.location, camera.forward, in_delta_time,
+					cloud_pixel_cone_angle);
 				cloud_params_buffer = CloudPass::pass.params.update(&in_state.vk, cloud_params);
 				CloudPass::write_sampled_set(&in_state.vk,
 					CloudPass::pass.raymarch_sets.current(&in_state.vk), cloud_params_buffer,

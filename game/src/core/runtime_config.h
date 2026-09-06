@@ -34,6 +34,14 @@ namespace RuntimeConfig
 		std::optional<std::string> cloud_shadow_validation_capture;
 		std::optional<bool> bloom;
 		std::optional<double> bloom_threshold;
+		// Cloud grazing-angle tuning. Exposed so the horizon quality/cost
+		// tradeoff can be swept from a script instead of the ImGui panel.
+		std::optional<double> cloud_max_step_scale;
+		std::optional<double> cloud_max_march_length;
+		std::optional<double> cloud_horizon_fade_start;
+		std::optional<double> cloud_horizon_fade_end;
+		std::optional<double> cloud_lod_step_weight;
+		std::optional<double> cloud_lod_max;
 		std::optional<double> bloom_soft_knee;
 		std::optional<double> bloom_intensity;
 		std::optional<long> bloom_mips;
@@ -132,6 +140,12 @@ namespace RuntimeConfig
 			"GAME2_CLOUD_SHADOW_VALIDATION_CAPTURE");
 		config.bloom = boolean_value("GAME2_BLOOM");
 		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
+		config.cloud_max_step_scale = float_value("GAME2_CLOUD_MAX_STEP_SCALE");
+		config.cloud_max_march_length = float_value("GAME2_CLOUD_MAX_MARCH_LENGTH");
+		config.cloud_horizon_fade_start = float_value("GAME2_CLOUD_HORIZON_FADE_START");
+		config.cloud_horizon_fade_end = float_value("GAME2_CLOUD_HORIZON_FADE_END");
+		config.cloud_lod_step_weight = float_value("GAME2_CLOUD_LOD_STEP_WEIGHT");
+		config.cloud_lod_max = float_value("GAME2_CLOUD_LOD_MAX");
 		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");
 		config.bloom_intensity = float_value("GAME2_BLOOM_INTENSITY");
 		config.bloom_mips = integer_value("GAME2_BLOOM_MIPS");

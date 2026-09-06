@@ -3,30 +3,12 @@
 #include "shader_common.h"
 #include "cloud_common.h"
 
-layout(set = 1, binding = 1) uniform sampler2DArray base_shape_tex;
-layout(set = 1, binding = 2) uniform sampler2DArray erosion_tex;
+layout(set = 1, binding = 1) uniform sampler3D base_shape_tex;
+layout(set = 1, binding = 2) uniform sampler3D erosion_tex;
 layout(set = 1, binding = 3) uniform sampler2DArray weather_tex;
 
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 out_transmittance;
-
-float sample_base(vec3 uvw)
-{
-	uvw = fract(uvw);
-	float z = uvw.z * 128.0 - 0.5;
-	float z0 = floor(z);
-	return mix(texture(base_shape_tex, vec3(uvw.xy, mod(z0, 128.0))).r,
-		texture(base_shape_tex, vec3(uvw.xy, mod(z0 + 1.0, 128.0))).r, fract(z));
-}
-
-float sample_erosion(vec3 uvw)
-{
-	uvw = fract(uvw);
-	float z = uvw.z * 32.0 - 0.5;
-	float z0 = floor(z);
-	return mix(texture(erosion_tex, vec3(uvw.xy, mod(z0, 32.0))).r,
-		texture(erosion_tex, vec3(uvw.xy, mod(z0 + 1.0, 32.0))).r, fract(z));
-}
 
 void main()
 {
@@ -61,13 +43,17 @@ void main()
 			vec2 seed_offset = (fract(vec2(layer_seed * 0.6180339,
 				layer_seed * 0.4142136)) - 0.5) * cloud.wind_weather.w;
 			vec2 weather_uv = fract((world_position.xy + wind + seed_offset) / cloud.wind_weather.w);
-			float weather = texture(weather_tex, vec3(weather_uv, float(layer_index))).r;
+			float weather = textureLod(weather_tex, vec3(weather_uv, float(layer_index)), 0.0).r;
 			float coverage = clamp(layer.altitude_thickness_coverage_density.z
 				+ (weather - 0.5) * 0.55, 0.0, 1.0);
 			float profile = cloud_height_profile(fraction,
 				int(layer.ambient_multi_profile_seed.z + 0.5), layer.scales_erosion_anvil.w);
-			float shape = sample_base(vec3(world_position.xy + wind + seed_offset, world_position.z)
-				/ max(layer.scales_erosion_anvil.x, 100.0));
+			// LOD 0: a fixed 512^2 map over a fixed extent has no view-dependent
+			// footprint, and it accumulates across four frames, so the level it
+			// samples must not shift underneath itself.
+			float shape = textureLod(base_shape_tex,
+				vec3(world_position.xy + wind + seed_offset, world_position.z)
+				/ max(layer.scales_erosion_anvil.x, 100.0), 0.0).r;
 			float coarse_density = cloud_remap(
 				shape * profile, 1.0 - coverage, 1.0, 0.0, 1.0);
 			float density = 0.0;
@@ -76,7 +62,7 @@ void main()
 				vec3 detail_coord = vec3(
 					world_position.xy + wind * 1.13 + seed_offset, world_position.z)
 					/ max(layer.scales_erosion_anvil.y, 10.0);
-				float detail = sample_erosion(detail_coord);
+				float detail = textureLod(erosion_tex, detail_coord, 0.0).r;
 				density = cloud_remap(coarse_density,
 					detail * layer.scales_erosion_anvil.z, 1.0, 0.0, 1.0)
 					* layer.altitude_thickness_coverage_density.w;

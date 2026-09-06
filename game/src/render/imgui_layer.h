@@ -802,6 +802,26 @@ namespace ImGuiLayer
 						0.01f, 1.0f, "%.2f");
 					ImGui::TextDisabled(
 						"Edge Fade/Minimum Density trim wisps; Clip Sigma/Opacity Rejection tune stability");
+					ImGui::SeparatorText("Grazing Angle");
+					quality_changed |= ImGui::SliderFloat(
+						"Max Step Scale", &state.clouds.max_step_scale,
+						0.5f, 16.0f, "%.2f");
+					quality_changed |= ImGui::SliderFloat(
+						"Max March Length", &state.clouds.max_march_length_m,
+						1000.0f, 200000.0f, "%.0f m");
+					quality_changed |= ImGui::SliderFloat(
+						"Horizon Fade Start", &state.clouds.horizon_fade_start_deg,
+						0.0f, 45.0f, "%.1f deg");
+					quality_changed |= ImGui::SliderFloat(
+						"Horizon Fade End", &state.clouds.horizon_fade_end_deg,
+						-5.0f, 45.0f, "%.1f deg");
+					quality_changed |= ImGui::SliderFloat(
+						"LOD Step Weight", &state.clouds.lod_step_weight,
+						0.0f, 2.0f, "%.2f");
+					quality_changed |= ImGui::SliderFloat(
+						"LOD Max", &state.clouds.lod_max, 0.0f, 8.0f, "%.2f");
+					ImGui::TextDisabled(
+						"Max Step Scale caps step length at thickness/view_steps x scale; LOD Max 0 disables mip selection");
 					if (ImGui::Button("Reset Cloud Quality"))
 					{
 						state.clouds.resolution_scale = State::CloudState::DEFAULT_RESOLUTION_SCALE;
@@ -816,6 +836,15 @@ namespace ImGuiLayer
 						state.clouds.minimum_density = State::CloudState::DEFAULT_MINIMUM_DENSITY;
 						state.clouds.history_clip_sigma = State::CloudState::DEFAULT_HISTORY_CLIP_SIGMA;
 						state.clouds.opacity_rejection = State::CloudState::DEFAULT_OPACITY_REJECTION;
+						state.clouds.lod_step_weight = State::CloudState::DEFAULT_LOD_STEP_WEIGHT;
+						state.clouds.lod_max = State::CloudState::DEFAULT_LOD_MAX;
+						state.clouds.max_step_scale = State::CloudState::DEFAULT_MAX_STEP_SCALE;
+						state.clouds.max_march_length_m =
+							State::CloudState::DEFAULT_MAX_MARCH_LENGTH_M;
+						state.clouds.horizon_fade_start_deg =
+							State::CloudState::DEFAULT_HORIZON_FADE_START_DEG;
+						state.clouds.horizon_fade_end_deg =
+							State::CloudState::DEFAULT_HORIZON_FADE_END_DEG;
 						resolution_changed = true;
 						quality_changed = true;
 					}
@@ -913,10 +942,19 @@ namespace ImGuiLayer
 					get_render_target(RenderTargetId::CloudShadow).get_color_output(0), 256.0f);
 				if (CloudPass::pass.caches_generated)
 				{
-					draw_texture(frame_data.linear_sampler, "Base shape slice 0",
-						CloudPass::pass.base_shape, 256.0f, CloudPass::pass.base_shape.layer_views[0]);
-					draw_texture(frame_data.linear_sampler, "Erosion slice 0",
-						CloudPass::pass.erosion, 256.0f, CloudPass::pass.erosion.layer_views[0]);
+					// Shape and erosion are 3D volumes, so there are no per-slice
+					// 2D views to hand ImGui. Previewing one would need a
+					// slice-blit shader.
+					ImGui::TextDisabled("Base shape %ux%ux%u, %u mips",
+						CloudPass::pass.base_shape.extent.width,
+						CloudPass::pass.base_shape.extent.height,
+						CloudPass::pass.base_shape.depth,
+						CloudPass::pass.base_shape.mip_levels);
+					ImGui::TextDisabled("Erosion %ux%ux%u, %u mips",
+						CloudPass::pass.erosion.extent.width,
+						CloudPass::pass.erosion.extent.height,
+						CloudPass::pass.erosion.depth,
+						CloudPass::pass.erosion.mip_levels);
 					for (i32 layer_index = 0;
 						layer_index < MIN(state.clouds.active_layer_count, MAX_CLOUD_LAYERS);
 						++layer_index)

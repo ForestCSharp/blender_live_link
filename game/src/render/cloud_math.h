@@ -27,6 +27,38 @@ inline CloudRayInterval cloud_sphere_interval_cpu(
 	return { -b - root, -b + root, true };
 }
 
+// Mirrors the step sizing in cloud_raymarch.frag. Step length has to be bounded
+// in absolute terms: dividing a shell chord by a fixed step count gives ~90 m
+// steps at zenith and ~6 km near the horizon, against noise features on the
+// order of 1 km. A scale of 1.0 reproduces the zenith step exactly, since at
+// zenith the chord is the layer thickness.
+inline float cloud_march_step_size_cpu(
+	float interval_length, float layer_thickness, float view_steps, float max_step_scale)
+{
+	view_steps = std::max(view_steps, 1.0f);
+	const float nominal_step = std::max(interval_length, 0.0f) / view_steps;
+	const float max_step = std::max(layer_thickness, 0.0f) / view_steps
+		* std::max(max_step_scale, 0.0f);
+	return std::min(nominal_step, max_step);
+}
+
+// How many steps a fully dense march would take across the interval. Compare
+// against MAX_STEPS_PER_LAYER: exceeding it truncates the ray before its far
+// boundary, which is view-dependent and so shows up as a horizon artifact.
+inline float cloud_march_step_count_cpu(
+	float interval_length, float step_size, float dense_step_scale)
+{
+	if (!(step_size > 0.0f)) return 0.0f;
+	return std::max(interval_length, 0.0f)
+		/ (step_size * std::clamp(dense_step_scale, 0.01f, 1.0f));
+}
+
+// Depth rides in an fp16 channel, whose largest finite value is 65504. Storing
+// kilometres keeps grazing-angle depths (~100 km) representable; storing metres
+// overflows to +Inf and poisons the reprojection UV with NaN.
+inline float cloud_depth_encode_cpu(float depth_m) { return depth_m * 0.001f; }
+inline float cloud_depth_decode_cpu(float stored) { return stored * 1000.0f; }
+
 inline float cloud_coverage_remap_cpu(float shape, float coverage)
 {
 	coverage = std::clamp(coverage, 0.0f, 1.0f);

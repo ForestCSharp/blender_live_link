@@ -165,6 +165,7 @@ static_assert((i32)EDisplayOutputMode::EDR == DISPLAY_OUTPUT_MODE_EDR);
 static_assert((i32)EDisplayOutputMode::HDR10 == DISPLAY_OUTPUT_MODE_HDR10);
 
 static constexpr u32 TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS = 192;
+static constexpr u32 CLOUD_NOISE_REQUIRED_VOLUME_SIZE = 128;
 
 #include "render/output_selection.inl"
 
@@ -953,6 +954,14 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "RGBA16F tonemapping LUT unsupported");
 	if (result.properties.limits.maxImageArrayLayers < TONEMAPPING_LUT_REQUIRED_ARRAY_LAYERS)
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "192-layer tonemapping LUT unsupported");
+	// The cloud noise volumes are compute-written and mip-filtered in place, so
+	// they need storage plus linear-filtered sampling on the same format.
+	if (!vulkan_format_supports(in_device, VK_FORMAT_R16_SFLOAT,
+		VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
+		| VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "R16F cloud noise volume unsupported");
+	if (result.properties.limits.maxImageDimension3D < CLOUD_NOISE_REQUIRED_VOLUME_SIZE)
+		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "128^3 cloud noise volume unsupported");
 
 	result.compatible = result.rejection_reason[0] == '\0';
 	if (result.compatible)

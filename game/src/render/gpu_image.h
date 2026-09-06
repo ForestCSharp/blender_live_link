@@ -14,10 +14,20 @@ struct GpuImageDesc
 	VkImageUsageFlags usage;
 	VkImageAspectFlags aspect;
 	u32 array_layers = 1;	// > 1 = 2D array (per-layer attachment views + array sampled view)
+	u32 depth = 1;			// > 1 = 3D volume; mips halve in z too, so array_layers must stay 1
 	u32 mip_levels = 1;		// whole-image view samples every mip; mip_views render one mip at a time
 	bool cubemap = false;	// requires array_layers == 6; sampled view is CUBE
 	const char* label = nullptr;
 };
+
+// 128 -> 8, 32 -> 6. A volume chain bottoms out at 1^3, whose single texel is
+// the volume mean; that is the correct limit for footprint-driven LOD.
+inline u32 gpu_image_full_mip_count(u32 in_size)
+{
+	u32 count = 1;
+	while ((in_size >> count) > 0u) ++count;
+	return count;
+}
 
 struct GpuImage
 {
@@ -35,7 +45,10 @@ struct GpuImage
 
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkFormat format = VK_FORMAT_UNDEFINED;
+	// Stays 2D: consumed directly as VkRenderingInfo::renderArea and scissor
+	// extents. Volume images carry their third dimension in `depth`.
 	VkExtent2D extent = {};
+	u32 depth = 1;
 	u32 array_layers = 1;
 	u32 mip_levels = 1;
 	VkImageAspectFlags aspects = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -283,28 +296,35 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 {
 	const u32 array_layers = MAX(in_desc.array_layers, 1u);
 	const u32 mip_levels = MAX(in_desc.mip_levels, 1u);
+	const u32 depth = MAX(in_desc.depth, 1u);
+	const bool volume = depth > 1;
 
 	GpuImage result = {
 		.format = in_desc.format,
 		.extent = { in_desc.width, in_desc.height },
+		.depth = depth,
 		.array_layers = array_layers,
 		.mip_levels = mip_levels,
 		.aspects = in_desc.aspect,
 		.generation = gpu_image_next_generation(),
 	};
+	// A volume pins array_layers to 1, so the aspect/mip/layer tracking below
+	// degenerates to aspect/mip without any special casing.
 	result.subresource_states.resize(3 * result.mip_levels * result.array_layers);
 
 	assert(!in_desc.cubemap || array_layers == 6);
+	assert(!volume || array_layers == 1);
+	assert(!volume || !in_desc.cubemap);
 
 	VkImageCreateInfo image_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.flags = in_desc.cubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags) 0,
-		.imageType = VK_IMAGE_TYPE_2D,
+		.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
 		.format = in_desc.format,
 		.extent = {
 			.width = in_desc.width,
 			.height = in_desc.height,
-			.depth = 1,
+			.depth = depth,
 		},
 		.mipLevels = mip_levels,
 		.arrayLayers = array_layers,
@@ -347,6 +367,7 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 		.image = result.image,
 		.viewType = in_desc.cubemap
 			? VK_IMAGE_VIEW_TYPE_CUBE
+			: volume ? VK_IMAGE_VIEW_TYPE_3D
 			: array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
 		.format = in_desc.format,
 		.subresourceRange = {
@@ -415,7 +436,8 @@ GpuImage gpu_image_create(VmaAllocator in_allocator, VkDevice in_device, const G
 			VkImageViewCreateInfo mip_view_create_info = {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 				.image = result.image,
-				.viewType = array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+				.viewType = volume ? VK_IMAGE_VIEW_TYPE_3D
+					: array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
 				.format = in_desc.format,
 				.subresourceRange = {
 					.aspectMask = in_desc.aspect,

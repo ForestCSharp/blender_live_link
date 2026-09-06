@@ -26,7 +26,8 @@ void main()
 	vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
 	vec4 world_h = per_frame.inv_view_projection * clip;
 	vec3 ray_direction = normalize(world_h.xyz / world_h.w - per_frame.camera_position.xyz);
-	vec3 world_position = per_frame.camera_position.xyz + ray_direction * current_depth.x;
+	vec3 world_position = per_frame.camera_position.xyz
+		+ ray_direction * (current_depth.x * CLOUD_DEPTH_FROM_STORAGE);
 	// Density samples add wind*time to their procedural coordinates, so the
 	// visible pattern travels against that vector. The same feature therefore
 	// lived one positive wind delta away in the previous frame.
@@ -35,8 +36,12 @@ void main()
 	vec4 previous_clip = cloud.previous_view_projection * vec4(world_position, 1.0);
 	vec2 history_uv = vec2(previous_clip.x / previous_clip.w * 0.5 + 0.5,
 		0.5 - previous_clip.y / previous_clip.w * 0.5);
-	if (previous_clip.w <= 0.0 || any(lessThan(history_uv, vec2(0.0)))
-		|| any(greaterThan(history_uv, vec2(1.0))))
+	// Positive form on purpose: a NaN uv fails every comparison here and is
+	// rejected, whereas the any(lessThan)/any(greaterThan) form let it through.
+	bool history_in_bounds = previous_clip.w > 0.0
+		&& all(greaterThanEqual(history_uv, vec2(0.0)))
+		&& all(lessThanEqual(history_uv, vec2(1.0)));
+	if (!history_in_bounds)
 	{
 		out_cloud = current;
 		out_depth = current_depth;
@@ -87,10 +92,17 @@ void main()
 	float opacity_confidence = 1.0 - smoothstep(
 		opacity_rejection * 0.25, opacity_rejection, opacity_error);
 	bool history_has_geometry = history_depth.w >= 0.5;
-	float history_weight = depth_error < cloud.temporal_quality.y
-		&& history_has_geometry == current_has_geometry
+	// A single mean depth is a poor anchor when the contributing volume spans
+	// tens of kilometres, so widen tolerance by the relative spread the march
+	// reported. Fading rather than switching also stops the history pulsing on
+	// and off as depth_error crosses the threshold.
+	float depth_tolerance = cloud.temporal_quality.y
+		* (1.0 + current_depth.y / max(current_depth.x, 1.0e-4));
+	float depth_confidence = 1.0 - smoothstep(
+		depth_tolerance * 0.5, depth_tolerance, depth_error);
+	float history_weight = history_has_geometry == current_has_geometry
 		&& history_depth.x > 0.0
-		? cloud.temporal_quality.x * opacity_confidence : 0.0;
+		? cloud.temporal_quality.x * opacity_confidence * depth_confidence : 0.0;
 	out_cloud = mix(current, history, history_weight);
 	out_depth = vec4(
 		mix(current_depth.xyz, history_depth.xyz, history_weight), current_depth.w);

@@ -66,6 +66,18 @@ namespace RuntimeStateOverrides
 		{
 			in_state.bloom.threshold = CLAMP((f32)*config.bloom_threshold, 0.0f, 10.0f);
 		}
+		if (config.cloud_max_step_scale)
+			in_state.clouds.max_step_scale = CLAMP((f32)*config.cloud_max_step_scale, 0.5f, 16.0f);
+		if (config.cloud_max_march_length)
+			in_state.clouds.max_march_length_m = MAX((f32)*config.cloud_max_march_length, 1000.0f);
+		if (config.cloud_horizon_fade_start)
+			in_state.clouds.horizon_fade_start_deg = CLAMP((f32)*config.cloud_horizon_fade_start, 0.0f, 45.0f);
+		if (config.cloud_horizon_fade_end)
+			in_state.clouds.horizon_fade_end_deg = CLAMP((f32)*config.cloud_horizon_fade_end, -5.0f, 45.0f);
+		if (config.cloud_lod_step_weight)
+			in_state.clouds.lod_step_weight = CLAMP((f32)*config.cloud_lod_step_weight, 0.0f, 2.0f);
+		if (config.cloud_lod_max)
+			in_state.clouds.lod_max = CLAMP((f32)*config.cloud_lod_max, 0.0f, 8.0f);
 		if (config.bloom_soft_knee)
 		{
 			in_state.bloom.soft_knee = CLAMP((f32)*config.bloom_soft_knee, 0.0f, 1.0f);

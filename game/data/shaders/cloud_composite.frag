@@ -34,8 +34,11 @@ void sample_cloud_bilateral(vec4 geometry_position, out vec4 cloud_value, out ve
 	vec2 source_pixel = uv * source_size - 0.5;
 	vec2 source_base = floor(source_pixel);
 	vec2 fraction = fract(source_pixel);
+	// Depth is stored in kilometres; compare in the same units rather than
+	// converting every sample.
 	float geometry_distance = geometry_position.w > 0.0
-		? length(geometry_position.xyz - per_frame.camera_position.xyz) : 1.0e30;
+		? length(geometry_position.xyz - per_frame.camera_position.xyz)
+			* CLOUD_DEPTH_TO_STORAGE : 1.0e30;
 	float reference_depth = texture(cloud_depth_tex, uv).x;
 	cloud_value = vec4(0.0);
 	depth_value = vec4(0.0);
@@ -50,9 +53,10 @@ void sample_cloud_bilateral(vec4 geometry_position, out vec4 cloud_value, out ve
 		float spatial_weight = mix(1.0 - fraction.x, fraction.x, float(x))
 			* mix(1.0 - fraction.y, fraction.y, float(y));
 		float foreground_weight = sample_depth.x <= 0.0
-			|| sample_depth.x < geometry_distance + 2.0 ? 1.0 : 0.0;
+			|| sample_depth.x < geometry_distance + 2.0 * CLOUD_DEPTH_TO_STORAGE ? 1.0 : 0.0;
 		float depth_weight = reference_depth > 0.0 && sample_depth.x > 0.0
-			? exp(-abs(sample_depth.x - reference_depth) / max(reference_depth * 0.08, 20.0))
+			? exp(-abs(sample_depth.x - reference_depth)
+				/ max(reference_depth * 0.08, 20.0 * CLOUD_DEPTH_TO_STORAGE))
 			: 1.0;
 		float weight = spatial_weight * foreground_weight * depth_weight;
 		cloud_value += sample_cloud * weight;
@@ -93,7 +97,8 @@ void main()
 	vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
 	vec4 world_h = per_frame.inv_view_projection * clip;
 	vec3 ray_direction = normalize(world_h.xyz / world_h.w - per_frame.camera_position.xyz);
-	vec3 cloud_world_position = per_frame.camera_position.xyz + ray_direction * depth_value.x;
+	vec3 cloud_world_position = per_frame.camera_position.xyz
+		+ ray_direction * (depth_value.x * CLOUD_DEPTH_FROM_STORAGE);
 	vec3 cloud_scattering = cloud_value.rgb;
 
 	AtmosphereParameters atmosphere = GetAtmosphere();

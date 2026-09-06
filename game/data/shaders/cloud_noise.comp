@@ -2,8 +2,11 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, r16f) uniform writeonly image2DArray base_shape_out;
-layout(set = 0, binding = 1, r16f) uniform writeonly image2DArray erosion_out;
+// The shape and erosion fields are true volumes: they are sampled on a
+// continuous third axis and mip-filtered in all three dimensions. Weather is
+// an atlas of independent per-layer 2D fields and stays a 2D array.
+layout(set = 0, binding = 0, r16f) uniform writeonly image3D base_shape_out;
+layout(set = 0, binding = 1, r16f) uniform writeonly image3D erosion_out;
 layout(set = 0, binding = 2, rg16f) uniform writeonly image2DArray weather_out;
 
 layout(push_constant) uniform NoisePushConstants

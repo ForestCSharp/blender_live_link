@@ -31,9 +31,11 @@ struct CloudGpuParams
 	HMM_Vec4 shadow_extent_misc;
 	HMM_Vec4 march_quality;
 	HMM_Vec4 temporal_quality;
+	HMM_Vec4 lod_params;	// x = radians per march pixel, y = step weight, z = max lod
+	HMM_Vec4 march_limits;	// x = max step scale, y = max march m, zw = horizon fade sines
 	CloudLayerGpu layers[MAX_CLOUD_LAYERS];
 };
-static_assert(sizeof(CloudGpuParams) == 432, "CloudGpuParams must match cloud_common.h std140 layout");
+static_assert(sizeof(CloudGpuParams) == 464, "CloudGpuParams must match cloud_common.h std140 layout");
 
 namespace CloudPass
 {
@@ -45,12 +47,21 @@ namespace CloudPass
 		u32 layers;
 	};
 
+	struct DownsamplePushConstants
+	{
+		u32 dest_width;
+		u32 dest_height;
+		u32 dest_depth;
+		u32 _pad;
+	};
+
 	struct Pass
 	{
 		GpuImage base_shape;
 		GpuImage erosion;
 		GpuImage weather;
 		TypedComputeEffect<NoisePushConstants> noise_effect;
+		TypedComputeEffect<DownsamplePushConstants> downsample_effect;
 
 		DescriptorSetSchema sampled_descriptors;
 		PerFrameDescriptorSets raymarch_sets;
@@ -125,16 +136,23 @@ namespace CloudPass
 
 	inline void init(VulkanContext* ctx)
 	{
+		// True volumes with a full mip chain. The raymarch picks a level from the
+		// ray footprint; a 2D array could not express the chain at all, because
+		// Vulkan holds arrayLayers constant across mips while a volume's third
+		// dimension has to halve with the other two. The chain costs 8/7 of the
+		// base level.
 		pass.base_shape = gpu_image_create(ctx->allocator, ctx->device, {
 			.width = 128, .height = 128, .format = VK_FORMAT_R16_SFLOAT,
 			.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			.aspect = VK_IMAGE_ASPECT_COLOR_BIT, .array_layers = 128,
+			.aspect = VK_IMAGE_ASPECT_COLOR_BIT, .depth = 128,
+			.mip_levels = gpu_image_full_mip_count(128),
 			.label = "Cloud Base Shape 128^3",
 		});
 		pass.erosion = gpu_image_create(ctx->allocator, ctx->device, {
 			.width = 32, .height = 32, .format = VK_FORMAT_R16_SFLOAT,
 			.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			.aspect = VK_IMAGE_ASPECT_COLOR_BIT, .array_layers = 32,
+			.aspect = VK_IMAGE_ASPECT_COLOR_BIT, .depth = 32,
+			.mip_levels = gpu_image_full_mip_count(32),
 			.label = "Cloud Erosion 32^3",
 		});
 		pass.weather = gpu_image_create(ctx->allocator, ctx->device, {
@@ -156,15 +174,34 @@ namespace CloudPass
 			.bindings = noise_bindings,
 			.binding_count = 3,
 		});
+		const DescriptorBindingSpec downsample_bindings[] = {
+			{ .binding = 0, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+			{ .binding = 1, .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.stages = VK_SHADER_STAGE_COMPUTE_BIT },
+		};
+		pass.downsample_effect.init(ctx, {
+			.shader_path = "bin/shaders/cloud_noise_downsample.comp.spv",
+			.bindings = downsample_bindings,
+			.binding_count = 2,
+		});
 
 		VkSamplerCreateInfo sampler_info = {
 			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 			.magFilter = VK_FILTER_LINEAR,
 			.minFilter = VK_FILTER_LINEAR,
-			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			// LINEAR, not NEAREST: LOD varies continuously along each ray, and
+			// nearest mip selection would draw camera-locked concentric shells
+			// that TAA cannot average away because they do not move with the
+			// scene. maxLod must be set explicitly - its 0.0 default silently
+			// clamps every textureLod back to mip 0 and the chain becomes dead
+			// memory with no validation error.
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
 			.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 			.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 			.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.minLod = 0.0f,
+			.maxLod = VK_LOD_CLAMP_NONE,
 		};
 		VK_CHECK(vkCreateSampler(ctx->device, &sampler_info, nullptr, &pass.repeat_sampler));
 
@@ -192,7 +229,10 @@ namespace CloudPass
 			2, 0, 0);
 
 		const VkFormat pair_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
-		const VkFormat quad_formats[] = { Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT, Render::SCENE_COLOR_FORMAT };
+		// Must match RenderTargetId::CloudComposite: attachments 1 and 3 hold
+		// world positions and use G-buffer precision.
+		const VkFormat quad_formats[] = { Render::SCENE_COLOR_FORMAT,
+			Render::GBUFFER_FORMAT, Render::SCENE_COLOR_FORMAT, Render::GBUFFER_FORMAT };
 		const VkFormat shadow_format = VK_FORMAT_R16_SFLOAT;
 		pass.raymarch_pipeline.init(ctx, {
 			.vertex_shader_path = "bin/shaders/cloud_raymarch.vert.spv",
@@ -220,6 +260,39 @@ namespace CloudPass
 		});
 	}
 
+	// Successively box-filters a noise volume down its mip chain. One graph node
+	// per level: FrameRenderGraph::compute emits pending barriers before the
+	// callback and none after, so consecutive levels need separate nodes to get
+	// the read-after-write edge between them. Same shape as the bloom pyramid.
+	inline void generate_mip_chain(
+		FrameRenderGraph& graph, VulkanContext* ctx, GpuImage& in_image)
+	{
+		for (u32 mip = 1; mip < in_image.mip_levels; ++mip)
+		{
+			const u32 dest_width = MAX(in_image.extent.width >> mip, 1u);
+			const u32 dest_height = MAX(in_image.extent.height >> mip, 1u);
+			const u32 dest_depth = MAX(in_image.depth >> mip, 1u);
+
+			graph.storage_read(frame_graph_mip(in_image, mip - 1),
+				VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+			graph.storage_write(frame_graph_mip(in_image, mip),
+				VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
+
+			DescriptorWriter writer = pass.downsample_effect.writer(ctx);
+			writer.storage_image(0, in_image.mip_views[mip - 1]);
+			writer.storage_image(1, in_image.mip_views[mip]);
+			writer.commit();
+
+			const DownsamplePushConstants push = {
+				dest_width, dest_height, dest_depth, 0 };
+			graph.compute([&]() {
+				pass.downsample_effect.bind(ctx, writer.set);
+				pass.downsample_effect.dispatch(ctx, push,
+					(dest_width + 3) / 4, (dest_height + 3) / 4, (dest_depth + 3) / 4);
+			});
+		}
+	}
+
 	inline void generate_caches(
 		FrameRenderGraph& graph, VulkanContext* ctx, u32 seed, i32 layer_count)
 	{
@@ -235,7 +308,10 @@ namespace CloudPass
 		DescriptorWriter noise_writer = pass.noise_effect.writer(ctx);
 		for (u32 index = 0; index < 3; ++index)
 		{
-			noise_writer.storage_image(index, images[index]->view);
+			// A storage-image descriptor must name exactly one mip level, and
+			// the whole-image view spans the entire chain.
+			noise_writer.storage_image(index, images[index]->mip_levels > 1
+				? images[index]->mip_views[0] : images[index]->view);
 		}
 		noise_writer.commit();
 		const NoisePushConstants dispatches[] = {
@@ -249,6 +325,8 @@ namespace CloudPass
 					(push.size + 7) / 8, (push.size + 7) / 8, push.layers);
 			}
 		});
+		generate_mip_chain(graph, ctx, pass.base_shape);
+		generate_mip_chain(graph, ctx, pass.erosion);
 		for (GpuImage* image : images)
 			graph.sampled(frame_graph_image(*image));
 		graph.apply();
@@ -263,7 +341,8 @@ namespace CloudPass
 
 	inline CloudGpuParams build_params(
 		State& state, const Object& controller, HMM_Mat4 view_projection,
-		HMM_Vec3 camera_position, HMM_Vec3 camera_forward, f32 delta_time)
+		HMM_Vec3 camera_position, HMM_Vec3 camera_forward, f32 delta_time,
+		f32 pixel_cone_angle)
 	{
 		const CloudSystem& cloud = controller.cloud_system;
 		if (pass.has_previous_camera)
@@ -299,6 +378,20 @@ namespace CloudPass
 			CLAMP(state.clouds.depth_rejection, 0.01f, 0.5f),
 			CLAMP(state.clouds.low_density_edge_fade, 0.0f, 0.2f),
 			CLAMP(state.clouds.minimum_density, 0.0f, 0.02f));
+		params.lod_params = HMM_V4(
+			MAX(pixel_cone_angle, 0.0f),
+			CLAMP(state.clouds.lod_step_weight, 0.0f, 2.0f),
+			CLAMP(state.clouds.lod_max, 0.0f, 8.0f),
+			0.0f);
+		// Fade bounds are compared against dot(ray, radial_up), which is the
+		// sine of elevation, so convert here rather than per pixel.
+		const f32 fade_start = CLAMP(state.clouds.horizon_fade_start_deg, 0.0f, 45.0f);
+		const f32 fade_end = CLAMP(state.clouds.horizon_fade_end_deg, -5.0f, fade_start);
+		params.march_limits = HMM_V4(
+			CLAMP(state.clouds.max_step_scale, 0.5f, 16.0f),
+			MAX(state.clouds.max_march_length_m, 1000.0f),
+			HMM_SinF(HMM_AngleDeg(fade_start)),
+			HMM_SinF(HMM_AngleDeg(fade_end)));
 		for (i32 layer_index = 0; layer_index < cloud.layer_count; ++layer_index)
 		{
 			const CloudLayer& layer = cloud.layers[layer_index];
@@ -440,6 +533,7 @@ namespace CloudPass
 		pass.composite_pipeline.shutdown(ctx);
 		pass.shadow_pipeline.shutdown(ctx);
 		pass.noise_effect.shutdown(ctx);
+		pass.downsample_effect.shutdown(ctx);
 		pass.atmosphere_pipeline_layout.shutdown(ctx);
 		pass.basic_pipeline_layout.shutdown(ctx);
 		pass.params.shutdown();

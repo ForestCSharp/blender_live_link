@@ -1,0 +1,44 @@
+#version 450
+
+// Builds one level of the cloud noise volume mip chain. The raymarch selects a
+// level from the ray footprint, so without a chain there is nothing to
+// band-limit the field and grazing rays alias against full-resolution noise.
+//
+// Source and destination are bound as separate readonly/writeonly images rather
+// than one read_write image: Metal gates access::read_write behind
+// MTLReadWriteTextureTier, while plain read and write are unrestricted.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, r16f) uniform readonly image3D source_mip;
+layout(set = 0, binding = 1, r16f) uniform writeonly image3D dest_mip;
+
+layout(push_constant) uniform DownsamplePushConstants
+{
+	uint dest_width;
+	uint dest_height;
+	uint dest_depth;
+	uint _pad;
+} pc;
+
+void main()
+{
+	ivec3 dest_id = ivec3(gl_GlobalInvocationID);
+	ivec3 dest_size = ivec3(pc.dest_width, pc.dest_height, pc.dest_depth);
+	if (any(greaterThanEqual(dest_id, dest_size))) return;
+
+	// Every extent in the chain is a power of two, so a 2x2x2 block never
+	// straddles the wrap boundary and the mip stays tileable. The clamp only
+	// guards a future non-power-of-two source.
+	ivec3 source_size = imageSize(source_mip);
+	ivec3 base = dest_id * 2;
+	float sum = 0.0;
+	for (int z = 0; z < 2; ++z)
+	for (int y = 0; y < 2; ++y)
+	for (int x = 0; x < 2; ++x)
+	{
+		ivec3 coord = min(base + ivec3(x, y, z), source_size - ivec3(1));
+		sum += imageLoad(source_mip, coord).r;
+	}
+	imageStore(dest_mip, dest_id, vec4(sum * 0.125));
+}

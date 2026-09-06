@@ -4,6 +4,13 @@
 const int MAX_CLOUD_LAYERS = 4;
 const float CLOUD_PI = 3.14159265358979323846;
 
+// The cloud depth target shares SCENE_COLOR_FORMAT (fp16), whose largest finite
+// value is 65504. Grazing-angle cloud depths reach ~100 km, so depth is stored
+// in kilometres: fp16 holds ~0.05% relative precision at any magnitude, which is
+// ~40 m at 80 km, while metres would overflow to +Inf.
+const float CLOUD_DEPTH_TO_STORAGE = 0.001;
+const float CLOUD_DEPTH_FROM_STORAGE = 1000.0;
+
 struct CloudLayerGpu
 {
 	vec4 altitude_thickness_coverage_density;
@@ -22,6 +29,8 @@ layout(set = 1, binding = 0, std140) uniform CloudParamsBlock
 	vec4 shadow_extent_misc;
 	vec4 march_quality;
 	vec4 temporal_quality;
+	vec4 lod_params;
+	vec4 march_limits;
 	CloudLayerGpu layers[MAX_CLOUD_LAYERS];
 } cloud;
 

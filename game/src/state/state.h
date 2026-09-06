@@ -615,6 +615,26 @@ struct State
 		static constexpr f32 DEFAULT_MINIMUM_DENSITY = 0.002f;
 		static constexpr f32 DEFAULT_HISTORY_CLIP_SIGMA = 1.25f;
 		static constexpr f32 DEFAULT_OPACITY_REJECTION = 0.35f;
+		// Grazing-angle sampling. A ray near the horizon crosses ~250 km of
+		// shell versus 3 km at zenith, so step length and noise LOD have to be
+		// bounded in absolute terms or the march undersamples its own medium.
+		// 0 by design: the absolute step clamp below already bounds along-ray
+		// sampling, so folding step length into the noise LOD only blurs
+		// detail at zenith without measurably helping the horizon. Left as a
+		// knob because a coarser max step scale would change that balance.
+		static constexpr f32 DEFAULT_LOD_STEP_WEIGHT = 0.0f;
+		static constexpr f32 DEFAULT_LOD_MAX = 4.0f;
+		// Ceiling on step length, in units of thickness/view_steps. The clamp
+		// only engages once the shell chord exceeds thickness * scale, so at
+		// 3.0 it leaves zenith (~120 m steps) untouched and bites only at
+		// grazing angles, where the unclamped step would reach kilometres.
+		static constexpr f32 DEFAULT_MAX_STEP_SCALE = 3.0f;
+		static constexpr f32 DEFAULT_MAX_MARCH_LENGTH_M = 40000.0f;
+		// Narrow on purpose. With the step clamp and cone LOD in place the fade
+		// is no longer load-bearing, and a wide fade visibly strands a band of
+		// empty sky above the skyline.
+		static constexpr f32 DEFAULT_HORIZON_FADE_START_DEG = 3.0f;
+		static constexpr f32 DEFAULT_HORIZON_FADE_END_DEG = 0.2f;
 
 		bool active = false;
 		bool debug_active = true;
@@ -636,6 +656,12 @@ struct State
 		f32 minimum_density = DEFAULT_MINIMUM_DENSITY;
 		f32 history_clip_sigma = DEFAULT_HISTORY_CLIP_SIGMA;
 		f32 opacity_rejection = DEFAULT_OPACITY_REJECTION;
+		f32 lod_step_weight = DEFAULT_LOD_STEP_WEIGHT;
+		f32 lod_max = DEFAULT_LOD_MAX;
+		f32 max_step_scale = DEFAULT_MAX_STEP_SCALE;
+		f32 max_march_length_m = DEFAULT_MAX_MARCH_LENGTH_M;
+		f32 horizon_fade_start_deg = DEFAULT_HORIZON_FADE_START_DEG;
+		f32 horizon_fade_end_deg = DEFAULT_HORIZON_FADE_END_DEG;
 	} clouds;
 
 	struct DebugCameraState
