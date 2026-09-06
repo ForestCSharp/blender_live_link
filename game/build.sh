@@ -12,12 +12,15 @@ set -o pipefail
 # Note: no Vulkan library is linked — volk dlopens the loader at runtime.
 # Only one runtime instance can listen on port 65432 at a time.
 
+# Store var for this script's directory
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
 
+# Create binary output directories
 mkdir -p bin
 mkdir -p bin/shaders
 
+# Show usage guide if no args passed
 usage() {
 	echo "Usage: ./build.sh <Mac|Linux|Windows> [-norun] [-full]"
 }
@@ -27,8 +30,11 @@ if [ $# -lt 1 ]; then
 	exit 1
 fi
 
+# Grab OS arg at $1 and discard it with shift
 OS_ARG=$1
 shift
+
+# Check+set vars for other args
 RUN_GAME=1
 FULL_REBUILD=0
 for arg in "$@"; do
@@ -47,6 +53,7 @@ for arg in "$@"; do
 	esac
 done
 
+# Validate OS arg
 case "$OS_ARG" in
 	Mac|Linux|Windows)
 		;;
@@ -57,9 +64,14 @@ case "$OS_ARG" in
 		;;
 esac
 
+# defines
 GAME_WARNING_FLAGS="-Wno-c99-designator"
-WITH_DEBUG_UI=${WITH_DEBUG_UI:-1}
+# WITH_DEBUG_UI defaults to enabled if unset
+WITH_DEBUG_UI=${WITH_DEBUG_UI:-1} 
+#GAME_BUILD_CONFIG defaults to Debug if unset
 GAME_BUILD_CONFIG=${GAME_BUILD_CONFIG:-Debug}
+
+# BEGIN Setup Vulkan Defines
 VULKAN_INCLUDE_ARGS=()
 VULKAN_SDK_PATH=${VULKAN_SDK:-}
 if [[ -n "$VULKAN_SDK_PATH" ]] && command -v cygpath > /dev/null 2>&1; then
@@ -106,7 +118,9 @@ configure_moltenvk_runtime() {
 }
 
 resolve_vulkan_include_args
+# END Setup Vulkan Defines
 
+# Setup compiler args based on GAME_BUILD_CONFIG
 case "$GAME_BUILD_CONFIG" in
 	Debug)
 		GAME_OPT_FLAGS="-O0 -g"
@@ -147,6 +161,7 @@ generate_dependency_manifest() {
 	} > "$output_file"
 }
 
+# Times a run in this shell script
 run_timed() {
 	local label=$1
 	shift
@@ -159,6 +174,7 @@ run_timed() {
 	return $status
 }
 
+# checks if a passed-in dependency needs a rebuild
 dependency_needs_rebuild() {
 	local dependency_name=$1
 	local source_dir=$2
@@ -178,6 +194,7 @@ dependency_needs_rebuild() {
 	return 1
 }
 
+# Stores manifest for dependency (used to check if it needs a rebuild)
 commit_dependency_manifest() {
 	local dependency_name=$1
 	mv "$BUILD_CACHE_DIR/$dependency_name.manifest.next" "$BUILD_CACHE_DIR/$dependency_name.manifest" || exit 1
@@ -186,6 +203,7 @@ commit_dependency_manifest() {
 export GAME_BUILD_CONFIG
 export SHADER_OPT_FLAGS
 
+# Compile Shaders
 if [ $FULL_REBUILD -eq 1 ]; then
 	run_timed "shader cache/build" ./compile_shaders.sh "$OS_ARG" -full || exit 1
 else
