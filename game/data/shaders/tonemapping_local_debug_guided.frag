@@ -1,7 +1,6 @@
 #version 450
 
 #include "tonemapping_operators.h"
-#include "tonemapping_validation_chart.h"
 #include "auto_adaptation.h"
 #include "tonemapping_local_guided.h"
 
@@ -21,7 +20,6 @@ layout(push_constant) uniform PushConstants
 	float exposure_bias;
 	vec2 guide_pixel_size;
 	float lut_integration_scale;
-	int validation_chart;
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
 	vec2 recovery_limits;
@@ -35,10 +33,7 @@ void main()
 	float auto_exposure_ev = pc.auto_exposure_enabled != 0
 		? auto_adaptation_values[AUTO_ADAPTATION_STATE_EXPOSURE_WHITE].x
 		: 0.0;
-	vec3 source = pc.validation_chart == 2 ? vec3(0.18)
-		: pc.validation_chart == 1 ? tonemapping_validation_chart(uv)
-		: pc.validation_chart == 3 ? tonemapping_validation_sky_geometry_chart(uv)
-		: texture(scene_color, uv).rgb;
+	vec3 source = texture(scene_color, uv).rgb;
 	if (pc.auto_white_balance_enabled != 0)
 	{
 		source = auto_adaptation_apply_white_balance(
@@ -59,11 +54,7 @@ void main()
 		pc.guide_pixel_size,
 		pc.recovery_limits.x,
 		pc.recovery_limits.y);
-	float local_strength = pc.validation_chart == 3
-		? tonemapping_validation_geometry_local_strength(
-			uv, 1.0 / vec2(textureSize(position_tex, 0)))
-		: pc.validation_chart != 0 ? 1.0
-		: tonemapping_geometry_local_strength(position_tex, uv);
+	float local_strength = tonemapping_geometry_local_strength(position_tex, uv);
 	float multiplier = mix(1.0, result.multiplier, local_strength);
 	float local_ev = clamp(log2(max(multiplier, 1e-5)), -4.0, 4.0);
 	guided_debug = vec4(

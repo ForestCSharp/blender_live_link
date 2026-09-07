@@ -41,32 +41,6 @@ namespace RenderSystem
 		return g_gi_scene;
 	}
 
-	inline bool dump_tonemapping_validation(State& in_state, const std::string& prefix)
-	{
-		GpuImage& tonemapped =
-			get_render_target(RenderTargetId::Tonemapping).get_color_output(0);
-		GpuImage& composite =
-			get_render_target(RenderTargetId::PresentationComposite).get_color_output(0);
-		return vulkan_context_dump_image_pfm(
-			&in_state.vk, &tonemapped, (prefix + ".tonemapped.pfm").c_str())
-			&& vulkan_context_dump_image_pfm(
-				&in_state.vk, &composite, (prefix + ".composite.pfm").c_str());
-	}
-
-	inline bool dump_cloud_shadow_validation(State& in_state, const std::string& path)
-	{
-		const bool shadow_succeeded = vulkan_context_dump_image_pfm(
-			&in_state.vk,
-			&get_render_target(RenderTargetId::CloudShadow).get_color_output(0),
-			path.c_str());
-		const std::string lighting_path = path + ".lighting.pfm";
-		const bool lighting_succeeded = vulkan_context_dump_image_pfm(
-			&in_state.vk,
-			&get_render_target(RenderTargetId::Lighting).get_color_output(0),
-			lighting_path.c_str());
-		return shadow_succeeded && lighting_succeeded;
-	}
-
 	// Derives the internal render size from the window size and resolution
 	// percentage.
 	void update_render_resolution(State& in_state)

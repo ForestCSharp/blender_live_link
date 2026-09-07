@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdlib>
-#include <cstring>
 #include <optional>
 #include <string>
 
@@ -10,49 +9,9 @@ namespace RuntimeConfig
 	struct Config
 	{
 		std::optional<long> render_scale;
-		std::optional<long> shadow_placement;
-		bool shadow_cascade_debug = false;
 		bool hide_ui = false;
-		std::optional<bool> ssao;
-		std::optional<bool> dof;
-		std::optional<double> dof_focus;
-		std::optional<double> dof_range;
-		bool dof_debug = false;
 		bool wireframe = false;
-		std::optional<bool> taa;
-		std::optional<bool> fxaa;
-		std::optional<std::string> tonemap_mode;
-		std::optional<bool> local_tonemap;
-		std::optional<bool> auto_exposure;
-		std::optional<bool> auto_white_balance;
-		std::optional<bool> cloud_shadows;
-		bool cloud_shadow_debug_fullscreen = false;
 		std::optional<std::string> output_mode;
-		int tonemap_validation_chart = 0;
-		std::optional<std::string> tonemap_validation_output_mode;
-		std::optional<std::string> tonemap_validation_capture;
-		std::optional<std::string> cloud_shadow_validation_capture;
-		std::optional<bool> bloom;
-		std::optional<double> bloom_threshold;
-		// Cloud grazing-angle tuning. Exposed so the horizon quality/cost
-		// tradeoff can be swept from a script instead of the ImGui panel.
-		std::optional<double> cloud_max_step_scale;
-		std::optional<double> cloud_max_march_length;
-		std::optional<double> cloud_horizon_fade_start;
-		std::optional<double> cloud_horizon_fade_end;
-		std::optional<double> cloud_lod_step_weight;
-		std::optional<double> cloud_lod_max;
-		std::optional<double> bloom_soft_knee;
-		std::optional<double> bloom_intensity;
-		std::optional<long> bloom_mips;
-		std::optional<bool> tessellation;
-		std::optional<long> tessellation_mode;
-		std::optional<long> tessellation_factor;
-		bool gi_probes = false;
-		std::optional<long> gi_radiance_mode;
-		std::optional<long> gi_occlusion_mode;
-		std::optional<bool> gi_specular;
-		bool test_resize = false;
 
 		std::optional<std::string> screenshot_path;
 		unsigned long long screenshot_frame = 60;
@@ -90,18 +49,6 @@ namespace RuntimeConfig
 		return value ? std::optional<long>(std::strtol(value, nullptr, 10)) : std::nullopt;
 	}
 
-	inline std::optional<double> float_value(const char* in_name)
-	{
-		const char* value = environment_value(in_name);
-		return value ? std::optional<double>(std::strtod(value, nullptr)) : std::nullopt;
-	}
-
-	inline std::optional<bool> boolean_value(const char* in_name)
-	{
-		const std::optional<long> value = integer_value(in_name);
-		return value ? std::optional<bool>(*value != 0) : std::nullopt;
-	}
-
 	inline bool is_set(const char* in_name)
 	{
 		return environment_value(in_name) != nullptr;
@@ -111,52 +58,10 @@ namespace RuntimeConfig
 	{
 		Config config;
 		config.render_scale = integer_value("GAME2_RENDER_SCALE");
-		config.shadow_placement = integer_value("GAME2_SHADOW_PLACEMENT");
-		config.shadow_cascade_debug = is_set("GAME2_SHADOW_CASCADE_DEBUG");
 		config.hide_ui = is_set("GAME2_HIDE_UI");
-		config.ssao = boolean_value("GAME2_SSAO");
-		config.dof = boolean_value("GAME2_DOF");
-		config.dof_focus = float_value("GAME2_DOF_FOCUS");
-		config.dof_range = float_value("GAME2_DOF_RANGE");
-		config.dof_debug = is_set("GAME2_DOF_DEBUG");
 		config.wireframe = is_set("GAME2_WIREFRAME");
-		config.taa = boolean_value("GAME2_TAA");
-		config.fxaa = boolean_value("GAME2_FXAA");
-		config.tonemap_mode = string_value("GAME2_TONEMAP_MODE");
-		config.local_tonemap = boolean_value("GAME2_LOCAL_TONEMAP");
-		config.auto_exposure = boolean_value("GAME2_AUTO_EXPOSURE");
-		config.auto_white_balance = boolean_value("GAME2_AUTO_WHITE_BALANCE");
-		config.cloud_shadows = boolean_value("GAME2_CLOUD_SHADOWS");
-		config.cloud_shadow_debug_fullscreen = is_set(
-			"GAME2_CLOUD_SHADOW_DEBUG_FULLSCREEN");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
-		if (const char* chart = environment_value("GAME2_TONEMAP_VALIDATION_CHART"))
-			config.tonemap_validation_chart = std::strcmp(chart, "constant") == 0 ? 2
-				: std::strcmp(chart, "sky") == 0 ? 3 : 1;
-		config.tonemap_validation_output_mode = string_value("GAME2_TONEMAP_VALIDATION_OUTPUT_MODE");
-		config.tonemap_validation_capture = string_value("GAME2_TONEMAP_VALIDATION_CAPTURE");
 		config.live_link_capture = string_value("GAME2_LIVE_LINK_CAPTURE");
-		config.cloud_shadow_validation_capture = string_value(
-			"GAME2_CLOUD_SHADOW_VALIDATION_CAPTURE");
-		config.bloom = boolean_value("GAME2_BLOOM");
-		config.bloom_threshold = float_value("GAME2_BLOOM_THRESHOLD");
-		config.cloud_max_step_scale = float_value("GAME2_CLOUD_MAX_STEP_SCALE");
-		config.cloud_max_march_length = float_value("GAME2_CLOUD_MAX_MARCH_LENGTH");
-		config.cloud_horizon_fade_start = float_value("GAME2_CLOUD_HORIZON_FADE_START");
-		config.cloud_horizon_fade_end = float_value("GAME2_CLOUD_HORIZON_FADE_END");
-		config.cloud_lod_step_weight = float_value("GAME2_CLOUD_LOD_STEP_WEIGHT");
-		config.cloud_lod_max = float_value("GAME2_CLOUD_LOD_MAX");
-		config.bloom_soft_knee = float_value("GAME2_BLOOM_SOFT_KNEE");
-		config.bloom_intensity = float_value("GAME2_BLOOM_INTENSITY");
-		config.bloom_mips = integer_value("GAME2_BLOOM_MIPS");
-		config.tessellation = boolean_value("GAME2_TESSELLATION");
-		config.tessellation_mode = integer_value("GAME2_TESSELLATION_MODE");
-		config.tessellation_factor = integer_value("GAME2_TESSELLATION_FACTOR");
-		config.gi_probes = is_set("GAME2_GI_PROBES");
-		config.gi_radiance_mode = integer_value("GAME2_GI_RADIANCE_MODE");
-		config.gi_occlusion_mode = integer_value("GAME2_GI_OCCLUSION_MODE");
-		config.gi_specular = boolean_value("GAME2_GI_SPECULAR");
-		config.test_resize = is_set("GAME2_TEST_RESIZE");
 
 		config.screenshot_path = string_value("GAME2_SCREENSHOT");
 		if (const char* screenshot_frame = environment_value("GAME2_SCREENSHOT_FRAME"))

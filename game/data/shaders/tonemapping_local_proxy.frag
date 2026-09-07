@@ -1,7 +1,6 @@
 #version 450
 
 #include "tonemapping_operators.h"
-#include "tonemapping_validation_chart.h"
 #include "auto_adaptation.h"
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
@@ -21,7 +20,6 @@ layout(push_constant) uniform PushConstants
 	float preference_sigma;
 	int method;
 	float lut_integration_scale;
-	int validation_chart;
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
 } pc;
@@ -47,16 +45,10 @@ vec4 downsample_geometry_hdr(vec2 sample_uv)
 		{
 			ivec2 pixel = clamp(center + ivec2(x - 1, y - 1),
 				ivec2(0), source_size - ivec2(1));
-			vec2 tap_uv = (vec2(pixel) + 0.5) / vec2(source_size);
+
 			float weight = kernel[x] * kernel[y];
-			float geometry = pc.validation_chart == 3
-				? tonemapping_validation_geometry_mask(tap_uv)
-				: pc.validation_chart != 0 ? 1.0
-				: (texelFetch(position_tex, pixel, 0).w == 0.0 ? 0.0 : 1.0);
-			vec3 tap_color = pc.validation_chart == 2 ? vec3(0.18)
-				: pc.validation_chart == 1 ? tonemapping_validation_chart(tap_uv)
-				: pc.validation_chart == 3 ? tonemapping_validation_sky_geometry_chart(tap_uv)
-				: texelFetch(scene_color, pixel, 0).rgb;
+			float geometry = (texelFetch(position_tex, pixel, 0).w == 0.0 ? 0.0 : 1.0);
+			vec3 tap_color = texelFetch(scene_color, pixel, 0).rgb;
 			weighted_color += weight * geometry * tap_color;
 			geometry_weight += weight * geometry;
 		}

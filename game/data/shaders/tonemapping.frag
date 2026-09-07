@@ -1,7 +1,6 @@
 #version 450
 
 #include "tonemapping_operators.h"
-#include "tonemapping_validation_chart.h"
 #include "auto_adaptation.h"
 #include "tonemapping_local_guided.h"
 
@@ -24,7 +23,6 @@ layout(push_constant) uniform PushConstants
 	float bloom_intensity;
 	vec2 guide_pixel_size;
 	float lut_integration_scale;
-	int validation_chart;
 	vec4 bloom_profile_gain;
 	int auto_exposure_enabled;
 	int auto_white_balance_enabled;
@@ -44,10 +42,7 @@ void main()
 	float exposure_scale = exp2(pc.exposure_bias + auto_exposure_ev);
 	float bloom_exposure_scale = exp2(pc.exposure_bias
 		+ auto_exposure_ev * clamp(pc.bloom_auto_exposure_influence, 0.0, 1.0));
-	vec3 source_color = pc.validation_chart == 2 ? vec3(0.18)
-		: pc.validation_chart == 1 ? tonemapping_validation_chart(uv)
-		: pc.validation_chart == 3 ? tonemapping_validation_sky_geometry_chart(uv)
-		: texture(scene_color, uv).rgb;
+	vec3 source_color = texture(scene_color, uv).rgb;
 	if (pc.auto_white_balance_enabled != 0)
 	{
 		source_color = auto_adaptation_apply_white_balance(
@@ -58,7 +53,7 @@ void main()
 	}
 	vec3 exposed_color = max(source_color, vec3(0.0)) * exposure_scale;
 	vec3 exposed_bloom = vec3(0.0);
-	if (pc.validation_chart == 0 && pc.bloom_intensity > 0.0)
+	if (pc.bloom_intensity > 0.0)
 	{
 		vec3 bloom = texture(bloom_color, uv).rgb;
 		if (pc.auto_white_balance_enabled != 0)
@@ -76,11 +71,7 @@ void main()
 
 	if (pc.local_enabled != 0)
 	{
-		float local_strength = pc.validation_chart == 3
-			? tonemapping_validation_geometry_local_strength(
-				uv, 1.0 / vec2(textureSize(position_tex, 0)))
-			: pc.validation_chart != 0 ? 1.0
-			: tonemapping_geometry_local_strength(position_tex, uv);
+		float local_strength = tonemapping_geometry_local_strength(position_tex, uv);
 		float local_multiplier = 1.0;
 		if (local_strength > 1.0e-5)
 		{

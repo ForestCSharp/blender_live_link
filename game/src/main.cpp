@@ -89,10 +89,6 @@ using std::optional;
 #include "ui/debug_ui_system.h"
 
 static AutomatedScreenshot automated_screenshot;
-static bool cloud_shadow_validation_capture_finished = false;
-static bool tonemapping_validation_capture_finished = false;
-static bool tonemapping_validation_capture_failed = false;
-static i32 tonemapping_validation_capture_count = 0;
 
 // Copies Jolt body transforms back into object transforms every frame.
 // This is a no-op while paused because bodies do not move.
@@ -175,32 +171,6 @@ void frame(f32 in_delta_time)
 
 	RenderSystem::end_frame(state);
 	automated_screenshot.after_frame(state);
-	const RuntimeConfig::Config& runtime_config = RuntimeConfig::get();
-	if (runtime_config.tonemap_validation_capture
-		&& !tonemapping_validation_capture_finished
-		&& state.vk.frame_number >= runtime_config.screenshot_frame
-			+ (u64)tonemapping_validation_capture_count * 2)
-	{
-		const std::string capture_prefix = *runtime_config.tonemap_validation_capture
-			+ ".repeat" + std::to_string(tonemapping_validation_capture_count);
-		tonemapping_validation_capture_failed = !RenderSystem::dump_tonemapping_validation(
-			state, capture_prefix);
-		tonemapping_validation_capture_count += 1;
-		tonemapping_validation_capture_finished =
-			tonemapping_validation_capture_failed || tonemapping_validation_capture_count == 2;
-	}
-	if (runtime_config.cloud_shadow_validation_capture
-		&& !cloud_shadow_validation_capture_finished
-		&& state.vk.frame_number >= runtime_config.screenshot_frame
-		&& state.clouds.active
-		&& CloudPass::pass.shadow_update_count >= 4
-		&& !state.gi.layout_dirty
-		&& !state.gi.is_updating)
-	{
-		cloud_shadow_validation_capture_finished = true;
-		RenderSystem::dump_cloud_shadow_validation(
-			state, *runtime_config.cloud_shadow_validation_capture);
-	}
 
 	InputSystem::reset_mouse_delta(state);
 }
@@ -259,23 +229,12 @@ int main(int argc, char** argv)
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	const bool tonemapping_validation = RuntimeConfig::get().tonemap_validation_chart != 0;
-	if (tonemapping_validation)
-	{
-		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-		#if defined(__APPLE__)
-		glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
-		#endif
-	}
-	GLFWmonitor* window_monitor = fullscreen && !tonemapping_validation
-		? glfwGetPrimaryMonitor() : nullptr;
+	GLFWmonitor* window_monitor = fullscreen ? glfwGetPrimaryMonitor() : nullptr;
 	const GLFWvidmode* fullscreen_mode = window_monitor
 		? glfwGetVideoMode(window_monitor) : nullptr;
 	GLFWwindow* window = glfwCreateWindow(
-		tonemapping_validation ? 768
-			: fullscreen_mode ? fullscreen_mode->width : state.window.width,
-		tonemapping_validation ? 512
-			: fullscreen_mode ? fullscreen_mode->height : state.window.height,
+		fullscreen_mode ? fullscreen_mode->width : state.window.width,
+		fullscreen_mode ? fullscreen_mode->height : state.window.height,
 		"Blender Game", window_monitor, nullptr);
 	if (!window)
 	{
@@ -316,15 +275,11 @@ int main(int argc, char** argv)
 		const f32 delta_time = (f32)(current_time - last_frame_time);
 		last_frame_time = current_time;
 
-		// Debug: exercise swapchain recreation without manual window dragging
-		if (RuntimeConfig::get().test_resize && state.vk.frame_number == 30)
-		{
-			glfwSetWindowSize(window, 1280, 720);
-		}
-
+        // Time and run one frame update
 		const f64 frame_start_time = glfwGetTime();
 		frame(delta_time);
 		const f64 frame_end_time = glfwGetTime();
+
 		benchmark.after_frame((frame_end_time - frame_start_time) * 1000.0, &state.vk);
 		if (benchmark.should_exit())
 		{
@@ -334,11 +289,8 @@ int main(int argc, char** argv)
 		{
 			glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}
-		if (tonemapping_validation_capture_finished)
-		{
-			glfwSetWindowShouldClose(window, GLFW_TRUE);
-		}
 	}
+
 	if (automated_screenshot.enabled() && !automated_screenshot.finished())
 	{
 		automated_screenshot.fail("window closed before capture completed");
@@ -364,5 +316,5 @@ int main(int argc, char** argv)
 
 	glfwDestroyWindow(window);
 	glfwTerminate();
-	return automated_screenshot.failed() || tonemapping_validation_capture_failed ? 1 : 0;
+	return automated_screenshot.failed() ? 1 : 0;
 }

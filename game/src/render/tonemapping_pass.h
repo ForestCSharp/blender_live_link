@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include "core/types.h"
 #include "render/vulkan_context.h"
 #include "render/render_types.h"
@@ -22,7 +24,7 @@ struct TonemappingFinalPushConstants
 	f32 bloom_intensity;
 	HMM_Vec2 guide_pixel_size;
 	f32 lut_integration_scale;
-	i32 validation_chart;
+	f32 padding = 0.0f; // Match GLSL vector alignment.
 	HMM_Vec4 bloom_profile_gain;
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
@@ -30,6 +32,8 @@ struct TonemappingFinalPushConstants
 	HMM_Vec4 local_recovery;
 };
 static_assert(sizeof(TonemappingFinalPushConstants) == 80);
+static_assert(offsetof(TonemappingFinalPushConstants, local_recovery) == 64);
+static_assert(offsetof(TonemappingFinalPushConstants, bloom_profile_gain) == 32);
 
 struct TonemappingLocalProxyPushConstants
 {
@@ -40,11 +44,11 @@ struct TonemappingLocalProxyPushConstants
 	f32 preference_sigma;
 	i32 method;
 	f32 lut_integration_scale;
-	i32 validation_chart;
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
 };
-static_assert(sizeof(TonemappingLocalProxyPushConstants) == 44);
+static_assert(sizeof(TonemappingLocalProxyPushConstants) == 40);
+static_assert(offsetof(TonemappingLocalProxyPushConstants, auto_exposure_enabled) == 32);
 
 struct TonemappingLocalDownsamplePushConstants
 {
@@ -73,12 +77,13 @@ struct TonemappingLocalDebugGuidedPushConstants
 	f32 exposure_bias;
 	HMM_Vec2 guide_pixel_size;
 	f32 lut_integration_scale;
-	i32 validation_chart;
 	i32 auto_exposure_enabled;
 	i32 auto_white_balance_enabled;
+	f32 padding = 0.0f; // Match GLSL vector alignment.
 	HMM_Vec2 recovery_limits;
 };
 static_assert(sizeof(TonemappingLocalDebugGuidedPushConstants) == 40);
+static_assert(offsetof(TonemappingLocalDebugGuidedPushConstants, recovery_limits) == 32);
 
 struct TonemappingDebugViewData
 {
@@ -151,23 +156,11 @@ struct TonemappingPass
 
 static TonemappingPass tonemapping_pass;
 
-inline EDisplayOutputMode tonemapping_profile_output_mode(const VulkanContext* ctx)
-{
-	const RuntimeConfig::Config& config = RuntimeConfig::get();
-	if (config.tonemap_validation_chart != 0 && config.tonemap_validation_output_mode)
-	{
-		if (*config.tonemap_validation_output_mode == "edr") return EDisplayOutputMode::EDR;
-		if (*config.tonemap_validation_output_mode == "hdr10") return EDisplayOutputMode::HDR10;
-		return EDisplayOutputMode::SDR;
-	}
-	return ctx->active_output_mode;
-}
-
 inline f32 tonemapping_lut_integration_scale(
 	const VulkanContext* ctx,
 	ETonemappingMethod method)
 {
-	const bool sdr = tonemapping_profile_output_mode(ctx) == EDisplayOutputMode::SDR;
+	const bool sdr = ctx->active_output_mode == EDisplayOutputMode::SDR;
 	if (method == ETonemappingMethod::AgX)
 		return sdr ? AgXTonemapping::SDR_INTEGRATION_SCALE : AgXTonemapping::HDR_INTEGRATION_SCALE;
 	if (method == ETonemappingMethod::Aces2)
@@ -247,7 +240,7 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	VK_CHECK(vkCreateSampler(
 		ctx->device, &position_sampler_info, nullptr, &tonemapping_pass.position_sampler));
 
-	const EDisplayOutputMode profile_output_mode = tonemapping_profile_output_mode(ctx);
+	const EDisplayOutputMode profile_output_mode = ctx->active_output_mode;
 	const bool hdr_output = profile_output_mode != EDisplayOutputMode::SDR;
 	printf("GT7 profile: %s, integration scale %.7f\n",
 		hdr_output ? "HDR 1000-nit peak / 203-nit diffuse white" : "SDR",
@@ -679,11 +672,8 @@ void tonemapping_pass_prepare_local(
 			.preference_sigma = in_state.local_exposure_preference_sigma,
 			.method = (i32)in_state.method,
 			.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
-			.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
-			.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-				&& in_state.auto_exposure_enabled ? 1 : 0,
-			.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-				&& in_state.auto_white_balance_enabled ? 1 : 0,
+			.auto_exposure_enabled = in_state.auto_exposure_enabled ? 1 : 0,
+			.auto_white_balance_enabled = in_state.auto_white_balance_enabled ? 1 : 0,
 		};
 		graph.sampled(tonemapping_pass.scene_color);
 		graph.sampled(frame_graph_image(tonemapping_pass.tonemapping_lut));
@@ -910,11 +900,8 @@ void tonemapping_pass_prepare_local_debug(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
 		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
-		.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
-		.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-			&& in_state.auto_exposure_enabled ? 1 : 0,
-		.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-			&& in_state.auto_white_balance_enabled ? 1 : 0,
+		.auto_exposure_enabled = in_state.auto_exposure_enabled ? 1 : 0,
+		.auto_white_balance_enabled = in_state.auto_white_balance_enabled ? 1 : 0,
 		.recovery_limits = HMM_V2(
 			in_state.local_shadow_recovery,
 			in_state.local_highlight_recovery),
@@ -1041,12 +1028,9 @@ void tonemapping_pass_draw(
 			1.0f / (f32)MAX(guide_width, 1u),
 			1.0f / (f32)MAX(guide_height, 1u)),
 		.lut_integration_scale = tonemapping_lut_integration_scale(ctx, in_state.method),
-		.validation_chart = RuntimeConfig::get().tonemap_validation_chart,
 		.bloom_profile_gain = in_bloom_profile_gain,
-		.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-			&& in_state.auto_exposure_enabled ? 1 : 0,
-		.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-			&& in_state.auto_white_balance_enabled ? 1 : 0,
+		.auto_exposure_enabled = in_state.auto_exposure_enabled ? 1 : 0,
+		.auto_white_balance_enabled = in_state.auto_white_balance_enabled ? 1 : 0,
 		.bloom_auto_exposure_influence = CLAMP(
 			in_bloom_auto_exposure_influence, 0.0f, 1.0f),
 		.local_recovery = HMM_V4(

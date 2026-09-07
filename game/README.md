@@ -93,9 +93,7 @@ silhouettes, thin geometry, boundary suppression, and recovery-range clamping.
 
 The formal suite adds a 110,604-sample deterministic corpus, upstream OCIO
 regeneration checks, direct production-GLSL compute readback (including synthetic
-framebuffer metering and adaptation updates), all 24
-method/local/output renderer combinations, isolated constant-field checks, and
-an HTML visual-review report:
+framebuffer metering and adaptation updates). It runs independently of the game:
 
 ```sh
 ./validate_tonemapping.sh
@@ -109,12 +107,10 @@ interpreter. The initial setup requires network access; later runs reuse the
 environment. Arguments are forwarded to `tools/validate_tonemapping.py`, which
 may still be invoked directly for advanced or dependency-free narrow runs.
 
-The full command requires a Vulkan device for GPU/pipeline validation. Reports
-and previews default to `bin/validation/tonemapping/`. Use `--skip-ocio`,
-`--skip-gpu`, or `--skip-pipeline` only when deliberately running a narrower
-tier. CPU and GPU results are hard conformance gates; chart images, clipping
-metrics, neutral-axis error, and global/local luminance SSIM are review
-artifacts rather than goldens.
+The full command requires a Vulkan device for GPU validation. JSON reports
+default to `bin/validation/tonemapping/`. Use `--skip-ocio` or `--skip-gpu`
+when deliberately running a narrower tier. CPU and GPU results are hard
+conformance gates. The suite does not launch the game or produce frame captures.
 
 Prerequisites:
 - Vulkan SDK installed (headers in `/usr/local/include`, `glslc` on PATH,
@@ -192,53 +188,26 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   first Live Link import and completed GI update, run a deterministic temporal
   settle, capture, and exit; timeout defaults to 600 seconds and can be changed
   with `GAME2_SCREENSHOT_TIMEOUT_SECONDS`
-- `GAME2_TEST_RESIZE=1` — programmatically resize at frame 30 to exercise
-  swapchain recreation
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the float presentation composite upsamples to the window before UI)
-- `GAME2_TONEMAP_MODE=local|gt7|agx|aces|neutral` — choose the tone method;
-  `aces` selects ACES 2.0.
-  The legacy `local` value means GT7 with local tonemapping enabled; named
-  methods retain their historical global behavior unless explicitly overridden.
-- `GAME2_LOCAL_TONEMAP=0|1` — independently disable or enable exposure-fusion
-  local tonemapping for the selected method. This explicit setting takes
-  precedence over the behavior implied by `GAME2_TONEMAP_MODE`.
-- `GAME2_AUTO_EXPOSURE=0|1` and `GAME2_AUTO_WHITE_BALANCE=0|1` — independently
-  disable or enable GPU framebuffer adaptation; both default to enabled. With
-  auto exposure active, the UI exposure control is compensation in EV.
-- `GAME2_TONEMAP_VALIDATION_CHART=1|constant`,
-  `GAME2_TONEMAP_VALIDATION_OUTPUT_MODE=sdr|edr|hdr10`, and
-  `GAME2_TONEMAP_VALIDATION_CAPTURE=<prefix>` — validation-only controls used
-  by `tools/validate_tonemapping.py`; they exercise HDR profiles through an
-  SDR-compatible surface and write deterministic pre-presentation PFM captures.
 - `GAME2_OUTPUT_MODE=auto|sdr|edr|hdr10` — unset or `auto` prefers HDR10 and
   safely falls back to SDR. Explicit `sdr` is the compatibility/testing path;
   `edr` requires `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR`, and `hdr10`
   requires an advertised `HDR10_ST2084` pair. All modes present the normal
   scene. Unsupported requests fall back to SDR and log the reason; unknown
   values use SDR, and no format/color-space pair is invented.
-- `GAME2_BLOOM=0|1` — disable or enable the default HDR bloom pass
-- `GAME2_BLOOM_THRESHOLD=<0..10>` / `GAME2_BLOOM_SOFT_KNEE=<0..1>` — tune
-  the exposure-aware highlight selection
-- `GAME2_BLOOM_INTENSITY=<0..5>` / `GAME2_BLOOM_MIPS=<1..8>` — tune bloom
-  strength and the active half-resolution pyramid depth. Active frequency bands
-  use a normalized diffraction-inspired profile, so changing pyramid depth
-  changes the glare radius without changing its total band weight. ImGui also
-  exposes Bloom Auto-Exposure Influence; it defaults to 0%, keeping glare stable
-  across automatic exposure changes, while 100% restores fully exposure-aware bloom.
 - `GAME2_PRINT_GPU_TIMINGS=1` — print GPU frame + per-pass times every 120
   frames (the same timestamp history drives the ImGui profiler timeline)
 - `GAME2_FORCE_DEVICE_LOCAL=1` — route static buffers through the
   device-local/staging path even on Apple Silicon
-- `GAME2_TESSELLATION=1` — enable compute tessellation
-- `GAME2_TESSELLATION_MODE=<0..2>` — fixed, adaptive-per-mesh, or
-  adaptive-per-triangle tessellation
-- `GAME2_TESSELLATION_FACTOR=<1..31>` — fixed tessellation factor
-- `GAME2_GI_PROBES=1` — render the GI probe visualization
-- `GAME2_GI_RADIANCE_MODE=<0..2>` / `GAME2_GI_OCCLUSION_MODE=<0..1>` —
-  select probe radiance and visibility representations for headless tests
-- `GAME2_GI_SPECULAR=0|1` — disable or enable roughness-aware probe specular
-  IBL for deterministic A/B captures
+- `GAME2_HIDE_UI=1` — hide the debug UI on startup
+- `GAME2_WIREFRAME=1` — enable shaded wireframe on startup
+- `GAME2_LIVE_LINK_CAPTURE=<path>` — save the largest imported payload for
+  offline replay with `--no-live-link -f <path>`
+
+Use the ImGui controls for feature settings and diagnostic views, including
+shadows, DOF, antialiasing, tonemapping, adaptation, clouds, bloom, tessellation,
+and GI. Feature-specific environment overrides and scripted resize are removed.
 
 ## Architecture notes
 
@@ -322,7 +291,7 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
   simulation controls, independent tone-method selection, local exposure-fusion
   and bloom tuning,
   GI/tessellation controls, probe picking, render-target viewers, and overlay
-  status text. The `GAME2_*` toggles remain available for automated/headless
+  status text. General runtime helpers remain available for automated/headless
   verification.
 
 ### Framebuffer auto-exposure and white balance

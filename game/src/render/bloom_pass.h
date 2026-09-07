@@ -2,7 +2,6 @@
 
 #include <cmath>
 
-#include "core/runtime_config.h"
 #include "core/timings.h"
 #include "render/bloom_profile.inl"
 #include "render/frame_data.h"
@@ -258,10 +257,8 @@ namespace BloomPass
 					.exposure_scale = std::exp2(CLAMP(
 						in_tonemapping_state.exposure_bias, -5.0f, 5.0f)),
 					.apply_threshold = mip == 0 ? 1 : 0,
-					.auto_exposure_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-						&& in_tonemapping_state.auto_exposure_enabled ? 1 : 0,
-					.auto_white_balance_enabled = RuntimeConfig::get().tonemap_validation_chart == 0
-						&& in_tonemapping_state.auto_white_balance_enabled ? 1 : 0,
+					.auto_exposure_enabled = in_tonemapping_state.auto_exposure_enabled ? 1 : 0,
+					.auto_white_balance_enabled = in_tonemapping_state.auto_white_balance_enabled ? 1 : 0,
 					.auto_exposure_influence = CLAMP(
 						in_state.auto_exposure_influence, 0.0f, 1.0f),
 				};

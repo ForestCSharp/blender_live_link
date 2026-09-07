@@ -2,7 +2,6 @@
 
 #include <limits>
 
-#include "core/runtime_config.h"
 #include "core/timings.h"
 #include "render/auto_adaptation_math.h"
 #include "render/bruneton_atmosphere_pass.h"
@@ -210,8 +209,7 @@ namespace AutoAdaptationPass
 
 	inline bool active(const State::TonemappingState& state)
 	{
-		return RuntimeConfig::get().tonemap_validation_chart == 0
-			&& (state.auto_exposure_enabled || state.auto_white_balance_enabled);
+		return (state.auto_exposure_enabled || state.auto_white_balance_enabled);
 	}
 
 	inline void consume_diagnostics(VulkanContext* ctx, State::TonemappingState& state)

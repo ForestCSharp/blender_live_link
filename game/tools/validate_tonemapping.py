@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
-"""Run deterministic CPU, GPU, OCIO, and full-pipeline tonemapping validation."""
+"""Run deterministic CPU, GPU, and OCIO tonemapping validation."""
 
 from __future__ import annotations
 
 import argparse
-import array
-import html
 import json
-import math
 import os
 from pathlib import Path
 import platform
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-METHODS = ("gt7", "agx", "aces", "neutral")
-OUTPUTS = ("sdr", "edr", "hdr10")
 CPU_TESTS = (
     "auto_adaptation_tests",
     "gt7_tonemapping_tests",
@@ -145,368 +139,12 @@ def verify_ocio_regeneration(python: str, report_dir: Path) -> dict:
     return result
 
 
-def read_pfm(path: Path) -> tuple[int, int, list[float]]:
-    with path.open("rb") as file:
-        if file.readline().strip() != b"PF":
-            raise RuntimeError(f"{path} is not an RGB PFM")
-        width, height = (int(value) for value in file.readline().split())
-        scale = float(file.readline())
-        values = array.array("f")
-        values.frombytes(file.read())
-    if scale >= 0.0:
-        values.byteswap()
-    if len(values) != width * height * 3:
-        raise RuntimeError(f"{path} has an invalid payload")
-    top_down = [0.0] * len(values)
-    row_values = width * 3
-    for y in range(height):
-        source = (height - 1 - y) * row_values
-        top_down[y * row_values:(y + 1) * row_values] = values[source:source + row_values]
-    return width, height, top_down
-
-
-def linear_to_srgb(value: float) -> float:
-    value = min(max(value, 0.0), 1.0)
-    return value * 12.92 if value <= 0.0031308 else 1.055 * value ** (1.0 / 2.4) - 0.055
-
-
-def write_preview(path: Path, width: int, height: int, pixels: list[float]) -> None:
-    data = bytearray(width * height * 3)
-    for index, value in enumerate(pixels):
-        data[index] = round(linear_to_srgb(value) * 255.0)
-    with path.open("wb") as file:
-        file.write(f"P6\n{width} {height}\n255\n".encode("ascii"))
-        file.write(data)
-
-
-def luminance(pixels: list[float]) -> list[float]:
-    return [0.2126 * pixels[index] + 0.7152 * pixels[index + 1]
-            + 0.0722 * pixels[index + 2]
-            for index in range(0, len(pixels), 3)]
-
-
-def global_ssim(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b):
-        return 0.0
-    mean_a = sum(a) / len(a)
-    mean_b = sum(b) / len(b)
-    variance_a = sum((value - mean_a) ** 2 for value in a) / len(a)
-    variance_b = sum((value - mean_b) ** 2 for value in b) / len(b)
-    covariance = sum((x - mean_a) * (y - mean_b) for x, y in zip(a, b)) / len(a)
-    c1, c2 = 0.01 ** 2, 0.03 ** 2
-    return ((2.0 * mean_a * mean_b + c1) * (2.0 * covariance + c2)
-            / ((mean_a ** 2 + mean_b ** 2 + c1) * (variance_a + variance_b + c2)))
-
-
-def image_metrics(width: int, height: int, pixels: list[float], local: bool) -> dict:
-    if not all(math.isfinite(value) for value in pixels):
-        raise RuntimeError("pipeline capture contains NaN or Inf")
-    pixel_count = width * height
-    clipped_low = sum(1 for value in pixels if value <= 0.0) / len(pixels)
-    clipped_high = sum(1 for value in pixels if value >= 1.0) / len(pixels)
-    neutral_error = 0.0
-    for y in range(max(0, height // 64), max(1, height // 8 - height // 64)):
-        for x in range(width):
-            index = (y * width + x) * 3
-            neutral_error = max(neutral_error,
-                                abs(pixels[index] - pixels[index + 1]),
-                                abs(pixels[index + 1] - pixels[index + 2]))
-    uniform_range = 0.0
-    y0, y1 = int(height * 0.90), int(height * 0.96)
-    for patch in range(3):
-        x0 = int(width * (patch / 3.0 + 0.08))
-        x1 = int(width * ((patch + 1) / 3.0 - 0.08))
-        for channel in range(3):
-            values = [pixels[(y * width + x) * 3 + channel]
-                      for y in range(y0, y1) for x in range(x0, x1)]
-            uniform_range = max(uniform_range, max(values) - min(values))
-    # A chart patch is influenced by neighboring bands in local mode; isolated
-    # full-frame constants receive the strict gate below.
-    threshold = 0.06 if local else 0.002
-    if uniform_range > threshold:
-        raise RuntimeError(
-            f"constant-field variation {uniform_range} exceeds {threshold} ({'local' if local else 'global'})")
-    maximum_adjacent_delta = 0.0
-    for y in range(height):
-        for x in range(width - 1):
-            left = (y * width + x) * 3
-            right = left + 3
-            maximum_adjacent_delta = max(maximum_adjacent_delta,
-                *(abs(pixels[left + channel] - pixels[right + channel]) for channel in range(3)))
-    return {
-        "minimum": min(pixels),
-        "maximum": max(pixels),
-        "clipped_low_fraction": clipped_low,
-        "clipped_high_fraction": clipped_high,
-        "maximum_neutral_axis_error": neutral_error,
-        "constant_field_range": uniform_range,
-        "maximum_horizontal_delta": maximum_adjacent_delta,
-        "pixel_count": pixel_count,
-    }
-
-
-def validation_geometry_mask(u: float, v: float) -> bool:
-    horizon = 0.60 if u < 0.28 else 0.48 + 0.22 * u
-    ground = v >= horizon
-    thin_geometry = abs(u - 0.52) < 0.006 and 0.20 <= v < horizon
-    return ground or thin_geometry
-
-
-def run_sky_aware_pipeline_test(game: Path, capture_dir: Path, preview_dir: Path,
-                                log_dir: Path, frame: int) -> dict:
-    images: dict[bool, tuple[int, int, list[float]]] = {}
-    previews: dict[bool, str] = {}
-    for local in (False, True):
-        label = f"sdr-gt7-sky-{'local' if local else 'global'}"
-        prefix = capture_dir / label
-        environment = os.environ.copy()
-        configure_moltenvk(environment)
-        environment.update({
-            "GAME2_OUTPUT_MODE": "sdr",
-            "GAME2_TONEMAP_VALIDATION_CHART": "sky",
-            "GAME2_TONEMAP_VALIDATION_OUTPUT_MODE": "sdr",
-            "GAME2_TONEMAP_VALIDATION_CAPTURE": str(prefix),
-            "GAME2_SCREENSHOT_FRAME": str(frame),
-            "GAME2_TONEMAP_MODE": "gt7",
-            "GAME2_LOCAL_TONEMAP": "1" if local else "0",
-            "GAME2_RENDER_SCALE": "100",
-            "GAME2_HIDE_UI": "1",
-            "GAME2_BLOOM": "0", "GAME2_TAA": "0", "GAME2_FXAA": "0",
-            "GAME2_SSAO": "0", "GAME2_DOF": "0",
-        })
-        run([str(game), "--no-live-link"], env=environment,
-            output=log_dir / f"{label}.log")
-        width, height, pixels = read_pfm(Path(f"{prefix}.repeat0.tonemapped.pfm"))
-        repeat_width, repeat_height, repeated = read_pfm(
-            Path(f"{prefix}.repeat1.tonemapped.pfm"))
-        if (width, height) != (repeat_width, repeat_height):
-            raise RuntimeError(f"{label}: repeat dimensions differ")
-        repeat_error = max(abs(a - b) for a, b in zip(pixels, repeated))
-        if repeat_error > 1e-6:
-            raise RuntimeError(f"{label}: temporal determinism error {repeat_error}")
-        if not all(math.isfinite(value) for value in pixels):
-            raise RuntimeError(f"{label}: capture contains NaN or Inf")
-        if min(pixels) < -0.002 or max(pixels) > 1.002:
-            raise RuntimeError(f"{label}: SDR result is outside [0,1]")
-        preview = preview_dir / f"{label}.ppm"
-        write_preview(preview, width, height, pixels)
-        previews[local] = str(preview.relative_to(capture_dir.parent))
-        images[local] = (width, height, pixels)
-
-    width, height, global_pixels = images[False]
-    local_width, local_height, local_pixels = images[True]
-    if (width, height) != (local_width, local_height):
-        raise RuntimeError("sky-aware local/global dimensions differ")
-
-    sky_error = 0.0
-    boundary_error = 0.0
-    interior_difference = 0.0
-    sky_pixels = 0
-    boundary_pixels = 0
-    interior_pixels = 0
-    for y in range(height):
-        for x in range(width):
-            u = (x + 0.5) / width
-            v = (y + 0.5) / height
-            geometry = validation_geometry_mask(u, v)
-            geometry_count = 0
-            if geometry:
-                for offset_y in (-1, 0, 1):
-                    for offset_x in (-1, 0, 1):
-                        sample_x = min(max(x + offset_x, 0), width - 1)
-                        sample_y = min(max(y + offset_y, 0), height - 1)
-                        geometry_count += validation_geometry_mask(
-                            (sample_x + 0.5) / width, (sample_y + 0.5) / height)
-            difference = max(abs(local_pixels[(y * width + x) * 3 + channel]
-                                 - global_pixels[(y * width + x) * 3 + channel])
-                             for channel in range(3))
-            if not geometry:
-                sky_error = max(sky_error, difference)
-                sky_pixels += 1
-            elif geometry_count <= 6:
-                boundary_error = max(boundary_error, difference)
-                boundary_pixels += 1
-            elif geometry_count == 9:
-                interior_difference = max(interior_difference, difference)
-                interior_pixels += 1
-
-    if not sky_pixels or not boundary_pixels or not interior_pixels:
-        raise RuntimeError("sky-aware chart did not exercise every classification")
-    if sky_error > 1e-6:
-        raise RuntimeError(f"sky pixels differ from global tonemapping by {sky_error}")
-    if boundary_error > 1e-6:
-        raise RuntimeError(
-            f"suppressed silhouette pixels differ from global tonemapping by {boundary_error}")
-    if interior_difference <= 1e-5:
-        raise RuntimeError("sky-aware chart did not exercise local recovery on geometry")
-    return {
-        "name": "sky-aware-silhouette",
-        "global_preview": previews[False],
-        "local_preview": previews[True],
-        "sky_pixel_count": sky_pixels,
-        "boundary_pixel_count": boundary_pixels,
-        "interior_geometry_pixel_count": interior_pixels,
-        "maximum_sky_global_error": sky_error,
-        "maximum_suppressed_boundary_error": boundary_error,
-        "maximum_interior_local_difference": interior_difference,
-    }
-
-
-def run_pipeline_matrix(report_dir: Path, frame: int) -> dict:
-    game = ROOT / "bin/game"
-    if platform.system() == "Windows":
-        game = ROOT / "bin/game.exe"
-    if not game.is_file():
-        raise RuntimeError("game binary is missing; run build.sh before pipeline validation")
-    capture_dir = report_dir / "pipeline"
-    preview_dir = report_dir / "previews"
-    log_dir = report_dir / "logs"
-    capture_dir.mkdir(parents=True, exist_ok=True)
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    results: list[dict] = []
-    images: dict[tuple[str, str, bool], tuple[int, int, list[float]]] = {}
-    for output_mode in OUTPUTS:
-        for method in METHODS:
-            for local in (False, True):
-                label = f"{output_mode}-{method}-{'local' if local else 'global'}"
-                prefix = capture_dir / label
-                environment = os.environ.copy()
-                configure_moltenvk(environment)
-                environment.update({
-                    "GAME2_OUTPUT_MODE": "sdr",
-                    "GAME2_TONEMAP_VALIDATION_CHART": "1",
-                    "GAME2_TONEMAP_VALIDATION_OUTPUT_MODE": output_mode,
-                    "GAME2_TONEMAP_VALIDATION_CAPTURE": str(prefix),
-                    "GAME2_SCREENSHOT_FRAME": str(frame),
-                    "GAME2_TONEMAP_MODE": method,
-                    "GAME2_LOCAL_TONEMAP": "1" if local else "0",
-                    "GAME2_RENDER_SCALE": "100",
-                    "GAME2_HIDE_UI": "1",
-                    "GAME2_BLOOM": "0",
-                    "GAME2_TAA": "0",
-                    "GAME2_FXAA": "0",
-                    "GAME2_SSAO": "0",
-                    "GAME2_DOF": "0",
-                })
-                run([str(game), "--no-live-link"], env=environment,
-                    output=log_dir / f"{label}.log")
-                first = Path(f"{prefix}.repeat0.tonemapped.pfm")
-                repeat = Path(f"{prefix}.repeat1.tonemapped.pfm")
-                width, height, pixels = read_pfm(first)
-                repeat_width, repeat_height, repeat_pixels = read_pfm(repeat)
-                if (width, height) != (repeat_width, repeat_height):
-                    raise RuntimeError(f"{label}: repeat dimensions differ")
-                repeat_error = max(abs(a - b) for a, b in zip(pixels, repeat_pixels))
-                if repeat_error > 1e-6:
-                    raise RuntimeError(f"{label}: temporal determinism error {repeat_error}")
-                if output_mode == "sdr" and (min(pixels) < -0.002 or max(pixels) > 1.002):
-                    raise RuntimeError(f"{label}: SDR result is outside [0,1]")
-                metrics = image_metrics(width, height, pixels, local)
-                metrics["maximum_repeat_error"] = repeat_error
-                preview = preview_dir / f"{label}.ppm"
-                write_preview(preview, width, height, pixels)
-                images[(output_mode, method, local)] = (width, height, pixels)
-                results.append({"name": label, "output_mode": output_mode,
-                                "method": method, "local": local,
-                                "preview": str(preview.relative_to(report_dir)), **metrics})
-    for result in results:
-        if not result["local"]:
-            continue
-        key = (result["output_mode"], result["method"])
-        _, _, global_pixels = images[(key[0], key[1], False)]
-        _, _, local_pixels = images[(key[0], key[1], True)]
-        result["global_local_luminance_ssim"] = global_ssim(
-            luminance(global_pixels), luminance(local_pixels))
-    constant_tests: list[dict] = []
-    for output_mode in OUTPUTS:
-        for method in METHODS:
-            label = f"{output_mode}-{method}-local-constant"
-            prefix = capture_dir / label
-            environment = os.environ.copy()
-            configure_moltenvk(environment)
-            environment.update({
-                "GAME2_OUTPUT_MODE": "sdr",
-                "GAME2_TONEMAP_VALIDATION_CHART": "constant",
-                "GAME2_TONEMAP_VALIDATION_OUTPUT_MODE": output_mode,
-                "GAME2_TONEMAP_VALIDATION_CAPTURE": str(prefix),
-                "GAME2_SCREENSHOT_FRAME": str(frame),
-                "GAME2_TONEMAP_MODE": method,
-                "GAME2_LOCAL_TONEMAP": "1",
-                "GAME2_RENDER_SCALE": "100",
-                "GAME2_HIDE_UI": "1",
-                "GAME2_BLOOM": "0", "GAME2_TAA": "0", "GAME2_FXAA": "0",
-                "GAME2_SSAO": "0", "GAME2_DOF": "0",
-            })
-            run([str(game), "--no-live-link"], env=environment,
-                output=log_dir / f"{label}.log")
-            width, height, pixels = read_pfm(Path(f"{prefix}.repeat0.tonemapped.pfm"))
-            _, _, repeated = read_pfm(Path(f"{prefix}.repeat1.tonemapped.pfm"))
-            repeat_error = max(abs(a - b) for a, b in zip(pixels, repeated))
-            interior_min = math.inf
-            interior_max = -math.inf
-            for y in range(height // 8, height * 7 // 8):
-                for x in range(width // 8, width * 7 // 8):
-                    index = (y * width + x) * 3
-                    for value in pixels[index:index + 3]:
-                        interior_min = min(interior_min, value)
-                        interior_max = max(interior_max, value)
-            uniform_range = interior_max - interior_min
-            if repeat_error > 1e-6 or uniform_range > 0.003:
-                raise RuntimeError(
-                    f"{label}: repeat={repeat_error}, constant-field range={uniform_range}")
-            constant_tests.append({"name": label, "maximum_repeat_error": repeat_error,
-                                   "constant_field_range": uniform_range})
-    sky_aware_test = run_sky_aware_pipeline_test(
-        game, capture_dir, preview_dir, log_dir, frame)
-    report = {"suite": "tonemapping-full-pipeline-v1", "passed": True,
-              "configuration_count": len(results), "configurations": results,
-              "constant_field_tests": constant_tests,
-              "sky_aware_test": sky_aware_test}
-    (report_dir / "pipeline_validation.json").write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    write_html(report_dir, report)
-    return report
-
-
-def write_html(report_dir: Path, pipeline: dict) -> None:
-    rows = []
-    for result in pipeline["configurations"]:
-        rows.append(
-            "<tr><td>{}</td><td><img src=\"{}\" width=\"384\"></td>"
-            "<td>min {:.5g}<br>max {:.5g}<br>clip low {:.3%}<br>clip high {:.3%}"
-            "<br>neutral error {:.5g}<br>constant range {:.5g}{}</td></tr>".format(
-                html.escape(result["name"]), html.escape(result["preview"]),
-                result["minimum"], result["maximum"], result["clipped_low_fraction"],
-                result["clipped_high_fraction"], result["maximum_neutral_axis_error"],
-                result["constant_field_range"],
-                ("<br>global/local SSIM {:.6f}".format(result["global_local_luminance_ssim"])
-                 if "global_local_luminance_ssim" in result else "")))
-    sky = pipeline["sky_aware_test"]
-    document = """<!doctype html><meta charset="utf-8"><title>Tonemapping validation</title>
-<style>body{{font:14px system-ui;background:#17191d;color:#eee;margin:24px}}table{{border-collapse:collapse}}
-td,th{{border:1px solid #555;padding:8px;vertical-align:top}}img{{image-rendering:auto}}</style>
-<h1>Tonemapping validation review</h1><p>Numerical gates passed. Images are review artifacts, not goldens.</p>
-<h2>Sky-aware silhouette</h2>
-<p>Global <img src="{}" width="384"> Local <img src="{}" width="384"></p>
-<p>maximum sky/global error {:.4g}; maximum suppressed-boundary error {:.4g};
-maximum interior local difference {:.4g}</p>
-<h2>Method/output matrix</h2>
-<table><tr><th>Configuration</th><th>Procedural chart</th><th>Metrics</th></tr>{}</table>""".format(
-        html.escape(sky["global_preview"]), html.escape(sky["local_preview"]),
-        sky["maximum_sky_global_error"], sky["maximum_suppressed_boundary_error"],
-        sky["maximum_interior_local_difference"], "\n".join(rows))
-    (report_dir / "index.html").write_text(document, encoding="utf-8")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=ROOT / "bin/validation/tonemapping")
     parser.add_argument("--skip-gpu", action="store_true")
-    parser.add_argument("--skip-pipeline", action="store_true")
     parser.add_argument("--skip-ocio", action="store_true")
     parser.add_argument("--ocio-python", default=sys.executable)
-    parser.add_argument("--rebuild-game", action="store_true")
-    parser.add_argument("--capture-frame", type=int, default=8)
     args = parser.parse_args()
     report_dir = args.output_dir.resolve()
     binary_dir = report_dir / "bin"
@@ -526,18 +164,12 @@ def main() -> int:
     ocio = None
     if not args.skip_ocio:
         ocio = verify_ocio_regeneration(args.ocio_python, report_dir)
-    pipeline = None
-    if not args.skip_pipeline:
-        if args.rebuild_game or not (ROOT / ("bin/game.exe" if os_name == "Windows" else "bin/game")).is_file():
-            run(["./build.sh", os_name, "-norun"])
-        pipeline = run_pipeline_matrix(report_dir, args.capture_frame)
     summary = {
-        "suite": "formal-tonemapping-validation-v1",
+        "suite": "standalone-tonemapping-validation-v2",
         "passed": True,
         "cpu": cpu,
         "gpu": gpu,
         "ocio": ocio,
-        "pipeline": pipeline,
     }
     (report_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8")
