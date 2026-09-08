@@ -4,8 +4,8 @@ body { margin: 0; height: 100dvh; display: flex; flex-direction: column; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; background: #1c232a; border-bottom: 1px solid #343e48; }
 strong { font-size: 12px; letter-spacing: .12em; }
 .badge { margin-left: 14px; color: #8dbfae; font-size: 11px; }
-nav { display: flex; gap: 8px; }
-button, .button { font: inherit; padding: 8px 12px; border: 1px solid #46515b; border-radius: 5px; background: #27313b; color: inherit; cursor: pointer; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+button, .button, select { font: inherit; padding: 8px 12px; border: 1px solid #46515b; border-radius: 5px; background: #27313b; color: inherit; cursor: pointer; white-space: nowrap; }
 button:hover, .button:hover { background: #36434f; }
 button[aria-pressed=true] { border-color: #8dbfae; color: #ade8d2; }
 #file { position: absolute; width: 1px; height: 1px; opacity: 0; }

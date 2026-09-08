@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local Live Link TCP receiver and dependency-free HTTP scene bridge."""
 import argparse
+from collections import deque, OrderedDict
 import functools
 import errno
 import secrets
@@ -30,7 +31,7 @@ MAX_FRAME = 128 * 1024 * 1024
 
 
 def decode(payload):
-    """Decode only V1 fields; reject invalid batches before changing scene state."""
+    """Decode supported static scene fields before changing scene state."""
     if not 12 <= len(payload) <= MAX_FRAME:
         raise ValueError('Invalid FlatBuffer size')
     root = struct.unpack_from('<I', payload)[0]
@@ -77,72 +78,209 @@ def decode(payload):
                 positions = vector(mesh, 'Positions')
                 normals = vector(mesh, 'Normals')
                 indices = vector(mesh, 'Indices')
+                uvs = vector(mesh, 'Texcoords')
                 if (len(positions) % 3 or len(indices) % 3 or
                     (normals and len(normals) != len(positions)) or
+                    (uvs and len(uvs) != len(positions) // 3 * 2) or
                     any(i >= len(positions) // 3 for i in indices) or
-                    not all(math.isfinite(x) for x in positions + normals)):
+                    not all(math.isfinite(x) for x in positions + normals + uvs)):
                     raise ValueError('Invalid mesh vectors')
-                item['mesh'] = dict(positions=positions, normals=normals, indices=indices,
+                item['mesh'] = dict(positions=positions, normals=normals, indices=indices, uvs=uvs,
                                     materialIds=vector(mesh, 'MaterialIds'))
 
+            light = obj.Light()
+            if light is not None:
+                table_bounds(light)
+                kind = light.Type()
+                detail = light.PointLight() if kind == 0 else light.SpotLight() if kind == 1 else light.SunLight() if kind == 2 else None
+                if detail is not None:
+                    power = detail.Power()
+                    if not math.isfinite(power):
+                        raise ValueError('Invalid light power')
+                    item['light'] = dict(type=kind, color=components(light.Color(), 'XYZ'),
+                                         power=max(0, power), shadows=light.UseShadow())
+                    if kind == 1:
+                        angle, blend = detail.BeamAngle(), detail.EdgeBlend()
+                        if not math.isfinite(angle) or not math.isfinite(blend):
+                            raise ValueError('Invalid spotlight cone')
+                        item['light'].update(angle=angle / 2, edgeBlend=blend)
+                    if kind == 2:
+                        item['light']['shadows'] = bool(light.UseShadow() and detail.CastShadows())
+                else:
+                    item['light'] = None
             objects.append(item)
         materials = []
         for m in vector(update, 'Materials'):
             table_bounds(m)
-            materials.append(dict(id=m.UniqueId(), color=components(m.BaseColor(), 'XYZW')))
+            metallic, roughness, strength = m.Metallic(), m.Roughness(), m.EmissionStrength()
+            if not all(math.isfinite(v) for v in (metallic, roughness, strength)):
+                raise ValueError('Invalid material scalar')
+            materials.append(dict(id=m.UniqueId(), color=components(m.BaseColor(), 'XYZW'),
+                                  metallic=metallic, roughness=roughness, emissionStrength=max(0, strength),
+                                  emission=components(m.EmissionColor(), 'XYZW') if m.EmissionColor() else [0,0,0,1],
+                                  colorImage=m.BaseColorImageId(), metallicImage=m.MetallicImageId(),
+                                  roughnessImage=m.RoughnessImageId(), emissionImage=m.EmissionColorImageId()))
+        images = []
+        for image in vector(update, 'Images'):
+            table_bounds(image)
+            width, height = image.Width(), image.Height()
+            if width <= 0 or height <= 0 or width * height * 4 != image.DataLength():
+                raise ValueError('Invalid image dimensions or RGBA length')
+            # A direct byte-vector slice avoids allocating one Python int per pixel.
+            offset = image._tab.Offset(10)
+            start = image._tab.Vector(offset)
+            end = start + image.DataLength()
+            if not offset or start < 0 or end > len(payload):
+                raise ValueError('Truncated image bytes')
+            pixels = bytes(payload[start:end])
+            version = hashlib.sha256(struct.pack('<II', width, height) + pixels).hexdigest()
+            images.append(dict(id=image.UniqueId(), width=width, height=height, version=version, pixels=pixels))
+        camera = None
+        editor = update.EditorCamera()
+        if editor is not None:
+            try:
+                table_bounds(editor)
+                position = components(editor.Location(), 'XYZ')
+                forward = components(editor.Forward(), 'XYZ')
+                up = components(editor.Up(), 'XYZ')
+                fl = math.sqrt(sum(x*x for x in forward))
+                ul = math.sqrt(sum(x*x for x in up))
+                if fl > 1e-6 and ul > 1e-6:
+                    forward = [x/fl for x in forward]
+                    up = [x/ul for x in up]
+                    if abs(sum(a*b for a, b in zip(forward, up))) < 0.999:
+                        camera = dict(position=position, forward=forward, up=up)
+            except (ValueError, struct.error, TypeError, IndexError):
+                pass  # Invalid optional camera falls back without rejecting geometry.
         return dict(reset=update.Reset(), objects=objects, materials=materials,
-                    deleted=vector(update, 'DeletedObjectUids'))
+                    camera=camera, images=images, deleted=vector(update, 'DeletedObjectUids'))
     except (IndexError, TypeError, struct.error, OverflowError) as exc:
         raise ValueError('Malformed FlatBuffer') from exc
 
 
-def snapshot(data):
+def snapshot_scene(data):
     if len(data) < 4 or struct.unpack_from('<I', data)[0] != len(data) - 4:
         raise ValueError('Expected one size-prefixed Live Link snapshot')
     state = Scene()
     state.apply(decode(data[4:]))
-    return state.view()
+    return state
+
+
+def snapshot(data):
+    return snapshot_scene(data).view()
 
 
 class Scene:
+    HISTORY_BATCHES = 128
+    HISTORY_BYTES = 64 * 1024 * 1024
+
     def __init__(self):
         self.objects = {}
         self.materials = {}
+        self.images = {}
+        self.camera_ready = False
+        self.initial_camera = None
         self.revision = 0
         self.session = uuid.uuid4().hex
         self.connected = False
         self.error = ''
         self.lock = threading.RLock()
+        self.history = deque()
+        self.history_bytes = 0
+        self.full_floor = 0
+
+    def clear(self):
+        self.objects.clear()
+        self.materials.clear()
+        self.images.clear()
+        self.history.clear()
+        self.history_bytes = 0
+        self.full_floor = self.revision
 
     def connection(self, connected, error=''):
         with self.lock:
             if connected:
-                self.objects.clear()
-                self.materials.clear()
                 self.revision += 1
+                self.clear()
             self.connected, self.error = connected, error
+
+    def image_metadata(self, image):
+        return {k: v for k, v in image.items() if k != 'pixels'} | {
+            'url': f"/api/images/{self.session}/{image['id']}/{image['version']}"}
+
+    def image_bytes(self, uid, version):
+        with self.lock:
+            image = self.images.get(uid)
+            return image['pixels'] if image and image['version'] == version else None
 
     def apply(self, batch):
         with self.lock:
+            if not self.camera_ready:
+                self.camera_ready = True
+                self.initial_camera = batch.get('camera')
+            self.revision += 1
             if batch['reset']:
-                self.objects.clear()
-                self.materials.clear()
+                self.clear()
             for uid in batch['deleted']:
                 self.objects.pop(uid, None)
+            changed_objects = []
             for item in batch['objects']:
-                # Absent mesh means a transform/visibility update, not removal.
-                self.objects[item['id']] = {**self.objects.get(item['id'], {}), **item}
+                previous = self.objects.get(item['id'], {})
+                # Exporters sometimes resend identical meshes; don't upload them again.
+                change = dict(item)
+                for field in ('mesh', 'light'):
+                    if field in change and change[field] == previous.get(field):
+                        del change[field]
+                self.objects[item['id']] = {**previous, **change}
+                changed_objects.append(change)
+            changed_materials = []
             for material in batch['materials']:
-                self.materials[material['id']] = material
-            self.revision += 1
+                if self.materials.get(material['id']) != material:
+                    self.materials[material['id']] = material
+                    changed_materials.append(material)
+            changed_images = []
+            for image in batch.get('images', []):
+                if self.images.get(image['id'], {}).get('version') != image['version']:
+                    self.images[image['id']] = image
+                    changed_images.append(self.image_metadata(image))
+            change = dict(revision=self.revision, objects=changed_objects, materials=changed_materials,
+                          images=changed_images, deleted=batch['deleted'])
+            size = len(json.dumps(change, separators=(',', ':')))
+            self.history.append((change, size))
+            self.history_bytes += size
+            while len(self.history) > self.HISTORY_BATCHES or self.history_bytes > self.HISTORY_BYTES:
+                expired, size = self.history.popleft()
+                self.history_bytes -= size
+                self.full_floor = max(self.full_floor, expired['revision'])
             self.error = ''
 
     def view(self, since=-1):
         with self.lock:
-            result = dict(revision=self.revision, session=self.session, connected=self.connected, error=self.error)
-            if since != self.revision:
-                result.update(objects=list(self.objects.values()), materials=list(self.materials.values()))
-            return result
+            result = dict(revision=self.revision, session=self.session, connected=self.connected, error=self.error,
+                          cameraReady=self.camera_ready, initialCamera=self.initial_camera)
+            if since == self.revision:
+                return result | {'kind': 'unchanged'}
+            if self.full_floor <= since < self.revision:
+                return result | {'kind': 'delta', 'batches': [batch for batch, _ in self.history if batch['revision'] > since]}
+            return result | dict(kind='full', objects=list(self.objects.values()), materials=list(self.materials.values()),
+                                 images=[self.image_metadata(i) for i in self.images.values()])
+
+
+# Snapshot images remain available during browser texture fetches. Bound retained
+# files independently of the live scene; each browser keeps its loaded GPU copies.
+SNAPSHOTS = OrderedDict()
+SNAPSHOT_LOCK = threading.RLock()
+
+
+def retain_snapshot(scene):
+    with SNAPSHOT_LOCK:
+        size = sum(len(i['pixels']) for i in scene.images.values())
+        assets = Scene()
+        assets.session = scene.session
+        assets.images = scene.images
+        SNAPSHOTS[scene.session] = (assets, size)
+        while len(SNAPSHOTS) > 8 or sum(s for _, s in SNAPSHOTS.values()) > 256 * 1024 * 1024:
+            SNAPSHOTS.popitem(last=False)
 
 
 class Receiver(socketserver.BaseRequestHandler):
@@ -218,6 +356,27 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 return self.reply({'error': 'Invalid revision'}, 400)
             return self.reply(self.server.scene.view(since))
+        if url.path.startswith('/api/images/'):
+            parts = url.path.split('/')
+            if len(parts) != 6:
+                return self.reply({'error': 'Not found'}, 404)
+            _, _, _, session, uid, version = parts
+            try:
+                uid = int(uid)
+            except ValueError:
+                return self.reply({'error': 'Invalid image ID'}, 400)
+            with SNAPSHOT_LOCK:
+                state = self.server.scene if session == self.server.scene.session else SNAPSHOTS.get(session, (None, 0))[0]
+                pixels = state.image_bytes(uid, version) if state else None
+            if pixels is None:
+                return self.reply({'error': 'Image revision expired'}, 404)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(pixels)))
+            self.send_header('Cache-Control', 'private, max-age=31536000, immutable')
+            self.end_headers()
+            self.wfile.write(pixels)
+            return
         # Serve only the public viewer assets, never repository or Python files.
         if url.path not in PUBLIC_FILES:
             return self.reply({'error': 'Not found'}, 404)
@@ -244,12 +403,14 @@ class Handler(SimpleHTTPRequestHandler):
             data = self.rfile.read(length)
             if len(data) != length:
                 raise ValueError('Truncated snapshot')
-            self.reply(snapshot(data))
+            state = snapshot_scene(data)
+            retain_snapshot(state)
+            self.reply(state.view())
         except (ValueError, OSError) as exc:
             self.reply({'error': str(exc)}, 400)
 
 
-PUBLIC_FILES = {'/', '/index.html', '/app.js', '/style.css',
+PUBLIC_FILES = {'/', '/index.html', '/app.js', '/camera.js', '/resources.js', '/lighting.js', '/style.css',
                 '/vendor/three/three.module.js', '/vendor/three/three.core.js',
                 '/vendor/three/OrbitControls.js'}
 

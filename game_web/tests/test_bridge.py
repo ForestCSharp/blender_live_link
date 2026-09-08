@@ -79,6 +79,10 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(s.objects[7]['visible'])
         self.assertEqual(s.objects[7]['position'], [9, -2, 1])
         s.apply(decode(frame()[4:]))
+        self.assertIs(s.objects[7]['mesh'], mesh)
+        changed = decode(frame()[4:])
+        changed['objects'][0]['mesh']['positions'][0] = 0.5
+        s.apply(changed)
         self.assertIsNot(s.objects[7]['mesh'], mesh)
         s.apply(decode(frame(deleted=[7], empty=True)[4:]))
         self.assertFalse(s.objects)

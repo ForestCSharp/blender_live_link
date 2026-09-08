@@ -22,10 +22,10 @@ viewer using existing generated schemas. It opens http://127.0.0.1:8000 and
 receives Blender updates on port 65432. Relaunching replaces the previous web
 bridge automatically; if HTTP port 8000 is busy, it opens an available port.
 
-The web viewer needs Python 3 and a WebGL2 browser, with no npm, pip packages,
-bundler, or runtime downloads. It supports simple shaded static meshes, orbit
-controls, and files from Blender's **Save To File** operator. See
-[game_web/README.md](game_web/README.md) for setup, validation, and V1 limits.
+The web viewer needs Python 3.9+ and a WebGL2 browser, with no npm, pip packages,
+bundler, or runtime downloads. It supports Blender-seeded fly-camera controls, incremental geometry updates,
+textured PBR materials, authored lights/shadows, and files from Blender's **Save To File** operator. See
+[game_web/README.md](game_web/README.md) for setup, validation, and remaining parity limits.
 
 ## Current Capabilities
 

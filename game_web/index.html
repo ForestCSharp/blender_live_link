@@ -9,9 +9,9 @@
 <script type="module" src="/app.js"></script>
 </head>
 <body>
-<header><div><strong>BLENDER LIVE LINK</strong><span class="badge">WEB / V1</span></div>
-<nav aria-label="Scene controls"><button id="live" aria-pressed="true">Live Blender</button><label class="button" for="file">Open snapshot</label><input id="file" type="file"><button id="frame">Frame scene</button></nav></header>
+<header><div><strong>BLENDER LIVE LINK</strong><span class="badge">WEB</span></div>
+<nav aria-label="Scene controls"><button id="live" aria-pressed="true">Live Blender</button><label class="button" for="file">Open snapshot</label><input id="file" type="file"><button id="frame">Frame scene</button><button id="reset-camera">Reset camera</button><label for="preview">Preview lights</label><select id="preview"><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select></nav></header>
 <main id="viewport" aria-label="3D scene viewer"><div id="empty">Waiting for geometry<span>Connect Blender’s Live Link, or open a saved snapshot.</span></div></main>
-<footer><span id="status" role="status">Starting renderer…</span><span id="count"></span><span>Drag to orbit · Right-drag to pan · Scroll to zoom · F to frame</span></footer>
+<footer><span id="status" role="status">Starting renderer…</span><span id="count"></span><span>Click to look · WASD + Q/E to fly · Shift for speed · Esc to release · F to frame</span></footer>
 <div id="error" role="alert" hidden></div>
 </body></html>
