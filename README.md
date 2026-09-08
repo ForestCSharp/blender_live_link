@@ -19,7 +19,8 @@ link loop, and understand what is currently wired together.
 Use `./build.sh -web` to select the browser renderer in place of `game/`.
 Combine it with `-python` for installed Blender, or `-g` to run only the web
 viewer using existing generated schemas. It opens http://127.0.0.1:8000 and
-receives Blender updates on port 65432; stop the native game first.
+receives Blender updates on port 65432. Relaunching replaces the previous web
+bridge automatically; if HTTP port 8000 is busy, it opens an available port.
 
 The web viewer needs Python 3 and a WebGL2 browser, with no npm, pip packages,
 bundler, or runtime downloads. It supports simple shaded static meshes, orbit

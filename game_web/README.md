@@ -20,9 +20,19 @@ From the project root:
 
 The renderer serves http://127.0.0.1:8000 and opens your default browser. Enable
 Live Link in Blender as with the native runtime. The bridge listens on
-127.0.0.1:65432; stop the native game before starting it. Only one Blender
-producer is accepted at a time. Port conflicts fail with an explanatory error.
-Ctrl+C stops the bridge. Closing the browser tab does not stop the bridge.
+127.0.0.1:65432. Relaunching automatically replaces this checkout's previous
+web bridge, including one using a fallback HTTP port. On systems with `lsof`
+and `ps`, the launcher also recognizes and stops this checkout's native game
+or older web bridge when it holds the Live Link port. It does not terminate
+unrelated processes. If another app owns HTTP port 8000, the viewer uses an
+available port and prints/opens its actual URL. Blender's TCP port stays 65432;
+an unidentified owner of that port is reported rather than terminated.
+
+Only one Blender producer is accepted at a time. Ctrl+C stops the bridge.
+Closing the browser tab does not stop the bridge. A subsequent launch restarts
+it automatically; existing tabs on a fallback port may need the new printed URL.
+Handoff uses a private temporary state file and a per-launch shutdown token;
+normal web relaunch requires only the Python standard library.
 
 Standalone validation / launch (use Linux or Windows in place of Mac as needed):
 
@@ -75,7 +85,8 @@ bash -n build.sh game_web/build.sh
 
 `-S` disables Python site packages to verify no NumPy or installed FlatBuffers
 package is required. Tests cover real/synthetic snapshots, TCP framing and
-reconnects, scene lifecycle, HTTP isolation, and stubbed root-build routing.
+reconnects, scene lifecycle, HTTP isolation, stubbed root-build routing,
+automatic relaunch, and HTTP-port fallback.
 
 With the bridge running, generate and transmit a real Blender fixture:
 

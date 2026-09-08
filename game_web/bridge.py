@@ -2,6 +2,8 @@
 """Local Live Link TCP receiver and dependency-free HTTP scene bridge."""
 import argparse
 import functools
+import errno
+import secrets
 import hashlib
 import json
 import math
@@ -14,6 +16,8 @@ import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
+
+from lifecycle import bind_live_link, request_shutdown, remember, forget
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -222,6 +226,14 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed():
             return self.reply({'error': 'Local origin required'}, 403)
+        if self.path == '/api/shutdown':
+            token = self.headers.get('X-Renderer-Token', '')
+            expected = getattr(self.server, 'shutdown_token', '')
+            if not expected or not secrets.compare_digest(token, expected):
+                return self.reply({'error': 'Invalid renderer token'}, 403)
+            self.reply({'stopping': True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if self.path != '/api/snapshot':
             return self.reply({'error': 'Not found'}, 404)
         try:
@@ -261,25 +273,42 @@ def main():
     if args.check:
         print('Web assets and generated Python bindings ready (Three.js r180).')
         return
+    if request_shutdown(HERE):
+        print('Replacing previous web renderer.', flush=True)
     scene = Scene()
+    tcp = None
+    http = None
+    token = secrets.token_hex(32)
     try:
-        tcp = TCPServer(('127.0.0.1', 65432), Receiver)
-        http = ThreadingHTTPServer(('127.0.0.1', 8000), functools.partial(Handler, directory=str(HERE)))
-    except OSError as exc:
-        raise SystemExit(f'Cannot start web renderer: {exc}. Stop any native game or process using ports 65432/8000.')
-    tcp.scene = http.scene = scene
-    threading.Thread(target=tcp.serve_forever, daemon=True).start()
-    print('Web renderer: http://127.0.0.1:8000 (Blender TCP: 65432). Ctrl+C to stop.', flush=True)
-    if not args.no_browser:
-        webbrowser.open('http://127.0.0.1:8000')
-    try:
+        tcp = bind_live_link(functools.partial(TCPServer, RequestHandlerClass=Receiver), HERE)
+        handler = functools.partial(Handler, directory=str(HERE))
+        try:
+            http = ThreadingHTTPServer(('127.0.0.1', 8000), handler)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            http = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+            print(f'HTTP port 8000 is busy; using {http.server_port}.', flush=True)
+        tcp.scene = http.scene = scene
+        http.shutdown_token = token
+        remember(HERE, http.server_port, token)
+        threading.Thread(target=tcp.serve_forever, daemon=True).start()
+        url = f'http://127.0.0.1:{http.server_port}'
+        print(f'Web renderer: {url} (Blender TCP: 65432). Ctrl+C to stop.', flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
         http.serve_forever()
     except KeyboardInterrupt:
         pass
+    except OSError as exc:
+        raise SystemExit(f'Cannot start web renderer: {exc}')
     finally:
-        http.server_close()
-        # Receiver thread is daemonized: an idle Blender connection must not block exit.
-        tcp.server_close()
+        forget(HERE, token)
+        if http is not None:
+            http.server_close()
+        # The receiver thread is daemonized: idle Blender must not block exit.
+        if tcp is not None:
+            tcp.server_close()
 
 
 if __name__ == '__main__':
