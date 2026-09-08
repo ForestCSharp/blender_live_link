@@ -9,6 +9,7 @@
 /renderer-game/
 /renderer-output/
 /screenshots/
+/.playwright-mcp/
 
 .DS_Store
 

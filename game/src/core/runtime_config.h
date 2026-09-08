@@ -15,9 +15,15 @@ namespace RuntimeConfig
 
 		std::optional<std::string> screenshot_path;
 		unsigned long long screenshot_frame = 60;
+		// Distinguishes "capture at exactly frame N" (CI) from "capture once the
+		// scene has settled" (everything else). Without this the default 60 is
+		// indistinguishable from an explicit request for frame 60.
+		bool screenshot_frame_explicit = false;
 		bool screenshot_wait_for_gi = false;
 		std::optional<std::string> screenshot_timeout_text;
-		double screenshot_timeout_seconds = 600.0;
+		// Every capture is bounded. A run that never reaches its capture phase
+		// must fail loudly in seconds rather than hang until someone notices.
+		double screenshot_timeout_seconds = 30.0;
 
 		bool force_device_local = false;
 		std::optional<std::string> present_mode;
@@ -71,6 +77,7 @@ namespace RuntimeConfig
 		if (const char* screenshot_frame = environment_value("GAME2_SCREENSHOT_FRAME"))
 		{
 			config.screenshot_frame = std::strtoull(screenshot_frame, nullptr, 10);
+			config.screenshot_frame_explicit = true;
 		}
 		config.screenshot_wait_for_gi = is_set("GAME2_SCREENSHOT_WAIT_FOR_GI");
 		config.screenshot_timeout_text = string_value("GAME2_SCREENSHOT_TIMEOUT_SECONDS");

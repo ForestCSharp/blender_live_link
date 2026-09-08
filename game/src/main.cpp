@@ -223,7 +223,7 @@ int main(int argc, char** argv)
 		printf("Failed to initialize GLFW\n");
 		return 1;
 	}
-	if (!automated_screenshot.configure(state))
+	if (!automated_screenshot.configure(state, benchmark.enabled))
 	{
 		glfwTerminate();
 		return 1;
@@ -286,7 +286,7 @@ int main(int argc, char** argv)
 		{
 			glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}
-		if (automated_screenshot.finished())
+		if (automated_screenshot.wants_exit())
 		{
 			glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}

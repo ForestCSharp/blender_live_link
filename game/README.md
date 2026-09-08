@@ -182,12 +182,16 @@ not provide a valid 3D viewport transform, the built-in fallback view is used.
 
 - `GAME_PRESENT_MODE=fifo|mailbox|immediate|fifo_relaxed` — request a present
   mode; unsupported requests fall back to FIFO (`GAME2_PRESENT_MODE` alias)
-- `GAME2_SCREENSHOT=<path> [GAME2_SCREENSHOT_FRAME=<n>]` — dump frame n
-  (default 60) to a PPM file when the surface supports transfer-source images
-- `GAME2_SCREENSHOT_WAIT_FOR_GI=1` — with `GAME2_SCREENSHOT`, wait for the
-  first Live Link import and completed GI update, run a deterministic temporal
-  settle, capture, and exit; timeout defaults to 600 seconds and can be changed
-  with `GAME2_SCREENSHOT_TIMEOUT_SECONDS`
+- `GAME2_SCREENSHOT=<path>` — wait for the first Live Link import that carries
+  objects, run a deterministic temporal settle, dump a PPM, and exit. Needs
+  `GAME2_OUTPUT_MODE=sdr`; the default HDR10 swapchain format is not
+  readback-compatible and the capture silently no-ops
+- `GAME2_SCREENSHOT_FRAME=<n>` — instead capture at exactly frame n, whatever is
+  on screen. Used by CI, where a benchmark frame budget owns the exit
+- `GAME2_SCREENSHOT_WAIT_FOR_GI=1` — also wait for GI to finish converging,
+  which costs one frame per probe (minutes on a large scene)
+- `GAME2_SCREENSHOT_TIMEOUT_SECONDS=<n>` — bound on any capture run, default 30.
+  On expiry the run prints which phase it was stuck in and exits 1
 - `GAME2_RENDER_SCALE=<25..100>` — internal render resolution percentage
   (the float presentation composite upsamples to the window before UI)
 - `GAME2_OUTPUT_MODE=auto|sdr|edr|hdr10` — unset or `auto` prefers HDR10 and

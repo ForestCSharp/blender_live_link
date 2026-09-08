@@ -4,14 +4,27 @@ Blender Live Link is an experiment in using Blender as the primary editor for a
 3D game. It is inspired by Santa Monica Studio's 2024 REAC presentation
 [Maya as Editor: The game development approach of Santa Monica Studio](https://www.youtube.com/watch?v=ZwPogOhbNWw).
 
-The repository has two main pieces:
+The repository has three main pieces:
 
 1. A Blender extension that exports scene state through FlatBuffers.
 2. A C++ game/runtime that listens for those updates and applies them live.
+3. An optional Three.js web viewer for live static geometry and saved Live Link snapshots.
 
 The project is still a research-and-development workspace, not a polished engine
 distribution. The README is meant to help contributors build it, run the live
 link loop, and understand what is currently wired together.
+
+## Web renderer
+
+Use `./build.sh -web` to select the browser renderer in place of `game/`.
+Combine it with `-python` for installed Blender, or `-g` to run only the web
+viewer using existing generated schemas. It opens http://127.0.0.1:8000 and
+receives Blender updates on port 65432; stop the native game first.
+
+The web viewer needs Python 3 and a WebGL2 browser, with no npm, pip packages,
+bundler, or runtime downloads. It supports simple shaded static meshes, orbit
+controls, and files from Blender's **Save To File** operator. See
+[game_web/README.md](game_web/README.md) for setup, validation, and V1 limits.
 
 ## Current Capabilities
 
@@ -62,6 +75,7 @@ For a deeper protocol and runtime ownership contract, see
 - `blend_src/`: local Blender source/build workspace used by the native path.
 - `game/`: golden-path Vulkan/GLFW C++ runtime, shaders, data, third-party
   engine libraries, and the game build script.
+- `game_web/`: offline Three.js viewer, Python TCP/HTTP bridge, and web build script.
 - `blend_files/`: sample Blender files for development and testing.
 - `docs/`: protocol notes and rendering/engine explanations.
 - `tools/native_opensubdiv_smoke.py`: automatic native Blender OpenSubdiv

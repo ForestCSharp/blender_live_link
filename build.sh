@@ -2,6 +2,7 @@
 
 # Running ./build.sh builds native blender integration by default, then builds and runs game in parallel after schema generation
 # Running ./build.sh -python builds blender add-on, installs it to blender, and launches blender in parallel with the game after schema generation
+# Running ./build.sh -web selects the browser renderer (combine with -g or -python)
 # Running ./build.sh -g only rebuilds the default Vulkan game and runs it
 # Running ./build.sh --package-only generates schemas and packages the extension without launching either application
 
@@ -20,6 +21,8 @@ case "${unameOut}" in
 esac
 echo OS is ${OS}
 
+GAME_PATH=game
+GAME_LABEL="Game (Vulkan)"
 BUILD_ONLY_GAME=false
 PACKAGE_ONLY=false
 BLENDER_BUILD_MODE=native
@@ -43,6 +46,7 @@ EXTENSION_PACKAGE_EXCLUSIONS=(
 	"$BASE_DIR/tools/*"
 	"$BASE_DIR/ci-artifacts/*"
 	"$BASE_DIR/game/*"
+	"$BASE_DIR/game_web/*"
 	"$BASE_DIR/blend_files/*"
 	"$BASE_DIR/screenshots/*"
 	"$BASE_DIR/blend_src/*"
@@ -180,7 +184,7 @@ configure_screenshot_capture() {
 
 	export GAME2_SCREENSHOT="$SCREENSHOT_OUTPUT_PATH"
 	export GAME2_SCREENSHOT_WAIT_FOR_GI=1
-	export GAME2_SCREENSHOT_TIMEOUT_SECONDS="${GAME2_SCREENSHOT_TIMEOUT_SECONDS:-600}"
+	export GAME2_SCREENSHOT_TIMEOUT_SECONDS="${GAME2_SCREENSHOT_TIMEOUT_SECONDS:-30}"
 	export BLENDER_LIVE_LINK_SCREENSHOT_COMPLETE="$SCREENSHOT_COMPLETION_FILE"
 
 	log_build "Screenshot capture: $run_args -> $SCREENSHOT_OUTPUT_PATH"
@@ -459,8 +463,8 @@ run_blender_side_build_and_launch() {
 }
 
 run_game_build_and_launch() {
-	cd "$SCRIPT_DIR/game" || return
-	log_build "Game (Vulkan) branch: building and launching game"
+	cd "$SCRIPT_DIR/$GAME_PATH" || return
+	log_build "$GAME_LABEL branch: building and launching game"
 	local game_status=0
 	./build.sh "$OS" || game_status=$?
 
@@ -827,6 +831,11 @@ wait_for_parallel_branches() {
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
+    -web|--web)
+        GAME_PATH=game_web
+        GAME_LABEL="Game (Web)"
+        shift
+        ;;
     -g|--game)
     	BUILD_ONLY_GAME=true
     	shift # past argument
@@ -879,9 +888,9 @@ if [[ "$PACKAGE_ONLY" = "true" && "$BUILD_ONLY_GAME" = "true" ]]; then
 fi
 
 if [[ "$SCREENSHOT_MODE" = true ]]; then
-	if [[ "$BUILD_ONLY_GAME" = true || "$PACKAGE_ONLY" = true || "$BLENDER_BUILD_MODE" != native ]]; then
+	if [[ "$BUILD_ONLY_GAME" = true || "$PACKAGE_ONLY" = true || "$BLENDER_BUILD_MODE" != native || "$GAME_PATH" = game_web ]]; then
 		echo "Error: -screenshot requires the native Vulkan full-build path"
-		echo "It cannot be combined with -g, --package-only, or -python."
+		echo "It cannot be combined with -g, --package-only, -python, or -web."
 		exit 1
 	fi
 	if [[ $OS != Mac && $OS != Linux ]]; then
@@ -932,6 +941,6 @@ if [[ "${BLENDER_LIVE_LINK_SKIP_GAME:-}" == "1" ]]; then
 	exit 0
 fi
 
-start_parallel_branch "Game (Vulkan)" run_game_build_and_launch || exit
+start_parallel_branch "$GAME_LABEL" run_game_build_and_launch || exit
 start_parallel_branch "Blender" run_blender_side_build_and_launch || exit
 wait_for_parallel_branches
