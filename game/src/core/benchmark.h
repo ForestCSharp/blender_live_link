@@ -246,6 +246,20 @@ inline bool benchmark_finalize(BenchmarkState& state, VulkanContext* ctx)
 	}
 #endif
 
+	// Tessellation activity. Counts are capacities now that draw commands are
+	// GPU-written, so these are upper bounds rather than exact emitted totals.
+	{
+		fprintf(output, "  \"tessellation\": { \"enabled\": %s, \"meshes\": %i, \"overflowed_meshes\": %i, \"patches\": %i, \"vertex_capacity\": %i, \"index_capacity\": %i, \"candidates\": %i, \"processed\": %i },\n",
+			::state.tessellation.enabled ? "true" : "false",
+			::state.tessellation.mesh_count,
+			::state.tessellation.overflowed_mesh_count,
+			::state.tessellation.patch_count,
+			::state.tessellation.generated_vertex_count,
+			::state.tessellation.generated_index_count,
+			::state.data_oriented.previous_frame.tessellation_candidate_count,
+			::state.data_oriented.previous_frame.tessellation_processed_count);
+	}
+
 	// Geometry arena occupancy and dedup effectiveness.
 	{
 		const GeometryArena& arena = g_geometry_arena;

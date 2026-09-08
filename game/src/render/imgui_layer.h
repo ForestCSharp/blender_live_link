@@ -277,7 +277,9 @@ namespace ImGuiLayer
 					ImGui::Text("Source Tris: %d  Patches: %d", state.tessellation.source_triangle_count, state.tessellation.patch_count);
 					ImGui::Text("Generated: %d verts / %d indices", state.tessellation.generated_vertex_count, state.tessellation.generated_index_count);
 					ImGui::Text("Max Factor: %d", state.tessellation.max_factor_seen);
-					ImGui::Text("Readback: %s  Age: %d", state.tessellation.readback_supported ? "Supported" : "Unsupported", state.tessellation.readback_age);
+					// Counts are capacities now: the exact values stay on the GPU
+					// and only the indirect draw commands ever see them.
+					ImGui::TextDisabled("Counts are upper bounds (GPU-driven draw commands)");
 					if (changed && !state.shadow.depth_freeze)
 						ShadowDepthPass::has_valid_shadow_map = false;
 				}

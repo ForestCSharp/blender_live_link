@@ -444,7 +444,15 @@ namespace WireOverlayPass
 				2, 1, &mesh_set,
 				0, nullptr
 			);
-			vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, (u32) render_object_index);
+			if (render_view.is_tessellated)
+			{
+				vulkan_cmd_draw_indirect(ctx, render_view.wire_draw_command_buffer, 0, 1,
+					sizeof(VkDrawIndirectCommand));
+			}
+			else
+			{
+				vulkan_cmd_draw(ctx, render_view.index_count, 1, 0, (u32) render_object_index);
+			}
 			drawn_mesh_count += 1;
 		}
 	}

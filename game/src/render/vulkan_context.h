@@ -183,6 +183,14 @@ struct VulkanCapabilities
 	bool swapchain_extension = false;
 	bool portability_subset_extension = false;
 	bool hdr_metadata_extension = false;
+	// Indirect drawing. Queried rather than assumed: MoltenVK has
+	// multiDrawIndirect and drawIndirectFirstInstance but no drawIndirectCount,
+	// so draw counts stay CPU-known and culled slots are written as degenerate
+	// indexCount = 0 commands. None of these gate device selection; the draw
+	// paths fall back instead.
+	bool multi_draw_indirect = false;
+	bool draw_indirect_first_instance = false;
+	bool draw_indirect_count = false;
 	bool compatible = false;
 	i32 score = -1;
 	VkSurfaceFormatKHR surface_format = {};
@@ -648,6 +656,55 @@ void vulkan_cmd_draw_indexed(VulkanContext* ctx, u32 index_count, u32 instance_c
 	vkCmdDrawIndexed(vulkan_current_command_buffer(ctx), index_count, instance_count, first_index, vertex_offset, first_instance);
 }
 
+// draw_count commands are recorded, so metrics stay comparable with the direct
+// path. MoltenVK loops these internally - indirect saves the Vulkan-side per-draw
+// work, not Metal draw calls.
+void vulkan_cmd_draw_indexed_indirect(
+	VulkanContext* ctx, VkBuffer buffer, VkDeviceSize offset, u32 draw_count, u32 stride)
+{
+	if (draw_count == 0)
+	{
+		return;
+	}
+	ctx->metrics.draw_calls += draw_count;
+
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+	if (ctx->capabilities.multi_draw_indirect)
+	{
+		vkCmdDrawIndexedIndirect(command_buffer, buffer, offset, draw_count, stride);
+		return;
+	}
+
+	// No multiDrawIndirect: same GPU work, one API call per command.
+	for (u32 draw_index = 0; draw_index < draw_count; ++draw_index)
+	{
+		vkCmdDrawIndexedIndirect(
+			command_buffer, buffer, offset + (VkDeviceSize) draw_index * stride, 1, stride);
+	}
+}
+
+void vulkan_cmd_draw_indirect(
+	VulkanContext* ctx, VkBuffer buffer, VkDeviceSize offset, u32 draw_count, u32 stride)
+{
+	if (draw_count == 0)
+	{
+		return;
+	}
+	ctx->metrics.draw_calls += draw_count;
+
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+	if (ctx->capabilities.multi_draw_indirect)
+	{
+		vkCmdDrawIndirect(command_buffer, buffer, offset, draw_count, stride);
+		return;
+	}
+	for (u32 draw_index = 0; draw_index < draw_count; ++draw_index)
+	{
+		vkCmdDrawIndirect(
+			command_buffer, buffer, offset + (VkDeviceSize) draw_index * stride, 1, stride);
+	}
+}
+
 void vulkan_cmd_dispatch(VulkanContext* ctx, u32 x, u32 y, u32 z)
 {
 	ctx->metrics.dispatch_calls += 1;
@@ -847,6 +904,9 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	};
 	vkGetPhysicalDeviceFeatures2(in_device, &features_2);
 	result.features = features_2.features;
+	result.multi_draw_indirect = result.features.multiDrawIndirect == VK_TRUE;
+	result.draw_indirect_first_instance = result.features.drawIndirectFirstInstance == VK_TRUE;
+	result.draw_indirect_count = result.features_1_2.drawIndirectCount == VK_TRUE;
 	vkGetPhysicalDeviceProperties(in_device, &result.properties);
 
 	u32 extension_count = 0;
@@ -1519,6 +1579,9 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.dynamicRendering = VK_TRUE,
 		};
 		VkPhysicalDeviceFeatures enabled_features = {
+			.multiDrawIndirect = ctx->capabilities.multi_draw_indirect ? VK_TRUE : VK_FALSE,
+			.drawIndirectFirstInstance =
+				ctx->capabilities.draw_indirect_first_instance ? VK_TRUE : VK_FALSE,
 			.independentBlend = VK_TRUE,
 		};
 
@@ -1536,6 +1599,10 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		volkLoadDevice(ctx->device);
 		ctx->hdr_metadata_enabled = ctx->capabilities.hdr_metadata_extension && vkSetHdrMetadataEXT != nullptr;
 		printf("HDR metadata: %s\n", ctx->hdr_metadata_enabled ? "VK_EXT_hdr_metadata enabled" : "unavailable");
+		printf("Indirect draw: multiDrawIndirect=%s firstInstance=%s drawIndirectCount=%s\n",
+			ctx->capabilities.multi_draw_indirect ? "yes" : "no",
+			ctx->capabilities.draw_indirect_first_instance ? "yes" : "no",
+			ctx->capabilities.draw_indirect_count ? "yes" : "no");
 		vkGetDeviceQueue(ctx->device, ctx->graphics_queue_family_index, 0, &ctx->graphics_queue);
 		vkGetDeviceQueue(ctx->device, ctx->present_queue_family_index, 0, &ctx->present_queue);
 		vulkan_set_object_name(ctx, VK_OBJECT_TYPE_QUEUE, (u64)ctx->graphics_queue, "Graphics Queue");

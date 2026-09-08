@@ -941,6 +941,11 @@ struct LightingCapture
 						vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
 							arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) render_object_index);
 					}
+					else if (render_view.is_tessellated)
+					{
+						vulkan_cmd_draw_indexed_indirect(ctx, render_view.draw_command_buffer, 0, 1,
+							sizeof(VkDrawIndexedIndirectCommand));
+					}
 					else
 					{
 						vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);

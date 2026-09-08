@@ -305,6 +305,13 @@ void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_in
 		vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
 			arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) in_object_index);
 	}
+	else if (render_view.is_tessellated)
+	{
+		// The index count lives in a GPU-written command; the CPU only knows the
+		// capacity, which would draw past what was emitted.
+		vulkan_cmd_draw_indexed_indirect(ctx, render_view.draw_command_buffer, 0, 1,
+			sizeof(VkDrawIndexedIndirectCommand));
+	}
 	else
 	{
 		vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) in_object_index);

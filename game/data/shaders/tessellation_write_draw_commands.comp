@@ -1,0 +1,55 @@
+#version 450
+
+#include "tessellation_common.h"
+
+// Turns the GPU-computed tessellation counters into draw commands.
+//
+// Without this the CPU had to read the counters back to learn how many indices
+// were emitted, which cost two frames of latency and forced the slot
+// double-buffering that went with it. Writing the commands on the GPU lets the
+// same frame that tessellates also draw, so the counters never travel back.
+//
+// Counts are clamped to the allocated capacity: the emitting shaders already
+// bound their writes, so a plan that wanted more than fits renders truncated
+// rather than reading past the buffer.
+
+layout(push_constant) uniform cs_params {
+	int object_index;		// becomes firstInstance; the vertex shader reads it as gl_InstanceIndex
+	int index_capacity;
+	int wire_index_capacity;
+	int padding0;
+};
+
+layout(set=0, binding=0, std430) readonly buffer GpuDrawCountersBuffer {
+	TessellationCounters gpu_draw_counters[];
+};
+
+// Matches VkDrawIndexedIndirectCommand.
+layout(set=0, binding=1, std430) buffer GpuDrawCommandBuffer {
+	uint gpu_draw_command[5];
+};
+
+// Matches VkDrawIndirectCommand; the wire overlay pulls indices from an SSBO
+// and so issues a non-indexed draw.
+layout(set=0, binding=2, std430) buffer GpuWireDrawCommandBuffer {
+	uint gpu_wire_draw_command[4];
+};
+
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+
+void main()
+{
+	uint index_count = min(gpu_draw_counters[0].index_count, uint(index_capacity));
+	uint wire_index_count = min(gpu_draw_counters[0].wire_index_count, uint(wire_index_capacity));
+
+	gpu_draw_command[0] = index_count;			// indexCount
+	gpu_draw_command[1] = 1u;					// instanceCount
+	gpu_draw_command[2] = 0u;					// firstIndex
+	gpu_draw_command[3] = 0u;					// vertexOffset
+	gpu_draw_command[4] = uint(object_index);	// firstInstance
+
+	gpu_wire_draw_command[0] = wire_index_count;	// vertexCount
+	gpu_wire_draw_command[1] = 1u;					// instanceCount
+	gpu_wire_draw_command[2] = 0u;					// firstVertex
+	gpu_wire_draw_command[3] = uint(object_index);	// firstInstance
+}

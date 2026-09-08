@@ -44,11 +44,20 @@ namespace Tessellation
 	};
 	static_assert(sizeof(PlanParams) == 144, "PlanParams shader layout mismatch");
 
+	struct DrawCommandParams
+	{
+		i32 object_index = 0;
+		i32 index_capacity = 0;
+		i32 wire_index_capacity = 0;
+		i32 padding0 = 0;
+	};
+
 	inline ComputeEffect clear_counters;
 	inline TypedComputeEffect<PlanParams> measure_mesh_factor;
 	inline TypedComputeEffect<PlanParams> plan_patches;
 	inline TypedComputeEffect<ComputeParams> emit_vertices;
 	inline TypedComputeEffect<ComputeParams> emit_indices;
+	inline TypedComputeEffect<DrawCommandParams> write_draw_commands;
 	inline bool initialized = false;
 
 	inline u32 vertex_count_for_factor(u32 factor)
@@ -102,6 +111,8 @@ namespace Tessellation
 			"bin/shaders/tessellation_emit_vertices_gpu.comp.spv");
 		init_effect(ctx, emit_indices, 4,
 			"bin/shaders/tessellation_emit_indices_gpu.comp.spv");
+		init_effect(ctx, write_draw_commands, 3,
+			"bin/shaders/tessellation_write_draw_commands.comp.spv");
 		initialized = true;
 	}
 
@@ -118,6 +129,21 @@ namespace Tessellation
 		effect.bind(ctx, writer.set);
 	}
 
+	// Only pay for the diagnostics copy when something will actually display it.
+	//
+	// debug_ui.visible defaults to true and is not compiled out with the UI, so
+	// without this guard a WITH_DEBUG_UI=0 build would run the copy every frame
+	// with nothing able to read it.
+	inline bool stats_wanted(const State& state)
+	{
+#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
+		return state.debug_ui.visible || state.runtime.benchmark_active;
+#else
+		(void) state;
+		return state.runtime.benchmark_active;
+#endif
+	}
+
 	inline void cleanup_slot(TessellatedGeometry::GpuSlot& slot)
 	{
 		slot.counters_buffer.destroy_gpu_buffer();
@@ -125,6 +151,8 @@ namespace Tessellation
 		slot.vertex_buffer.destroy_gpu_buffer();
 		slot.index_buffer.destroy_gpu_buffer();
 		slot.wire_index_buffer.destroy_gpu_buffer();
+		slot.draw_command_buffer.destroy_gpu_buffer();
+		slot.wire_draw_command_buffer.destroy_gpu_buffer();
 		slot.counters_readback.destroy_gpu_buffer();
 		slot = {};
 	}
@@ -163,14 +191,27 @@ namespace Tessellation
 			.data = nullptr, .size = sizeof(u32) * indices * 2u,
 			.usage = { .index_buffer = true, .storage_buffer = true, .prefer_device_local = true }, .label = "Tessellation wire indices",
 		});
-		slot.counters_readback = GpuBuffer((GpuBufferDesc<TessellationCounters>) {
-			.data = nullptr, .size = sizeof(TessellationCounters),
-			.usage = { .stream_update = true, .readback = true }, .label = "Tessellation counter readback",
+		slot.draw_command_buffer = GpuBuffer((GpuBufferDesc<VkDrawIndexedIndirectCommand>) {
+			.data = nullptr, .size = sizeof(VkDrawIndexedIndirectCommand),
+			.usage = { .storage_buffer = true, .prefer_device_local = true, .indirect_buffer = true },
+			.label = "Tessellation draw command",
+		});
+		slot.wire_draw_command_buffer = GpuBuffer((GpuBufferDesc<VkDrawIndirectCommand>) {
+			.data = nullptr, .size = sizeof(VkDrawIndirectCommand),
+			.usage = { .storage_buffer = true, .prefer_device_local = true, .indirect_buffer = true },
+			.label = "Tessellation wire draw command",
 		});
 		// Force creation before descriptor/copy recording.
 		slot.counters_buffer.get_gpu_buffer(); slot.patch_buffer.get_gpu_buffer();
 		slot.vertex_buffer.get_gpu_buffer(); slot.index_buffer.get_gpu_buffer();
-		slot.wire_index_buffer.get_gpu_buffer(); slot.counters_readback.get_gpu_buffer();
+		slot.wire_index_buffer.get_gpu_buffer();
+		slot.counters_readback = GpuBuffer((GpuBufferDesc<TessellationCounters>) {
+			.data = nullptr, .size = sizeof(TessellationCounters),
+			.usage = { .stream_update = true, .readback = true },
+			.label = "Tessellation stats readback",
+		});
+		slot.draw_command_buffer.get_gpu_buffer(); slot.wire_draw_command_buffer.get_gpu_buffer();
+		slot.counters_readback.get_gpu_buffer();
 		return true;
 	}
 
@@ -203,51 +244,12 @@ namespace Tessellation
 			: mesh.vertex_buffer.get_gpu_buffer();
 	}
 
-	inline void consume_readbacks(VulkanContext* ctx, State& state)
+	// A single slot suffices: draw commands are produced on the GPU in the same
+	// frame, so nothing has to be kept alive for a later CPU read.
+	inline u32 choose_slot(TessellatedGeometry& tessellated, bool)
 	{
-		for (i32 object_id : state.scene.indexes.mesh_object_ids)
-		{
-			auto found = state.scene.objects.find(object_id);
-			if (found == state.scene.objects.end()) { continue; }
-			TessellatedGeometry& tessellated = found->second.mesh.tessellated_geometry;
-			for (u32 slot_idx = 0; slot_idx < TessellatedGeometry::GPU_SLOT_COUNT; ++slot_idx)
-			{
-				auto& slot = tessellated.gpu_slots[slot_idx];
-				if (!slot.readback_requested || ctx->frame_number < slot.ready_frame_number) { continue; }
-				slot.counters_readback.read_gpu_buffer(&slot.counters, sizeof(slot.counters));
-				slot.readback_requested = false;
-				slot.has_counts = true;
-				if (slot.counters.overflowed || slot.counters.patch_count > slot.patch_capacity
-					|| slot.counters.vertex_count > slot.vertex_capacity || slot.counters.index_count > slot.index_capacity)
-				{
-					tessellated.overflowed = true;
-					continue;
-				}
-				tessellated.active_gpu_slot = slot_idx;
-				tessellated.active = slot.counters.index_count > 0;
-				tessellated.overflowed = false;
-				tessellated.patch_count = slot.counters.patch_count;
-				tessellated.vertex_count = slot.counters.vertex_count;
-				tessellated.index_count = slot.counters.index_count;
-				tessellated.wire_index_count = slot.counters.wire_index_count;
-				tessellated.readback_age = 0;
-			}
-		}
-	}
-
-	inline u32 choose_slot(TessellatedGeometry& tessellated, bool allow_active)
-	{
-		for (u32 attempt = 0; attempt < TessellatedGeometry::GPU_SLOT_COUNT; ++attempt)
-		{
-			u32 idx = (tessellated.next_gpu_slot + attempt) % TessellatedGeometry::GPU_SLOT_COUNT;
-			auto& slot = tessellated.gpu_slots[idx];
-			if (!slot.readback_requested && (allow_active || idx != tessellated.active_gpu_slot))
-			{
-				tessellated.next_gpu_slot = (idx + 1) % TessellatedGeometry::GPU_SLOT_COUNT;
-				return idx;
-			}
-		}
-		return TessellatedGeometry::GPU_SLOT_COUNT;
+		tessellated.next_gpu_slot = 0;
+		return 0;
 	}
 
 	inline bool prepare_mesh(FrameRenderGraph& graph, VulkanContext* ctx,
@@ -261,14 +263,16 @@ namespace Tessellation
 			tessellated.active = false;
 			return false;
 		}
-		const bool needs_readback = state.tessellation.mode != ETessellationMode::Fixed;
-		const u32 slot_idx = choose_slot(tessellated, !needs_readback);
+		// Fixed mode derives its counts analytically; adaptive modes let the GPU
+		// decide and clamp to capacity. Neither needs a readback any more.
+		const bool adaptive = state.tessellation.mode != ETessellationMode::Fixed;
+		const u32 slot_idx = choose_slot(tessellated, true);
 		if (slot_idx >= TessellatedGeometry::GPU_SLOT_COUNT) { return tessellated.active; }
 
 		const u32 triangle_count = mesh.index_count / 3;
 		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
 		u32 patch_capacity, vertex_capacity, index_capacity;
-		if (!needs_readback)
+		if (!adaptive)
 		{
 			const u32 factor = CLAMP((u32) state.tessellation.fixed_factor, 1u, max_factor);
 			const u64 patch_count = triangle_count;
@@ -287,6 +291,11 @@ namespace Tessellation
 			u32 split = state.tessellation.mode == ETessellationMode::AdaptiveAngularPerTriangle
 				&& state.tessellation.virtual_patches_enabled
 				? 1u << (u32) CLAMP(state.tessellation.virtual_patch_max_depth, 0, 4) : 1u;
+			// Capacity is the analytic worst case at max_factor, clamped by the
+			// generation budgets. Whether a mesh actually ran out is not
+			// predictable from here - adaptive factors are usually far below
+			// max_factor, so nearly every mesh trips the clamp while almost none
+			// really overflow. The GPU reports the truth; see consume_stats.
 			patch_capacity = (u32) MIN((u64) triangle_count * split * split, (u64) state.tessellation.max_generated_patches);
 			vertex_capacity = (u32) MIN((u64) patch_capacity * vertex_count_for_factor(max_factor), (u64) state.tessellation.max_generated_vertices);
 			index_capacity = (u32) MIN((u64) patch_capacity * index_count_for_factor(max_factor), (u64) state.tessellation.max_generated_indices);
@@ -296,7 +305,7 @@ namespace Tessellation
 			tessellated.active = false; return false;
 		}
 		auto& slot = tessellated.gpu_slots[slot_idx];
-		slot.readback_requested = false; slot.has_counts = false; slot.counters = {};
+		slot.counters = {};
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
 		const VkBuffer source_vertex_buffer = source_vertices(mesh);
@@ -388,31 +397,90 @@ namespace Tessellation
 		graph.index(frame_graph_buffer(index_buffer));
 		graph.index(frame_graph_buffer(wire_index_buffer));
 
-		if (!needs_readback)
+		// Turn the counters into draw commands on the GPU. This is what removes
+		// the readback: the draw learns its index count from this buffer instead
+		// of the CPU learning it two frames later.
+		const VkBuffer draw_command_buffer = slot.draw_command_buffer.get_gpu_buffer();
+		const VkBuffer wire_draw_command_buffer = slot.wire_draw_command_buffer.get_gpu_buffer();
+		graph.storage_read(frame_graph_buffer(counters_buffer));
+		graph.storage_write(frame_graph_buffer(draw_command_buffer));
+		graph.storage_write(frame_graph_buffer(wire_draw_command_buffer));
+		graph.compute([&]() {
+			DrawCommandParams params = {
+				.object_index = object.render_object_index,
+				.index_capacity = (i32) slot.index_capacity,
+				.wire_index_capacity = (i32) slot.wire_index_capacity,
+			};
+			VkBuffer command_buffers[] = {
+				counters_buffer, draw_command_buffer, wire_draw_command_buffer };
+			bind_set(ctx, write_draw_commands.effect, command_buffers, 3);
+			write_draw_commands.dispatch(ctx, params, 1, 1, 1);
+		});
+		graph.indirect_read(frame_graph_buffer(draw_command_buffer));
+		graph.indirect_read(frame_graph_buffer(wire_draw_command_buffer));
+
+		// Diagnostics copy. Off the draw path entirely, so it adds no latency and
+		// is skipped when nothing will read it.
+		if (stats_wanted(state) && !slot.stats_readback_pending)
 		{
-			u32 factor = CLAMP((u32) state.tessellation.fixed_factor, 1u, max_factor);
-			slot.counters = { .patch_count = triangle_count, .vertex_count = vertex_capacity,
-				.index_count = index_capacity, .wire_index_count = index_capacity * 2u,
-				.source_triangle_count = triangle_count, .max_factor_seen = factor };
-			tessellated.active_gpu_slot = slot_idx; tessellated.active = true; tessellated.overflowed = false;
-			tessellated.patch_count = triangle_count; tessellated.vertex_count = vertex_capacity;
-			tessellated.index_count = index_capacity; tessellated.wire_index_count = index_capacity * 2u;
-		}
-		else
-		{
-			VkBufferCopy copy = { .size = sizeof(TessellationCounters) };
 			const VkBuffer readback_buffer = slot.counters_readback.get_gpu_buffer();
+			VkBufferCopy copy = { .size = sizeof(TessellationCounters) };
 			graph.transfer_source(frame_graph_buffer(counters_buffer));
 			graph.transfer_destination(frame_graph_buffer(readback_buffer));
 			graph.transfer([&]() {
-				vkCmdCopyBuffer(command_buffer, counters_buffer,
-					readback_buffer, 1, &copy);
+				vkCmdCopyBuffer(command_buffer, counters_buffer, readback_buffer, 1, &copy);
 			});
-			slot.readback_requested = true;
-			slot.ready_frame_number = ctx->frame_number + MAX_FRAMES_IN_FLIGHT;
+			slot.stats_readback_pending = true;
+			slot.stats_ready_frame_number = ctx->frame_number + MAX_FRAMES_IN_FLIGHT;
 		}
+
+		// Published immediately - the same frame that tessellates also draws.
+		// The counts here are capacities, i.e. upper bounds; the exact values
+		// stay on the GPU and only the indirect commands see them.
+		const u32 reported_factor = adaptive
+			? max_factor : CLAMP((u32) state.tessellation.fixed_factor, 1u, max_factor);
+		slot.counters = { .patch_count = patch_capacity, .vertex_count = vertex_capacity,
+			.index_count = index_capacity, .wire_index_count = index_capacity * 2u,
+			.source_triangle_count = triangle_count, .max_factor_seen = reported_factor };
+		tessellated.active_gpu_slot = slot_idx;
+		tessellated.active = true;
+		tessellated.patch_count = patch_capacity;
+		tessellated.vertex_count = vertex_capacity;
+		tessellated.index_count = index_capacity;
+		tessellated.wire_index_count = index_capacity * 2u;
 		tessellated.gpu_planned = true;
 		return tessellated.active;
+	}
+
+	// Publishes the GPU's own counters for display. Deliberately touches nothing
+	// the draw path reads: active, active_gpu_slot and the capacities are all
+	// decided the frame they are dispatched.
+	inline void consume_stats(VulkanContext* ctx, State& state)
+	{
+		if (!stats_wanted(state)) { return; }
+		for (i32 object_id : state.scene.indexes.mesh_object_ids)
+		{
+			auto found = state.scene.objects.find(object_id);
+			if (found == state.scene.objects.end()) { continue; }
+			TessellatedGeometry& tessellated = found->second.mesh.tessellated_geometry;
+			for (auto& slot : tessellated.gpu_slots)
+			{
+				if (!slot.stats_readback_pending
+					|| ctx->frame_number < slot.stats_ready_frame_number)
+				{
+					continue;
+				}
+				slot.counters_readback.read_gpu_buffer(&slot.counters, sizeof(slot.counters));
+				slot.stats_readback_pending = false;
+				tessellated.stats = slot.counters;
+				tessellated.stats_valid = true;
+				// The GPU either flagged overflow itself or emitted more than fit.
+				tessellated.overflowed = slot.counters.overflowed != 0
+					|| slot.counters.patch_count > slot.patch_capacity
+					|| slot.counters.vertex_count > slot.vertex_capacity
+					|| slot.counters.index_count > slot.index_capacity;
+			}
+		}
 	}
 
 	inline void reset_stats(State& state)
@@ -420,14 +488,14 @@ namespace Tessellation
 		state.tessellation.source_triangle_count = 0; state.tessellation.patch_count = 0;
 		state.tessellation.generated_vertex_count = 0; state.tessellation.generated_index_count = 0;
 		state.tessellation.mesh_count = 0; state.tessellation.overflowed_mesh_count = 0;
-		state.tessellation.max_factor_seen = 1; state.tessellation.readback_age = 0;
+		state.tessellation.max_factor_seen = 1;
 	}
 
 	inline void update(FrameRenderGraph& graph, VulkanContext* ctx,
 		State& state, const Camera& camera, f32 fov)
 	{
 		scene_ensure_indexes(state);
-		consume_readbacks(ctx, state);
+		consume_stats(ctx, state);
 		reset_stats(state);
 		state.data_oriented.frame.tessellation_candidate_count += (i32) state.scene.indexes.mesh_object_ids.length();
 		if (!state.tessellation.enabled)
@@ -451,9 +519,12 @@ namespace Tessellation
 			{
 				state.tessellation.mesh_count++;
 				state.tessellation.source_triangle_count += (i32) (found->second.mesh.index_count / 3);
-				state.tessellation.patch_count += (i32) tessellated.patch_count;
-				state.tessellation.generated_vertex_count += (i32) tessellated.vertex_count;
-				state.tessellation.generated_index_count += (i32) tessellated.index_count;
+				// Report what the GPU actually produced once it has come back;
+				// capacities would otherwise read as wildly inflated totals.
+				const TessellationCounters& reported = tessellated.stats;
+				state.tessellation.patch_count += (i32) (tessellated.stats_valid ? reported.patch_count : 0u);
+				state.tessellation.generated_vertex_count += (i32) (tessellated.stats_valid ? reported.vertex_count : 0u);
+				state.tessellation.generated_index_count += (i32) (tessellated.stats_valid ? reported.index_count : 0u);
 			}
 			if (tessellated.overflowed) { state.tessellation.overflowed_mesh_count++; }
 		}

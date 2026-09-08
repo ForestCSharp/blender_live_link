@@ -14,5 +14,6 @@ namespace RuntimeStateOverrides
 		}
 		if (config.hide_ui) { in_state.debug_ui.visible = false; }
 		if (config.wireframe) { in_state.wireframe.shaded_wireframe = true; }
+		if (config.tessellation) { in_state.tessellation.enabled = true; }
 	}
 }

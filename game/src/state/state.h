@@ -158,6 +158,9 @@ struct State
 		bool game_running = true;
 		bool blender_data_loaded = false;
 		bool is_simulating = true;
+		// Benchmarking hides the debug UI, so diagnostics that are normally
+		// gated on the UI being open need this to stay collected.
+		bool benchmark_active = false;
 		std::optional<std::string> init_file;
 	} runtime;
 
@@ -509,8 +512,6 @@ struct State
 		i32 mesh_count = 0;
 		i32 overflowed_mesh_count = 0;
 		i32 max_factor_seen = 1;
-		bool readback_supported = true;
-		i32 readback_age = 0;
 	} tessellation;
 
 	struct SkyState

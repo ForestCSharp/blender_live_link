@@ -25,6 +25,9 @@ namespace RuntimeConfig
 		// Dumps the largest live-link payload seen (the full-scene sync) to this
 		// path, so `--no-live-link -f <path>` can replay the scene without Blender.
 		std::optional<std::string> live_link_capture;
+		// Tessellation defaults off and has no UI-free toggle, which makes the
+		// GPU-driven tessellation path impossible to exercise headlessly.
+		bool tessellation = false;
 		bool print_gpu_timings = false;
 	};
 
@@ -62,6 +65,7 @@ namespace RuntimeConfig
 		config.wireframe = is_set("GAME2_WIREFRAME");
 		config.output_mode = string_value("GAME2_OUTPUT_MODE");
 		config.live_link_capture = string_value("GAME2_LIVE_LINK_CAPTURE");
+		config.tessellation = is_set("GAME2_TESSELLATION");
 
 		config.screenshot_path = string_value("GAME2_SCREENSHOT");
 		if (const char* screenshot_frame = environment_value("GAME2_SCREENSHOT_FRAME"))

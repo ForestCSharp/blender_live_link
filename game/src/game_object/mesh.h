@@ -11,13 +11,13 @@ static_assert(sizeof(TessellationCounters) == 32, "TessellationCounters shader l
 
 struct TessellatedGeometry
 {
-	static constexpr u32 GPU_SLOT_COUNT = 2;
+	// One slot is enough now that draw commands are written on the GPU. The
+	// second slot only existed so the CPU could read counters from one slot
+	// while the other was being written, which cost two frames of latency.
+	static constexpr u32 GPU_SLOT_COUNT = 1;
 
 	struct GpuSlot
 	{
-		bool readback_requested = false;
-		bool has_counts = false;
-		u64 ready_frame_number = 0;
 		u32 patch_capacity = 0;
 		u32 vertex_capacity = 0;
 		u32 index_capacity = 0;
@@ -29,20 +29,38 @@ struct TessellatedGeometry
 		GpuBuffer<Vertex> vertex_buffer;
 		GpuBuffer<u32> index_buffer;
 		GpuBuffer<u32> wire_index_buffer;
+
+		// Written by tessellation_write_draw_commands.comp from the counters, so
+		// the index count never has to travel back to the CPU.
+		GpuBuffer<VkDrawIndexedIndirectCommand> draw_command_buffer;
+		GpuBuffer<VkDrawIndirectCommand> wire_draw_command_buffer;
+
+		// Diagnostics only. Nothing in the draw path waits on this, so it can be
+		// arbitrarily stale and is skipped entirely when no one is reading the
+		// numbers. Removing readback from the *draw path* is what bought the
+		// latency win; the stats never needed to be on that path.
 		GpuBuffer<TessellationCounters> counters_readback;
+		bool stats_readback_pending = false;
+		u64 stats_ready_frame_number = 0;
 	};
 
 	bool active = false;
 	bool overflowed = false;
 	bool gpu_planned = false;
-	bool readback_supported = true;
 	u32 active_gpu_slot = GPU_SLOT_COUNT;
 	u32 next_gpu_slot = 0;
-	u32 readback_age = 0;
 	u32 patch_count = 0;
 	u32 vertex_count = 0;
+	// Capacities. These drive the draw path and are always valid the frame they
+	// are set; the exact emitted totals live on the GPU.
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
+
+	// Last values actually reported by the GPU, a few frames behind. Display
+	// only - never consult these to decide whether or what to draw.
+	TessellationCounters stats = {};
+	bool stats_valid = false;
+
 	GpuSlot gpu_slots[GPU_SLOT_COUNT];
 };
 
@@ -211,6 +229,11 @@ struct MeshRenderView
 	VkBuffer wire_index_buffer = VK_NULL_HANDLE;
 	u32 index_count = 0;
 	u32 wire_index_count = 0;
+	// Tessellated geometry draws indirectly: the counts live in these buffers,
+	// written by the GPU in the same frame, so index_count/wire_index_count are
+	// only upper bounds for tessellated views.
+	VkBuffer draw_command_buffer = VK_NULL_HANDLE;
+	VkBuffer wire_draw_command_buffer = VK_NULL_HANDLE;
 	bool is_tessellated = false;
 };
 
@@ -235,6 +258,8 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 			.wire_index_buffer = slot.wire_index_buffer.get_gpu_buffer(),
 			.index_count = tessellated.index_count,
 			.wire_index_count = tessellated.wire_index_count,
+			.draw_command_buffer = slot.draw_command_buffer.get_gpu_buffer(),
+			.wire_draw_command_buffer = slot.wire_draw_command_buffer.get_gpu_buffer(),
 			.is_tessellated = true,
 		};
 	}
@@ -325,6 +350,8 @@ void mesh_cleanup_tessellated_geometry(Mesh& in_mesh)
 		slot.vertex_buffer.destroy_gpu_buffer();
 		slot.index_buffer.destroy_gpu_buffer();
 		slot.wire_index_buffer.destroy_gpu_buffer();
+		slot.draw_command_buffer.destroy_gpu_buffer();
+		slot.wire_draw_command_buffer.destroy_gpu_buffer();
 		slot.counters_readback.destroy_gpu_buffer();
 	}
 	in_mesh.tessellated_geometry = {};

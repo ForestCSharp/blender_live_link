@@ -226,6 +226,13 @@ struct FrameRenderGraph
 			VK_ACCESS_2_INDEX_READ_BIT);
 	}
 
+	// Draw commands sourced from a buffer the GPU or a prior upload wrote.
+	FrameGraphBuffer indirect_read(FrameGraphBuffer in_resource)
+	{
+		return buffer_usage(in_resource, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+			VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+	}
+
 	FrameGraphBuffer transfer_source(FrameGraphBuffer in_resource)
 	{
 		return buffer_usage(in_resource, VK_PIPELINE_STAGE_2_TRANSFER_BIT,

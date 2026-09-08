@@ -214,6 +214,7 @@ int main(int argc, char** argv)
 			args["benchmark-output"].as<std::string>()
 		);
 		state.debug_ui.visible = false;
+		state.runtime.benchmark_active = true;
 	}
 
 	InputSystem::install_error_callback();

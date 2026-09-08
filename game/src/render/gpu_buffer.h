@@ -23,6 +23,7 @@ struct GpuBufferUsage
 	bool prefer_device_local = false;
 	bool transfer_src = false;
 	bool readback = false;
+	bool indirect_buffer = false;
 };
 
 // Static (non-stream) buffers default to device-local + staging upload on
@@ -109,6 +110,7 @@ public:
 			if (usage.storage_buffer)	{ usage_flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; }
 			if (usage.uniform_buffer)	{ usage_flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
 			if (usage.transfer_src)		{ usage_flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT; }
+			if (usage.indirect_buffer)	{ usage_flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
 
 			VkBufferCreateInfo buffer_create_info = {
 				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -316,6 +318,11 @@ protected:
 			{
 				dst_stage |= VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
 				dst_access |= VK_ACCESS_2_INDEX_READ_BIT;
+			}
+			if (usage.indirect_buffer)
+			{
+				dst_stage |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+				dst_access |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 			}
 			if (usage.storage_buffer)
 			{
