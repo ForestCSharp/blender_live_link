@@ -179,6 +179,12 @@ struct Mesh
 	bool skinned_vertex_cache_valid = false;
 	TessellatedGeometry tessellated_geometry;
 
+	// Conservative bounds of the deformed mesh in local space, refreshed by
+	// pack_skin_matrices each frame. Skinned meshes have no meaningful static
+	// bounds, so without this they cannot be frustum culled at all.
+	BoundingBox skinned_local_bounds;
+	bool skinned_local_bounds_valid = false;
+
 	// Slice of the shared geometry arena holding this mesh's static geometry.
 	// Invalid for skinned meshes and for meshes that did not fit; those fall
 	// back to the per-mesh vertex_buffer/index_buffer path.
@@ -234,6 +240,23 @@ MeshRenderView mesh_get_render_view(Mesh& in_mesh)
 	}
 
 	return out_view;
+}
+
+// Largest distance from the mesh origin to any bind-pose corner. Skinning
+// blends a vertex toward its bones' translations, so this radius bounds how far
+// a deformed vertex can sit from the bone it follows.
+inline f32 mesh_bind_pose_radius(const Mesh& in_mesh)
+{
+	f32 radius_squared = 0.0f;
+	for (i32 corner_index = 0; corner_index < 8; ++corner_index)
+	{
+		const HMM_Vec3 corner = HMM_V3(
+			(corner_index & 1) ? in_mesh.bounding_box.max.X : in_mesh.bounding_box.min.X,
+			(corner_index & 2) ? in_mesh.bounding_box.max.Y : in_mesh.bounding_box.min.Y,
+			(corner_index & 4) ? in_mesh.bounding_box.max.Z : in_mesh.bounding_box.min.Z);
+		radius_squared = MAX(radius_squared, HMM_LenSqrV3(corner));
+	}
+	return sqrtf(radius_squared);
 }
 
 // True when this mesh can be drawn from the shared arena, filling out_slice with

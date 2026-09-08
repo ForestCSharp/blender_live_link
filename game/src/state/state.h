@@ -33,7 +33,8 @@ static constexpr i32 MAX_SHADOW_CASCADES = 4;
 enum CullEntryFlag : u32
 {
 	CullEntryFlag_Renderable = 1u << 0,	// visible and has a mesh
-	CullEntryFlag_Skinned    = 1u << 1,	// bounds are not valid; never culled
+	CullEntryFlag_Skinned    = 1u << 1,	// informational; drives the cull stat
+	CullEntryFlag_NoBounds   = 1u << 2,	// no usable bounds; never culled
 };
 
 // One cull candidate, parallel to State::render_objects.items and indexed by
@@ -891,6 +892,17 @@ void build_render_object_snapshot(State& in_state)
 			if (object.mesh.has_skinned_vertices)
 			{
 				entry.flags |= CullEntryFlag_Skinned;
+				// pack_skin_matrices runs earlier in the frame, so the deformed
+				// bounds it derived describe this frame's pose.
+				if (object.mesh.skinned_local_bounds_valid)
+				{
+					entry.world_bounds = bounding_box_transform(
+						object.mesh.skinned_local_bounds, object.current_transform);
+				}
+				else
+				{
+					entry.flags |= CullEntryFlag_NoBounds;
+				}
 			}
 			else
 			{

@@ -59,12 +59,16 @@ void cull_objects(
 			continue;
 		}
 
-		// TODO: Compute animated bounds for skinned meshes so they can be
-		// frustum culled safely.
-		if (entry.flags & CullEntryFlag_Skinned)
+		// Skinned meshes carry conservative bounds derived from their packed
+		// skin matrices, so they cull like anything else. Only entries with no
+		// usable bounds at all bypass the tests.
+		if (entry.flags & CullEntryFlag_NoBounds)
 		{
 			out_visible.add(entry_index);
-			in_state.data_oriented.frame.cull_skinned_visible_count += 1;
+			if (entry.flags & CullEntryFlag_Skinned)
+			{
+				in_state.data_oriented.frame.cull_skinned_visible_count += 1;
+			}
 			continue;
 		}
 
@@ -89,6 +93,10 @@ void cull_objects(
 		}
 
 		out_visible.add(entry_index);
+		if (entry.flags & CullEntryFlag_Skinned)
+		{
+			in_state.data_oriented.frame.cull_skinned_visible_count += 1;
+		}
 	}
 
 	in_state.data_oriented.frame.cull_calls += 1;

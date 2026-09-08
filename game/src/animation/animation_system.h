@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cfloat>
+
 #include <cmath>
 
 #include "state/state.h"
@@ -89,6 +91,7 @@ namespace AnimationSystem
 	
 			Mesh& mesh = found->second.mesh;
 			mesh.skin_matrix_arena_offset = -1;
+			mesh.skinned_local_bounds_valid = false;
 			if (!mesh.has_skinned_vertices || mesh.skin_matrix_count == 0 || !mesh.skin_matrices)
 			{
 				continue;
@@ -117,11 +120,44 @@ namespace AnimationSystem
 				}
 			}
 	
+			// Conservative deformed bounds, built from the same matrices being
+			// packed. A deformed vertex is a convex blend of (L_i * v + t_i), so
+			// it never leaves the AABB of the bone translations expanded by
+			// max||L_i|| * bind-pose radius. The Frobenius norm is an upper bound
+			// on the operator norm, which keeps the estimate safe rather than
+			// tight. Unwritten bones were reset to identity above, so their
+			// t = 0 is included and covers vertices that stay in bind pose.
+			const f32 bind_pose_radius = mesh_bind_pose_radius(mesh);
+			HMM_Vec3 deformed_min = HMM_V3(FLT_MAX, FLT_MAX, FLT_MAX);
+			HMM_Vec3 deformed_max = HMM_V3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+			f32 max_linear_norm = 0.0f;
+
 			mesh.skin_matrix_arena_offset = (i32) in_state.skin_matrices.items.length();
 			for (u32 matrix_idx = 0; matrix_idx < mesh.skin_matrix_count; ++matrix_idx)
 			{
-				in_state.skin_matrices.items.add(mesh.skin_matrices[matrix_idx]);
+				const HMM_Mat4& skin_matrix = mesh.skin_matrices[matrix_idx];
+
+				const HMM_Vec3 translation = skin_matrix.Columns[3].XYZ;
+				deformed_min = HMM_MinV3(deformed_min, translation);
+				deformed_max = HMM_MaxV3(deformed_max, translation);
+
+				f32 linear_norm_squared = 0.0f;
+				for (i32 column_index = 0; column_index < 3; ++column_index)
+				{
+					linear_norm_squared += HMM_LenSqrV3(skin_matrix.Columns[column_index].XYZ);
+				}
+				max_linear_norm = MAX(max_linear_norm, sqrtf(linear_norm_squared));
+
+				in_state.skin_matrices.items.add(skin_matrix);
 			}
+
+			const f32 bounds_padding = max_linear_norm * bind_pose_radius;
+			const HMM_Vec3 padding_vector = HMM_V3(bounds_padding, bounds_padding, bounds_padding);
+			mesh.skinned_local_bounds = {
+				.min = deformed_min - padding_vector,
+				.max = deformed_max + padding_vector,
+			};
+			mesh.skinned_local_bounds_valid = mesh.skin_matrix_count > 0;
 			in_state.data_oriented.frame.animation_skin_matrix_uploads += 1;
 		}
 	

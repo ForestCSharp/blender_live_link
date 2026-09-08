@@ -84,10 +84,13 @@ public:
 			return;
 		}
 
-		if (phase == Phase::WaitingForLiveLink
-			&& in_state.data_oriented.import_history.length() > 0)
+		// Blender sends an empty reset before the full sync, so "any update
+		// drained" is satisfied while the scene is still in flight. Large scenes
+		// then get captured empty - test_file is ~39 MB and loses that race
+		// regularly. Wait for an update that actually delivered objects.
+		if (phase == Phase::WaitingForLiveLink && scene_has_arrived(in_state))
 		{
-			printf("Automated screenshot: first Live Link update drained\n");
+			printf("Automated screenshot: Live Link scene drained\n");
 			phase = Phase::WaitingForGi;
 		}
 
@@ -195,6 +198,21 @@ public:
 	}
 
 private:
+	// True once a drained live-link update carried at least one object. An
+	// empty scene never satisfies this, so a genuinely empty capture times out
+	// loudly rather than silently producing a blank baseline.
+	static bool scene_has_arrived(const State& in_state)
+	{
+		for (const auto& import_stats : in_state.data_oriented.import_history)
+		{
+			if (import_stats.object_count > 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	enum class Phase
 	{
 		Disabled,
