@@ -5,6 +5,7 @@
 # Running ./build.sh -web selects the browser renderer (combine with -g or -python)
 # Running ./build.sh -g only rebuilds the default Vulkan game and runs it
 # Running ./build.sh --package-only generates schemas and packages the extension without launching either application
+# Running ./build.sh -port N puts Blender and the renderer on live link TCP port N instead of 65432
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 BASE_DIR="${SCRIPT_DIR##*/}"
@@ -861,6 +862,24 @@ while [[ $# -gt 0 ]]; do
     	shift # past argument
     	shift # past argument
     	;;
+    -port|--port)
+		if [[ $# -lt 2 ]]; then
+			echo "Error: $1 requires a TCP port"
+			exit 1
+		fi
+		# Exported, not passed as a flag: Blender, game/build.sh and
+		# game_web/build.sh are all launched as children of this script and
+		# read BLENDER_LIVE_LINK_PORT themselves, so one export covers the
+		# whole run. Only exported when asked for, leaving an inherited
+		# value untouched otherwise.
+		if [[ ! "$2" =~ ^[0-9]+$ ]] || (( $2 < 1 || $2 > 65535 )); then
+			echo "Error: $1 must be a TCP port between 1 and 65535, got \"$2\""
+			exit 1
+		fi
+		export BLENDER_LIVE_LINK_PORT="$2"
+		shift # past argument
+		shift # past value
+		;;
     -screenshot|--screenshot)
 		if [[ $# -lt 2 || -z "$2" ]]; then
 			echo "Error: $1 requires a capture-set directory"

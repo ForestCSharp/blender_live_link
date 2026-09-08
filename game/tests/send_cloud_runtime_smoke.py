@@ -308,7 +308,8 @@ if os.environ.get("CLOUD_SMOKE_PAYLOAD_ONLY") == "1":
 deadline = time.monotonic() + float(os.environ.get("CLOUD_SMOKE_CONNECT_SECONDS", "30"))
 while True:
     try:
-        connection = socket.create_connection(("127.0.0.1", 65432), timeout=1.0)
+        connection = socket.create_connection(
+            ("127.0.0.1", int(os.environ.get("BLENDER_LIVE_LINK_PORT", "65432"))), timeout=1.0)
         break
     except ConnectionRefusedError:
         if time.monotonic() >= deadline:

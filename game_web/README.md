@@ -25,8 +25,10 @@ web bridge, including one using a fallback HTTP port. On systems with `lsof`
 and `ps`, the launcher also recognizes and stops this checkout's native game
 or older web bridge when it holds the Live Link port. It does not terminate
 unrelated processes. If another app owns HTTP port 8000, the viewer uses an
-available port and prints/opens its actual URL. Blender's TCP port stays 65432;
-an unidentified owner of that port is reported rather than terminated.
+available port and prints/opens its actual URL. Blender's TCP port defaults to
+65432 and follows `$BLENDER_LIVE_LINK_PORT`, the same variable Blender and the
+native game read; an unidentified owner of that port is reported rather than
+terminated.
 
 Only one Blender producer is accepted at a time. Ctrl+C stops the bridge.
 Closing the browser tab does not stop the bridge. A subsequent launch restarts

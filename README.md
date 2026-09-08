@@ -19,7 +19,8 @@ link loop, and understand what is currently wired together.
 Use `./build.sh -web` to select the browser renderer in place of `game/`.
 Combine it with `-python` for installed Blender, or `-g` to run only the web
 viewer using existing generated schemas. It opens http://127.0.0.1:8000 and
-receives Blender updates on port 65432. Relaunching replaces the previous web
+receives Blender updates on port 65432 (see Live Link port below). Relaunching
+replaces the previous web
 bridge automatically; if HTTP port 8000 is busy, it opens an available port.
 
 The web viewer needs Python 3.9+ and a WebGL2 browser, with no npm, pip packages,
@@ -347,7 +348,18 @@ in the native development build.
 ## Development Notes
 
 - The game listens on `127.0.0.1:65432`; the Blender extension connects to the
-  same address. Connection attempts and sends are nonblocking. Offline edits
+  same address. Set `BLENDER_LIVE_LINK_PORT` to use a different port: Blender,
+  the native game, and the web bridge all read it, defaulting to 65432 when it
+  is unset and refusing to start on a malformed value. Because `build.sh`
+  launches Blender and the renderer as child processes, exporting it once
+  covers every process in the run:
+
+  ```bash
+  BLENDER_LIVE_LINK_PORT=65433 ./build.sh
+  ```
+
+  Blender reads it at startup, so change it before launching Blender, not
+  after. The game's `--port` flag still overrides the variable. Connection attempts and sends are nonblocking. Offline edits
   are coalesced without exporting; reconnect sends a reset followed by the
   current full scene. Only one payload is in flight, and later edits are batched.
   Scene evaluation/export itself still runs on Blender's main thread.

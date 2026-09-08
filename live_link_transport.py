@@ -1,8 +1,36 @@
 """Blender-independent, single-payload nonblocking TCP transport."""
 import errno
+import os
 import select
 import socket
 import time
+
+DEFAULT_PORT = 65432
+PORT_ENV_VAR = 'BLENDER_LIVE_LINK_PORT'
+
+
+def resolve_port(environ=None):
+    """Live link TCP port: $BLENDER_LIVE_LINK_PORT, else DEFAULT_PORT.
+
+    A malformed value raises instead of falling back. Silently listening on a
+    different port than the one that was asked for produces exactly the
+    "why isn't Blender connecting" confusion this variable exists to avoid.
+    """
+    value = (os.environ if environ is None else environ).get(PORT_ENV_VAR, '').strip()
+    if not value:
+        return DEFAULT_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        port = -1
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f'{PORT_ENV_VAR} must be a TCP port between 1 and 65535, got {value!r}')
+    return port
+
+
+def default_address():
+    return ('127.0.0.1', resolve_port())
 
 
 class LiveLinkTransport:
@@ -11,9 +39,12 @@ class LiveLinkTransport:
     TICK_SECONDS = 0.002
     TICK_BYTES = 256 * 1024
 
-    def __init__(self, address=('127.0.0.1', 65432), *, socket_factory=socket.socket,
+    def __init__(self, address=None, *, socket_factory=socket.socket,
                  clock=time.monotonic, select_fn=select.select):
-        self.address = address
+        # Resolved here rather than at the call sites so every bare
+        # LiveLinkTransport() -- the add-on, the smoke tests -- honors the
+        # environment without each one repeating the lookup.
+        self.address = default_address() if address is None else address
         self.socket_factory = socket_factory
         self.clock = clock
         self.select = select_fn

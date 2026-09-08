@@ -917,17 +917,45 @@ namespace LiveLinkSystem
 	
 		// make a socket
 		state.live_link.blender_socket = socket_open(res->ai_family, res->ai_socktype, res->ai_protocol);
-	
-		// Allow us to reuse address and port
-		socket_set_reuse_addr_and_port(state.live_link.blender_socket, true);
-	
-		// bind our socket
-		SOCKET_OP(bind(state.live_link.blender_socket, res->ai_addr, res->ai_addrlen));
-	
-		const i32 backlog = 1;
-		SOCKET_OP(listen(state.live_link.blender_socket, backlog));
-	
+
+		// Reuse the address so a restart isn't blocked by our own TIME_WAIT
+		// sockets. Deliberately NOT SO_REUSEPORT: on macOS/BSD that lets a
+		// second instance bind the same port and silently steal Blender's
+		// connection instead of reporting the conflict.
+		socket_set_reuse_addr(state.live_link.blender_socket, true);
+
+		// Bind + listen. A live link port that's already taken is a normal
+		// misconfiguration (another game instance, or game_web/bridge.py), not
+		// a fatal error: report it and run without live link rather than
+		// exiting from this thread while the render loop is still going.
+		const bool bind_failed = bind(
+			state.live_link.blender_socket, res->ai_addr, res->ai_addrlen) != 0;
+		const int backlog = 1;
+		const bool listen_failed =
+			!bind_failed && listen(state.live_link.blender_socket, backlog) != 0;
+
 		freeaddrinfo(res);
+
+		if (bind_failed || listen_failed)
+		{
+			const int error = socket_get_last_error();
+			printf("live link: failed to %s 127.0.0.1:%s (error %i%s)\n",
+				bind_failed ? "bind" : "listen", state.live_link.port.c_str(), error,
+				error == socket_error_addr_in_use() ? ": port already in use" : "");
+			if (error == socket_error_addr_in_use())
+			{
+				printf("live link: another process is holding the port. Find it with\n"
+					"  lsof -nP -iTCP:%s -sTCP:LISTEN\n"
+					"and stop it (a stale game instance, or game_web/bridge.py from "
+					"./build.sh -web), or pass --port to use a different one.\n",
+					state.live_link.port.c_str());
+			}
+			printf("live link: continuing without live link; Blender updates will not arrive.\n");
+			socket_close(state.live_link.blender_socket);
+			state.live_link.blender_socket = socket_invalid();
+			socket_lib_quit();
+			return;
+		}
 
 		// Read exactly one prefix/body at a time: TCP may split a prefix or
 		// coalesce several updates. Timeouts retain the partial frame.

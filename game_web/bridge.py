@@ -18,7 +18,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
-from lifecycle import bind_live_link, request_shutdown, remember, forget
+from lifecycle import bind_live_link, request_shutdown, remember, forget, resolve_port
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -431,6 +431,10 @@ def main():
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
     validate()
+    try:
+        port = resolve_port()
+    except ValueError as exc:
+        raise SystemExit(str(exc))
     if args.check:
         print('Web assets and generated Python bindings ready (Three.js r180).')
         return
@@ -441,7 +445,7 @@ def main():
     http = None
     token = secrets.token_hex(32)
     try:
-        tcp = bind_live_link(functools.partial(TCPServer, RequestHandlerClass=Receiver), HERE)
+        tcp = bind_live_link(functools.partial(TCPServer, RequestHandlerClass=Receiver), HERE, port)
         handler = functools.partial(Handler, directory=str(HERE))
         try:
             http = ThreadingHTTPServer(('127.0.0.1', 8000), handler)
@@ -455,7 +459,7 @@ def main():
         remember(HERE, http.server_port, token)
         threading.Thread(target=tcp.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{http.server_port}'
-        print(f'Web renderer: {url} (Blender TCP: 65432). Ctrl+C to stop.', flush=True)
+        print(f'Web renderer: {url} (Blender TCP: {port}). Ctrl+C to stop.', flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         http.serve_forever()

@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lifecycle import is_project_renderer, state_path, bind_live_link
+from lifecycle import is_project_renderer, state_path, bind_live_link, resolve_port
 
 
 class LifecycleTests(unittest.TestCase):
@@ -30,11 +30,22 @@ class LifecycleTests(unittest.TestCase):
         root = Path('/tmp/project/game_web')
         def occupied(_address):
             raise OSError(errno.EADDRINUSE, 'busy')
+        # Pin the port: a developer with BLENDER_LIVE_LINK_PORT exported must
+        # not change what this test asserts.
         with patch('lifecycle.stop_legacy_listener', return_value=False) as stop, \
+             patch.dict('os.environ', {'BLENDER_LIVE_LINK_PORT': '65432'}), \
              patch('lifecycle.time.monotonic', side_effect=[0, 6]):
             with self.assertRaisesRegex(OSError, 'could not be identified'):
                 bind_live_link(occupied, root)
             stop.assert_called_once_with(root, 65432)
+
+    def test_resolve_port_reads_environment(self):
+        self.assertEqual(resolve_port({}), 65432)
+        self.assertEqual(resolve_port({'BLENDER_LIVE_LINK_PORT': ''}), 65432)
+        self.assertEqual(resolve_port({'BLENDER_LIVE_LINK_PORT': ' 65433 '}), 65433)
+        for bad in ('nope', '0', '65536', '-1', '65432.0'):
+            with self.assertRaisesRegex(ValueError, 'BLENDER_LIVE_LINK_PORT'):
+                resolve_port({'BLENDER_LIVE_LINK_PORT': bad})
 
     def test_http_fallback_and_repeat_launch(self):
         web_root = str(Path(__file__).resolve().parents[1])
@@ -46,16 +57,18 @@ class LifecycleTests(unittest.TestCase):
             busy_port = http_owner.getsockname()[1]
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1', 0))
-                tcp_port = reservation.getsockname()[1]
+                tcp_port = str(reservation.getsockname()[1])
             script = f'''
+import os
 import sys
 sys.path.insert(0, {web_root!r})
+# Drive the real port plumbing rather than stubbing the bind: this is the
+# same channel Blender and the native game read.
+os.environ['BLENDER_LIVE_LINK_PORT'] = {tcp_port!r}
 import bridge
 from pathlib import Path
 bridge.HERE = Path({directory!r})
 bridge.validate = lambda: None
-original_bind = bridge.bind_live_link
-bridge.bind_live_link = lambda factory, root: original_bind(factory, root, {tcp_port})
 original_http = bridge.ThreadingHTTPServer
 bridge.ThreadingHTTPServer = lambda address, handler: original_http(('127.0.0.1', {busy_port} if address[1] == 8000 else address[1]), handler)
 sys.argv = ['bridge.py', '--no-browser']

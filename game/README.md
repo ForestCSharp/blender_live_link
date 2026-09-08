@@ -146,8 +146,10 @@ pipeline cache defaults to `bin/pipeline_cache.bin`; override it with
 
 ## Live link
 
-The game listens on `127.0.0.1:65432` (override with `--port`); the Blender
-addon connects to it.
+The game listens on `127.0.0.1:65432`; the Blender addon connects to it. The
+port comes from `--port`, else `$BLENDER_LIVE_LINK_PORT`, else 65432; a value
+outside 1-65535 fails startup rather than falling back. If the port is already
+held by another process, the game reports it and runs on without live link.
 
 Sun energy in the game wire format/runtime is incident irradiance in W/m²
 before atmospheric attenuation. Blender retains its familiar artistic Sun

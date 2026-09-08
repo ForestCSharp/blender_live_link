@@ -184,7 +184,7 @@ int main(int argc, char** argv)
 
 	options.add_options()
 		("f,file", "File name", cxxopts::value<std::string>())
-		("p,port", "Live link TCP port", cxxopts::value<std::string>()->default_value("65432"))
+		("p,port", "Live link TCP port (default: $BLENDER_LIVE_LINK_PORT, else 65432)", cxxopts::value<std::string>())
 		("no-live-link", "Do not start the live-link server", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
 		("warmup-frames", "Benchmark warmup frame count", cxxopts::value<u64>()->default_value("300"))
 		("benchmark-frames", "Measured frame count; providing this enables benchmark mode", cxxopts::value<u64>())
@@ -202,7 +202,30 @@ int main(int argc, char** argv)
 	{
 		state.runtime.init_file = args["f"].as<std::string>();
 	}
-	state.live_link.port = args["port"].as<std::string>();
+	// --port beats $BLENDER_LIVE_LINK_PORT beats the built-in default. Resolved
+	// on the main thread before anything starts, so a bad value fails the
+	// process outright instead of only taking down the live link thread.
+	{
+		const char* environment_port = getenv("BLENDER_LIVE_LINK_PORT");
+		std::string port = "65432";
+		if (args.count("port") > 0)
+		{
+			port = args["port"].as<std::string>();
+		}
+		else if (environment_port != nullptr && environment_port[0] != '\0')
+		{
+			port = environment_port;
+		}
+		char* parse_end = nullptr;
+		const long port_value = strtol(port.c_str(), &parse_end, 10);
+		if (parse_end == port.c_str() || *parse_end != '\0' || port_value < 1 || port_value > 65535)
+		{
+			printf("Live link port must be between 1 and 65535, got \"%s\"%s\n", port.c_str(),
+				args.count("port") > 0 ? "" : " (from $BLENDER_LIVE_LINK_PORT)");
+			return 1;
+		}
+		state.live_link.port = port;
+	}
 	const bool no_live_link = args["no-live-link"].as<bool>();
 	const bool fullscreen = args["fullscreen"].as<bool>();
 	BenchmarkState benchmark;

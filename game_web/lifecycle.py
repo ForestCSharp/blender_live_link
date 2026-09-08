@@ -112,7 +112,34 @@ def stop_legacy_listener(root, port):
     return stopped
 
 
-def bind_live_link(factory, root, port=65432):
+DEFAULT_PORT = 65432
+PORT_ENV_VAR = 'BLENDER_LIVE_LINK_PORT'
+
+
+def resolve_port(environ=None):
+    """Live link TCP port: $BLENDER_LIVE_LINK_PORT, else DEFAULT_PORT.
+
+    Mirrors resolve_port() in the repository-root live_link_transport.py, which
+    game_web deliberately does not import: the web renderer stays runnable from
+    this directory alone. A malformed value raises rather than silently binding
+    a port Blender is not dialing.
+    """
+    value = (os.environ if environ is None else environ).get(PORT_ENV_VAR, '').strip()
+    if not value:
+        return DEFAULT_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        port = -1
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f'{PORT_ENV_VAR} must be a TCP port between 1 and 65535, got {value!r}')
+    return port
+
+
+def bind_live_link(factory, root, port=None):
+    if port is None:
+        port = resolve_port()
     deadline = time.monotonic() + 5
     inspected = False
     while True:

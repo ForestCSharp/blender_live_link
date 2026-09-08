@@ -10,7 +10,8 @@ set -o pipefail
 #    (run the repo root ./build.sh once)
 #
 # Note: no Vulkan library is linked — volk dlopens the loader at runtime.
-# Only one runtime instance can listen on port 65432 at a time.
+# Only one runtime instance can listen on the live link port at a time
+#    (--port, else $BLENDER_LIVE_LINK_PORT, else 65432).
 
 # Store var for this script's directory
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )

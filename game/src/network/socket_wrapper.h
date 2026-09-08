@@ -28,16 +28,6 @@
 	#define INVALID_SOCKET -1
 #endif
 
-#define SOCKET_OP(f) \
-{\
-	int result = (f);\
-	if (result != 0)\
-	{\
-		printf("Line %i error on %s: %i\n", __LINE__, #f, errno);\
-		exit(0);\
-	}\
-}
-
 int socket_lib_init(void)
 {
 #if defined(SOCKET_PLATFORM_WINDOWS)
@@ -119,16 +109,28 @@ void socket_set_recv_timeout(SOCKET in_socket, const struct timeval& in_timeval)
 	#endif
 }
 
-void socket_set_reuse_addr_and_port(SOCKET in_socket, bool in_enable)
+int socket_get_last_error();
+
+// SO_REUSEADDR only: it lets a restart rebind a port still held by our own
+// TIME_WAIT sockets. SO_REUSEPORT is intentionally not set — on macOS/BSD it
+// would let a second instance bind the same listening port and silently take
+// over incoming connections instead of failing with EADDRINUSE.
+void socket_set_reuse_addr(SOCKET in_socket, bool in_enable)
 {
 	int optval = in_enable ? 1 : 0;
-	
+
 	#if defined(SOCKET_PLATFORM_WINDOWS)
-		SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)));
+		const int result = setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
 	#else
-		SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)));
-		SOCKET_OP(setsockopt(in_socket, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)));
+		const int result = setsockopt(in_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 	#endif
+
+	// Non-fatal: without it a rebind may hit a lingering TIME_WAIT socket,
+	// which the caller already reports.
+	if (result != 0)
+	{
+		printf("socket: SO_REUSEADDR failed (error %i)\n", socket_get_last_error());
+	}
 }
 
 int socket_get_last_error()
@@ -155,6 +157,15 @@ int socket_error_would_block()
 	return WSAEWOULDBLOCK;
 #else
 	return EWOULDBLOCK;
+#endif
+}
+
+int socket_error_addr_in_use()
+{
+#if defined(SOCKET_PLATFORM_WINDOWS)
+	return WSAEADDRINUSE;
+#else
+	return EADDRINUSE;
 #endif
 }
 
