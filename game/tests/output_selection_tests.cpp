@@ -12,7 +12,7 @@ enum class EDisplayOutputMode
 	HDR10,
 };
 
-#include "render/output_selection.inl"
+#include "render/core/output_selection.inl"
 
 int main()
 {

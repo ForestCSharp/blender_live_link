@@ -10,9 +10,9 @@
 #include "network/socket_wrapper.h"
 #include "game_object/camera.h"
 #include "game_object/game_object.h"
-#include "render/vulkan_context.h"
-#include "render/gpu_buffer.h"
-#include "render/render_pass.h"
+#include "render/core/vulkan_context.h"
+#include "render/core/gpu_buffer.h"
+#include "render/core/render_pass.h"
 
 // ObjectData (shared with shaders)
 #include "shader_common.h"

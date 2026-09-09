@@ -11,7 +11,7 @@
 
 #include "blender_live_link_generated.h"
 #include "core/dynamic_array.h"
-#include "render/imgui_layer.h"
+#include "render/passes/imgui/imgui_layer.h"
 #include "state/state.h"
 
 namespace LiveLinkSystem

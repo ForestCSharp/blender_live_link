@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "render/auto_adaptation_math.h"
+#include "render/passes/auto_adaptation/auto_adaptation_math.h"
 
 using namespace AutoAdaptationMath;
 

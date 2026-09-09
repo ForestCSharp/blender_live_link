@@ -348,7 +348,7 @@ linear-sRGB → Rec.2020 → GT7/ICtCp → linear-sRGB transform. A fixed 1.575 
 SDR integration calibration matches the renderer's EV-0 18% gray to the former
 AgX-backed local path; it is not a claim that scene units are physical nits.
 The port retains Polyphony Digital's MIT notice in
-`src/render/gt7_tonemapping.h`.
+`src/render/passes/tonemapping/gt7_tonemapping.h`.
 
 AgX uses the official Blender 5.2 view transforms instead of the former compact
 GLSL approximation. The checked-in SDR asset bakes `AgX Base Rec.1886`; EDR and

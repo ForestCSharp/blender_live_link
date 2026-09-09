@@ -8,8 +8,8 @@
 #include "GLFW/glfw3.h"
 #include "handmade_math/HandmadeMath.h"
 
-#include "render/frame_render_graph.h"
-#include "render/fullscreen_pipeline.h"
+#include "render/core/frame_render_graph.h"
+#include "render/core/fullscreen_pipeline.h"
 
 struct TestComputePushConstants
 {

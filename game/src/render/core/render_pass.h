@@ -1,0 +1,548 @@
+#pragma once
+
+#include <cassert>
+#include <functional>
+
+#include "core/types.h"
+#include "core/dynamic_array.h"
+#include "core/timings.h"
+#include "render/core/vulkan_context.h"
+
+// Render-pass framework built on Vulkan dynamic rendering.
+//
+// The framework owns pass targets (allocation + resize), image layout
+// transitions for its own outputs, render begin/end, the uniform
+// negative-height (Y-flip) viewport, and timing scopes. Pass files own
+// pipelines and record draws in the execute callback.
+//
+// The top-level ordered frame graph declares cross-pass reads. Specialized
+// internal workflows can still issue explicit usages for subresources.
+
+// Single/Swapchain (Phase 1), Array (Phase 3a shadows), Multi/Cubemap
+// (Phase 3c GI captures)
+enum class ERenderPassType
+{
+	Single,
+	Multi,		// pass_count independent 2D target sets
+	Array,		// one layered image; one slice per pass
+	Cubemap,	// one cube image; one face per pass, sampled as CUBE
+	Swapchain,
+};
+
+static constexpr i32 NUM_CUBE_FACES = 6;
+
+static constexpr i32 RENDER_PASS_MAX_COLOR_OUTPUTS = 4;
+
+// Persistent image targets used by the top-level frame pipeline. Multi-stage
+// effects have explicit identities rather than overloading intermediate/final.
+enum class RenderTargetId : i32
+{
+	ShadowDepth,
+	ShadowBlurHorizontal,
+	ShadowBlurred,
+	ShadowCascadeDebug,
+	Geometry,
+	SSAO,
+	SSAOBlurHorizontal,
+	SSAOBlurred,
+	ScreenSpaceShadowTrace,
+	ScreenSpaceShadows,
+	Lighting,
+	CloudRaymarch,
+	CloudHistory0,
+	CloudHistory1,
+	CloudComposite,
+	CloudShadow,
+	Fog,
+	DofCombine,
+	WireOverlay,
+	TemporalAAHistory0,
+	TemporalAAHistory1,
+	Tonemapping,
+	FXAA,
+	PresentationComposite,
+	Swapchain,
+
+	COUNT,
+};
+
+struct RenderPassOutputDesc
+{
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	VkAttachmentStoreOp store_op = VK_ATTACHMENT_STORE_OP_STORE;
+	VkClearValue clear_value = {};
+};
+
+enum class ERenderTargetExtent
+{
+	Render,
+	Output,
+	Fixed,
+};
+
+struct RenderTargetExtent
+{
+	ERenderTargetExtent type = ERenderTargetExtent::Render;
+	i32 width = -1;
+	i32 height = -1;
+	f32 width_scale = 1.0f;
+	f32 height_scale = 1.0f;
+};
+
+constexpr RenderTargetExtent render_target_extent_fixed(i32 in_width, i32 in_height)
+{
+	return { .type = ERenderTargetExtent::Fixed, .width = in_width, .height = in_height };
+}
+
+constexpr RenderTargetExtent render_target_extent_scaled(f32 in_scale)
+{
+	return { .width_scale = in_scale, .height_scale = in_scale };
+}
+
+constexpr RenderTargetExtent render_target_extent_output()
+{
+	return { .type = ERenderTargetExtent::Output };
+}
+
+struct RenderPassDesc
+{
+	i32 pass_count = 1;
+
+	i32 num_outputs = 0;
+	RenderPassOutputDesc outputs[RENDER_PASS_MAX_COLOR_OUTPUTS];
+	RenderPassOutputDesc depth_output;	// format == UNDEFINED means no depth
+
+	RenderTargetExtent extent;
+	ERenderPassType type = ERenderPassType::Single;
+	const char* debug_label = nullptr;
+};
+
+inline RenderPassDesc render_target_color_desc(
+	const char* in_label,
+	VkFormat in_format,
+	RenderTargetExtent in_extent = {},
+	VkAttachmentLoadOp in_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+	VkClearValue in_clear_value = {})
+{
+	return {
+		.num_outputs = 1,
+		.outputs = {{
+			.format = in_format,
+			.load_op = in_load_op,
+			.clear_value = in_clear_value,
+		}},
+		.extent = in_extent,
+		.debug_label = in_label,
+	};
+}
+
+inline RenderPassDesc render_target_mrt_desc(
+	const char* in_label,
+	VkFormat in_format,
+	i32 in_output_count,
+	RenderTargetExtent in_extent = {},
+	VkAttachmentLoadOp in_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+	VkClearValue in_clear_value = {})
+{
+	assert(in_output_count > 0 && in_output_count <= RENDER_PASS_MAX_COLOR_OUTPUTS);
+	RenderPassDesc result = {
+		.num_outputs = in_output_count,
+		.extent = in_extent,
+		.debug_label = in_label,
+	};
+	for (i32 output_index = 0; output_index < in_output_count; ++output_index)
+	{
+		result.outputs[output_index] = {
+			.format = in_format,
+			.load_op = in_load_op,
+			.store_op = VK_ATTACHMENT_STORE_OP_STORE,
+			.clear_value = in_clear_value,
+		};
+	}
+	return result;
+}
+
+struct RenderPass
+{
+	RenderPassDesc desc = {};
+
+	// Single/Array/Cubemap: one image per color output (Array/Cubemap are
+	// layered with per-layer attachment views). Multi: one image per output
+	// per pass instance, flat-indexed [image_idx * num_outputs + output_idx].
+	// depth_outputs mirrors the image-set count.
+	DynamicArray<GpuImage> color_outputs;
+	DynamicArray<GpuImage> depth_outputs;
+
+	i32 current_width = -1;
+	i32 current_height = -1;
+
+	void validate_desc()
+	{
+		const bool has_any_output = desc.num_outputs > 0 || desc.depth_output.format != VK_FORMAT_UNDEFINED;
+		assert(has_any_output || desc.type == ERenderPassType::Swapchain);
+		assert(desc.num_outputs <= RENDER_PASS_MAX_COLOR_OUTPUTS);
+		assert(desc.type != ERenderPassType::Array || desc.pass_count >= 1);
+		assert(desc.type != ERenderPassType::Multi || desc.pass_count >= 1);
+	}
+
+	bool has_depth() const
+	{
+		return desc.depth_output.format != VK_FORMAT_UNDEFINED;
+	}
+
+	// Independent target sets (Multi renders each instance into its own images)
+	i32 get_image_set_count() const
+	{
+		return desc.type == ERenderPassType::Multi ? desc.pass_count : 1;
+	}
+
+	i32 get_natural_pass_count() const
+	{
+		switch (desc.type)
+		{
+			case ERenderPassType::Single:		return 1;
+			case ERenderPassType::Multi:		return desc.pass_count;
+			case ERenderPassType::Array:		return desc.pass_count;
+			case ERenderPassType::Cubemap:		return NUM_CUBE_FACES;
+			case ERenderPassType::Swapchain:	return 1;
+		}
+		assert(false);
+		return 1;
+	}
+
+	void release_targets()
+	{
+		for (GpuImage& image : color_outputs)
+		{
+			vulkan_context_retire_image(g_vulkan_context, image);
+		}
+		color_outputs.reset();
+
+		for (GpuImage& image : depth_outputs)
+		{
+			vulkan_context_retire_image(g_vulkan_context, image);
+		}
+		depth_outputs.reset();
+	}
+
+	void allocate_outputs()
+	{
+		if (desc.type == ERenderPassType::Swapchain)
+		{
+			return;
+		}
+
+		const bool is_cubemap = desc.type == ERenderPassType::Cubemap;
+		const u32 array_layers = desc.type == ERenderPassType::Array ? (u32) desc.pass_count
+								: is_cubemap ? (u32) NUM_CUBE_FACES
+								: 1u;
+		const i32 image_set_count = get_image_set_count();
+
+		for (i32 image_idx = 0; image_idx < image_set_count; ++image_idx)
+		{
+			for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+			{
+				char output_label[192];
+				snprintf(output_label, sizeof(output_label), "%s Color %i Set %i",
+					desc.debug_label ? desc.debug_label : "RenderPass", output_idx, image_idx);
+				color_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.outputs[output_idx].format,
+					.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+						   | VK_IMAGE_USAGE_SAMPLED_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+						   | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+					.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+					.label = output_label,
+				}));
+			}
+
+			if (has_depth())
+			{
+				char depth_label[192];
+				snprintf(depth_label, sizeof(depth_label), "%s Depth Set %i",
+					desc.debug_label ? desc.debug_label : "RenderPass", image_idx);
+				depth_outputs.add(gpu_image_create(g_vulkan_context->allocator, g_vulkan_context->device, (GpuImageDesc) {
+					.width = (u32) current_width,
+					.height = (u32) current_height,
+					.format = desc.depth_output.format,
+					.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					.aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+					.array_layers = array_layers,
+					.cubemap = is_cubemap,
+					.label = depth_label,
+				}));
+			}
+		}
+	}
+
+	void init(const RenderPassDesc& in_desc)
+	{
+		cleanup();
+		desc = in_desc;
+		validate_desc();
+
+		if (desc.extent.type == ERenderTargetExtent::Fixed)
+		{
+			handle_resize(desc.extent.width, desc.extent.height);
+		}
+	}
+
+	GpuImage& get_color_output(i32 in_output_idx = 0, i32 in_image_idx = 0)
+	{
+		const i32 flat_idx = in_image_idx * desc.num_outputs + in_output_idx;
+		assert(color_outputs.is_valid_index(flat_idx));
+		return color_outputs[flat_idx];
+	}
+
+	GpuImage& get_depth_output(i32 in_image_idx = 0)
+	{
+		assert(depth_outputs.is_valid_index(in_image_idx));
+		return depth_outputs[in_image_idx];
+	}
+
+	// Recreates targets at the new size. Old targets retire against the
+	// current frame fence, so render-scale changes do not idle the device.
+	void handle_resize(i32 in_width, i32 in_height)
+	{
+		if (desc.extent.type == ERenderTargetExtent::Fixed)
+		{
+			if (current_width > 0)
+			{
+				return;
+			}
+			in_width = desc.extent.width;
+			in_height = desc.extent.height;
+		}
+
+		const i32 new_width = MAX(1, (i32)(in_width * desc.extent.width_scale + 0.5f));
+		const i32 new_height = MAX(1, (i32)(in_height * desc.extent.height_scale + 0.5f));
+		if (new_width == current_width && new_height == current_height)
+		{
+			return;
+		}
+
+		current_width = new_width;
+		current_height = new_height;
+
+		if (desc.type != ERenderPassType::Swapchain)
+		{
+			release_targets();
+			allocate_outputs();
+		}
+	}
+
+	// Transitions outputs, begins dynamic rendering with the declared
+	// attachments, sets the Y-flipped viewport + scissor, runs the callback,
+	// ends rendering. The callback binds its own pipeline/sets and draws.
+	// Array passes loop once per slice (callback receives the slice index).
+	void execute(
+		VulkanContext* ctx,
+		const std::function<void(i32)>& in_callback,
+		i32 in_pass_count = -1)
+	{
+		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+
+		CPU_TIMING_SCOPE(desc.debug_label ? desc.debug_label : "RenderPass");
+		const i32 gpu_timing_slot = gpu_timestamps_begin_scope(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
+		vulkan_begin_debug_label(ctx, desc.debug_label ? desc.debug_label : "RenderPass");
+
+		const bool is_swapchain = desc.type == ERenderPassType::Swapchain;
+		const bool is_multi = desc.type == ERenderPassType::Multi;
+		const bool is_sliced = desc.type == ERenderPassType::Array || desc.type == ERenderPassType::Cubemap;
+
+		const VkExtent2D render_extent = is_swapchain
+			? ctx->swapchain_extent
+			: (VkExtent2D) { (u32) current_width, (u32) current_height };
+
+		const i32 natural_pass_count = get_natural_pass_count();
+		const i32 pass_count =
+			in_pass_count >= 0 ? MIN(in_pass_count, natural_pass_count) : natural_pass_count;
+		for (i32 pass_idx = 0; pass_idx < pass_count; ++pass_idx)
+		{
+			// Declare the exact attachment slices used by this rendering
+			// instance and apply all required barriers in one dependency.
+			DynamicArray<ImageUsage> attachment_usages;
+			if (!is_swapchain)
+			{
+				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+				{
+					GpuImage& output = get_color_output(output_idx, is_multi ? pass_idx : 0);
+					attachment_usages.add({
+						.image = &output,
+						.range = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.baseMipLevel = 0,
+							.levelCount = 1,
+							.baseArrayLayer = is_sliced ? (u32)pass_idx : 0,
+							.layerCount = 1,
+						},
+						.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+						.access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.discard = desc.outputs[output_idx].load_op != VK_ATTACHMENT_LOAD_OP_LOAD,
+					});
+				}
+				if (has_depth())
+				{
+					GpuImage& depth = get_depth_output(is_multi ? pass_idx : 0);
+					attachment_usages.add({
+						.image = &depth,
+						.range = {
+							.aspectMask = depth.aspects,
+							.baseMipLevel = 0,
+							.levelCount = 1,
+							.baseArrayLayer = is_sliced ? (u32)pass_idx : 0,
+							.layerCount = 1,
+						},
+						.stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+							   | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+						.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+								| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+						.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+						.discard = desc.depth_output.load_op != VK_ATTACHMENT_LOAD_OP_LOAD,
+					});
+				}
+				gpu_image_apply_usages(
+					command_buffer,
+					attachment_usages.data(),
+					(u32)attachment_usages.length()
+				);
+			}
+
+			VkRenderingAttachmentInfo color_attachments[RENDER_PASS_MAX_COLOR_OUTPUTS] = {};
+			u32 color_attachment_count = 0;
+
+			if (is_swapchain)
+			{
+				// Swapchain passes render straight to the acquired image. Ops
+				// come from outputs[0] when declared, else overwrite defaults.
+				const RenderPassOutputDesc& output_desc = desc.outputs[0];
+				color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = ctx->swapchain_image_views[ctx->swapchain_image_index],
+					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.loadOp = desc.num_outputs > 0 ? output_desc.load_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.storeOp = desc.num_outputs > 0 ? output_desc.store_op : VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = output_desc.clear_value,
+				};
+			}
+			else
+			{
+				for (i32 output_idx = 0; output_idx < desc.num_outputs; ++output_idx)
+				{
+					GpuImage& output_image = get_color_output(output_idx, is_multi ? pass_idx : 0);
+					color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+						.imageView = is_sliced ? output_image.layer_views[pass_idx] : output_image.view,
+						.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.loadOp = desc.outputs[output_idx].load_op,
+						.storeOp = desc.outputs[output_idx].store_op,
+						.clearValue = desc.outputs[output_idx].clear_value,
+					};
+				}
+			}
+
+			VkRenderingAttachmentInfo depth_attachment = {};
+			if (has_depth() && !is_swapchain)
+			{
+				GpuImage& depth_image = get_depth_output(is_multi ? pass_idx : 0);
+				depth_attachment = (VkRenderingAttachmentInfo) {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = is_sliced ? depth_image.layer_views[pass_idx] : depth_image.view,
+					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.loadOp = desc.depth_output.load_op,
+					.storeOp = desc.depth_output.store_op,
+					.clearValue = desc.depth_output.clear_value,
+				};
+			}
+
+			VkRenderingInfo rendering_info = {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = {
+					.offset = { 0, 0 },
+					.extent = render_extent,
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = color_attachment_count,
+				.pColorAttachments = color_attachment_count > 0 ? color_attachments : nullptr,
+				.pDepthAttachment = (has_depth() && !is_swapchain) ? &depth_attachment : nullptr,
+			};
+
+			vkCmdBeginRendering(command_buffer, &rendering_info);
+
+			// Uniform Y-flip convention across all passes
+			VkViewport flipped_viewport = {
+				.x = 0.0f,
+				.y = (f32) render_extent.height,
+				.width = (f32) render_extent.width,
+				.height = -(f32) render_extent.height,
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f,
+			};
+			vkCmdSetViewport(command_buffer, 0, 1, &flipped_viewport);
+
+			VkRect2D scissor = {
+				.offset = { 0, 0 },
+				.extent = render_extent,
+			};
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+			in_callback(pass_idx);
+
+			vkCmdEndRendering(command_buffer);
+		}
+
+		gpu_timestamps_end_scope(ctx, gpu_timing_slot);
+		vulkan_end_debug_label(ctx);
+	}
+
+	void cleanup()
+	{
+		release_targets();
+		current_width = -1;
+		current_height = -1;
+	}
+};
+
+struct RenderTargetRegistry
+{
+	RenderPass targets[(i32) RenderTargetId::COUNT];
+
+	RenderPass& get(RenderTargetId in_id)
+	{
+		return targets[(i32) in_id];
+	}
+
+	void init(RenderTargetId in_id, const RenderPassDesc& in_desc)
+	{
+		get(in_id).init(in_desc);
+	}
+
+	void handle_resize(
+		i32 in_render_width,
+		i32 in_render_height,
+		i32 in_output_width,
+		i32 in_output_height)
+	{
+		for (RenderPass& target : targets)
+		{
+			const bool output = target.desc.extent.type == ERenderTargetExtent::Output;
+			target.handle_resize(
+				output ? in_output_width : in_render_width,
+				output ? in_output_height : in_render_height);
+		}
+	}
+
+	void cleanup()
+	{
+		for (RenderPass& target : targets)
+		{
+			target.cleanup();
+		}
+	}
+};

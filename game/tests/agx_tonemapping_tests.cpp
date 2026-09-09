@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "render/agx_tonemapping.h"
+#include "render/passes/tonemapping/agx_tonemapping.h"
 
 using GT7Tonemapping::RGB;
 

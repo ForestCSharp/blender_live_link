@@ -8,7 +8,7 @@
 #include "GLFW/glfw3.h"
 
 #include "core/runtime_config.h"
-#include "render/gi.h"
+#include "render/passes/gi/gi.h"
 #include "state/state.h"
 
 class AutomatedScreenshot

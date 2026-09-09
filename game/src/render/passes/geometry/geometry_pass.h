@@ -1,0 +1,326 @@
+#pragma once
+
+#include "core/types.h"
+#include "render/core/vulkan_context.h"
+#include "render/core/render_types.h"
+#include "render/core/shader_module.h"
+#include "render/core/frame_data.h"
+#include "game_object/mesh.h"
+
+// Deferred geometry pass: writes the 4-attachment G-buffer (see
+// geometry.frag for the layout). Same descriptor set 0 (layout A) and push
+// constants as the old forward pass; materials/bindless textures are baked
+// into the G-buffer here and consumed by the lighting pass.
+
+// Pass-constant only. Per-object data reaches the shader through the ObjectData
+// SSBO, indexed by gl_InstanceIndex (the draw's firstInstance).
+struct GeometryPassPushConstants
+{
+	i32 skinning_debug_view;
+};
+static_assert(sizeof(GeometryPassPushConstants) == 4, "Geometry push constants must match GLSL");
+
+struct GeometryPass
+{
+	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkPipeline skinned_pipeline = VK_NULL_HANDLE;
+
+	// Bind-on-change trackers, reset each pass begin. Arena-resident meshes all
+	// share one buffer pair, so a pass over them binds once instead of per draw.
+	VkPipeline bound_pipeline = VK_NULL_HANDLE;
+	VkBuffer bound_vertex_buffer = VK_NULL_HANDLE;
+	VkBuffer bound_skinned_vertex_buffer = VK_NULL_HANDLE;
+	VkBuffer bound_index_buffer = VK_NULL_HANDLE;
+};
+
+static GeometryPass geometry_pass;
+
+// Builds one geometry pipeline variant (static or skinned vertex input)
+static VkPipeline geometry_pass_create_pipeline(VulkanContext* ctx, const char* in_vertex_shader_path, bool in_skinned)
+{
+	VkShaderModule vertex_module = create_shader_module_from_file(ctx->device, in_vertex_shader_path);
+	VkShaderModule fragment_module = create_shader_module_from_file(ctx->device, "bin/shaders/geometry.frag.spv");
+
+	VkPipelineShaderStageCreateInfo shader_stages[] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = vertex_module,
+			.pName = "main",
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = fragment_module,
+			.pName = "main",
+		},
+	};
+
+	VkDynamicState dynamic_states[] = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR,
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamic_state = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = sizeof(dynamic_states) / sizeof(dynamic_states[0]),
+		.pDynamicStates = dynamic_states,
+	};
+
+	VkVertexInputBindingDescription vertex_bindings[] = {
+		{
+			.binding = 0,
+			.stride = sizeof(Vertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
+		{
+			.binding = 1,
+			.stride = sizeof(SkinnedVertex),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		},
+	};
+
+	VkVertexInputAttributeDescription vertex_attributes[] = {
+		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, position) },
+		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(Vertex, normal) },
+		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, texcoord) },
+		{ .location = 3, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_indices) },
+		{ .location = 4, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(SkinnedVertex, joint_weights) },
+	};
+
+	VkPipelineVertexInputStateCreateInfo vertex_input = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = in_skinned ? 2u : 1u,
+		.pVertexBindingDescriptions = vertex_bindings,
+		.vertexAttributeDescriptionCount = in_skinned ? 5u : 3u,
+		.pVertexAttributeDescriptions = vertex_attributes,
+	};
+
+	VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.primitiveRestartEnable = VK_FALSE,
+	};
+
+	VkPipelineViewportStateCreateInfo viewport = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		.viewportCount = 1,
+		.scissorCount = 1,
+	};
+
+	// Disable rasterizer culling; mesh winding is not constrained.
+	VkPipelineRasterizationStateCreateInfo rasterization = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL,
+		.cullMode = VK_CULL_MODE_NONE,
+		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.lineWidth = 1.0f,
+	};
+
+	VkPipelineMultisampleStateCreateInfo multisampling = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+	};
+
+	VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_TRUE,
+		.depthWriteEnable = VK_TRUE,
+		.depthCompareOp = Render::DEPTH_COMPARE_OP,
+	};
+
+	VkPipelineColorBlendAttachmentState color_blend_attachments[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 attachment_idx = 0; attachment_idx < Render::GBUFFER_OUTPUT_COUNT; ++attachment_idx)
+	{
+		color_blend_attachments[attachment_idx] = (VkPipelineColorBlendAttachmentState) {
+			.blendEnable = VK_FALSE,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
+							| VK_COLOR_COMPONENT_G_BIT
+							| VK_COLOR_COMPONENT_B_BIT
+							| VK_COLOR_COMPONENT_A_BIT,
+		};
+	}
+
+	VkPipelineColorBlendStateCreateInfo color_blending = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		.attachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pAttachments = color_blend_attachments,
+	};
+
+	VkFormat color_formats[Render::GBUFFER_OUTPUT_COUNT];
+	for (i32 format_idx = 0; format_idx < Render::GBUFFER_OUTPUT_COUNT; ++format_idx)
+	{
+		color_formats[format_idx] = Render::GBUFFER_FORMAT;
+	}
+
+	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = Render::GBUFFER_OUTPUT_COUNT,
+		.pColorAttachmentFormats = color_formats,
+		.depthAttachmentFormat = Render::SCENE_DEPTH_FORMAT,
+	};
+
+	VkGraphicsPipelineCreateInfo pipeline_create_info = {
+		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+		.pNext = &pipeline_rendering_create_info,
+		.stageCount = 2,
+		.pStages = shader_stages,
+		.pVertexInputState = &vertex_input,
+		.pInputAssemblyState = &input_assembly,
+		.pViewportState = &viewport,
+		.pRasterizationState = &rasterization,
+		.pMultisampleState = &multisampling,
+		.pDepthStencilState = &depth_stencil,
+		.pColorBlendState = &color_blending,
+		.pDynamicState = &dynamic_state,
+		.layout = geometry_pass.pipeline_layout,
+		.renderPass = VK_NULL_HANDLE,
+	};
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VK_CHECK(vulkan_create_graphics_pipelines(ctx, 1, &pipeline_create_info, &pipeline));
+
+	vkDestroyShaderModule(ctx->device, vertex_module, nullptr);
+	vkDestroyShaderModule(ctx->device, fragment_module, nullptr);
+
+	return pipeline;
+}
+
+void geometry_pass_init(VulkanContext* ctx)
+{
+	VkPushConstantRange push_constant_range = {
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset = 0,
+		.size = sizeof(GeometryPassPushConstants),
+	};
+
+	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &frame_data.per_frame_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &push_constant_range,
+	};
+
+	VK_CHECK(vkCreatePipelineLayout(ctx->device, &pipeline_layout_create_info, nullptr, &geometry_pass.pipeline_layout));
+
+	geometry_pass.pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry.vert.spv", /*in_skinned*/ false);
+	geometry_pass.skinned_pipeline = geometry_pass_create_pipeline(ctx, "bin/shaders/geometry_skinned.vert.spv", /*in_skinned*/ true);
+}
+
+void geometry_pass_bind(VulkanContext* ctx, bool in_skinning_debug_view)
+{
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+
+	geometry_pass.bound_pipeline = VK_NULL_HANDLE;
+	geometry_pass.bound_vertex_buffer = VK_NULL_HANDLE;
+	geometry_pass.bound_skinned_vertex_buffer = VK_NULL_HANDLE;
+	geometry_pass.bound_index_buffer = VK_NULL_HANDLE;
+
+	vkCmdBindDescriptorSets(
+		command_buffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		geometry_pass.pipeline_layout,
+		0, 1, &frame_data.per_frame_sets[ctx->frame_index],
+		0, nullptr
+	);
+
+	// Constant for the whole pass, so it is pushed once here rather than per draw.
+	const GeometryPassPushConstants push_constants = {
+		.skinning_debug_view = in_skinning_debug_view ? 1 : 0,
+	};
+	vulkan_cmd_push_constants(
+		ctx,
+		geometry_pass.pipeline_layout,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, sizeof(push_constants), &push_constants);
+}
+
+// Lazy GPU buffer creation happens here, on the main thread
+void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
+{
+	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
+
+	// Resolve arena residency before touching mesh_get_render_view: that call
+	// lazily creates this mesh's own VkBuffers, which an arena-resident mesh
+	// never binds. Asking first is what keeps the per-mesh allocations from
+	// being created at all.
+	MeshArenaSlice arena_slice;
+	const bool from_arena = mesh_get_arena_slice(in_mesh, arena_slice);
+
+	MeshRenderView render_view = {};
+	bool skinned = false;
+	if (!from_arena)
+	{
+		render_view = mesh_get_render_view(in_mesh);
+		skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
+		if (skinned && in_mesh.skin_matrix_arena_offset < 0)
+		{
+			return;
+		}
+	}
+
+	VkPipeline wanted_pipeline = skinned ? geometry_pass.skinned_pipeline : geometry_pass.pipeline;
+	if (geometry_pass.bound_pipeline != wanted_pipeline)
+	{
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
+		geometry_pass.bound_pipeline = wanted_pipeline;
+	}
+
+	VkBuffer vertex_buffer = from_arena
+		? g_geometry_arena.vertex_buffer.get_gpu_buffer()
+		: render_view.vertex_buffer;
+	VkBuffer index_buffer = from_arena
+		? g_geometry_arena.index_buffer.get_gpu_buffer()
+		: render_view.index_buffer;
+
+	if (geometry_pass.bound_vertex_buffer != vertex_buffer)
+	{
+		VkDeviceSize vertex_buffer_offset = 0;
+		vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_buffer_offset);
+		geometry_pass.bound_vertex_buffer = vertex_buffer;
+	}
+
+	if (skinned)
+	{
+		VkBuffer skinned_vertex_buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
+		if (geometry_pass.bound_skinned_vertex_buffer != skinned_vertex_buffer)
+		{
+			VkDeviceSize skinned_offset = 0;
+			vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
+			geometry_pass.bound_skinned_vertex_buffer = skinned_vertex_buffer;
+		}
+	}
+
+	if (geometry_pass.bound_index_buffer != index_buffer)
+	{
+		vulkan_cmd_bind_index_buffer(ctx, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+		geometry_pass.bound_index_buffer = index_buffer;
+	}
+
+	// firstInstance carries the object index; the shader reads gl_InstanceIndex.
+	if (from_arena)
+	{
+		vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
+			arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) in_object_index);
+	}
+	else if (render_view.is_tessellated)
+	{
+		// The index count lives in a GPU-written command; the CPU only knows the
+		// capacity, which would draw past what was emitted.
+		vulkan_cmd_draw_indexed_indirect(ctx, render_view.draw_command_buffer, 0, 1,
+			sizeof(VkDrawIndexedIndirectCommand));
+	}
+	else
+	{
+		vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) in_object_index);
+	}
+}
+
+void geometry_pass_shutdown(VulkanContext* ctx)
+{
+	vkDestroyPipeline(ctx->device, geometry_pass.skinned_pipeline, nullptr);
+	vkDestroyPipeline(ctx->device, geometry_pass.pipeline, nullptr);
+	vkDestroyPipelineLayout(ctx->device, geometry_pass.pipeline_layout, nullptr);
+}

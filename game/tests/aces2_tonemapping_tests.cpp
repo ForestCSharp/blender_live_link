@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "render/aces2_tonemapping.h"
+#include "render/passes/tonemapping/aces2_tonemapping.h"
 
 using GT7Tonemapping::RGB;
 

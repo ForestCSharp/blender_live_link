@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <vector>
 
-#include "render/aces2_tonemapping.h"
-#include "render/agx_tonemapping.h"
-#include "render/gt7_tonemapping.h"
+#include "render/passes/tonemapping/aces2_tonemapping.h"
+#include "render/passes/tonemapping/agx_tonemapping.h"
+#include "render/passes/tonemapping/gt7_tonemapping.h"
 #include "tonemapping_shared.h"
 
 namespace TonemappingValidation

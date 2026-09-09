@@ -2,7 +2,7 @@
 #include <cassert>
 #include <cmath>
 
-#include "render/bloom_profile.inl"
+#include "render/passes/bloom/bloom_profile.inl"
 
 static void expect_near(float actual, float expected, float tolerance = 1e-6f)
 {

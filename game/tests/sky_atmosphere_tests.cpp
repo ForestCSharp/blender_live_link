@@ -14,8 +14,8 @@
 #include "GLFW/glfw3.h"
 #include "handmade_math/HandmadeMath.h"
 
-#include "render/sky_atmosphere_dirty.h"
-#include "render/solar_calibration.h"
+#include "render/passes/sky/sky_atmosphere_dirty.h"
+#include "render/passes/sky/solar_calibration.h"
 #include "scene/scene_system.h"
 
 static Object& add_sun(State& state, i32 uid, bool with_sky = true)

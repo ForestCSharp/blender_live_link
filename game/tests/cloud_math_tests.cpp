@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdint>
 
-#include "render/cloud_math.h"
+#include "render/passes/clouds/cloud_math.h"
 
 static void test_shell_intersection_and_sorting()
 {

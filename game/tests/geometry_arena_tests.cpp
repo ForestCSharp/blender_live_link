@@ -1,7 +1,7 @@
 #include <cassert>
 #include <cstdio>
 
-#include "render/geometry_arena_freelist.h"
+#include "render/core/geometry_arena_freelist.h"
 
 // Exercises the geometry arena's suballocation bookkeeping without Vulkan.
 // The arena hands vkCmdDrawIndexed its firstIndex/vertexOffset directly, so an

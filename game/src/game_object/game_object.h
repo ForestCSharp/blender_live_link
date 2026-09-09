@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/types.h"
-#include "render/gpu_buffer.h"
+#include "render/core/gpu_buffer.h"
 
 #include "handmade_math/HandmadeMath.h"
 

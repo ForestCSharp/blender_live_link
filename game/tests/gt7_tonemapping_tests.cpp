@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "render/gt7_tonemapping.h"
+#include "render/passes/tonemapping/gt7_tonemapping.h"
 
 using GT7Tonemapping::RGB;
 

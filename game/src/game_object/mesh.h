@@ -1,8 +1,8 @@
 #pragma once
 
-#include "render/gpu_buffer.h"
-#include "render/geometry_arena.h"
-#include "render/render_types.h"
+#include "render/core/gpu_buffer.h"
+#include "render/core/geometry_arena.h"
+#include "render/core/render_types.h"
 #include "tessellation_common.h"
 
 static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout");
