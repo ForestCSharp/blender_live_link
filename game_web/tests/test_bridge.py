@@ -10,7 +10,8 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bridge import Scene, TCPServer, Receiver, Handler, ThreadingHTTPServer, decode, snapshot
+from bridge import (Scene, TCPServer, Receiver, Handler, ThreadingHTTPServer, Viewers,
+                    decode, snapshot, watch_for_closed_viewers)
 from compiled_schemas.python import flatbuffers
 from compiled_schemas.python.Blender.LiveLink import Update, Object, Mesh, Vec3, Quat, Material, Vec4
 
@@ -132,6 +133,59 @@ class BridgeTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_viewer_connection_controls_shutdown(self):
+        """A dropped viewer connection is what frees the Blender TCP port."""
+        server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(
+            Handler, directory=str(Path(__file__).parents[1])))
+        server.scene = Scene()
+        server.viewers = Viewers()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        stopped = threading.Event()
+        real_shutdown = server.shutdown
+        server.shutdown = stopped.set
+        threading.Thread(target=watch_for_closed_viewers, args=(server, 0.5),
+                         kwargs={'startup_grace': 60, 'interval': 0.05},
+                         daemon=True).start()
+        # A raw socket: http.client hands its socket to the response object, so
+        # closing the connection alone would leave the descriptor open.
+        host, port = server.server_address
+        viewer = socket.create_connection((host, port))
+        try:
+            viewer.sendall(f'GET /api/alive HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n'.encode())
+            header = viewer.recv(200)
+            self.assertIn(b'200 OK', header)
+            self.assertIn(b'text/event-stream', header)
+            deadline = time.monotonic() + 5
+            while server.viewers.count == 0 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(server.viewers.count, 1)
+            # An open page keeps the renderer alive past the grace period.
+            self.assertFalse(stopped.wait(1.5))
+            viewer.close()
+            # Closing the page stops it, which is what releases the port.
+            self.assertTrue(stopped.wait(10), 'renderer did not stop after the viewer left')
+        finally:
+            viewer.close()
+            server.shutdown = real_shutdown
+            server.shutdown()
+            server.server_close()
+
+    def test_startup_grace_before_any_viewer(self):
+        """--no-browser must not stop before anyone has opened the page."""
+        viewers = Viewers()
+        self.assertFalse(viewers.ever_connected)
+        self.assertGreaterEqual(viewers.idle_seconds(), 0.0)
+        viewers.arrived()
+        self.assertTrue(viewers.ever_connected)
+        self.assertEqual(viewers.idle_seconds(), 0.0)
+        viewers.arrived()
+        viewers.left()
+        self.assertEqual(viewers.idle_seconds(), 0.0)  # a second tab still open
+        viewers.left()
+        self.assertGreater(viewers.idle_seconds(), 0.0)
+        viewers.left()
+        self.assertEqual(viewers.count, 0)
 
     def test_http_snapshot_isolation_and_origin(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(Path(__file__).parents[1])))

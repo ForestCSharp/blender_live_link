@@ -30,6 +30,12 @@ available port and prints/opens its actual URL. Blender's TCP port defaults to
 native game read; an unidentified owner of that port is reported rather than
 terminated.
 
+Closing the last viewer tab stops the renderer and releases the Blender TCP
+port, so a native game run started afterwards can bind it. Each open page holds
+an `/api/alive` connection; the bridge stops a few seconds after the last one
+drops, and a reload reconnects well inside that window. Pass
+`--idle-timeout 0` to keep it running until Ctrl+C instead.
+
 Only one Blender producer is accepted at a time. Ctrl+C stops the bridge.
 Closing the browser tab does not stop the bridge. A subsequent launch restarts
 it automatically; existing tabs on a fallback port may need the new printed URL.

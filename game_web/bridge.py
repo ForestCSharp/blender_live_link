@@ -5,6 +5,7 @@ from collections import deque, OrderedDict
 import functools
 import errno
 import secrets
+import select
 import hashlib
 import json
 import math
@@ -13,6 +14,7 @@ import socketserver
 import struct
 import sys
 import threading
+import time
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -28,6 +30,16 @@ except ImportError as exc:
     raise SystemExit('Missing generated Python schemas. Run the project-root ./build.sh first.') from exc
 
 MAX_FRAME = 128 * 1024 * 1024
+# Seconds to wait after the last viewer disconnects before stopping. Long
+# enough to ride out a page reload, short enough that the Blender TCP port is
+# free by the time you are back at the terminal.
+VIEWER_GRACE_SECONDS = 5.0
+# A page that has never been opened gets longer: the browser may still be
+# starting, or the URL may be opened by hand after --no-browser.
+STARTUP_GRACE_SECONDS = 600.0
+# Server -> viewer keepalive. Writing is what surfaces a socket whose peer is
+# gone; a silent connection would look alive forever.
+VIEWER_PING_SECONDS = 5.0
 
 
 def decode(payload):
@@ -343,10 +355,42 @@ class Handler(SimpleHTTPRequestHandler):
         return (self.headers.get('Host') == expected and
                 self.headers.get('Origin', 'http://' + expected) == 'http://' + expected)
 
+    def stream_alive(self):
+        """Hold one connection open for as long as this page is watching.
+
+        Tab closed, browser quit, laptop shut: the socket dies with it, and that
+        is what releases the Blender TCP port. A polled heartbeat cannot do this
+        job -- browsers throttle timers in background tabs to roughly once a
+        minute, so a backgrounded tab and a closed one look identical.
+        """
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.server.viewers.arrived()
+        try:
+            while True:
+                # EOF is what a closed tab looks like, and select reports it at
+                # once. Writing is not enough on its own: a write to a
+                # half-closed loopback socket can succeed indefinitely. The
+                # viewer never sends on this connection, so any readability
+                # here means it is finished with it.
+                readable, _, _ = select.select([self.connection], [], [], VIEWER_PING_SECONDS)
+                if readable:
+                    break
+                self.wfile.write(b': keepalive\n\n')
+                self.wfile.flush()
+        except (OSError, ValueError):
+            pass  # The viewer is gone; that is the signal, not an error.
+        finally:
+            self.server.viewers.left()
+
     def do_GET(self):
         if not self.allowed():
             return self.reply({'error': 'Local origin required'}, 403)
         url = urlsplit(self.path)
+        if url.path == '/api/alive':
+            return self.stream_alive()
         if url.path == '/api/scene':
             try:
                 query = parse_qs(url.query)
@@ -425,10 +469,56 @@ def validate():
             raise SystemExit('Vendored asset checksum mismatch: ' + name)
 
 
+class Viewers:
+    """Open viewer connections. Zero of them means nobody is watching."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.count = 0
+        self.ever_connected = False
+        self.empty_since = time.monotonic()
+
+    def arrived(self):
+        with self.lock:
+            self.count += 1
+            self.ever_connected = True
+
+    def left(self):
+        with self.lock:
+            self.count = max(0, self.count - 1)
+            if self.count == 0:
+                self.empty_since = time.monotonic()
+
+    def idle_seconds(self):
+        with self.lock:
+            return 0.0 if self.count else time.monotonic() - self.empty_since
+
+
+def watch_for_closed_viewers(http, grace, startup_grace=STARTUP_GRACE_SECONDS, interval=1.0):
+    """Stop the renderer once the last page has gone.
+
+    The bridge outlives its browser tab: closing the page used to leave this
+    process holding the Blender TCP port, so the next native game run bound
+    nothing and silently received no updates.
+    """
+    while True:
+        time.sleep(interval)
+        idle = http.viewers.idle_seconds()
+        if idle >= (grace if http.viewers.ever_connected else startup_grace):
+            print('No page is watching; stopping the web renderer and releasing '
+                  'the Blender TCP port.', flush=True)
+            threading.Thread(target=http.shutdown, daemon=True).start()
+            return
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--idle-timeout', type=float, default=VIEWER_GRACE_SECONDS,
+                        metavar='SECONDS',
+                        help='stop this long after the last page closes (0 to run until '
+                             f'Ctrl+C; default {VIEWER_GRACE_SECONDS:.0f})')
     args = parser.parse_args()
     validate()
     try:
@@ -456,10 +546,16 @@ def main():
             print(f'HTTP port 8000 is busy; using {http.server_port}.', flush=True)
         tcp.scene = http.scene = scene
         http.shutdown_token = token
+        http.viewers = Viewers()
+        if args.idle_timeout > 0:
+            threading.Thread(target=watch_for_closed_viewers,
+                             args=(http, args.idle_timeout), daemon=True).start()
         remember(HERE, http.server_port, token)
         threading.Thread(target=tcp.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{http.server_port}'
-        print(f'Web renderer: {url} (Blender TCP: {port}). Ctrl+C to stop.', flush=True)
+        stopping = ('stops when the page closes' if args.idle_timeout > 0
+                    else 'runs until Ctrl+C')
+        print(f'Web renderer: {url} (Blender TCP: {port}); {stopping}.', flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         http.serve_forever()

@@ -113,6 +113,11 @@ async function poll() {
   setTimeout(poll, 250);
 }
 poll();
+
+// Held open for as long as this page is watching. When the last one drops the
+// bridge stops and releases the Blender TCP port, so the next native game run
+// can bind it. EventSource reconnects on its own, so a reload is not a close.
+new EventSource('/api/alive');
 window.gameWebDiagnostics = () => ({ source, revision, session, ...resources.diagnostics(),
   geometries: renderer.info.memory.geometries, gpuTextures: renderer.info.memory.textures,
   cameraUp: camera.up.toArray(), cameraPosition: camera.position.toArray(),
