@@ -1477,7 +1477,11 @@ class LiveLinkConnection():
         update_reason,
         editor_camera,
     ):
-        if native_live_link_available() and not scene_uses_python_export_fallback():
+        # The host scene, not bpy.context.scene: serialization runs inside the
+        # temporary evaluation scene override, and that scene carries the
+        # property's default rather than the user's choice.
+        export_scene = self.active_export_scene or bpy.context.scene
+        if native_live_link_available() and not scene_uses_python_export_fallback(export_scene):
             self.update_sequence += 1
             output = self.make_update_native(
                 occurrences,
