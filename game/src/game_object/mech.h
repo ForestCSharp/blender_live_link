@@ -445,7 +445,7 @@ void update_mech_transforms()
 			{
 				Object& body = body_found->second;
 				body.current_transform.location = character_found->second.current_transform.location;
-				body.current_transform.rotation = character_found->second.current_transform.rotation;
+				body.current_transform.rotation = character_found->second.character.body_rotation;
 				body.current_transform.scale = body.initial_transform.scale;
 				std::string body_error;
 				if (mech_part_instance_can_render(body, body_error)) body.visibility = true;
@@ -485,6 +485,11 @@ void update_mech_transforms()
 					{
 						add_error(part_type, "socket transform is singular");
 						continue;
+					}
+					// Legs inherit the socket position, but keep their own world heading.
+					if (part_type == PartType::Legs)
+					{
+						attached_transform.rotation = character_found->second.character.legs_rotation;
 					}
 					attached_transform.scale = part.initial_transform.scale;
 					part.current_transform = attached_transform;

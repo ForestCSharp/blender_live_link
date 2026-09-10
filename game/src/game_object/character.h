@@ -28,6 +28,10 @@ struct Character
 	// Tweakable Settings
 	CharacterSettings settings;
 
+	// Independent world headings for the assembled mech.
+	HMM_Quat body_rotation;
+	HMM_Quat legs_rotation;
+
 	// Jolt State
 	JPH::CharacterSettings* jph_character_settings = nullptr;
 	JPH::Character* jph_character = nullptr;
@@ -82,6 +86,8 @@ Character character_create(JoltState& in_jolt_state, const CharacterSettings& in
 	// Return our Character struct
 	return (Character) {
 		.settings = in_settings,
+		.body_rotation = in_settings.initial_rotation,
+		.legs_rotation = in_settings.initial_rotation,
 		.jph_character_settings = jph_character_settings,
 		.jph_character = jph_character,
 	};
@@ -151,4 +157,16 @@ void character_move(Character& in_character, HMM_Vec3 in_move_vec, bool in_jump,
 
 	// Update the velocity
 	mCharacter->SetLinearVelocity(new_velocity);
+}
+
+// Blender/game forward is +Y and up is +Z. Ignore pitch and retain the
+// previous heading for stationary movement or a vertical look direction.
+void character_turn_heading(HMM_Quat& in_out_rotation, HMM_Vec3 in_direction, f32 in_delta_time)
+{
+	in_direction.Z = 0.0f;
+	if (HMM_LenSqrV3(in_direction) <= 1.0e-6f) return;
+	const HMM_Quat target = HMM_QFromAxisAngle_RH(
+		UnitVectors::Up, HMM_AngleRad(atan2f(-in_direction.X, in_direction.Y)));
+	in_out_rotation = HMM_SLerp(in_out_rotation,
+		HMM_Clamp(0.0f, 10.0f * in_delta_time, 1.0f), target);
 }

@@ -148,6 +148,8 @@ namespace InputSystem
 	
 		const bool jump = is_key_pressed(in_state, GLFW_KEY_SPACE);
 		character_move(player_character_state, move_direction, jump, in_delta_time);
+		character_turn_heading(player_character_state.body_rotation, camera.forward, in_delta_time);
+		character_turn_heading(player_character_state.legs_rotation, move_direction, in_delta_time);
 	}
 
 	void key_callback(GLFWwindow* in_window, i32 in_key, i32 in_scancode, i32 in_action, i32 in_mods)
