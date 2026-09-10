@@ -20,6 +20,8 @@ async (page) => {
     await test.waitForFunction(() => window.gameWebDiagnostics().cameraPosition[1] > -6.9);
     await test.keyboard.up('w');
     await test.keyboard.press('Escape');
+    // Automated Escape may not trigger Chrome's native pointer-lock release.
+    await test.evaluate(() => document.exitPointerLock());
     await test.waitForFunction(() => document.pointerLockElement === null);
     await test.locator('#reset-camera').click();
     const reset = await test.evaluate(() => window.gameWebDiagnostics().cameraPosition);

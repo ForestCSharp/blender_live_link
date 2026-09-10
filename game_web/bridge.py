@@ -84,6 +84,13 @@ def decode(payload):
             item = dict(id=obj.UniqueId(), name=(obj.Name() or b'').decode('utf-8', 'replace'),
                         visible=obj.Visibility(), position=components(obj.Location(), 'XYZ'),
                         scale=components(obj.Scale(), 'XYZ'), rotation=components(obj.Rotation(), 'XYZW'))
+            rigid = obj.RigidBody()
+            item['rigidBody'] = None
+            if rigid is not None:
+                mass = rigid.Mass()
+                if not math.isfinite(mass):
+                    raise ValueError('Invalid rigid-body mass')
+                item['rigidBody'] = dict(isDynamic=rigid.IsDynamic(), mass=mass)
             mesh = obj.Mesh()
             if mesh is not None:
                 table_bounds(mesh)
@@ -193,6 +200,7 @@ class Scene:
         self.camera_ready = False
         self.initial_camera = None
         self.revision = 0
+        self.generation = 0
         self.session = uuid.uuid4().hex
         self.connected = False
         self.error = ''
@@ -202,6 +210,7 @@ class Scene:
         self.full_floor = 0
 
     def clear(self):
+        self.generation += 1
         self.objects.clear()
         self.materials.clear()
         self.images.clear()
@@ -268,7 +277,7 @@ class Scene:
 
     def view(self, since=-1):
         with self.lock:
-            result = dict(revision=self.revision, session=self.session, connected=self.connected, error=self.error,
+            result = dict(revision=self.revision, generation=self.generation, session=self.session, connected=self.connected, error=self.error,
                           cameraReady=self.camera_ready, initialCamera=self.initial_camera)
             if since == self.revision:
                 return result | {'kind': 'unchanged'}
@@ -332,6 +341,8 @@ class TCPServer(socketserver.TCPServer):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".wasm": "application/wasm"}
+
     def handle(self):
         try:
             super().handle()
@@ -456,17 +467,19 @@ class Handler(SimpleHTTPRequestHandler):
 
 PUBLIC_FILES = {'/', '/index.html', '/app.js', '/camera.js', '/resources.js', '/lighting.js', '/style.css',
                 '/vendor/three/three.module.js', '/vendor/three/three.core.js',
-                '/vendor/three/OrbitControls.js'}
+                '/vendor/three/OrbitControls.js', '/physics.js',
+                '/vendor/jolt/jolt-physics.wasm.js', '/vendor/jolt/jolt-physics.wasm.wasm'}
 
 
 def validate():
     for name in PUBLIC_FILES - {'/'}:
         if not (HERE / name.lstrip('/')).is_file():
             raise SystemExit('Missing web asset: ' + name)
-    for line in (HERE / 'vendor/three/SHA256SUMS').read_text().splitlines():
-        digest, name = line.split()
-        if hashlib.sha256((HERE / 'vendor/three' / name).read_bytes()).hexdigest() != digest:
-            raise SystemExit('Vendored asset checksum mismatch: ' + name)
+    for vendor in ('three', 'jolt'):
+        for line in (HERE / 'vendor' / vendor / 'SHA256SUMS').read_text().splitlines():
+            digest, name = line.split()
+            if hashlib.sha256((HERE / 'vendor' / vendor / name).read_bytes()).hexdigest() != digest:
+                raise SystemExit('Vendored asset checksum mismatch: ' + name)
 
 
 class Viewers:

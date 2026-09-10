@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ScenePhysics } from './physics.js';
 import { SceneLights, configureParityShader } from './lighting.js';
 
 const FALLBACK = { color: [0.6,0.6,0.6,1], metallic: 0, roughness: 0.5, emission: [0,0,0,1], emissionStrength: 0 };
@@ -6,6 +7,8 @@ const IMAGE_FIELDS = ['colorImage','metallicImage','roughnessImage','emissionIma
 export class SceneResources {
   constructor(scene) {
     this.scene = scene;
+    this.physics = new ScenePhysics();
+    this.physicsSource = null;
     this.group = new THREE.Group();
     scene.add(this.group);
     this.objects = new Map(); this.materialData = new Map(); this.imageData = new Map();
@@ -26,11 +29,23 @@ export class SceneResources {
   }
   async apply(data) {
     if (data.kind === 'full') {
-      this.clear(); this.fullSnapshots++;
+      const key = `${data.session}:${data.generation ?? 0}`;
+      if (this.physicsSource !== key) {
+        this.clear(); this.physics.dispose(); this.physics = new ScenePhysics();
+        this.physicsSource = key;
+      } else {
+        // Recovery snapshots reconcile existing GPU and physics resources.
+        const ids = new Set(data.objects.map(o => o.id));
+        this.accumulate({ deleted: [...this.objects.keys()].filter(id => !ids.has(id)), objects: [], materials: [] });
+        this.materialData.clear(); this.imageData.clear();
+      }
+      this.fullSnapshots++;
       this.accumulate(data);
     } else if (data.kind === 'delta') {
       for (const batch of data.batches) { this.accumulate(batch); this.incrementalBatches++; }
     } else return;
+    await this.physics.ready;
+    if (this.disposed) return;
     await this.refreshTextures();
     if (!this.disposed) this.sync();
   }
@@ -41,8 +56,9 @@ export class SceneResources {
       if (old) { old.geometry.dispose(); this.group.remove(old); this.meshes.delete(id); }
     }
     for (const object of batch.objects) {
-      this.objects.set(object.id, { ...this.objects.get(object.id), ...object });
-      if (object.mesh !== undefined) this.dirtyMeshes.add(object.id);
+      const previous = this.objects.get(object.id);
+      if (object.mesh !== undefined && JSON.stringify(previous?.mesh) !== JSON.stringify(object.mesh)) this.dirtyMeshes.add(object.id);
+      this.objects.set(object.id, { ...previous, ...object });
     }
     for (const material of batch.materials) this.materialData.set(material.id, material);
     for (const image of batch.images || []) this.imageData.set(image.id, image);
@@ -148,11 +164,17 @@ export class SceneResources {
       mesh.name = object.name;
       mesh.castShadow = mesh.receiveShadow = true;
     }
+    this.physics.reconcile(this.objects);
+    this.physics.write(this.meshes);
     this.group.updateMatrixWorld(true);
     // Bounds also change on transform-only deltas and deletion.
     this.lights.sync(this.objects, this.bounds(), true);
     this.dirtyMeshes.clear();
   }
+  stepPhysics(dt, hidden = false) {
+    if (this.physics.step(dt, this.meshes, hidden)) this.lights.sync(this.objects, this.bounds(), true);
+  }
+  resetPhysics() { this.physics.reset(this.objects); this.sync(); }
   bounds() {
     const box = new THREE.Box3();
     this.group.updateMatrixWorld(true);
@@ -162,10 +184,10 @@ export class SceneResources {
   diagnostics() {
     let meshCount = 0, triangles = 0;
     for (const mesh of this.meshes.values()) if (mesh.visible) { meshCount++; triangles += mesh.geometry.index.count / 3; }
-    return { meshCount, triangles, fullSnapshots: this.fullSnapshots, incrementalBatches: this.incrementalBatches,
+    return { ...this.physics.diagnostics(), meshCount, triangles, fullSnapshots: this.fullSnapshots, incrementalBatches: this.incrementalBatches,
       geometryUploads: this.geometryUploads, materials: this.materials.size, textures: this.textures.size,
       lights: this.lights.items.size, previewLights: this.lights.preview.visible,
       objects: [...this.meshes].map(([id, mesh]) => ({ id, geometry: mesh.geometry.uuid, position: mesh.position.toArray(), scale: mesh.scale.toArray(), visible: mesh.visible })) };
   }
-  dispose() { this.disposed = true; this.abort.abort(); this.clear(); this.lights.dispose(); this.scene.remove(this.group); }
+  dispose() { this.disposed = true; this.abort.abort(); this.physics.dispose(); this.clear(); this.lights.dispose(); this.scene.remove(this.group); }
 }

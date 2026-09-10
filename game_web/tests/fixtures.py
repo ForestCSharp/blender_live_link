@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from compiled_schemas.python import flatbuffers
-from compiled_schemas.python.Blender.LiveLink import Update, Object, Mesh, Vec3, Vec4, Quat, Material, Image, EditorCamera, Light, PointLight, SpotLight, SunLight
+from compiled_schemas.python.Blender.LiveLink import Update, Object, Mesh, Vec3, Vec4, Quat, Material, Image, EditorCamera, Light, PointLight, SpotLight, SunLight, RigidBody
 
 CAMERA = {'position': [0, -7, 3], 'forward': [0, 1, -0.3], 'up': [0, 0, 1]}
 QUAD = {'positions': [-2,0,0, 2,0,0, 2,0,3, -2,0,3], 'normals': [0,-1,0]*4,
@@ -53,6 +53,9 @@ def encode(*, objects=(), materials=(), images=(), camera=None, deleted=(), rese
         Object.AddLocation(b, Vec3.CreateVec3(b, *obj.get('position', [0,0,0])))
         Object.AddScale(b, Vec3.CreateVec3(b, *obj.get('scale', [1,1,1])))
         Object.AddRotation(b, Quat.CreateQuat(b, *obj.get('rotation', [0,0,0,1])))
+        if obj.get('rigidBody') is not None:
+            rigid = obj['rigidBody']
+            Object.AddRigidBody(b, RigidBody.CreateRigidBody(b, rigid['isDynamic'], rigid['mass']))
         if mesh_offset is not None: Object.AddMesh(b, mesh_offset)
         if light_offset is not None: Object.AddLight(b, light_offset)
         object_offsets.append(Object.End(b))

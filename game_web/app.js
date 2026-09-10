@@ -31,10 +31,34 @@ new ResizeObserver(() => {
   camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
 }).observe($('viewport'));
-let lastFrame = performance.now();
+let lastFrame = performance.now(), physicsFrame = lastFrame;
+document.addEventListener('visibilitychange', () => {
+  lastFrame = physicsFrame = performance.now();
+  resources.physics.accumulator = 0;
+});
 renderer.setAnimationLoop(now => {
   controls.move((now - lastFrame) / 1000); lastFrame = now;
+  resources.stepPhysics((now - physicsFrame) / 1000, document.hidden); physicsFrame = now;
+  updatePhysicsStatus();
   renderer.render(scene, camera);
+});
+function updatePhysicsStatus() {
+  const d = resources.physics.diagnostics();
+  const label = d.physicsRunning ? 'Pause physics' : 'Resume physics';
+  if ($('physics-toggle').textContent !== label) $('physics-toggle').textContent = label;
+  const status = d.physicsState === 'ready'
+    ? `${d.dynamicBodies} dynamic · ${d.staticBodies} static${d.physicsErrors.length ? ' · ' + d.physicsErrors.join('; ') : ''}`
+    : d.physicsState;
+  if ($('physics-status').textContent !== status) $('physics-status').textContent = status;
+}
+$('physics-toggle').onclick = () => { resources.physics.running = !resources.physics.running; };
+$('physics-reset').onclick = () => resources.resetPhysics();
+window.addEventListener('keydown', e => {
+  if (document.pointerLockElement !== renderer.domElement || !e.ctrlKey || !['Space', 'KeyR'].includes(e.code)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (e.code === 'Space') $('physics-toggle').click();
+  else resources.resetPhysics();
 });
 $('frame').onclick = () => controls.frame(resources.bounds());
 $('reset-camera').onclick = () => controls.reset();
@@ -47,6 +71,7 @@ window.addEventListener('keydown', e => {
 });
 $('live').onclick = () => {
   selection++; source = 'live'; revision = -1;
+  resources.physicsSource = null;
   $('live').setAttribute('aria-pressed', 'true'); error();
 };
 $('file').onchange = async () => {

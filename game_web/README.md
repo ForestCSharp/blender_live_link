@@ -137,6 +137,47 @@ PCF maps (six faces for point lights). Directional shadow coverage fits visible
 scene bounds; geometry/light edits refresh the maps. Disabling shadows or deleting
 lights disposes the maps. This is not native cascaded/EVRP shadow filtering.
 
+## Rigid-body physics
+
+Jolt runs locally in the browser using vendored `jolt-physics@1.0.0`, a
+single-threaded JavaScript/WASM distribution. No npm, extra Python packages,
+workers, cross-origin isolation, or external network access are required. The
+bridge serves `.wasm` as `application/wasm`; `build.sh -norun` checks asset hashes.
+A browser with WebAssembly SIMD support is required. Initialization failures leave
+the static viewer usable and appear in the physics status.
+
+Only meshes with Blender rigid bodies collide. Active, enabled, non-kinematic
+bodies are dynamic; other exported rigid bodies are static. Both use convex hulls
+of exported mesh positions with signed object scale, matching the native shape
+choice. Dynamic bodies use exported mass, calculated inertia, and Jolt defaults
+for friction, restitution, and damping. Gravity is `(0, 0, -10)` and the world
+supports 1,024 bodies. Invalid mass, scale, or hulls leave the mesh visible with an
+object-specific error. Visibility does not disable collision.
+
+Physics starts automatically on source selection. **Pause/Resume physics** stops
+or restarts simulation; **Reset physics** restores the latest authored poses and
+zero velocities without changing pause state. While the viewport has pointer
+capture, Ctrl+Space toggles simulation and Ctrl+R resets it. These shortcuts do not
+replace browser shortcuts outside capture. The debug camera is independent.
+
+Stepping uses a fixed 60 Hz with at most five steps per render frame. Excess time
+is discarded; hidden pages suspend physics. Moving bodies refresh shadows without
+rebuilding GPU geometry. Native `game/` currently vendors Jolt 5.2.1 and uses a
+variable timestep; web/native results are behaviorally comparable, not guaranteed
+bit-identical.
+
+The HTTP object JSON includes `rigidBody: { isDynamic, mass } | null`; null removes
+the body. Scene responses include `generation`, incremented on reset/reconnect.
+History-recovery snapshots retain the generation and preserve unchanged bodies,
+velocities, and GPU geometry. Authored transform, scale, collider positions, mass,
+or motion-type edits reset only that body; material and visibility edits preserve
+simulation. Source switches and new generations replace the world. Physics never
+writes transforms back to Blender or bridge scene state.
+
+Collider choices, concave colliders, constraints, character controllers, soft
+bodies, and physics-to-Blender writeback are not supported. Blender's kinematic
+flag currently exports as static, as it does for the native renderer.
+
 ## Remaining parity limits
 
 Three.js's BRDF is still different from the native Cook–Torrance implementation.
@@ -149,7 +190,7 @@ at display output. Full native image parity is therefore not claimed.
 
 GI, sky/atmosphere/clouds, area lights, bloom, native tone mapping/exposure, normal
 maps, arbitrary Blender nodes, per-face material slots, animation/skinning,
-physics, and gameplay remain future work.
+character physics, constraints, and gameplay remain future work.
 
 ## Validation
 
@@ -189,3 +230,11 @@ python3 -S -c "import sys; from pathlib import Path; sys.path.insert(0, 'game_we
 Vendored source: https://github.com/mrdoob/three.js/tree/r180. Required modules,
 MIT license, and SHA-256 checksums are in `vendor/three/`; normal builds verify
 these checksums and never fetch assets.
+
+Physics validation: `tests/browser_physics.js` is a Playwright callback using
+real WASM with non-local requests blocked. It checks collisions, stack settling,
+off-center mirrored hulls, edits, pause/reset, recovery snapshots, frame rates,
+and repeated resource replacement. Run `tests/blender_physics_smoke.py` through
+Blender's `--background --factory-startup --python` options while the bridge is
+running; it sends real rigid bodies and writes `/tmp/game_web_physics_blender.bin`
+for snapshot checks. Python physics protocol tests run with the suite above.
