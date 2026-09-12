@@ -174,9 +174,64 @@ or motion-type edits reset only that body; material and visibility edits preserv
 simulation. Source switches and new generations replace the world. Physics never
 writes transforms back to Blender or bridge scene state.
 
-Collider choices, concave colliders, constraints, character controllers, soft
-bodies, and physics-to-Blender writeback are not supported. Blender's kinematic
+Collider choices, concave colliders, constraints, soft bodies, and
+physics-to-Blender writeback are not supported. Blender's kinematic
 flag currently exports as static, as it does for the native renderer.
+
+## Characters and mechs
+
+Run `./build.sh -f test_file.blend -web` from the project root to open the test
+scene. The viewer starts in Debug mode. Choose **Character control**, or press
+Ctrl+D while the canvas has pointer capture, to control the lowest-ID exported
+player character. Click the canvas to capture the mouse; Escape releases it.
+WASD moves relative to the camera, left Shift sprints at 3× speed, and held Space
+adds upward velocity every simulation step, including in midair. This deliberately
+matches the native controller rather than introducing a grounded jump rule.
+
+Exported CameraControl components orbit and follow their owning object using its
+follow distance and speed. The last updated CameraControl is selected independently
+of the player character, as in native. Without one, character movement uses the
+current view. Returning to Debug retains the active camera pose. Frame scene and
+Reset camera explicitly return to Debug mode. Blur, capture loss, source changes,
+and mode changes clear held keys.
+
+Character collision uses a translation-only Jolt capsule with the native 80 kg
+mass, friction 0.5, and gravity factor 1. The exported height is the capsule's
+cylinder height, so total height is `height + 2 * radius`. Native Jolt Character
+is not exposed by the vendored JS bindings; the adapter reproduces its underlying
+body setup. Native currently does not call Character::PostSimulation; the web
+controller preserves its resulting ground-state behavior. Simulation pause freezes
+characters and animation. Reset physics resets rigid bodies and rewinds animation,
+but preserves live characters' current positions, velocities, and headings.
+
+Open **Characters & Mechs** to inspect assembly, change individual part slots, or
+create/remove mechs. Each character automatically gets Body, Legs, Left Arm,
+Right Arm, and Head instances. Default selects the lowest-ID template per type.
+An explicit missing template stays missing and recovers when that ID returns.
+Remove mech opts out of auto-assembly until Create mech or a new scene generation.
+These choices are local to the viewer; they do not modify Blender or snapshots.
+
+Catalog parts and socket helpers are hidden. Runtime parts share geometry and
+materials, but each mech has independent skeletons and animation clocks. Object
+sockets use the Body matrix and socket-local matrix; bone sockets additionally use
+the current armature pose and mesh/armature conversion. Legs keep their movement
+heading while Body follows look direction. Each part retains its template scale.
+Missing sockets, armatures, or bones hide the affected part and appear in the panel.
+
+Skinning consumes the exported four-influence weights and sampled matrices
+without rebuilding TRS animation tracks. Clips loop using discrete exported
+frames; the first clip plays initially. Play/Pause animation, Rewind, rate 0–4×,
+and per-instance clip selection are in the panel. Skinning and bone sockets use
+the same frame, including depth/shadow passes and deformed scene bounds. Meshes
+without a clip use identity skin matrices. There is no IK or animation blending.
+
+Scene JSON includes nullable `character`, `cameraControl`, `part`, `attachment`,
+and `armature` records plus mesh joint arrays and conversion matrices. Generated
+wire schemas are unchanged. Full exported objects explicitly clear absent gameplay
+components; unchanged asset payloads are omitted from deltas. Same-generation
+recovery preserves runtime characters, loadouts, and playback. Source changes and
+new generations dispose them. Diagnostics include character, mech, and skeleton
+counts, selected IDs, per-part transforms, and dependency errors.
 
 ## Remaining parity limits
 
@@ -189,8 +244,8 @@ The web renderer has no tone mapping or automatic exposure; bright values clip
 at display output. Full native image parity is therefore not claimed.
 
 GI, sky/atmosphere/clouds, area lights, bloom, native tone mapping/exposure, normal
-maps, arbitrary Blender nodes, per-face material slots, animation/skinning,
-character physics, constraints, and gameplay remain future work.
+maps, arbitrary Blender nodes, per-face material slots, constraints, AI, combat,
+IK, ragdolls, and animation blending remain future work.
 
 ## Validation
 
@@ -238,3 +293,19 @@ and repeated resource replacement. Run `tests/blender_physics_smoke.py` through
 Blender's `--background --factory-startup --python` options while the bridge is
 running; it sends real rigid bodies and writes `/tmp/game_web_physics_blender.bin`
 for snapshot checks. Python physics protocol tests run with the suite above.
+
+Character/mech checks: `tests/browser_gameplay.js` verifies two independently
+assembled animated mechs with external requests blocked. `tests/test_gameplay.py`
+covers wire validation and component lifecycle. The headless native reference uses
+the real native controller (use the same compiler defines as the cached Jolt):
+
+```sh
+clang++ -std=c++20 -Igame/src -Igame/extern game_web/tests/native_character_fixture.cpp game/bin/libjolt.a -o /tmp/game_web_native_character
+/tmp/game_web_native_character
+```
+
+The matched 60 Hz one-second movement fixture gives `(0, 18.9401474, 95.00315094)`
+in both native and web; this is a controlled comparison, not a guarantee of
+cross-version deterministic simulation. `tests/blender_gameplay_smoke.py` loads
+Starter part files without saving them, exports two characters and all parts through
+Live Link, and writes `/tmp/game_web_starter_mechs.bin` for snapshot verification.

@@ -10,8 +10,8 @@
 </head>
 <body>
 <header><div><strong>BLENDER LIVE LINK</strong><span class="badge">WEB</span></div>
-<nav aria-label="Scene controls"><button id="live" aria-pressed="true">Live Blender</button><label class="button" for="file">Open snapshot</label><input id="file" type="file"><button id="frame">Frame scene</button><button id="reset-camera">Reset camera</button><button id="physics-toggle">Pause physics</button><button id="physics-reset">Reset physics</button><label for="preview">Preview lights</label><select id="preview"><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select></nav></header>
-<main id="viewport" aria-label="3D scene viewer"><div id="empty">Waiting for geometry<span>Connect Blender’s Live Link, or open a saved snapshot.</span></div></main>
-<footer><span id="status" role="status">Starting renderer…</span><span id="count"></span><span id="physics-status" role="status">Physics loading…</span><span>Click to look · WASD + Q/E to fly · Shift for speed · Esc to release · F to frame</span></footer>
+<nav aria-label="Scene controls"><button id="live" aria-pressed="true">Live Blender</button><label class="button" for="file">Open snapshot</label><input id="file" type="file"><button id="frame">Frame scene</button><button id="reset-camera">Reset camera</button><button id="control-mode">Debug camera</button><button id="physics-toggle">Pause physics</button><button id="physics-reset">Reset physics</button><label for="preview">Preview lights</label><select id="preview"><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select></nav></header>
+<main id="viewport" aria-label="3D scene viewer"><div id="empty">Waiting for geometry<span>Connect Blender’s Live Link, or open a saved snapshot.</span></div><details id="gameplay-panel"><summary>Characters &amp; Mechs</summary><div id="gameplay-content"></div></details></main>
+<footer><span id="status" role="status">Starting renderer…</span><span id="count"></span><span id="physics-status" role="status">Physics loading…</span><span id="controls-hint">Click to look · WASD + Q/E to fly · Shift for speed · Esc to release · F to frame</span></footer>
 <div id="error" role="alert" hidden></div>
 </body></html>

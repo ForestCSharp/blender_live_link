@@ -1,0 +1,90 @@
+async page => {
+  const tab=await page.context().newPage(), errors=[];
+  tab.on('pageerror',e=>errors.push(e.message));
+  tab.on('console',m=>{if(m.text().includes('GL_INVALID'))errors.push(m.text());});
+  await tab.route('**/*',r=>r.request().url().startsWith('http://127.0.0.1:8000/')?r.continue():r.abort());
+  try {
+    await tab.goto('http://127.0.0.1:8000');
+    let snapshot;
+    await tab.route('**/api/snapshot',async route=>{const response=await route.fetch();if(response.ok())snapshot=await response.json();await route.fulfill({response});});
+    await tab.locator('#file').setInputFiles('game_web/tests/gameplay_snapshot.bin');
+    await tab.waitForFunction(()=>window.gameWebDiagnostics?.().mechCount===2);
+    const result=await tab.evaluate(async data=>{
+      const THREE=await import('/vendor/three/three.module.js');
+      const {SceneResources}=await import('/resources.js');
+      const {characterVelocity,turnHeading}=await import('/gameplay.js');
+      const {CharacterControls}=await import('/character_controls.js');
+      const assert=(v,m)=>{if(!v)throw Error(m);}, near=(a,b)=>Math.abs(a-b)<1e-4;
+      const r=new SceneResources(new THREE.Scene());
+      const renderer=new THREE.WebGLRenderer();renderer.shadowMap.enabled=true;
+      const target=new THREE.WebGLRenderTarget(128,128);
+      try {
+        await r.apply(data);const g=r.gameplay;
+        assert(g.mechs.size===2&&r.physics.diagnostics().characterBodies===2,'Characters not created');
+        assert(g.playerId===1&&g.activeCameraId===1,'Player/camera selection');
+        const one=g.mechs.get(1),two=g.mechs.get(2);
+        assert(one.errors.length===0,one.errors.join(';'));
+        assert(!r.meshes.get(10).visible&&one.parts.get(0).mesh.visible,'Catalog visibility');
+        assert(one.parts.get(0).mesh.geometry===two.parts.get(0).mesh.geometry,'Geometry not shared');
+        assert(one.parts.get(0).mesh.skeleton!==two.parts.get(0).mesh.skeleton,'Skeleton state shared');
+        assert(one.parts.get(1).transform.position.toArray().every((v,i)=>near(v,[2,2,23][i])),'Object socket transform');
+        one.armatures.get(100).advance(.5);g.update();
+        assert(one.parts.get(4).transform.position.toArray().every((v,i)=>near(v,[-2,3,25][i])),'Bone socket transform');
+        assert(near(two.parts.get(4).transform.position.z,23),'Independent playback');
+        const skinned=one.parts.get(0).mesh;
+        assert(near(skinned.skeleton.boneMatrices[16+14],2),'Skin matrix conversion');
+        const vertex=new THREE.Vector3().fromBufferAttribute(skinned.geometry.attributes.position,0);
+        skinned.applyBoneTransform(0,vertex);assert(near(vertex.z,2),'CPU skinning disagrees');
+        const cam=new THREE.PerspectiveCamera(60,1,.01,1000);cam.up.set(0,0,1);cam.position.set(6,-20,25);cam.lookAt(5,0,20);
+        renderer.setSize(128,128);renderer.setRenderTarget(target);renderer.render(r.scene,cam);
+        assert(renderer.getContext().getError()===0,'GPU draw error');
+        const pixels=new Uint8Array(128*128*4);renderer.readRenderTargetPixels(target,0,0,128,128,pixels);
+        assert(pixels.some((v,i)=>i%4!==3&&v>0),'Skinned scene did not render');
+        const body=r.physics.bodies.get(1).body, geometry=skinned.geometry;
+        await r.apply({...data,kind:'full'});
+        assert(r.physics.bodies.get(1).body===body&&one.parts.get(0).mesh.geometry===geometry,'Recovery rebuilt character/geometry');
+        assert(one.armatures.get(100).frame===1,'Recovery rewound animation');
+        const delta=objects=>({kind:'delta',batches:[{objects,materials:[]}]});
+        await r.apply(delta([{id:40,name:'Edited template name'}]));
+        assert(r.physics.bodies.get(1).body===body,'Template edit reset character');
+        g.select(1,2,40);assert(one.parts.get(2).templateId===40&&two.parts.get(2).templateId===12,'Independent loadout');
+        g.select(1,2,999);assert(!one.parts.has(2)&&one.errors.some(e=>e.includes('explicit')),'Missing explicit template fell back');
+        await r.apply(delta([{...data.objects.find(o=>o.id===40),id:999}]));assert(one.parts.get(2).templateId===999,'Late template did not recover');
+        await r.apply({kind:'delta',batches:[{objects:[],materials:[],deleted:[24]}]});
+        assert(!one.parts.get(4).mesh.visible,'Deleted socket still rendered');
+        await r.apply(delta([data.objects.find(o=>o.id===24)]));assert(one.parts.get(4).mesh.visible,'Socket recovery failed');
+        g.remove(2);await r.apply(delta([{id:40,name:'Another edit'}]));assert(!g.mechs.has(2),'Opt-out lost');g.create(2);
+        const canvas=document.createElement('canvas');const controls=new CharacterControls(cam,canvas);controls.attach(r);controls.toggle();
+        g.input=controls;controls.keys.add('KeyW');r.stepPhysics(1/60);
+        const velocity=body.GetLinearVelocity();assert(velocity.GetY()>4.9&&velocity.GetY()<5.01,'Native acceleration');
+        controls.keys.add('Space');r.stepPhysics(1/60);const vz=body.GetLinearVelocity().GetZ();r.stepPhysics(1/60);
+        assert(body.GetLinearVelocity().GetZ()>vz+9,'Native held airborne jump');
+        controls.keys.clear();const before=r.physics.position(1);r.resetPhysics();
+        assert(r.physics.position(1).every((v,i)=>v===before[i]),'Reset moved live character');
+        assert(one.armatures.get(100).frame===0,'Reset did not rewind');
+        window.dispatchEvent(new Event('blur'));assert(controls.keys.size===0,'Blur retained keys');
+        const q=new THREE.Quaternion();turnHeading(q,new THREE.Vector3(1,0,0),1/60);
+        const heading=q.toArray();assert(near(heading[2],Math.sin(-Math.PI/24)),'Heading interpolation');
+        const native=characterVelocity([1,2,3],new THREE.Vector3(0,3,0),{moveSpeed:20,jumpSpeed:10},true,1/60);
+        assert(native.every((v,i)=>near(v,[.75,16.5,13][i])),'Native movement equation');
+        const worlds=[];
+        for(let i=0;i<50;i++) {g.remove(2);g.create(2);renderer.render(r.scene,cam);if(i===10||i===49)worlds.push(r.physics.J.HEAP8.buffer.byteLength);}
+        assert(worlds[0]===worlds[1],'WASM resource growth');
+        const uploads=r.geometryUploads;
+        for(let i=0;i<10;i++)r.stepPhysics(1/60);
+        assert(r.geometryUploads===uploads,'Animation uploaded geometry');
+        await r.apply({kind:'delta',batches:[{objects:[],materials:[],deleted:[1,2]}]});
+        assert(g.mechs.size===0&&r.physics.diagnostics().characterBodies===0,'Character deletion leaked');
+        return {native,heading,worlds,pixels:pixels.filter((v,i)=>i%4!==3&&v>0).length};
+      } finally {r.dispose();target.dispose();renderer.dispose();renderer.forceContextLoss();}
+    },snapshot);
+    await tab.locator('#physics-toggle').click();
+    await tab.locator('#control-mode').click();
+    await tab.waitForFunction(()=>window.gameWebDiagnostics().controlMode==='character');
+    await tab.locator('#gameplay-panel summary').click();
+    await tab.getByLabel('1 Left Arm',{exact:true}).selectOption('40');
+    await tab.waitForFunction(()=>window.gameWebDiagnostics().mechs.find(m=>m.characterId===1).loadout[2]===40);
+    if(errors.length)throw Error(errors.join(';'));
+    return result;
+  } finally {await tab.close();}
+}

@@ -25,7 +25,7 @@ bridge automatically; if HTTP port 8000 is busy, it opens an available port.
 
 The web viewer needs Python 3.9+ and a WebGL2 browser, with no npm, pip packages,
 bundler, or runtime downloads. It supports Blender-seeded fly-camera controls, incremental geometry updates,
-textured PBR materials, authored lights/shadows, Jolt rigid-body physics, and files from Blender's **Save To File** operator. See
+textured PBR materials, authored lights/shadows, Jolt rigid-body and character physics, animated mech assembly with loadout controls, and files from Blender's **Save To File** operator. See
 [game_web/README.md](game_web/README.md) for setup, validation, and remaining parity limits.
 
 ## Current Capabilities

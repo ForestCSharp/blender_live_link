@@ -91,6 +91,12 @@ enum class ETessellationMode : i32
 	MAX,
 };
 
+inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
+	"Fixed",
+	"Adaptive Angular (Per Mesh)",
+	"Adaptive Angular (Per Triangle)",
+};
+
 enum class ETonemappingMethod : i32
 {
 	GT7 = TONEMAP_METHOD_GT7,
@@ -98,12 +104,6 @@ enum class ETonemappingMethod : i32
 	Aces2 = TONEMAP_METHOD_ACES_2,
 	KhronosPBRNeutral = TONEMAP_METHOD_KHRONOS_PBR_NEUTRAL,
 	MAX = TONEMAP_METHOD_COUNT,
-};
-
-inline const char* ETessellationModeNames[(i32) ETessellationMode::MAX] = {
-	"Fixed",
-	"Adaptive Angular (Per Mesh)",
-	"Adaptive Angular (Per Triangle)",
 };
 
 inline const char* ETonemappingMethodNames[(i32) ETonemappingMethod::MAX] = {

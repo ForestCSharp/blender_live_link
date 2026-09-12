@@ -27,7 +27,7 @@ export class DebugCamera {
     window.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.altKey) { this.keys.clear(); return; }
       if (document.pointerLockElement !== canvas) return;
-      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowLeft','ArrowDown','ArrowRight','KeyQ','KeyE','ShiftLeft','ShiftRight'].includes(e.code)) {
+      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowLeft','ArrowDown','ArrowRight','KeyQ','KeyE','ShiftLeft','ShiftRight','Space'].includes(e.code)) {
         e.preventDefault(); this.keys.add(e.code);
       }
     });

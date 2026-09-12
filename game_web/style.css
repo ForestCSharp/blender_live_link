@@ -19,3 +19,12 @@ footer { padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 20px; color: #
 footer span:last-child { margin-left: auto; }
 #error { position: absolute; bottom: 50px; left: 20px; max-width: calc(100% - 40px); padding: 12px 16px; border: 1px solid #b57c62; background: #3b2821; border-radius: 6px; }
 @media(max-width: 700px) { header { flex-wrap: wrap; padding: 12px; } footer span:last-child { display: none; } }
+
+#gameplay-panel { position: absolute; top: 10px; right: 10px; background: #1c232a; border: 1px solid #46515b; border-radius: 5px; padding: 10px; max-width: min(380px, 90%); max-height: 90%; overflow: auto; }
+#gameplay-panel summary { cursor: pointer; }
+#gameplay-content section { border-top: 1px solid #46515b; padding: 10px 0; display: grid; gap: 6px; }
+#gameplay-content label { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; }
+#gameplay-content select { min-width: 0; max-width: 100%; }
+#gameplay-content p { color: #b9c6d1; overflow-wrap: anywhere; }
+
+header > div { flex-shrink: 0; }

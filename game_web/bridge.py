@@ -29,6 +29,8 @@ try:
 except ImportError as exc:
     raise SystemExit('Missing generated Python schemas. Run the project-root ./build.sh first.') from exc
 
+from gameplay_decode import decode_gameplay
+
 MAX_FRAME = 128 * 1024 * 1024
 # Seconds to wait after the last viewer disconnects before stopping. Long
 # enough to ride out a page reload, short enough that the Blender TCP port is
@@ -127,6 +129,7 @@ def decode(payload):
                         item['light']['shadows'] = bool(light.UseShadow() and detail.CastShadows())
                 else:
                     item['light'] = None
+            decode_gameplay(obj, item, vector, table_bounds)
             objects.append(item)
         materials = []
         for m in vector(update, 'Materials'):
@@ -200,6 +203,7 @@ class Scene:
         self.camera_ready = False
         self.initial_camera = None
         self.revision = 0
+        self.active_camera_control_id = None
         self.generation = 0
         self.session = uuid.uuid4().hex
         self.connected = False
@@ -210,6 +214,7 @@ class Scene:
         self.full_floor = 0
 
     def clear(self):
+        self.active_camera_control_id = None
         self.generation += 1
         self.objects.clear()
         self.materials.clear()
@@ -244,12 +249,18 @@ class Scene:
                 self.clear()
             for uid in batch['deleted']:
                 self.objects.pop(uid, None)
+                if self.active_camera_control_id == uid:
+                    self.active_camera_control_id = None
             changed_objects = []
             for item in batch['objects']:
                 previous = self.objects.get(item['id'], {})
+                if item.get('cameraControl'):
+                    self.active_camera_control_id = item['id']
+                elif item.get('cameraControl', False) is None and self.active_camera_control_id == item['id']:
+                    self.active_camera_control_id = None
                 # Exporters sometimes resend identical meshes; don't upload them again.
                 change = dict(item)
-                for field in ('mesh', 'light'):
+                for field in ('mesh', 'light', 'armature', 'character', 'cameraControl', 'part', 'attachment'):
                     if field in change and change[field] == previous.get(field):
                         del change[field]
                 self.objects[item['id']] = {**previous, **change}
@@ -278,7 +289,7 @@ class Scene:
     def view(self, since=-1):
         with self.lock:
             result = dict(revision=self.revision, generation=self.generation, session=self.session, connected=self.connected, error=self.error,
-                          cameraReady=self.camera_ready, initialCamera=self.initial_camera)
+                          cameraReady=self.camera_ready, initialCamera=self.initial_camera, activeCameraControlId=self.active_camera_control_id)
             if since == self.revision:
                 return result | {'kind': 'unchanged'}
             if self.full_floor <= since < self.revision:
@@ -467,7 +478,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 PUBLIC_FILES = {'/', '/index.html', '/app.js', '/camera.js', '/resources.js', '/lighting.js', '/style.css',
                 '/vendor/three/three.module.js', '/vendor/three/three.core.js',
-                '/vendor/three/OrbitControls.js', '/physics.js',
+                '/vendor/three/OrbitControls.js', '/physics.js', '/gameplay.js', '/animation.js', '/character_controls.js', '/gameplay_ui.js',
                 '/vendor/jolt/jolt-physics.wasm.js', '/vendor/jolt/jolt-physics.wasm.wasm'}
 
 

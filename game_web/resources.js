@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Gameplay } from './gameplay.js';
 import { ScenePhysics } from './physics.js';
 import { SceneLights, configureParityShader } from './lighting.js';
 
@@ -9,6 +10,7 @@ export class SceneResources {
     this.scene = scene;
     this.physics = new ScenePhysics();
     this.physicsSource = null;
+    this.gameplay = new Gameplay(this);
     this.group = new THREE.Group();
     scene.add(this.group);
     this.objects = new Map(); this.materialData = new Map(); this.imageData = new Map();
@@ -20,7 +22,8 @@ export class SceneResources {
     this.abort = new AbortController();
   }
   clear() {
-    for (const mesh of this.meshes.values()) { mesh.geometry.dispose(); this.group.remove(mesh); }
+    this.gameplay.clear();
+    for (const mesh of this.meshes.values()) { mesh.skeleton?.dispose(); mesh.geometry.dispose(); this.group.remove(mesh); }
     for (const material of this.materials.values()) material.dispose();
     for (const record of this.textures.values()) record.texture.dispose();
     this.objects.clear(); this.meshes.clear(); this.materialData.clear(); this.materials.clear();
@@ -44,6 +47,7 @@ export class SceneResources {
     } else if (data.kind === 'delta') {
       for (const batch of data.batches) { this.accumulate(batch); this.incrementalBatches++; }
     } else return;
+    if (data.activeCameraControlId !== undefined) this.gameplay.activeCameraId = data.activeCameraControlId;
     await this.physics.ready;
     if (this.disposed) return;
     await this.refreshTextures();
@@ -53,7 +57,7 @@ export class SceneResources {
     for (const id of batch.deleted || []) {
       this.objects.delete(id);
       const old = this.meshes.get(id);
-      if (old) { old.geometry.dispose(); this.group.remove(old); this.meshes.delete(id); }
+      if (old) { old.skeleton?.dispose(); old.geometry.dispose(); this.group.remove(old); this.meshes.delete(id); }
     }
     for (const object of batch.objects) {
       const previous = this.objects.get(object.id);
@@ -141,7 +145,7 @@ export class SceneResources {
     for (const [id, material] of this.materials) if (!used.has(id)) { material.dispose(); this.materials.delete(id); }
     for (const [id, object] of this.objects) {
       const data = object.mesh;
-      if (!data) continue;
+      if (!data) { const old=this.meshes.get(id); if(old){old.skeleton?.dispose();old.geometry.dispose();old.removeFromParent();this.meshes.delete(id);} continue; }
       let mesh = this.meshes.get(id);
       if (!mesh || this.dirtyMeshes.has(id)) {
         const geometry = new THREE.BufferGeometry();
@@ -152,39 +156,56 @@ export class SceneResources {
         if (data.uvs?.length) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
         // Materials with maps also need UVs on meshes lacking authored UVs.
         else geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(data.positions.length / 3 * 2), 2));
+        const skinned = !!data.jointIndices?.length;
+        if (skinned) {
+          // Bone zero is an identity sentinel for native zero-weight vertices.
+          const joints = data.jointIndices.map(i=>i+1), weights = [...data.jointWeights];
+          for(let i=0;i<weights.length;i+=4) if(weights.slice(i,i+4).reduce((a,b)=>a+b,0)<=1e-5) {
+            joints[i]=0; weights.splice(i,4,1,0,0,0);
+          }
+          geometry.setAttribute('skinIndex', new THREE.Float32BufferAttribute(joints,4));
+          geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights,4));
+        }
+        if(mesh && !!mesh.isSkinnedMesh !== skinned) {
+          mesh.skeleton?.dispose(); mesh.geometry.dispose(); mesh.removeFromParent(); mesh=null;
+        }
         if (mesh) { mesh.geometry.dispose(); mesh.geometry = geometry; }
-        else { mesh = new THREE.Mesh(geometry); this.group.add(mesh); this.meshes.set(id, mesh); }
+        else { mesh = skinned ? new THREE.SkinnedMesh(geometry) : new THREE.Mesh(geometry); this.group.add(mesh); this.meshes.set(id, mesh); }
         this.geometryUploads++;
       }
       mesh.material = this.materials.get(data.materialIds[0] ?? -1);
       mesh.position.fromArray(object.position);
       mesh.quaternion.fromArray(object.rotation).normalize();
       mesh.scale.fromArray(object.scale);
-      mesh.visible = object.visible;
+      mesh.visible = object.visible && !object.part && !object.attachment;
       mesh.name = object.name;
       mesh.castShadow = mesh.receiveShadow = true;
     }
     this.physics.reconcile(this.objects);
     this.physics.write(this.meshes);
+    this.gameplay.reconcile();
     this.group.updateMatrixWorld(true);
     // Bounds also change on transform-only deltas and deletion.
-    this.lights.sync(this.objects, this.bounds(), true);
+    this.lights.sync(this.gameplay.lightObjects, this.bounds(), true);
     this.dirtyMeshes.clear();
   }
   stepPhysics(dt, hidden = false) {
-    if (this.physics.step(dt, this.meshes, hidden)) this.lights.sync(this.objects, this.bounds(), true);
+    const moved = this.physics.step(dt, this.meshes, hidden, step=>this.gameplay.beforeStep(step), step=>this.gameplay.advance(step));
+    if (moved || this.gameplay.changed || (this.physics.lastSteps && (this.gameplay.mechs.size || this.gameplay.playbacks.size))) {
+      this.gameplay.update(); this.lights.sync(this.gameplay.lightObjects, this.bounds(), true); this.gameplay.changed=false;
+    }
   }
-  resetPhysics() { this.physics.reset(this.objects); this.sync(); }
+  resetPhysics() { this.physics.reset(this.objects); this.gameplay.rewind(); this.sync(); }
   bounds() {
     const box = new THREE.Box3();
     this.group.updateMatrixWorld(true);
-    for (const mesh of this.meshes.values()) if (mesh.visible) box.expandByObject(mesh);
+    for (const mesh of [...this.meshes.values(), ...this.gameplay.runtimeMeshes()]) if (mesh.visible) box.expandByObject(mesh);
     return box;
   }
   diagnostics() {
     let meshCount = 0, triangles = 0;
-    for (const mesh of this.meshes.values()) if (mesh.visible) { meshCount++; triangles += mesh.geometry.index.count / 3; }
-    return { ...this.physics.diagnostics(), meshCount, triangles, fullSnapshots: this.fullSnapshots, incrementalBatches: this.incrementalBatches,
+    for (const mesh of [...this.meshes.values(), ...this.gameplay.runtimeMeshes()]) if (mesh.visible) { meshCount++; triangles += mesh.geometry.index.count / 3; }
+    return { ...this.gameplay.diagnostics(), ...this.physics.diagnostics(), meshCount, triangles, fullSnapshots: this.fullSnapshots, incrementalBatches: this.incrementalBatches,
       geometryUploads: this.geometryUploads, materials: this.materials.size, textures: this.textures.size,
       lights: this.lights.items.size, previewLights: this.lights.preview.visible,
       objects: [...this.meshes].map(([id, mesh]) => ({ id, geometry: mesh.geometry.uuid, position: mesh.position.toArray(), scale: mesh.scale.toArray(), visible: mesh.visible })) };

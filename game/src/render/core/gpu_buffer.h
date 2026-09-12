@@ -462,6 +462,8 @@ struct PerFrameUniform
 	}
 };
 
+// growable, triple-buffered array for uploading changing CPU data to the GPU
+// lets the CPU upload new data while the GPU still reads previous frames’ data
 template<typename T>
 struct ResizableGpuStreamRing
 {

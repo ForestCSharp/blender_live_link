@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { DebugCamera } from './camera.js';
+import { CharacterControls } from './character_controls.js';
+import { GameplayUI } from './gameplay_ui.js';
 import { SceneResources } from './resources.js';
 
 const $ = id => document.getElementById(id);
@@ -15,8 +16,9 @@ renderer.toneMapping = THREE.NoToneMapping;
 $('viewport').append(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 10000);
-const controls = new DebugCamera(camera, renderer.domElement);
+const controls = new CharacterControls(camera, renderer.domElement);
 let resources = new SceneResources(scene);
+const gameplayUI = new GameplayUI($('gameplay-content'));
 let source = 'live', session = '', revision = -1, selection = 0;
 let previewMode = 'auto';
 
@@ -37,9 +39,15 @@ document.addEventListener('visibilitychange', () => {
   resources.physics.accumulator = 0;
 });
 renderer.setAnimationLoop(now => {
+  controls.attach(resources);
   controls.move((now - lastFrame) / 1000); lastFrame = now;
   resources.stepPhysics((now - physicsFrame) / 1000, document.hidden); physicsFrame = now;
   updatePhysicsStatus();
+  const mode=controls.debug?'Debug camera':'Character control';
+  if($('control-mode').textContent!==mode)$('control-mode').textContent=mode;
+  gameplayUI.update(resources,controls);
+  const hint=controls.debug?'Click to look · WASD + Q/E to fly · Shift for speed · Esc to release · F to frame':'Click to orbit · WASD to move · Shift to sprint · Hold Space to boost · Ctrl+D for debug';
+  if($('controls-hint').textContent!==hint)$('controls-hint').textContent=hint;
   renderer.render(scene, camera);
 });
 function updatePhysicsStatus() {
@@ -47,29 +55,32 @@ function updatePhysicsStatus() {
   const label = d.physicsRunning ? 'Pause physics' : 'Resume physics';
   if ($('physics-toggle').textContent !== label) $('physics-toggle').textContent = label;
   const status = d.physicsState === 'ready'
-    ? `${d.dynamicBodies} dynamic · ${d.staticBodies} static${d.physicsErrors.length ? ' · ' + d.physicsErrors.join('; ') : ''}`
+    ? `${d.characterBodies} characters · ${d.dynamicBodies} dynamic · ${d.staticBodies} static${d.physicsErrors.length ? ' · ' + d.physicsErrors.join('; ') : ''}`
     : d.physicsState;
   if ($('physics-status').textContent !== status) $('physics-status').textContent = status;
 }
+$('control-mode').onclick=()=>controls.toggle();
 $('physics-toggle').onclick = () => { resources.physics.running = !resources.physics.running; };
 $('physics-reset').onclick = () => resources.resetPhysics();
 window.addEventListener('keydown', e => {
-  if (document.pointerLockElement !== renderer.domElement || !e.ctrlKey || !['Space', 'KeyR'].includes(e.code)) return;
+  if (document.pointerLockElement !== renderer.domElement || !e.ctrlKey || !['Space', 'KeyR', 'KeyD'].includes(e.code)) return;
   e.preventDefault();
   if (e.repeat) return;
   if (e.code === 'Space') $('physics-toggle').click();
+  else if(e.code === 'KeyD') controls.toggle();
   else resources.resetPhysics();
 });
-$('frame').onclick = () => controls.frame(resources.bounds());
-$('reset-camera').onclick = () => controls.reset();
+$('frame').onclick = () => { if(!controls.debug)controls.toggle(); controls.frame(resources.bounds()); };
+$('reset-camera').onclick = () => { if(!controls.debug)controls.toggle(); controls.reset(); };
 $('preview').onchange = () => {
   previewMode = $('preview').value;
   resources.lights.setPreview(previewMode);
 };
 window.addEventListener('keydown', e => {
-  if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey && !['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) controls.frame(resources.bounds());
+  if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey && !['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) $('frame').click();
 });
 $('live').onclick = () => {
+  controls.keys.clear();
   selection++; source = 'live'; revision = -1;
   resources.physicsSource = null;
   $('live').setAttribute('aria-pressed', 'true'); error();
@@ -93,6 +104,7 @@ $('file').onchange = async () => {
     for (const object of [...stagingScene.children]) scene.add(object);
     candidate.scene = scene; candidate.lights.scene = scene;
     resources = candidate; candidate = null;
+    controls.attach(resources);
     resources.lights.setPreview(previewMode);
     controls.seed(data.initialCamera, true);
     source = 'file';
@@ -147,4 +159,4 @@ window.gameWebDiagnostics = () => ({ source, revision, session, ...resources.dia
   geometries: renderer.info.memory.geometries, gpuTextures: renderer.info.memory.textures,
   cameraUp: camera.up.toArray(), cameraPosition: camera.position.toArray(),
   cameraForward: camera.getWorldDirection(new THREE.Vector3()).toArray(),
-  cameraInitialized: controls.initialized, fov: camera.fov, aspect: camera.aspect });
+  controlMode: controls.debug ? "debug" : "character", cameraInitialized: controls.initialized, fov: camera.fov, aspect: camera.aspect });
