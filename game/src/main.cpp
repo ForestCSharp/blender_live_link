@@ -1,7 +1,3 @@
-//
-// Golden-path Vulkan (MoltenVK) + Volk + VMA + GLFW live-link game.
-//
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
