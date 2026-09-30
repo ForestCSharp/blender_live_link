@@ -49,6 +49,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentContainer
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogController
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosphere
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSystem
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentWeapon
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import CloudLayer
 from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
@@ -734,6 +735,9 @@ class LiveLinkConnection():
             add(armature.data)
             for action in self.get_armature_actions(armature):
                 add(action)
+        for component in blender_object.live_link_settings.components:
+            if component.type == Component_Weapon.type_name:
+                add(component.weapon.muzzle_object)
         return frozenset(dependency_ids)
 
     def _make_direct_occurrence(self, blender_object, dependency_graph, view_layer=None):
@@ -1292,7 +1296,9 @@ class LiveLinkConnection():
 
                 print(f"Bone: {bone.name} Parent: {bone_parent_name}")
 
+                label_fb = builder.CreateString(bone.live_link_attachment_label)
                 Bone.Start(builder)
+                Bone.AddAttachmentLabel(builder, label_fb)
                 Bone.AddName(builder, bone_name_fb)
                 if bone_parent_name_fb:
                     Bone.AddParentName(builder, bone_parent_name_fb)
@@ -2750,6 +2756,52 @@ class Component_Part(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentPart
 
+def weapon_muzzle_poll(self, obj):
+    owner = getattr(self, "id_data", None)
+    return bool(owner and obj.parent == owner and obj.parent_type == 'OBJECT')
+
+
+class Component_Weapon(Component):
+    type_name = 'WEAPON'
+    label = 'Weapon'
+
+    accepted_bone_label: StringProperty(
+        name="Accepted Bone Label", default="Hand",
+        update=gameplay_component_property_update,
+    )
+
+    muzzle_object: PointerProperty(
+        name="Muzzle Object", type=bpy.types.Object,
+        description="Direct child at the barrel opening; local +Y points along the shot",
+        poll=weapon_muzzle_poll,
+        update=gameplay_component_property_update,
+    )
+
+    def create_flatbuffers_value(self, builder, source_object=None,
+                                 dependency_graph=None, exporter=None, **_kwargs):
+        label = builder.CreateString(self.accepted_bone_label)
+        muzzle = self.muzzle_object
+        valid = bool(muzzle and source_object and muzzle.parent == source_object
+                     and muzzle.parent_type == 'OBJECT')
+        local = MathMatrix.Identity(4)
+        if valid:
+            weapon_eval = source_object.evaluated_get(dependency_graph) if dependency_graph else source_object
+            muzzle_eval = muzzle.evaluated_get(dependency_graph) if dependency_graph else muzzle
+            local = weapon_eval.matrix_world.inverted_safe() @ muzzle_eval.matrix_world
+            # Scale belongs to the weapon, not to the authored marker.
+            local = local.to_4x4() if hasattr(local, 'to_4x4') else local
+            location, rotation, _scale = local.decompose()
+            local = MathMatrix.Translation(location) @ rotation.to_matrix().to_4x4()
+        local_fb = exporter.make_flatbuffer_matrix(builder, local)
+        GameplayComponentWeapon.Start(builder)
+        GameplayComponentWeapon.AddAcceptedBoneLabel(builder, label)
+        GameplayComponentWeapon.AddMuzzleLocalTransform(builder, local_fb)
+        GameplayComponentWeapon.AddMuzzleValid(builder, valid)
+        return GameplayComponentWeapon.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentWeapon
+
 class Component_AttachmentPoint(Component):
     type_name = 'ATTACHMENT_POINT'
     label = 'Attachment Point'
@@ -2802,6 +2854,7 @@ COMPONENT_SPECS = [
     (Component_CameraControl, 'camera_control'),
     (Component_FogController, 'fog_controller'),
     (Component_Part, 'part'),
+    (Component_Weapon, 'weapon'),
     (Component_AttachmentPoint, 'attachment_point'),
     (Component_SkyAtmosphere, 'sky_atmosphere'),
     (Component_CloudSystem, 'cloud_system'),
@@ -2828,6 +2881,7 @@ class ComponentContainer(PropertyGroup):
     camera_control: PointerProperty(type=Component_CameraControl)
     fog_controller: PointerProperty(type=Component_FogController)
     part:           PointerProperty(type=Component_Part)
+    weapon:         PointerProperty(type=Component_Weapon)
     attachment_point: PointerProperty(type=Component_AttachmentPoint)
     sky_atmosphere: PointerProperty(type=Component_SkyAtmosphere)
     cloud_system:   PointerProperty(type=Component_CloudSystem)
@@ -2931,7 +2985,7 @@ class OBJECT_OT_add_custom_item(Operator):
                 self.report({'WARNING'}, "Cloud System already exists on this object")
                 return {'CANCELLED'}
 
-        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name}:
+        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name, Component_Weapon.type_name}:
             if any(component.type == settings.add_type for component in settings.components):
                 self.report({'WARNING'}, f"{settings.add_type.replace('_', ' ').title()} already exists on this object")
                 return {'CANCELLED'}
@@ -3101,6 +3155,34 @@ def draw_cloud_system(layout, cloud, component_index):
 # Panel UI
 # ------------------------------------------------------------
 
+def bone_attachment_label_update(self, _context):
+    if depsgraph_update_post_callback.enabled:
+        # Bone properties belong to the Armature datablock, which can have many users.
+        queue_object_updates(
+            (obj for obj in bpy.data.objects
+             if obj.type == 'ARMATURE' and obj.data == self.id_data),
+            update_reason="bone_attachment_label_changed",
+        )
+
+class BONE_PT_live_link_attachment(Panel):
+    bl_label = "Live Link Attachment"
+    bl_idname = "BONE_PT_live_link_attachment"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'bone'
+
+    @classmethod
+    def poll(cls, context):
+        return (getattr(context, "bone", None) is not None or
+                getattr(context, "edit_bone", None) is not None or
+                getattr(context, "active_pose_bone", None) is not None)
+
+    def draw(self, context):
+        bone = (getattr(context, "edit_bone", None) or
+                getattr(context, "bone", None) or
+                getattr(context, "active_pose_bone", None))
+        self.layout.prop(bone, "live_link_attachment_label")
+
 class OBJECT_PT_custom_object_panel(Panel):
     bl_label = "Live Link Properties"
     bl_idname = "OBJECT_PT_custom_object_panel"
@@ -3162,6 +3244,7 @@ classes_to_register = [
     OBJECT_OT_cloud_layer_move,
     OBJECT_OT_cloud_layer_reset_profile,
     OBJECT_PT_custom_object_panel,
+    BONE_PT_live_link_attachment,
 ]
 
 # ------------------------------------------------------------
@@ -3188,6 +3271,13 @@ def register():
 
     # add to searchable menu
     bpy.types.VIEW3D_MT_object.append(menu_func)
+
+    for bone_type in (bpy.types.Bone, bpy.types.EditBone):
+        bone_type.live_link_attachment_label = StringProperty(
+            name="Attachment Label", default="",
+            description="Weapons with this accepted label attach at this bone origin",
+            update=bone_attachment_label_update,
+        )
 
     # Setup live link settings on type Object
     bpy.types.Object.live_link_settings = bpy.props.PointerProperty(type=LiveLinkObjectSettings)
@@ -3222,6 +3312,8 @@ def unregister():
 
     # Delete Live Link Settings
     del bpy.types.Object.live_link_settings
+    del bpy.types.Bone.live_link_attachment_label
+    del bpy.types.EditBone.live_link_attachment_label
     if hasattr(bpy.types.Scene, "live_link_use_python_export_fallback"):
         del bpy.types.Scene.live_link_use_python_export_fallback
 

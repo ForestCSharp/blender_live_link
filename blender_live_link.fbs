@@ -66,6 +66,7 @@ table Bone
 	parent_name			: string;
 	parent_index		: int = -1;
 	inverse_bind_matrix	: Matrix;
+	attachment_label : string;
 }
 
 table Animation
@@ -265,6 +266,13 @@ table GameplayComponentAttachmentPoint
 	valid			: bool = false;
 }
 
+table GameplayComponentWeapon
+{
+	accepted_bone_label : string;
+	muzzle_local_transform : Matrix;
+	muzzle_valid : bool = false;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
@@ -275,7 +283,8 @@ union GameplayComponent
 	GameplayComponentPart,
 	GameplayComponentAttachmentPoint,
 	GameplayComponentSkyAtmosphere,
-	GameplayComponentCloudSystem
+	GameplayComponentCloudSystem,
+	GameplayComponentWeapon
 }
 
 table GameplayComponentContainer

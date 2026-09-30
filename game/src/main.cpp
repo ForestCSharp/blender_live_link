@@ -50,6 +50,7 @@ using std::optional;
 #include "state/state.h"
 #include "game_object/attachment_point.h"
 #include "game_object/mech.h"
+#include "game_object/projectile.h"
 #include "core/benchmark.h"
 #include "core/runtime_state_overrides.h"
 #include "render/passes/geometry/geometry_pass.h"
@@ -143,6 +144,8 @@ void frame(f32 in_delta_time)
 		CPU_TIMING_SCOPE("Object Transforms");
 		update_physics_backed_object_transforms();
 		update_mech_transforms();
+		projectile_update_lifetimes(in_delta_time);
+		projectile_consume_fire_requests();
 		SceneSystem::refresh_derived_state(state);
 	}
 

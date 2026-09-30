@@ -208,6 +208,7 @@ namespace InputSystem
 			{
 				set_mouse_locked(state, true);
 			}
+			if (state.runtime.is_simulating) ++state.input.pending_fire_requests;
 		}
 	}
 	

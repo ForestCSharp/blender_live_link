@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "core/types.h"
 #include "render/core/gpu_buffer.h"
 
@@ -176,9 +178,17 @@ struct AttachmentPoint
 	bool valid = false;
 };
 
+struct Weapon
+{
+	std::string accepted_bone_label;
+	HMM_Mat4 muzzle_local_transform = HMM_M4D(1.0f);
+	bool muzzle_valid = false;
+};
+
 struct ArmatureBone
 {
 	char* name = nullptr;
+	char* attachment_label = nullptr;
 	i32 parent_index = -1;
 	HMM_Mat4 inverse_bind_matrix = HMM_M4D(1.0f);
 };
@@ -225,6 +235,7 @@ enum class ObjectStorageKind : u8
 	Authored,
 	RuntimePart,
 	RuntimeArmature,
+	RuntimeProjectile,
 };
 
 struct Object
@@ -282,6 +293,9 @@ struct Object
 	bool has_cloud_system = false;
 	CloudSystem cloud_system;
 
+	bool has_weapon = false;
+	Weapon weapon;
+
 	bool has_part = false;
 	Part part;
 
@@ -308,7 +322,7 @@ bool object_has_dynamic_jolt_actor(const Object& in_object)
 // often to bake).
 bool object_contributes_to_gi_scene(const Object& in_object)
 {
-	return in_object.visibility && in_object.has_mesh && !in_object.has_part &&
+	return in_object.visibility && in_object.has_mesh && !in_object.has_part && !in_object.has_weapon &&
 		!object_is_runtime_instance(in_object) && !object_has_dynamic_jolt_actor(in_object);
 }
 
@@ -573,6 +587,7 @@ void object_cleanup_armature(Object& in_object)
 	for (u32 bone_idx = 0; bone_idx < in_object.armature.bone_count; ++bone_idx)
 	{
 		free(in_object.armature.bones[bone_idx].name);
+		free(in_object.armature.bones[bone_idx].attachment_label);
 	}
 	free(in_object.armature.bones);
 

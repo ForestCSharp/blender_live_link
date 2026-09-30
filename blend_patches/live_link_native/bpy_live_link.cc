@@ -64,6 +64,7 @@
 #include "IMB_imbuf_types.hh"
 
 #include "RNA_prototypes.hh"
+#include "RNA_access.hh"
 
 #include "bpy_rna.hh"
 
@@ -1460,6 +1461,35 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentCloudSystem, value.Union()));
     }
+    else if (type == "WEAPON") {
+      PyPtr weapon(PyObject_GetAttrString(component, "weapon"));
+      if (!weapon) {
+        PyErr_Clear();
+        continue;
+      }
+      float muzzle_local[4][4];
+      unit_m4(muzzle_local);
+      bool muzzle_valid = false;
+      PyPtr muzzle_py(PyObject_GetAttrString(weapon, "muzzle_object"));
+      Object *muzzle = muzzle_py && muzzle_py.value != Py_None ? object_from_py(muzzle_py) : nullptr;
+      if (muzzle && muzzle->parent == object && (muzzle->partype & PARTYPE) == PAROBJECT) {
+        Object *weapon_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
+        Object *muzzle_eval = depsgraph ? DEG_get_evaluated(depsgraph, muzzle) : muzzle;
+        float inverse_weapon[4][4];
+        invert_m4_m4(inverse_weapon, weapon_eval->object_to_world().ptr());
+        mul_m4_m4m4(muzzle_local, inverse_weapon, muzzle_eval->object_to_world().ptr());
+        normalize_m4(muzzle_local);
+        muzzle_valid = true;
+      }
+      else if (!muzzle_py) {
+        PyErr_Clear();
+      }
+      const auto value = ll::CreateGameplayComponentWeapon(
+          builder, builder.CreateString(py_string_attr(weapon, "accepted_bone_label", "Hand")),
+          create_matrix(builder, muzzle_local), muzzle_valid);
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentWeapon, value.Union()));
+    }
     else if (type == "PART") {
       PyPtr part(PyObject_GetAttrString(component, "part"));
       if (!part) {
@@ -1594,11 +1624,16 @@ flatbuffers::Offset<ll::Armature> export_armature(flatbuffers::FlatBufferBuilder
 
     float inverse_bind[4][4];
     invert_m4_m4(inverse_bind, bone->arm_mat);
+    PointerRNA bone_ptr = RNA_pointer_create_discrete(
+        const_cast<ID *>(&armature->id), RNA_Bone, const_cast<Bone *>(bone));
+    PropertyRNA *label = RNA_struct_find_property(&bone_ptr, "live_link_attachment_label");
+    const std::string attachment_label = label ? RNA_property_string_get(&bone_ptr, label) : "";
     bone_offsets.push_back(ll::CreateBone(builder,
                                           builder.CreateString(bone->name),
                                           parent_name ? builder.CreateString(parent_name) : 0,
                                           parent_index,
-                                          create_matrix(builder, inverse_bind)));
+                                          create_matrix(builder, inverse_bind),
+                                          builder.CreateString(attachment_label)));
   }
 
   std::vector<flatbuffers::Offset<ll::Animation>> animation_offsets;
@@ -2843,6 +2878,20 @@ void compare_component(DiffList &diffs,
       }
     }
   }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentWeapon &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentWeapon)
+  {
+    const auto *native_weapon = native_value->value_as_GameplayComponentWeapon();
+    const auto *python_weapon = python_value->value_as_GameplayComponentWeapon();
+    compare_string(diffs, path + ".weapon.accepted_bone_label",
+                   fb_string(native_weapon->accepted_bone_label()),
+                   fb_string(python_weapon->accepted_bone_label()));
+    compare_matrix(diffs, path + ".weapon.muzzle_local_transform",
+                   native_weapon->muzzle_local_transform(), python_weapon->muzzle_local_transform(), 1e-4);
+    compare_exact(diffs, path + ".weapon.muzzle_valid",
+                  native_weapon->muzzle_valid(), python_weapon->muzzle_valid());
+    return;
+  }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&
       python_value->value_type() == ll::GameplayComponent_GameplayComponentPart)
   {
@@ -2908,6 +2957,7 @@ void compare_components(DiffList &diffs,
 void compare_bone(DiffList &diffs, const std::string &path, const ll::Bone &native_value, const ll::Bone &python_value)
 {
   compare_string(diffs, path + ".name", fb_string(native_value.name()), fb_string(python_value.name()));
+  compare_string(diffs, path + ".attachment_label", fb_string(native_value.attachment_label()), fb_string(python_value.attachment_label()));
   compare_string(diffs, path + ".parent_name", fb_string(native_value.parent_name()), fb_string(python_value.parent_name()));
   compare_exact(diffs, path + ".parent_index", native_value.parent_index(), python_value.parent_index());
   compare_matrix(diffs, path + ".inverse_bind_matrix", native_value.inverse_bind_matrix(), python_value.inverse_bind_matrix());

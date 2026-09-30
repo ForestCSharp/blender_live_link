@@ -54,7 +54,7 @@ bool transform_from_matrix_location_rotation(const HMM_Mat4& in_matrix, Transfor
 
 bool attachment_point_world_matrix(
 	const MechInstance& in_mech,
-	const Object& in_body,
+	const Object& in_owner,
 	const AttachmentPoint& in_attachment,
 	HMM_Mat4& out_world_matrix,
 	std::string& out_error)
@@ -65,22 +65,22 @@ bool attachment_point_world_matrix(
 		return false;
 	}
 
-	const HMM_Mat4 body_model = object_get_model_matrix(in_body);
+	const HMM_Mat4 owner_model = object_get_model_matrix(in_owner);
 	if (in_attachment.binding_type == AttachmentBindingType::Object)
 	{
-		out_world_matrix = HMM_MulM4(body_model, in_attachment.local_transform);
+		out_world_matrix = HMM_MulM4(owner_model, in_attachment.local_transform);
 		return true;
 	}
 
-	if (!in_body.has_mesh || !in_body.mesh.has_skinned_vertices)
+	if (!in_owner.has_mesh || !in_owner.mesh.has_skinned_vertices)
 	{
-		out_error = "Body is not a skinned mesh";
+		out_error = "Owner is not a skinned mesh";
 		return false;
 	}
 	const i32 armature_instance_uid = mech_find_armature_instance(in_mech, in_attachment.armature_id);
-	if (armature_instance_uid == -1 || in_body.mesh.armature_id != armature_instance_uid)
+	if (armature_instance_uid == -1 || in_owner.mesh.armature_id != armature_instance_uid)
 	{
-		out_error = "socket armature does not match the Body mesh armature";
+		out_error = "socket armature does not match the owner mesh armature";
 		return false;
 	}
 
@@ -123,9 +123,9 @@ bool attachment_point_world_matrix(
 	}
 
 	out_world_matrix = HMM_MulM4(
-		body_model,
+		owner_model,
 		HMM_MulM4(
-			in_body.mesh.armature_to_mesh,
+			in_owner.mesh.armature_to_mesh,
 			HMM_MulM4(pose_matrix, in_attachment.local_transform)
 		)
 	);

@@ -3,6 +3,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
+#include "game_object/weapon_selection.h"
 
 #include "ankerl/unordered_dense.h"
 #include "core/types.h"
@@ -143,6 +145,7 @@ struct MechInstance
 	i32 runtime_id = -1;
 	i32 character_uid = -1;
 	MechLoadout loadout;
+	std::vector<MechWeaponInstance> weapons;
 	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 socket_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
@@ -233,7 +236,15 @@ struct State
 		bool is_mouse_locked = false;
 		bool action_latches[4] = {};
 		bool gi_probe_pick_requested = false;
+		i32 pending_fire_requests = 0;
 	} input;
+
+	struct ProjectileInstance
+	{
+		i32 object_uid = -1;
+		f32 age_seconds = 0.0f;
+	};
+	std::vector<ProjectileInstance> projectiles;
 
 	struct SceneState
 	{
@@ -782,7 +793,7 @@ void scene_rebuild_indexes(State& in_state)
 	ankerl::unordered_dense::map<i32, bool> catalog_armature_ids;
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
-		if (object.has_part && !object_is_runtime_instance(object) && object.has_mesh &&
+		if ((object.has_part || object.has_weapon) && !object_is_runtime_instance(object) && object.has_mesh &&
 			object.mesh.has_skinned_vertices && object.mesh.armature_id >= 0)
 		{
 			catalog_armature_ids[object.mesh.armature_id] = true;
@@ -794,7 +805,7 @@ void scene_rebuild_indexes(State& in_state)
 		// Catalog Parts and sockets are immutable authoring templates. Runtime
 		// clones deliberately omit those components and enter normal render and
 		// skinning indexes below.
-		if (object.has_mesh && !object.has_part && !object.has_attachment_point)
+		if (object.has_mesh && !object.has_part && !object.has_weapon && !object.has_attachment_point)
 		{
 			indexes.mesh_object_ids.add(unique_id);
 
@@ -803,7 +814,7 @@ void scene_rebuild_indexes(State& in_state)
 				indexes.skinned_mesh_object_ids.add(unique_id);
 			}
 		}
-		if (object.has_light && !object.has_part && !object.has_attachment_point)
+		if (object.has_light && !object.has_part && !object.has_weapon && !object.has_attachment_point)
 		{
 			indexes.light_object_ids.add(unique_id);
 		}
@@ -1161,6 +1172,8 @@ bool scene_remove_object(State& in_state, i32 in_unique_id)
 
 void scene_clear_objects(State& in_state)
 {
+	in_state.projectiles.clear();
+	in_state.input.pending_fire_requests = 0;
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
 		object_cleanup(object);

@@ -500,6 +500,7 @@ namespace LiveLinkSystem
 	
 							game_object.armature.bones[bone_idx] = {
 								.name = copy_flatbuffer_string(flatbuffer_bone->name()),
+								.attachment_label = copy_flatbuffer_string(flatbuffer_bone->attachment_label()),
 								.parent_index = flatbuffer_bone->parent_index(),
 								.inverse_bind_matrix = flatbuffer_helpers::to_hmm_mat4(flatbuffer_bone->inverse_bind_matrix()),
 							};
@@ -807,6 +808,15 @@ namespace LiveLinkSystem
 									};
 									object_add_camera_control(game_object, cam_control_settings);
 									break;
+							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentWeapon:
+							{
+								const auto* weapon = reinterpret_cast<const Blender::LiveLink::GameplayComponentWeapon*>(component);
+								game_object.has_weapon = true;
+								game_object.weapon.accepted_bone_label = weapon->accepted_bone_label() ? weapon->accepted_bone_label()->str() : "";
+								game_object.weapon.muzzle_local_transform = flatbuffer_helpers::to_hmm_mat4(weapon->muzzle_local_transform());
+								game_object.weapon.muzzle_valid = weapon->muzzle_valid();
+								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentPart:
 							{

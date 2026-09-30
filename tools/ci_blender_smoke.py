@@ -70,6 +70,7 @@ def validate_compression_registries(extension_module) -> None:
         ("CAMERA_CONTROL", "camera_control"),
         ("FOG_CONTROLLER", "fog_controller"),
         ("PART", "part"),
+        ("WEAPON", "weapon"),
         ("ATTACHMENT_POINT", "attachment_point"),
         ("SKY_ATMOSPHERE", "sky_atmosphere"),
         ("CLOUD_SYSTEM", "cloud_system"),
@@ -221,6 +222,11 @@ def create_synthetic_scene():
         component.type = component_type
         return component
 
+    armature_data.bones["Root"].live_link_attachment_label = "Hand"
+    weapon_object = bpy.data.objects.new("CI Weapon", mesh)
+    bpy.context.scene.collection.objects.link(weapon_object)
+    add_component(weapon_object, "WEAPON").weapon.accepted_bone_label = "Hand"
+
     body_component = add_component(mesh_object, "PART")
     body_component.part.part_type = "BODY"
     mesh_object.hide_set(True)
@@ -355,6 +361,7 @@ def create_synthetic_scene():
         second_character_object,
         blender_hidden_character_object,
         light_object,
+        weapon_object,
     ]
     for scene_object in synthetic_objects:
         if not hasattr(scene_object, "live_link_settings"):
@@ -641,6 +648,12 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
             "Blender RNA component identifiers changed across save/reload: "
             f"{reloaded_component_types}"
         )
+
+    if bpy.data.armatures["CI Mech Armature Data"].bones["Root"].live_link_attachment_label != "Hand":
+        raise AssertionError("Bone attachment label changed across save/reload")
+    weapon = bpy.data.objects["CI Weapon"].live_link_settings.components[0].weapon
+    if weapon.accepted_bone_label != "Hand":
+        raise AssertionError("Weapon label changed across save/reload")
 
     print(
         "BLENDER_LIVE_LINK_CI_SYNTHETIC_OK",

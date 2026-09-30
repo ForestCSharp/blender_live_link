@@ -424,3 +424,44 @@ Characters can independently instance the same templates. The Body follows its
 own Character object. Missing or invalid child sockets hide only that instance's
 child and produce a per-mech diagnostic; Live Link batches automatically
 refresh all instances while preserving explicit template selections.
+
+### Weapons on mech hands (native game)
+
+Select a hand bone in Edit Mode or Pose Mode. In **Bone Properties → Live Link
+Attachment**, set **Attachment Label** to `Hand`. Leave other bones unlabeled.
+Labels are case-sensitive strings and work across rigs with different bone names.
+Each labeled bone on an equipped Left Arm or Right Arm is one weapon slot; a
+shared armature/bone pair is counted once.
+
+On a weapon mesh, add **Weapon** under **Live Link Properties** and set **Accepted
+Bone Label** to the same label. Place the weapon's object origin at its grip and
+orient its local axes to the receiving bone. The game aligns that origin and
+rotation directly to the animated bone, retaining the weapon's authored scale.
+Its catalog position and rotation do not act as attachment offsets. Weapons are
+single objects (optionally skinned); child hierarchies are not instanced.
+To fire, add an Empty as a direct child of the weapon and place it at the barrel
+opening, outside the weapon's collision geometry. Point the Empty's local **+Y**
+axis down the barrel, then select it in the Weapon component's **Muzzle Object**
+field. A missing or incorrectly parented Empty leaves the weapon equipped but
+unable to fire. Each left mouse click fires one physics sphere from every valid
+equipped weapon while simulation is running; holding the button does not repeat.
+Spheres expire after five seconds, with at most 64 active. They do not deal damage.
+
+The active player's mech randomly chooses a compatible weapon for every labeled
+arm bone. The same template can equip both hands. Templates stay out of the
+rendered scene, and ordinary Live Link updates preserve valid selections. Removed
+or incompatible selections are replaced if possible; unmatched hands remain
+empty.
+Bone labels and Weapon components work through both exporters, saved updates,
+and linked collection occurrences. Rebuild the extension and native Blender
+exporter after updating the schema; generated bindings remain build artifacts.
+
+Weapon checks:
+
+- `game/tests/weapon_selection_tests.cpp` is a standalone C++20 test; compile with
+  `-I game/src`. It tests matching, seeded randomness, duplicates and stable selection.
+- Run `game/tests/weapon_export_blender.py` with Blender's `--background
+  --factory-startup --python-exit-code 1 --python` options. It checks export parity,
+  linked instances and property notifications, and writes `/tmp/weapon_fixture.bin`.
+- `game/tests/run_weapon_runtime_tests.sh` builds and runs the native GPU integration
+  test against that fixture, checking animation, transforms and instance lifecycle.
