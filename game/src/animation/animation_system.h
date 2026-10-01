@@ -28,7 +28,8 @@ namespace AnimationSystem
 	}
 	
 	// Advances all armatures before mech attachment evaluation so bone sockets
-	// and rendered skinning consume the same animation frame.
+	// and rendered skinning consume the same animation frame. Poses are sampled
+	// from current_frame by update_mech_transforms, ahead of arm IK.
 	void advance(State& in_state, f32 in_delta_time)
 	{
 		scene_ensure_indexes(in_state);
@@ -73,8 +74,8 @@ namespace AnimationSystem
 		}
 	}
 	
-	// Computes each skinned mesh's final matrices (armature_to_mesh * clip *
-	// mesh_to_armature) and packs the shared per-frame arena.
+	// Convert the evaluated global pose to skin matrices, including IK overrides,
+	// then pack the shared per-frame arena.
 	void pack_skin_matrices(State& in_state)
 	{
 		scene_ensure_indexes(in_state);
@@ -104,19 +105,11 @@ namespace AnimationSystem
 			if (armature_found != in_state.scene.objects.end() && armature_found->second.has_armature)
 			{
 				Armature& armature = armature_found->second.armature;
-				AnimationClip* animation = armature_get_active_animation(armature);
-				if (animation && animation->skin_matrices && animation->frame_count > 0 && animation->bone_count > 0)
+				for (u32 bone_idx = 0; bone_idx < MIN(armature.bone_count, mesh.skin_matrix_count); ++bone_idx)
 				{
-					const i32 frame_idx = CLAMP(armature.current_frame, 0, animation->frame_count - 1);
-					const i32 bone_count = MIN(animation->bone_count, (i32) mesh.skin_matrix_count);
-					for (i32 bone_idx = 0; bone_idx < bone_count; ++bone_idx)
-					{
-						const HMM_Mat4& clip_matrix = animation->skin_matrices[frame_idx * animation->bone_count + bone_idx];
-						mesh.skin_matrices[bone_idx] = HMM_MulM4(
-							mesh.armature_to_mesh,
-							HMM_MulM4(clip_matrix, mesh.mesh_to_armature)
-						);
-					}
+					const HMM_Mat4 skin = armature_bone_pose(armature, bone_idx) *
+						armature.bones[bone_idx].inverse_bind_matrix;
+					mesh.skin_matrices[bone_idx] = mesh.armature_to_mesh * skin * mesh.mesh_to_armature;
 				}
 			}
 	

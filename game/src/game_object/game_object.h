@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "core/types.h"
 #include "render/core/gpu_buffer.h"
@@ -165,6 +166,9 @@ enum class AttachmentBindingType : u8
 struct Part
 {
 	PartType type = PartType::Body;
+	std::string ik_shoulder_bone;
+	std::string ik_elbow_bone;
+	std::string ik_hand_bone;
 };
 
 struct AttachmentPoint
@@ -214,6 +218,8 @@ struct Armature
 	i32 active_animation_index = 0;
 	f32 playback_time = 0.0f;
 	i32 current_frame = 0;
+	// Mutable per-instance state. Bones and clips remain shared with templates.
+	std::vector<HMM_Mat4> evaluated_pose;
 };
 
 AnimationClip* armature_get_active_animation(Armature& in_armature)
@@ -229,6 +235,35 @@ AnimationClip* armature_get_active_animation(Armature& in_armature)
 		(i32) in_armature.animation_count - 1
 	);
 	return &in_armature.animations[in_armature.active_animation_index];
+}
+
+// Clip skin matrices map bind space to posed space. Each armature instance keeps
+// one armature-space pose shared by skinning, sockets and procedural overrides.
+void armature_sample_pose(Armature& in_armature)
+{
+	in_armature.evaluated_pose.resize(in_armature.bone_count);
+	const AnimationClip* animation = armature_get_active_animation(in_armature);
+	const bool has_clip = animation && animation->skin_matrices && animation->frame_count > 0;
+	const i32 frame_idx = has_clip ? CLAMP(in_armature.current_frame, 0, animation->frame_count - 1) : 0;
+	for (u32 bone_idx = 0; bone_idx < in_armature.bone_count; ++bone_idx)
+	{
+		HMM_Mat4 pose = HMM_InvGeneralM4(in_armature.bones[bone_idx].inverse_bind_matrix);
+		if (has_clip && bone_idx < (u32) animation->bone_count)
+		{
+			pose = animation->skin_matrices[frame_idx * animation->bone_count + bone_idx] * pose;
+		}
+		in_armature.evaluated_pose[bone_idx] = pose;
+	}
+}
+
+// Falls back to the bind pose before the armature's first sample.
+HMM_Mat4 armature_bone_pose(const Armature& in_armature, u32 in_bone_idx)
+{
+	if (in_bone_idx < in_armature.evaluated_pose.size())
+	{
+		return in_armature.evaluated_pose[in_bone_idx];
+	}
+	return HMM_InvGeneralM4(in_armature.bones[in_bone_idx].inverse_bind_matrix);
 }
 
 enum class ObjectStorageKind : u8

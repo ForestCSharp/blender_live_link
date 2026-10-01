@@ -1498,7 +1498,10 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
         continue;
       }
       const auto value = ll::CreateGameplayComponentPart(
-          builder, part_type_from_string(py_string_attr(part, "part_type", "BODY")));
+          builder, part_type_from_string(py_string_attr(part, "part_type", "BODY")),
+          builder.CreateString(py_string_attr(part, "ik_shoulder_bone", "")),
+          builder.CreateString(py_string_attr(part, "ik_elbow_bone", "")),
+          builder.CreateString(py_string_attr(part, "ik_hand_bone", "")));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentPart, value.Union()));
     }
@@ -2903,6 +2906,9 @@ void compare_component(DiffList &diffs,
     compare_exact(diffs, path + ".part.present", native_part != nullptr, python_part != nullptr);
     if (native_part && python_part) {
       compare_exact(diffs, path + ".part.part_type", int(native_part->part_type()), int(python_part->part_type()));
+      compare_string(diffs, path + ".part.ik_shoulder_bone", fb_string(native_part->ik_shoulder_bone()), fb_string(python_part->ik_shoulder_bone()));
+      compare_string(diffs, path + ".part.ik_elbow_bone", fb_string(native_part->ik_elbow_bone()), fb_string(python_part->ik_elbow_bone()));
+      compare_string(diffs, path + ".part.ik_hand_bone", fb_string(native_part->ik_hand_bone()), fb_string(python_part->ik_hand_bone()));
     }
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentAttachmentPoint &&

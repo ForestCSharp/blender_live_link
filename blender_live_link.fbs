@@ -253,6 +253,9 @@ table GameplayComponentCloudSystem
 table GameplayComponentPart
 {
 	part_type : PartType = Body;
+	ik_shoulder_bone : string;
+	ik_elbow_bone : string;
+	ik_hand_bone : string;
 }
 
 table GameplayComponentAttachmentPoint

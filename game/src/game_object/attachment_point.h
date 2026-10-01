@@ -109,18 +109,7 @@ bool attachment_point_world_matrix(
 		return false;
 	}
 
-	const HMM_Mat4 bind_matrix = HMM_InvGeneralM4(armature.bones[bone_idx].inverse_bind_matrix);
-	HMM_Mat4 pose_matrix = bind_matrix;
-	AnimationClip* animation = armature_get_active_animation(armature);
-	if (animation && animation->skin_matrices && animation->frame_count > 0 &&
-		bone_idx < animation->bone_count)
-	{
-		const i32 frame_idx = CLAMP(armature.current_frame, 0, animation->frame_count - 1);
-		const HMM_Mat4& skin_matrix = animation->skin_matrices[
-			frame_idx * animation->bone_count + bone_idx
-		];
-		pose_matrix = HMM_MulM4(skin_matrix, bind_matrix);
-	}
+	const HMM_Mat4 pose_matrix = armature_bone_pose(armature, bone_idx);
 
 	out_world_matrix = HMM_MulM4(
 		owner_model,

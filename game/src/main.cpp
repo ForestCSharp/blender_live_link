@@ -144,6 +144,7 @@ void frame(f32 in_delta_time)
 	{
 		CPU_TIMING_SCOPE("Object Transforms");
 		update_physics_backed_object_transforms();
+		// Base poses -> assembled parts -> player arm IK -> weapon attachments.
 		update_mech_transforms();
 		projectile_update_lifetimes(in_delta_time);
 		WeaponSystem::update(in_delta_time);

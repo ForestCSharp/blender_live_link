@@ -460,7 +460,42 @@ Bone labels and Weapon components work through both exporters, saved updates,
 and linked collection occurrences. Rebuild the extension and native Blender
 exporter after updating the schema; generated bindings remain build artifacts.
 
-Weapon checks:
+### Player arm aiming with IK (native game)
+
+The active player's arms always aim parallel to the player camera's forward
+vector. Select an arm mesh and open **Object Properties → Live Link Properties →
+Part**. For Left Arm and Right Arm parts, **Shoulder Bone**, **Elbow Bone**, and
+**Hand Bone** search the mesh's bound armature. The bones must form a direct
+shoulder → elbow → hand hierarchy. Leave Hand Bone empty to use the rig's single
+bone with a nonempty attachment label; leave Elbow or Shoulder empty to use the
+selected hand's parent or elbow's parent. Multiple labeled bones require an
+explicit hand selection. Stale names after a bone rename must be selected again.
+
+IK restores the shoulder subtree (including fingers) to rest locals, aims it,
+then bends the elbow by at least 25° (`ArmIK::min_elbow_bend_degrees`),
+preserving segment lengths. A rest pose bent further keeps its bend and its bend
+direction; arms within 2° of straight drop the elbow toward world down. The wrist aligns the equipped gun's muzzle-local
++Y with the view, accounting for muzzle rotation and weapon scale; without a
+valid muzzle it aligns hand-local +Y. Other body bones and other characters keep
+animating. Invalid chains retain their sampled animation and report the reason
+in mech assembly diagnostics.
+
+Debug-camera movement does not change player aim. Aiming still evaluates while
+paused, but paused/debug-camera firing remains suppressed. Runtime per-arm
+`ArmPoseMode::Animation` bypasses IK for future melee states; compatible Live Link
+rebuilds preserve this mode. V1 has no joint limits, smoothing or arm collisions.
+
+IK checks and smoke scene:
+
+- Run `game/tests/arm_ik_export_blender.py` with the locally built native Blender's
+  `--background --factory-startup --python-exit-code 1 --python`. It tests the pickers, export parity,
+  linked instances and updates, and writes `/tmp/arm_ik_fixture.blend` and `.bin`.
+- Open that Blender fixture to inspect two bent arm chains and a reusable gun
+  with a rotated muzzle. Load the `.bin` into the native game to inspect aiming.
+- `game/tests/run_arm_ik_runtime_tests.sh` tests the solver, rendered skinning,
+  weapon attachment and firing, animation fallback, player changes and cleanup.
+
+Existing weapon checks:
 
 - `game/tests/weapon_selection_tests.cpp` is a standalone C++20 test; compile with
   `-I game/src`. It tests matching, seeded randomness, duplicates and stable selection.

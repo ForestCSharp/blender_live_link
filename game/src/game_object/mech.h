@@ -8,6 +8,7 @@
 
 #include "state/state.h"
 #include "game_object/attachment_point.h"
+#include "animation/arm_ik.h"
 
 void update_mech_transforms();
 
@@ -91,6 +92,7 @@ i32 mech_clone_armature(MechInstance& in_mech, i32 in_template_uid)
 	armature_instance.armature = armature_template.armature;
 	armature_instance.armature.playback_time = 0.0f;
 	armature_instance.armature.current_frame = 0;
+	armature_instance.armature.evaluated_pose.clear();
 
 	scene_insert_or_replace_object(state, std::move(armature_instance));
 	in_mech.armature_instances.add({
@@ -156,7 +158,10 @@ void mech_destroy_runtime_objects(MechInstance& in_mech)
 {
 	for (auto& weapon : in_mech.weapons)
 	{
-		if (weapon.instance_uid != -1) scene_remove_object(state, weapon.instance_uid);
+		if (weapon.instance_uid != -1)
+		{
+			scene_remove_object(state, weapon.instance_uid);
+		}
 		weapon.instance_uid = -1;
 	}
 	for (i32 part_idx = 0; part_idx < (i32) PartType::Count; ++part_idx)
@@ -193,7 +198,10 @@ void mech_suspend_runtime_objects()
 	for (auto& [object_uid, object] : state.scene.objects)
 	{
 		if (object.storage_kind == ObjectStorageKind::RuntimePart ||
-			object.storage_kind == ObjectStorageKind::RuntimeArmature) orphan_uids.add(object_uid);
+			object.storage_kind == ObjectStorageKind::RuntimeArmature)
+		{
+			orphan_uids.add(object_uid);
+		}
 	}
 	for (i32 orphan_uid : orphan_uids)
 	{
@@ -411,102 +419,163 @@ std::mt19937& mech_weapon_random_engine()
 	return engine;
 }
 
-bool mech_weapon_template_compatible(const Object& object, const std::string& label)
+// Weapons are standalone, renderable templates: never runtime clones, parts or
+// sockets, and they must name the bone label they attach to.
+bool mech_is_weapon_template(const Object& in_object)
 {
-	if (object_is_runtime_instance(object) || !object.has_weapon || !object.has_mesh ||
-		object.has_part || object.has_attachment_point || label.empty() ||
-		object.weapon.accepted_bone_label != label || object.mesh.vertex_count == 0 ||
-		object.mesh.index_count == 0) return false;
-	if (!object.mesh.has_skinned_vertices) return true;
-	auto armature = state.scene.objects.find(object.mesh.armature_id);
+	if (object_is_runtime_instance(in_object) || !in_object.has_weapon || !in_object.has_mesh ||
+		in_object.has_part || in_object.has_attachment_point || in_object.weapon.accepted_bone_label.empty() ||
+		in_object.mesh.vertex_count == 0 || in_object.mesh.index_count == 0)
+	{
+		return false;
+	}
+	if (!in_object.mesh.has_skinned_vertices)
+	{
+		return true;
+	}
+	auto armature = state.scene.objects.find(in_object.mesh.armature_id);
 	return armature != state.scene.objects.end() && armature->second.has_armature &&
 		!object_is_runtime_instance(armature->second);
 }
 
-void mech_reconcile_weapons(MechInstance& mech)
+// Every attachment-labeled bone on the player's arm rigs is a weapon target.
+std::vector<MechWeaponInstance> mech_collect_weapon_targets(const MechInstance& in_mech)
 {
 	std::vector<MechWeaponInstance> targets;
-	if (state.scene.player_character_id == mech.character_uid)
+	if (state.scene.player_character_id != in_mech.character_uid)
 	{
-		for (PartType slot : {PartType::LeftArm, PartType::RightArm})
+		return targets;
+	}
+	for (PartType slot : {PartType::LeftArm, PartType::RightArm})
+	{
+		auto arm = state.scene.objects.find(in_mech.part_instance_uids[(i32) slot]);
+		if (arm == state.scene.objects.end() || !arm->second.has_mesh || !arm->second.mesh.has_skinned_vertices)
 		{
-			auto arm = state.scene.objects.find(mech.part_instance_uids[(i32) slot]);
-			if (arm == state.scene.objects.end() || !arm->second.has_mesh ||
-				!arm->second.mesh.has_skinned_vertices) continue;
-			auto rig = state.scene.objects.find(arm->second.mesh.armature_id);
-			if (rig == state.scene.objects.end() || !rig->second.has_armature) continue;
-			for (u32 bone_idx = 0; bone_idx < rig->second.armature.bone_count; ++bone_idx)
+			continue;
+		}
+		auto rig = state.scene.objects.find(arm->second.mesh.armature_id);
+		if (rig == state.scene.objects.end() || !rig->second.has_armature)
+		{
+			continue;
+		}
+		const i32 rig_template_uid = rig->second.template_object_id;
+		for (u32 bone_idx = 0; bone_idx < rig->second.armature.bone_count; ++bone_idx)
+		{
+			const ArmatureBone& bone = rig->second.armature.bones[bone_idx];
+			if (!bone.name || !bone.attachment_label || !bone.attachment_label[0] ||
+				weapon_target_exists(targets, rig_template_uid, bone.name))
 			{
-				const auto& bone = rig->second.armature.bones[bone_idx];
-				if (!bone.name || !bone.attachment_label || !bone.attachment_label[0]) continue;
-				const i32 rig_uid = rig->second.template_object_id;
-				if (weapon_target_exists(targets, rig_uid, bone.name)) continue;
-				MechWeaponInstance target;
-				target.arm_slot = (i32) slot;
-				target.arm_template_uid = mech.part_template_uids[(i32) slot];
-				target.armature_template_uid = rig_uid;
-				target.bone_name = bone.name;
-				target.label = bone.attachment_label;
-				targets.push_back(std::move(target));
+				continue;
+			}
+			MechWeaponInstance target;
+			target.arm_slot = (i32) slot;
+			target.arm_template_uid = in_mech.part_template_uids[(i32) slot];
+			target.armature_template_uid = rig_template_uid;
+			target.bone_name = bone.name;
+			target.label = bone.attachment_label;
+			targets.push_back(std::move(target));
+		}
+	}
+	return targets;
+}
+
+// Drops cloned rigs that no part or weapon instance skins to anymore.
+void mech_release_unused_armatures(MechInstance& io_mech)
+{
+	auto skins_to = [&](i32 in_object_uid, i32 in_armature_uid) {
+		auto object = state.scene.objects.find(in_object_uid);
+		return object != state.scene.objects.end() && object->second.has_mesh &&
+			object->second.mesh.has_skinned_vertices && object->second.mesh.armature_id == in_armature_uid;
+	};
+
+	DynamicArray<MechArmatureInstance> retained;
+	for (const MechArmatureInstance& mapping : io_mech.armature_instances)
+	{
+		bool used = false;
+		for (i32 part_uid : io_mech.part_instance_uids)
+		{
+			used = used || skins_to(part_uid, mapping.instance_uid);
+		}
+		for (const MechWeaponInstance& weapon : io_mech.weapons)
+		{
+			used = used || skins_to(weapon.instance_uid, mapping.instance_uid);
+		}
+
+		if (used)
+		{
+			retained.add(mapping);
+		}
+		else
+		{
+			scene_remove_object(state, mapping.instance_uid);
+		}
+	}
+	io_mech.armature_instances = std::move(retained);
+}
+
+void mech_reconcile_weapons(MechInstance& io_mech)
+{
+	std::vector<MechWeaponInstance> targets = mech_collect_weapon_targets(io_mech);
+	std::vector<WeaponCandidate> candidates;
+	if (!targets.empty())
+	{
+		for (const auto& [uid, object] : state.scene.objects)
+		{
+			if (mech_is_weapon_template(object))
+			{
+				candidates.push_back({uid, object.weapon.accepted_bone_label});
 			}
 		}
 	}
-	std::vector<WeaponCandidate> candidates;
-	if (!targets.empty())
-		for (const auto& [uid, object] : state.scene.objects)
-			if (mech_weapon_template_compatible(object, object.weapon.accepted_bone_label))
-				candidates.push_back({uid, object.weapon.accepted_bone_label});
-	select_mech_weapons(targets, mech.weapons, std::move(candidates), mech_weapon_random_engine());
+	select_mech_weapons(targets, io_mech.weapons, std::move(candidates), mech_weapon_random_engine());
+
 	bool removed_weapon = false;
-	for (const auto& old : mech.weapons)
+	for (const MechWeaponInstance& old : io_mech.weapons)
 	{
-		if (old.instance_uid != -1 && std::none_of(targets.begin(), targets.end(), [&](const auto& target) {
+		const bool kept = std::any_of(targets.begin(), targets.end(), [&](const MechWeaponInstance& target) {
 			return target.instance_uid == old.instance_uid;
-		}))
+		});
+		if (old.instance_uid != -1 && !kept)
 		{
 			scene_remove_object(state, old.instance_uid);
 			removed_weapon = true;
 		}
 	}
-	mech.weapons = std::move(targets);
+	io_mech.weapons = std::move(targets);
 
 	// Finish enumeration before inserting objects: scene-map inserts invalidate references.
-	for (auto& target : mech.weapons)
+	for (MechWeaponInstance& target : io_mech.weapons)
+	{
 		if (target.weapon_template_uid != -1 && target.instance_uid == -1)
-			target.instance_uid = mech_clone_part(mech, state.scene.objects.at(target.weapon_template_uid));
+		{
+			target.instance_uid = mech_clone_part(io_mech, state.scene.objects.at(target.weapon_template_uid));
+		}
+	}
 	if (removed_weapon)
 	{
-		DynamicArray<MechArmatureInstance> retained;
-		for (const auto& mapping : mech.armature_instances)
-		{
-			auto uses_rig = [&](i32 uid) {
-				auto object = state.scene.objects.find(uid);
-				return object != state.scene.objects.end() && object->second.has_mesh &&
-					object->second.mesh.has_skinned_vertices && object->second.mesh.armature_id == mapping.instance_uid;
-			};
-			bool used = false;
-			for (i32 uid : mech.part_instance_uids) used = used || uses_rig(uid);
-			for (const auto& weapon : mech.weapons) used = used || uses_rig(weapon.instance_uid);
-			if (used) retained.add(mapping);
-			else scene_remove_object(state, mapping.instance_uid);
-		}
-		mech.armature_instances = std::move(retained);
+		mech_release_unused_armatures(io_mech);
 	}
 }
 
-void mech_update_weapon_transforms(MechInstance& mech, std::string& diagnostics, bool& has_lights)
+void mech_update_weapon_transforms(MechInstance& io_mech, std::string& io_diagnostics, bool& io_has_lights)
 {
-	for (const auto& equipped : mech.weapons)
+	for (const MechWeaponInstance& equipped : io_mech.weapons)
 	{
 		auto weapon = state.scene.objects.find(equipped.instance_uid);
-		if (weapon == state.scene.objects.end()) continue;
+		if (weapon == state.scene.objects.end())
+		{
+			continue;
+		}
 		Object& object = weapon->second;
 		object.visibility = false;
-		has_lights = has_lights || object.has_light;
-		auto arm = state.scene.objects.find(mech.part_instance_uids[(i32) equipped.arm_slot]);
+		io_has_lights = io_has_lights || object.has_light;
+
 		std::string error;
+		auto arm = state.scene.objects.find(io_mech.part_instance_uids[equipped.arm_slot]);
 		if (arm == state.scene.objects.end() || !arm->second.visibility)
+		{
 			error = "owning arm is hidden or missing";
+		}
 		else
 		{
 			AttachmentPoint attachment;
@@ -515,30 +584,50 @@ void mech_update_weapon_transforms(MechInstance& mech, std::string& diagnostics,
 			attachment.armature_id = equipped.armature_template_uid;
 			attachment.bone_name = const_cast<char*>(equipped.bone_name.c_str());
 			HMM_Mat4 world;
-			if (attachment_point_world_matrix(mech, arm->second, attachment, world, error))
+			if (attachment_point_world_matrix(io_mech, arm->second, attachment, world, error))
 			{
 				Transform transform = object.current_transform;
 				if (!transform_from_matrix_location_rotation(world, transform))
+				{
 					error = "weapon bone transform is singular";
+				}
 				else if (mech_part_instance_can_render(object, error))
 				{
+					// Follow the bone's location and rotation, keeping the weapon's authored scale.
 					transform.scale = object.initial_transform.scale;
 					object.current_transform = transform;
 					object.visibility = true;
 				}
 			}
 		}
-		diagnostics += " weapon[" + equipped.bone_name + "]=" + std::to_string(equipped.weapon_template_uid);
-		if (!error.empty()) diagnostics += " error[weapon " + equipped.bone_name + "]=" + error;
+
+		io_diagnostics += " weapon[" + equipped.bone_name + "]=" + std::to_string(equipped.weapon_template_uid);
+		if (!error.empty())
+		{
+			io_diagnostics += " error[weapon " + equipped.bone_name + "]=" + error;
+		}
 	}
 }
 
 void update_mech_transforms()
 {
-	bool has_instanced_lights = false;
+	// Reconciliation may add rigs, so it runs first. Then resample every rig from
+	// its clip; IK overrides the sampled pose and must never feed back into it.
 	for (auto& [mech_id, mech] : state.mech.instances)
 	{
 		mech_reconcile_weapons(mech);
+	}
+	for (auto& [uid, object] : state.scene.objects)
+	{
+		if (object.has_armature)
+		{
+			armature_sample_pose(object.armature);
+		}
+	}
+
+	bool has_instanced_lights = false;
+	for (auto& [mech_id, mech] : state.mech.instances)
+	{
 		std::string diagnostics = "mech=" + std::to_string(mech.runtime_id) +
 			" character=" + std::to_string(mech.character_uid);
 		for (i32 part_idx = 0; part_idx < (i32) PartType::Count; ++part_idx)
@@ -638,6 +727,7 @@ void update_mech_transforms()
 			}
 		}
 
+		ArmIK::update(mech, diagnostics);
 		mech_update_weapon_transforms(mech, diagnostics, has_instanced_lights);
 		if (diagnostics != mech.last_diagnostic_signature)
 		{

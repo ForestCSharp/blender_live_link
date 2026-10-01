@@ -140,11 +140,20 @@ struct MechArmatureInstance
 	i32 instance_uid = -1;
 };
 
+enum class ArmPoseMode : u8 { AimIK, Animation };
+
+struct MechArmPose
+{
+	ArmPoseMode mode = ArmPoseMode::AimIK;
+	i32 template_uid = -1;
+};
+
 struct MechInstance
 {
 	i32 runtime_id = -1;
 	i32 character_uid = -1;
 	MechLoadout loadout;
+	MechArmPose arm_poses[2];
 	std::vector<MechWeaponInstance> weapons;
 	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};

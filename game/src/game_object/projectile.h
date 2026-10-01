@@ -13,29 +13,47 @@ constexpr size_t MAX_ACTIVE_PROJECTILES = 64;
 
 void projectile_remove_oldest()
 {
-	if (state.projectiles.empty()) return;
+	if (state.projectiles.empty())
+	{
+		return;
+	}
 	scene_remove_object(state, state.projectiles.front().object_uid);
 	state.projectiles.erase(state.projectiles.begin());
 }
 
-void projectile_update_lifetimes(f32 delta_seconds)
+void projectile_update_lifetimes(f32 in_delta_seconds)
 {
-	if (!state.runtime.is_simulating) return;
-	for (auto& projectile : state.projectiles) projectile.age_seconds += std::max(0.0f, delta_seconds);
+	if (!state.runtime.is_simulating)
+	{
+		return;
+	}
+	for (auto& projectile : state.projectiles)
+	{
+		projectile.age_seconds += std::max(0.0f, in_delta_seconds);
+	}
+	// Spawn order is age order, so expired projectiles are always at the front.
 	while (!state.projectiles.empty() && state.projectiles.front().age_seconds >= PROJECTILE_LIFETIME_S)
+	{
 		projectile_remove_oldest();
+	}
 }
 
-bool projectile_spawn(HMM_Vec3 origin, HMM_Vec3 direction)
+bool projectile_spawn(HMM_Vec3 in_origin, HMM_Vec3 in_direction)
 {
-	const f32 length_sq = HMM_DotV3(direction, direction);
-	if (!std::isfinite(length_sq) || length_sq < 1e-8f) return false;
-	direction = HMM_MulV3F(direction, 1.0f / sqrtf(length_sq));
-	while (state.projectiles.size() >= MAX_ACTIVE_PROJECTILES) projectile_remove_oldest();
+	const f32 length_sq = HMM_LenSqrV3(in_direction);
+	if (!std::isfinite(length_sq) || length_sq < 1e-8f)
+	{
+		return false;
+	}
+	const HMM_Vec3 direction = in_direction / sqrtf(length_sq);
+	while (state.projectiles.size() >= MAX_ACTIVE_PROJECTILES)
+	{
+		projectile_remove_oldest();
+	}
 
 	const i32 uid = mech_allocate_runtime_object_uid();
 	Object sphere = object_create(uid, strdup("Projectile"), true,
-		HMM_V4(origin.X, origin.Y, origin.Z, 1.0f), HMM_Q(0, 0, 0, 1), HMM_V3(1, 1, 1));
+		HMM_V4V(in_origin, 1.0f), HMM_Q(0, 0, 0, 1), HMM_V3(1, 1, 1));
 	sphere.storage_kind = ObjectStorageKind::RuntimeProjectile;
 	sphere.has_mesh = true;
 	sphere.mesh = make_mesh(mesh_init_data_uv_sphere(PROJECTILE_RADIUS_M, 12, 16));
@@ -46,7 +64,7 @@ bool projectile_spawn(HMM_Vec3 origin, HMM_Vec3 direction)
 	JPH::SphereShapeSettings shape_settings(PROJECTILE_RADIUS_M);
 	const auto shape_result = shape_settings.Create();
 	JPH::BodyCreationSettings settings(shape_result.Get(),
-		JPH::RVec3(origin.X, origin.Y, origin.Z), JPH::Quat::sIdentity(),
+		JPH::RVec3(in_origin.X, in_origin.Y, in_origin.Z), JPH::Quat::sIdentity(),
 		JPH::EMotionType::Dynamic, Layers::MOVING);
 	JPH::MassProperties mass;
 	mass.ScaleToMass(PROJECTILE_MASS_KG);

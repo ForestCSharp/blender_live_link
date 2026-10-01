@@ -2748,8 +2748,27 @@ class Component_Part(Component):
         update=gameplay_component_property_update,
     )
 
+    ik_shoulder_bone: StringProperty(
+        name="Shoulder Bone", default="", description="Empty infers the elbow's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_elbow_bone: StringProperty(
+        name="Elbow Bone", default="", description="Empty infers the hand's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_hand_bone: StringProperty(
+        name="Hand Bone", default="", description="Empty infers the rig's single attachment-labeled bone",
+        update=gameplay_component_property_update,
+    )
+
     def create_flatbuffers_value(self, builder, **_kwargs):
+        shoulder = builder.CreateString(self.ik_shoulder_bone)
+        elbow = builder.CreateString(self.ik_elbow_bone)
+        hand = builder.CreateString(self.ik_hand_bone)
         GameplayComponentPart.Start(builder)
+        GameplayComponentPart.AddIkShoulderBone(builder, shoulder)
+        GameplayComponentPart.AddIkElbowBone(builder, elbow)
+        GameplayComponentPart.AddIkHandBone(builder, hand)
         GameplayComponentPart.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
         return GameplayComponentPart.End(builder)
 
@@ -3220,6 +3239,16 @@ class OBJECT_PT_custom_object_panel(Panel):
                 if group:
                     if component.type == Component_CloudSystem.type_name:
                         draw_cloud_system(box, group, i)
+                    elif component.type == Component_Part.type_name:
+                        box.prop(group, "part_type")
+                        if group.part_type in {'LEFT_ARM', 'RIGHT_ARM'}:
+                            rig = live_link_connection.get_mesh_armature(obj)
+                            for field in ("ik_shoulder_bone", "ik_elbow_bone", "ik_hand_bone"):
+                                if rig:
+                                    box.prop_search(group, field, rig.data, "bones")
+                                else:
+                                    box.prop(group, field)
+                            box.label(text="Unset bones are inferred; shoulder → elbow → hand")
                     else:
                         draw_property_group(box, group)
 

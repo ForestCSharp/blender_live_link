@@ -826,6 +826,9 @@ namespace LiveLinkSystem
 								game_object.has_part = true;
 								game_object.part = {
 									.type = (PartType) part_component->part_type(),
+									.ik_shoulder_bone = flatbuffers::GetString(part_component->ik_shoulder_bone()),
+									.ik_elbow_bone = flatbuffers::GetString(part_component->ik_elbow_bone()),
+									.ik_hand_bone = flatbuffers::GetString(part_component->ik_hand_bone()),
 								};
 								break;
 							}
