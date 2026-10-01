@@ -183,6 +183,7 @@ struct Weapon
 	std::string accepted_bone_label;
 	HMM_Mat4 muzzle_local_transform = HMM_M4D(1.0f);
 	bool muzzle_valid = false;
+	f32 rate_of_fire_seconds = 0.0f;
 };
 
 struct ArmatureBone

@@ -271,6 +271,7 @@ table GameplayComponentWeapon
 	accepted_bone_label : string;
 	muzzle_local_transform : Matrix;
 	muzzle_valid : bool = false;
+	rate_of_fire_seconds : float = 0.0;
 }
 
 // TODO: Other Gameplay Components

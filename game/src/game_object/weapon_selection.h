@@ -15,6 +15,7 @@ struct MechWeaponInstance
 	int weapon_template_uid = -1;
 	int instance_uid = -1;
 	int arm_slot = -1;
+	float fire_cooldown_seconds = 0.0f;
 };
 
 struct WeaponCandidate
@@ -48,13 +49,20 @@ inline void select_mech_weapons(std::vector<MechWeaponInstance>& targets,
 			{
 				target.weapon_template_uid = old.weapon_template_uid;
 				target.instance_uid = old.instance_uid;
+				target.fire_cooldown_seconds = old.fire_cooldown_seconds;
 				break;
 			}
 		}
 		if (target.weapon_template_uid == -1 && !compatible.empty())
 		{
-			std::uniform_int_distribution<size_t> choose(0, compatible.size() - 1);
-			target.weapon_template_uid = compatible[choose(random)];
+			// Templates are reusable: a lone candidate equips every matching hand.
+			if (compatible.size() == 1)
+				target.weapon_template_uid = compatible.front();
+			else
+			{
+				std::uniform_int_distribution<size_t> choose(0, compatible.size() - 1);
+				target.weapon_template_uid = compatible[choose(random)];
+			}
 		}
 	}
 }

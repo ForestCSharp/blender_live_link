@@ -237,6 +237,7 @@ struct State
 		bool action_latches[4] = {};
 		bool gi_probe_pick_requested = false;
 		i32 pending_fire_requests = 0;
+		bool weapon_fire_held = false;
 	} input;
 
 	struct ProjectileInstance
@@ -1174,6 +1175,7 @@ void scene_clear_objects(State& in_state)
 {
 	in_state.projectiles.clear();
 	in_state.input.pending_fire_requests = 0;
+	in_state.input.weapon_fire_held = false;
 	for (auto& [unique_id, object] : in_state.scene.objects)
 	{
 		object_cleanup(object);

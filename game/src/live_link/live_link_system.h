@@ -816,6 +816,7 @@ namespace LiveLinkSystem
 								game_object.weapon.accepted_bone_label = weapon->accepted_bone_label() ? weapon->accepted_bone_label()->str() : "";
 								game_object.weapon.muzzle_local_transform = flatbuffer_helpers::to_hmm_mat4(weapon->muzzle_local_transform());
 								game_object.weapon.muzzle_valid = weapon->muzzle_valid();
+								game_object.weapon.rate_of_fire_seconds = weapon->rate_of_fire_seconds();
 								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentPart:

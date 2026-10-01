@@ -16,16 +16,21 @@ int main()
 {
 	std::mt19937 random(1234);
 	const std::vector<MechWeaponInstance> hands = {hand(1, 10, "L"), hand(2, 20, "R")};
+	auto single_weapon = hands;
+	select_mech_weapons(single_weapon, {}, {{100, "Hand"}}, random);
+	assert(single_weapon[0].weapon_template_uid == 100 && single_weapon[1].weapon_template_uid == 100);
 	auto selected = hands;
 	select_mech_weapons(selected, {}, {{100, "Hand"}, {101, "hand"}, {102, "Foot"}}, random);
 	assert(selected[0].weapon_template_uid == 100 && selected[1].weapon_template_uid == 100);
 	selected[0].instance_uid = -10;
+	selected[0].fire_cooldown_seconds = .125f;
 	selected[1].instance_uid = -11;
 	auto refreshed = hands;
 	const auto before = random;
 	select_mech_weapons(refreshed, selected, {{99, "Hand"}, {100, "Hand"}}, random);
 	assert(random == before); // Unrelated updates and new candidates do not reroll.
 	assert(refreshed[0].instance_uid == -10 && refreshed[1].instance_uid == -11);
+	assert(refreshed[0].fire_cooldown_seconds == .125f && refreshed[1].fire_cooldown_seconds == 0.0f);
 	for (auto& target : selected) target.instance_uid = -1; // Live Link suspension.
 	refreshed = hands;
 	select_mech_weapons(refreshed, selected, {{100, "Hand"}}, random);

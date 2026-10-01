@@ -52,6 +52,68 @@ void seed_for_first_candidate()
 	}
 }
 
+void check_rate_of_fire(GLFWwindow* window)
+{
+	for (auto& equipped : player_mech().weapons)
+	{
+		state.scene.objects.at(equipped.weapon_template_uid).weapon.rate_of_fire_seconds = .2f;
+		equipped.fire_cooldown_seconds = 0.0f;
+	}
+	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == 2 && state.input.weapon_fire_held);
+	WeaponSystem::update(.11f);
+	assert(state.projectiles.size() == 2);
+	const float remaining = player_mech().weapons[0].fire_cooldown_seconds;
+	mech_reconcile_instances();
+	assert(fabsf(player_mech().weapons[0].fire_cooldown_seconds - remaining) < 1e-5f);
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == 2); // Rebuilding must not reset the cadence.
+	WeaponSystem::update(.11f);
+	assert(state.projectiles.size() == 4);
+	WeaponSystem::update(.4f);
+	assert(state.projectiles.size() == 8); // Catch up across a long frame.
+	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE, 0);
+	WeaponSystem::update(1.0f);
+	assert(state.projectiles.size() == 8 && !state.input.weapon_fire_held);
+	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == 10);
+	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == 10); // Re-clicking cannot bypass a positive interval.
+	state.debug_camera.active = true;
+	WeaponSystem::update(.3f);
+	assert(state.projectiles.size() == 10 && !state.input.weapon_fire_held);
+	state.debug_camera.active = false;
+	WeaponSystem::update(1.0f);
+	assert(state.projectiles.size() == 10);
+	for (float interval : {0.0f, -.5f})
+	{
+		for (auto& equipped : player_mech().weapons)
+			state.scene.objects.at(equipped.weapon_template_uid).weapon.rate_of_fire_seconds = interval;
+		const size_t before = state.projectiles.size();
+		InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+		WeaponSystem::update(0.0f);
+		assert(state.projectiles.size() == before + 2);
+		WeaponSystem::update(1.0f);
+		assert(state.projectiles.size() == before + 2); // Holding never repeats in semi-auto mode.
+		InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE, 0);
+		InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+		WeaponSystem::update(0.0f);
+		assert(state.projectiles.size() == before + 4);
+	}
+	InputSystem::window_focus_callback(window, GLFW_FALSE);
+	assert(!state.input.weapon_fire_held && state.input.pending_fire_requests == 0);
+	for (auto& equipped : player_mech().weapons)
+	{
+		state.scene.objects.at(equipped.weapon_template_uid).weapon.rate_of_fire_seconds = 0.0f;
+		equipped.fire_cooldown_seconds = 0.0f;
+	}
+	projectile_update_lifetimes(PROJECTILE_LIFETIME_S + .01f);
+	assert(state.projectiles.empty());
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -73,6 +135,10 @@ int main()
 	for (const auto& [id, mech] : state.mech.instances)
 		if (mech.character_uid != *state.scene.player_character_id) assert(mech.weapons.empty());
 	const auto original = player_mech().weapons;
+	assert(fabsf(state.scene.objects.at(original[0].weapon_template_uid).weapon.rate_of_fire_seconds - .2f) < 1e-5f);
+	// Exercise the existing click-only checks with the backwards-compatible default.
+	for (auto& [uid, object] : state.scene.objects)
+		if (object.has_weapon) object.weapon.rate_of_fire_seconds = 0.0f;
 	assert(state.scene.objects.at(original[0].instance_uid).mesh.has_skinned_vertices);
 	// Unequipping a skinned weapon must release its otherwise unused cloned rig.
 	const int player_id = *state.scene.player_character_id;
@@ -97,10 +163,11 @@ int main()
 	update_mech_transforms();
 	for (const auto& weapon : player_mech().weapons) check_attachment(weapon);
 	// A first click locks the mouse and fires from both current animated muzzles.
+	state.debug_camera.active = false;
 	assert(!state.input.is_mouse_locked);
 	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
 	assert(state.input.is_mouse_locked && state.input.pending_fire_requests == 1);
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(state.projectiles.size() == 2);
 	for (size_t index = 0; index < state.projectiles.size(); ++index)
 	{
@@ -120,13 +187,13 @@ int main()
 	// One hidden gun does not emit; an invalid shared template silences both.
 	state.scene.objects.at(player_mech().weapons[0].instance_uid).visibility = false;
 	state.input.pending_fire_requests = 1;
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(state.projectiles.size() == 3);
 	update_mech_transforms();
 	for (const auto& equipped : player_mech().weapons)
 		state.scene.objects.at(equipped.weapon_template_uid).weapon.muzzle_valid = false;
 	state.input.pending_fire_requests = 1;
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(state.projectiles.size() == 3);
 	for (const auto& equipped : player_mech().weapons)
 		state.scene.objects.at(equipped.weapon_template_uid).weapon.muzzle_valid = true;
@@ -139,6 +206,15 @@ int main()
 	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
 	assert(state.input.pending_fire_requests == 0);
 	state.runtime.is_simulating = true;
+	state.debug_camera.active = true;
+	const size_t before_debug_click = state.projectiles.size();
+	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+	assert(state.input.pending_fire_requests == 0);
+	// Switching cameras after a player click also discards the queued shot.
+	state.input.pending_fire_requests = 1;
+	WeaponSystem::update(0.0f);
+	assert(state.input.pending_fire_requests == 0 && state.projectiles.size() == before_debug_click);
+	state.debug_camera.active = false;
 	state.gi.probe_isolation_enable = state.gi.show_probes = true;
 	InputSystem::mouse_button_callback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
 	assert(state.input.pending_fire_requests == 0 && state.input.gi_probe_pick_requested);
@@ -146,11 +222,12 @@ int main()
 	state.input.gi_probe_pick_requested = false;
 	const int first_projectile = state.projectiles.front().object_uid;
 	state.input.pending_fire_requests = 33;
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(state.projectiles.size() == MAX_ACTIVE_PROJECTILES);
 	assert(!state.scene.objects.contains(first_projectile));
 	projectile_update_lifetimes(PROJECTILE_LIFETIME_S + .01f);
 	assert(state.projectiles.empty());
+	check_rate_of_fire(window);
 	// No animation uses the bind pose, not a stale skinning matrix.
 	for (const auto& mapping : player_mech().armature_instances)
 		state.scene.objects.at(mapping.instance_uid).armature.animation_count = 0;
@@ -181,18 +258,26 @@ int main()
 	// Simulate an incoming deletion batch: suspend borrowed allocations before removal.
 	const int removed = player_mech().weapons[0].weapon_template_uid;
 	state.input.pending_fire_requests = 1;
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(!state.projectiles.empty());
 	const int retained_projectile = state.projectiles.front().object_uid;
 	mech_suspend_runtime_objects();
 	assert(state.scene.objects.contains(retained_projectile));
 	scene_remove_object(state, removed);
 	mech_reconcile_instances();
+	// One compatible catalog weapon must create a distinct copy for each hand.
+	assert(player_mech().weapons.size() == 2);
+	assert(player_mech().weapons[0].weapon_template_uid == player_mech().weapons[1].weapon_template_uid);
+	assert(player_mech().weapons[0].instance_uid != player_mech().weapons[1].instance_uid);
 	for (const auto& weapon : player_mech().weapons)
 	{
 		assert(weapon.weapon_template_uid != removed);
 		check_attachment(weapon);
 	}
+	const size_t projectiles_before_copies_fire = state.projectiles.size();
+	state.input.pending_fire_requests = 1;
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == projectiles_before_copies_fire + 2);
 	MechLoadout loadout = player_mech().loadout;
 	loadout.slots[(int) PartType::LeftArm].selection = MechLoadoutSelectionType::TemplateUid;
 	loadout.slots[(int) PartType::LeftArm].template_uid = 999999;
@@ -218,7 +303,7 @@ int main()
 	update_mech_transforms();
 	assert(player_mech().weapons.size() == 1);
 	state.input.pending_fire_requests = 1;
-	projectile_consume_fire_requests();
+	WeaponSystem::update(0.0f);
 	assert(!state.projectiles.empty());
 
 	VK_CHECK(vulkan_device_wait_idle(&state.vk));

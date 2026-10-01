@@ -444,7 +444,11 @@ opening, outside the weapon's collision geometry. Point the Empty's local **+Y**
 axis down the barrel, then select it in the Weapon component's **Muzzle Object**
 field. A missing or incorrectly parented Empty leaves the weapon equipped but
 unable to fire. Each left mouse click fires one physics sphere from every valid
-equipped weapon while simulation is running; holding the button does not repeat.
+equipped weapon while simulation is running and the player camera is active.
+Set **Rate of Fire (Seconds)** to a positive interval (for example, `0.2` for five
+shots per second) to repeat while holding LMB. Zero or negative values require a
+new click for each shot. Each equipped copy keeps its own firing timer.
+Debug camera clicks do not fire weapons.
 Spheres expire after five seconds, with at most 64 active. They do not deal damage.
 
 The active player's mech randomly chooses a compatible weapon for every labeled

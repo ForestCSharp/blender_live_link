@@ -1486,7 +1486,8 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       }
       const auto value = ll::CreateGameplayComponentWeapon(
           builder, builder.CreateString(py_string_attr(weapon, "accepted_bone_label", "Hand")),
-          create_matrix(builder, muzzle_local), muzzle_valid);
+          create_matrix(builder, muzzle_local), muzzle_valid,
+          py_float_attr(weapon, "rate_of_fire_seconds", 0.0f));
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentWeapon, value.Union()));
     }
@@ -2890,6 +2891,8 @@ void compare_component(DiffList &diffs,
                    native_weapon->muzzle_local_transform(), python_weapon->muzzle_local_transform(), 1e-4);
     compare_exact(diffs, path + ".weapon.muzzle_valid",
                   native_weapon->muzzle_valid(), python_weapon->muzzle_valid());
+    compare_float(diffs, path + ".weapon.rate_of_fire_seconds",
+                  native_weapon->rate_of_fire_seconds(), python_weapon->rate_of_fire_seconds());
     return;
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&

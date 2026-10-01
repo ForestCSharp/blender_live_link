@@ -77,6 +77,7 @@ using std::optional;
 #include "render/passes/copy_to_swapchain/copy_to_swapchain_pass.h"
 #include "automation/automated_screenshot.h"
 #include "animation/animation_system.h"
+#include "weapon/weapon_system.h"
 
 #include "render/passes/imgui/imgui_layer.h"
 #include "input/input_system.h"
@@ -145,7 +146,7 @@ void frame(f32 in_delta_time)
 		update_physics_backed_object_transforms();
 		update_mech_transforms();
 		projectile_update_lifetimes(in_delta_time);
-		projectile_consume_fire_requests();
+		WeaponSystem::update(in_delta_time);
 		SceneSystem::refresh_derived_state(state);
 	}
 

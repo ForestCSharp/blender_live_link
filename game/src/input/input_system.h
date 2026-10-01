@@ -189,11 +189,19 @@ namespace InputSystem
 	
 	void mouse_button_callback(GLFWwindow* in_window, i32 in_button, i32 in_action, i32 in_mods)
 	{
+		// Releases must reach gameplay even when the pointer has moved onto UI.
+		if (in_button == GLFW_MOUSE_BUTTON_LEFT && in_action == GLFW_RELEASE)
+			state.input.weapon_fire_held = false;
 		#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 		if (ImGuiLayer::initialized)
 		{
 			ImGui_ImplGlfw_MouseButtonCallback(in_window, in_button, in_action, in_mods);
-			if (ImGui::GetIO().WantCaptureMouse) { return; }
+			if (ImGui::GetIO().WantCaptureMouse)
+			{
+				state.input.weapon_fire_held = false;
+				state.input.pending_fire_requests = 0;
+				return;
+			}
 		}
 		#endif
 		// Lock Mouse on left click into game space
@@ -202,13 +210,18 @@ namespace InputSystem
 			if (state.gi.probe_isolation_enable && state.gi.show_probes)
 			{
 				state.input.gi_probe_pick_requested = true;
+				state.input.weapon_fire_held = false;
 				return;
 			}
 			if (!is_mouse_locked(state))
 			{
 				set_mouse_locked(state, true);
 			}
-			if (state.runtime.is_simulating) ++state.input.pending_fire_requests;
+			if (state.runtime.is_simulating && !state.debug_camera.active)
+			{
+				state.input.weapon_fire_held = true;
+				++state.input.pending_fire_requests;
+			}
 		}
 	}
 	
@@ -259,6 +272,11 @@ namespace InputSystem
 	
 	void window_focus_callback(GLFWwindow* in_window, i32 in_focused)
 	{
+		if (!in_focused)
+		{
+			state.input.weapon_fire_held = false;
+			state.input.pending_fire_requests = 0;
+		}
 		#if defined(WITH_DEBUG_UI) && WITH_DEBUG_UI
 		if (ImGuiLayer::initialized) { ImGui_ImplGlfw_WindowFocusCallback(in_window, in_focused); }
 		#endif
@@ -430,6 +448,11 @@ namespace InputSystem
 		if (in_automation_enabled)
 		{
 			return;
+		}
+		if (ui_captures_mouse)
+		{
+			in_state.input.weapon_fire_held = false;
+			in_state.input.pending_fire_requests = 0;
 		}
 
 		if (!ui_captures_keyboard)

@@ -2770,6 +2770,12 @@ class Component_Weapon(Component):
         update=gameplay_component_property_update,
     )
 
+    rate_of_fire_seconds: FloatProperty(
+        name="Rate of Fire (Seconds)", default=0.0,
+        description="Seconds between shots while holding LMB; zero or less fires once per click",
+        update=gameplay_component_property_update,
+    )
+
     muzzle_object: PointerProperty(
         name="Muzzle Object", type=bpy.types.Object,
         description="Direct child at the barrel opening; local +Y points along the shot",
@@ -2797,6 +2803,7 @@ class Component_Weapon(Component):
         GameplayComponentWeapon.AddAcceptedBoneLabel(builder, label)
         GameplayComponentWeapon.AddMuzzleLocalTransform(builder, local_fb)
         GameplayComponentWeapon.AddMuzzleValid(builder, valid)
+        GameplayComponentWeapon.AddRateOfFireSeconds(builder, self.rate_of_fire_seconds)
         return GameplayComponentWeapon.End(builder)
 
     def get_flatbuffers_value_type(self):

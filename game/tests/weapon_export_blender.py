@@ -53,6 +53,8 @@ def verify(payload):
                 value = ext.GameplayComponentWeapon.GameplayComponentWeapon()
                 table = c.Value()
                 value.Init(table.Bytes, table.Pos)
+                expected_interval = {b'Weapon0': .2, b'Weapon1': .4, b'Weapon2': -.1}.get(obj.Name(), 0.0)
+                assert abs(value.RateOfFireSeconds() - expected_interval) < 1e-5, obj.Name()
                 weapons.append((obj.Name(), value.AcceptedBoneLabel(), value.MuzzleValid(), value.MuzzleLocalTransform()))
     assert sorted(label for _, label, _, _ in weapons) == [b'Foot', b'Hand', b'Hand', b'LibraryOnly', b'LibraryOnly'], weapons
     assert sorted(valid for _, _, valid, _ in weapons) == [False, True, True, True, True], weapons
@@ -110,6 +112,7 @@ try:
         weapon = cube('Weapon' + str(index), (20 + index * 3, 0, 0), (.25, 1, .25))
         weapon_component = component(weapon, 'WEAPON')
         weapon_component.accepted_bone_label = label
+        weapon_component.rate_of_fire_seconds = (.2, .4, -.1)[index]
         muzzle = bpy.data.objects.new('Weapon' + str(index) + 'Muzzle', None)
         bpy.context.collection.objects.link(muzzle)
         muzzle.parent = weapon
@@ -222,6 +225,9 @@ try:
     assert library_rig.session_uid in ext.batched_dirty_ids
     ext.batched_dirty_ids.clear()
     bpy.data.objects['Weapon0'].live_link_settings.components[0].weapon.muzzle_object = None
+    assert bpy.data.objects['Weapon0'].session_uid in ext.batched_dirty_ids
+    ext.batched_dirty_ids.clear()
+    bpy.data.objects['Weapon0'].live_link_settings.components[0].weapon.rate_of_fire_seconds = .3
     assert bpy.data.objects['Weapon0'].session_uid in ext.batched_dirty_ids
     ext.depsgraph_update_post_callback.enabled = False
     bpy.data.objects['Weapon0'].live_link_settings.components[0].weapon.muzzle_object = first_muzzle
