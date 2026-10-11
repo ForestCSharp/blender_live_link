@@ -9,6 +9,7 @@
 #include "state/state.h"
 #include "game_object/attachment_point.h"
 #include "animation/arm_ik.h"
+#include "animation/leg_ik.h"
 
 void update_mech_transforms();
 
@@ -728,6 +729,7 @@ void update_mech_transforms()
 		}
 
 		ArmIK::update(mech, diagnostics);
+		LegIK::update(mech, diagnostics);
 		mech_update_weapon_transforms(mech, diagnostics, has_instanced_lights);
 		if (diagnostics != mech.last_diagnostic_signature)
 		{

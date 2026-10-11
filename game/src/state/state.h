@@ -216,6 +216,8 @@ struct State
 		bool is_playing = true;
 		f32 playback_rate = 1.0f;
 		bool skinning_debug_view = false;
+		// Debug scale on leg IK's max reach (thigh + shin), 1.0 = full natural extension.
+		f32 leg_ik_max_extension_scale = 1.0f;
 	} animation;
 
 	struct WindowState

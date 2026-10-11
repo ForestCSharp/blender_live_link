@@ -256,6 +256,14 @@ table GameplayComponentPart
 	ik_shoulder_bone : string;
 	ik_elbow_bone : string;
 	ik_hand_bone : string;
+	ik_left_hip_bone : string;
+	ik_left_knee_bone : string;
+	ik_left_hock_bone : string;
+	ik_left_foot_bone : string;
+	ik_right_hip_bone : string;
+	ik_right_knee_bone : string;
+	ik_right_hock_bone : string;
+	ik_right_foot_bone : string;
 }
 
 table GameplayComponentAttachmentPoint

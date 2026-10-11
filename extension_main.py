@@ -2761,14 +2761,63 @@ class Component_Part(Component):
         update=gameplay_component_property_update,
     )
 
+    ik_left_hip_bone: StringProperty(
+        name="Left Hip Bone", default="", description="Empty infers the left knee's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_left_knee_bone: StringProperty(
+        name="Left Knee Bone", default="", description="Empty infers the left hock's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_left_hock_bone: StringProperty(
+        name="Left Hock Bone", default="", description="The reverse joint between knee and foot; empty infers the left foot's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_left_foot_bone: StringProperty(
+        name="Left Foot Bone", default="", description="Empty infers one of the rig's two attachment-labeled bones",
+        update=gameplay_component_property_update,
+    )
+    ik_right_hip_bone: StringProperty(
+        name="Right Hip Bone", default="", description="Empty infers the right knee's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_right_knee_bone: StringProperty(
+        name="Right Knee Bone", default="", description="Empty infers the right hock's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_right_hock_bone: StringProperty(
+        name="Right Hock Bone", default="", description="The reverse joint between knee and foot; empty infers the right foot's parent",
+        update=gameplay_component_property_update,
+    )
+    ik_right_foot_bone: StringProperty(
+        name="Right Foot Bone", default="", description="Empty infers one of the rig's two attachment-labeled bones",
+        update=gameplay_component_property_update,
+    )
+
     def create_flatbuffers_value(self, builder, **_kwargs):
         shoulder = builder.CreateString(self.ik_shoulder_bone)
         elbow = builder.CreateString(self.ik_elbow_bone)
         hand = builder.CreateString(self.ik_hand_bone)
+        left_hip = builder.CreateString(self.ik_left_hip_bone)
+        left_knee = builder.CreateString(self.ik_left_knee_bone)
+        left_hock = builder.CreateString(self.ik_left_hock_bone)
+        left_foot = builder.CreateString(self.ik_left_foot_bone)
+        right_hip = builder.CreateString(self.ik_right_hip_bone)
+        right_knee = builder.CreateString(self.ik_right_knee_bone)
+        right_hock = builder.CreateString(self.ik_right_hock_bone)
+        right_foot = builder.CreateString(self.ik_right_foot_bone)
         GameplayComponentPart.Start(builder)
         GameplayComponentPart.AddIkShoulderBone(builder, shoulder)
         GameplayComponentPart.AddIkElbowBone(builder, elbow)
         GameplayComponentPart.AddIkHandBone(builder, hand)
+        GameplayComponentPart.AddIkLeftHipBone(builder, left_hip)
+        GameplayComponentPart.AddIkLeftKneeBone(builder, left_knee)
+        GameplayComponentPart.AddIkLeftHockBone(builder, left_hock)
+        GameplayComponentPart.AddIkLeftFootBone(builder, left_foot)
+        GameplayComponentPart.AddIkRightHipBone(builder, right_hip)
+        GameplayComponentPart.AddIkRightKneeBone(builder, right_knee)
+        GameplayComponentPart.AddIkRightHockBone(builder, right_hock)
+        GameplayComponentPart.AddIkRightFootBone(builder, right_foot)
         GameplayComponentPart.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
         return GameplayComponentPart.End(builder)
 
@@ -3249,6 +3298,18 @@ class OBJECT_PT_custom_object_panel(Panel):
                                 else:
                                     box.prop(group, field)
                             box.label(text="Unset bones are inferred; shoulder → elbow → hand")
+                        elif group.part_type == 'LEGS':
+                            rig = live_link_connection.get_mesh_armature(obj)
+                            for field in (
+                                "ik_left_hip_bone", "ik_left_knee_bone", "ik_left_hock_bone", "ik_left_foot_bone",
+                                "ik_right_hip_bone", "ik_right_knee_bone", "ik_right_hock_bone", "ik_right_foot_bone",
+                            ):
+                                if rig:
+                                    box.prop_search(group, field, rig.data, "bones")
+                                else:
+                                    box.prop(group, field)
+                            box.label(text="Unset bones are inferred; hip → knee → hock → foot")
+                            box.label(text="Leave both feet unset to auto-detect from two labeled attachment bones")
                     else:
                         draw_property_group(box, group)
 

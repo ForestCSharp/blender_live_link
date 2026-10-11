@@ -829,6 +829,14 @@ namespace LiveLinkSystem
 									.ik_shoulder_bone = flatbuffers::GetString(part_component->ik_shoulder_bone()),
 									.ik_elbow_bone = flatbuffers::GetString(part_component->ik_elbow_bone()),
 									.ik_hand_bone = flatbuffers::GetString(part_component->ik_hand_bone()),
+									.ik_left_hip_bone = flatbuffers::GetString(part_component->ik_left_hip_bone()),
+									.ik_left_knee_bone = flatbuffers::GetString(part_component->ik_left_knee_bone()),
+									.ik_left_hock_bone = flatbuffers::GetString(part_component->ik_left_hock_bone()),
+									.ik_left_foot_bone = flatbuffers::GetString(part_component->ik_left_foot_bone()),
+									.ik_right_hip_bone = flatbuffers::GetString(part_component->ik_right_hip_bone()),
+									.ik_right_knee_bone = flatbuffers::GetString(part_component->ik_right_knee_bone()),
+									.ik_right_hock_bone = flatbuffers::GetString(part_component->ik_right_hock_bone()),
+									.ik_right_foot_bone = flatbuffers::GetString(part_component->ik_right_foot_bone()),
 								};
 								break;
 							}

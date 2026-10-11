@@ -228,6 +228,8 @@ namespace ImGuiLayer
 			ImGui::SetNextItemWidth(160.0f);
 			ImGui::DragFloat("Playback Rate", &state.animation.playback_rate, 0.01f, 0.0f, 4.0f, "%.2fx");
 			ImGui::Checkbox("Skinning Debug View", &state.animation.skinning_debug_view);
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::SliderFloat("Leg Max Extension", &state.animation.leg_ik_max_extension_scale, 0.0f, 1.0f, "%.2fx");
 			scene_ensure_indexes(state);
 			for (i32 unique_id : state.scene.indexes.armature_object_ids)
 			{

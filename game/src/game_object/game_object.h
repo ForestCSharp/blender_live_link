@@ -169,6 +169,14 @@ struct Part
 	std::string ik_shoulder_bone;
 	std::string ik_elbow_bone;
 	std::string ik_hand_bone;
+	std::string ik_left_hip_bone;
+	std::string ik_left_knee_bone;
+	std::string ik_left_hock_bone;
+	std::string ik_left_foot_bone;
+	std::string ik_right_hip_bone;
+	std::string ik_right_knee_bone;
+	std::string ik_right_hock_bone;
+	std::string ik_right_foot_bone;
 };
 
 struct AttachmentPoint
