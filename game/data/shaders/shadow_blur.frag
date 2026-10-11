@@ -26,6 +26,5 @@ layout(location = 0) out vec4 frag_color;
 
 void main()
 {
-	frag_color = gaussian_blur_apply(
-		uv, pc.screen_size, pc.direction, pc.blur_size);
+	frag_color = gaussian_blur_apply(uv, pc.screen_size, pc.direction, pc.blur_size);
 }

@@ -294,32 +294,43 @@ namespace ArmIK
 			pose[bone] = arm_rotation * pose[bone];
 		}
 
-		// Bend the elbow to at least min_elbow_bend_degrees, then place the elbow
-		// for the resulting reach (law of cosines). An authored rest bend keeps
-		// its direction; a straight rest arm drops its elbow toward world down.
+		// ---- Work out where the bent elbow and hand should go ----
+
+		// Rest elbow angle, measured as deviation from a straight arm (0 = straight).
 		const f32 rest_bend = acosf(HMM_Clamp(-1.0f, HMM_DotV3(elbow - shoulder, hand - elbow) / (upper_length * lower_length), 1.0f));
 		const f32 bend_angle = std::max(rest_bend, HMM_AngleDeg(min_elbow_bend_degrees));
-		const f32 min_reach = fabsf(upper_length - lower_length) + epsilon * (upper_length + lower_length);
-		const f32 target_reach = HMM_Clamp(min_reach,
-			sqrtf(upper_length * upper_length + lower_length * lower_length + 2.0f * upper_length * lower_length * cosf(bend_angle)),
-			upper_length + lower_length);
-		const f32 along = HMM_Clamp(-upper_length,
-			(upper_length * upper_length - lower_length * lower_length + target_reach * target_reach) / (2.0f * target_reach),
-			upper_length);
-		const f32 bend = sqrtf(std::max(0.0f, upper_length * upper_length - along * along));
 
+		// Shoulder-to-hand distance for that bend (law of cosines), kept within what the arm can reach.
+		const f32 upper_sq = upper_length * upper_length;
+		const f32 lower_sq = lower_length * lower_length;
+        // u² + l² is the reach at a 90° elbow; 2ul·cos θ adjusts it for any other bend (0 = straight).
+		const f32 bent_reach = sqrtf(upper_sq + lower_sq + 2.0f * upper_length * lower_length * cosf(bend_angle));
+		const f32 max_reach = upper_length + lower_length;
+		const f32 min_reach = fabsf(upper_length - lower_length) + epsilon * max_reach;
+		const f32 target_reach = HMM_Clamp(min_reach, bent_reach, max_reach);
+
+		// Elbow position relative to the aim line: distance along it, then distance off it.
+		const f32 along_unclamped = (upper_sq - lower_sq + target_reach * target_reach) / (2.0f * target_reach);
+		const f32 along = HMM_Clamp(-upper_length, along_unclamped, upper_length);
+		const f32 bend = sqrtf(std::max(0.0f, upper_sq - along * along));
+
+		// Pole: which way the elbow sticks out, perpendicular to aim. Prefer the rest bend's direction.
 		const HMM_Vec3 aimed_elbow = pose[in_chain.elbow].Columns[3].XYZ;
 		HMM_Vec3 pole = (aimed_elbow - shoulder) - aim * HMM_DotV3(aimed_elbow - shoulder, aim);
 		if (rest_bend < HMM_AngleDeg(authored_bend_degrees) || HMM_LenSqrV3(pole) < epsilon * upper_length * upper_length)
 		{
+			// Straight rest arm: bend toward world down, projected perpendicular to aim.
 			const HMM_Vec3 down = direction(world_to_rig, HMM_V3(0, 0, -1));
 			pole = down - aim * HMM_DotV3(down, aim);
 			if (HMM_LenSqrV3(pole) < epsilon * HMM_LenSqrV3(down))
 			{
+				// Aiming straight up or down: any fixed perpendicular will do.
 				pole = any_perpendicular(aim);
 			}
 		}
 		pole = HMM_NormV3(pole);
+
+		// Target joint positions: hand on the aim line, elbow offset from it along the pole.
 		const HMM_Vec3 bent_elbow = shoulder + aim * along + pole * bend;
 		const HMM_Vec3 bent_hand = shoulder + aim * target_reach;
 
@@ -329,6 +340,7 @@ namespace ArmIK
 		{
 			pose[bone] = upper_rotation * pose[bone];
 		}
+
 		const HMM_Vec3 swung_hand = pose[in_chain.hand].Columns[3].XYZ;
 		const HMM_Mat4 lower_rotation = rotate_about(swing(swung_hand - bent_elbow, bent_hand - bent_elbow), bent_elbow);
 		for (const auto& [depth, bone] : subtree)
