@@ -8,6 +8,7 @@
 
 #include "state/state.h"
 #include "game_object/attachment_point.h"
+#include "render/debug_draw.h"
 
 // Procedural aim for the active player's arms. Runs after base poses are
 // sampled and before weapons attach, so sockets and skinning see the result.
@@ -385,6 +386,15 @@ namespace ArmIK
 				out_error = "non-finite solved pose";
 				return false;
 			}
+		}
+		if (state.character.show_ik)
+		{
+			auto world = [&](i32 in_bone) { return (in_rig_world * pose[in_bone].Columns[3]).XYZ; };
+			const HMM_Vec3 hand_at = world(in_chain.hand);
+			DebugDraw::chain({world(in_chain.shoulder), world(in_chain.elbow), hand_at}, DebugDraw::white);
+			DebugDraw::line(world(in_chain.shoulder), world(in_chain.shoulder) + HMM_NormV3(in_forward) * 3.0f, DebugDraw::yellow);
+			DebugDraw::line(world(in_chain.elbow), world(in_chain.elbow) + HMM_NormV3(direction(in_rig_world, pole)) * 0.4f, DebugDraw::magenta);
+			DebugDraw::line(hand_at, hand_at + HMM_NormV3(direction(aimed_hand_world, in_muzzle_axis)) * 1.0f, DebugDraw::cyan);
 		}
 		io_rig.evaluated_pose = std::move(pose);
 		return true;

@@ -11,6 +11,7 @@
 #include "ui/cpu_profiler_ui.h"
 #include "input/input_system.h"
 #include "render/passes/clouds/cloud_pass.h"
+#include "render/debug_draw.h"
 
 namespace ImGuiLayer
 {
@@ -159,8 +160,62 @@ namespace ImGuiLayer
 		ImGui::Image(texture(sampler, override_view != VK_NULL_HANDLE ? override_view : image.view), image_size(image, max_size));
 	}
 
+	// Projects DebugDraw lines (plus character colliders) onto the screen as a
+	// see-through overlay, using the frame's camera without TAA jitter.
+	inline void draw_character_debug(State& state)
+	{
+		if (!state.character.show_ik && !state.character.show_collider)
+		{
+			return;
+		}
+		std::vector<DebugDraw::Line> lines = state.character.show_ik ? DebugDraw::lines : std::vector<DebugDraw::Line>{};
+		if (state.character.show_collider)
+		{
+			for (const auto& [uid, object] : state.scene.objects)
+			{
+				if (!object.has_character || !object.character.jph_character)
+				{
+					continue;
+				}
+				// Matches character_create: a capsule along Z after its X rotation, then the body rotation.
+				const HMM_Vec3 axis = (HMM_QToM4(object.current_transform.rotation) * HMM_V4(0, 0, 1, 0)).XYZ;
+				DebugDraw::capsule(lines, object.current_transform.location.XYZ, HMM_NormV3(axis),
+					character_capsule_half_height(object.character.settings), object.character.settings.radius, DebugDraw::green);
+			}
+		}
+
+		const Camera& camera = InputSystem::active_camera(state);
+		const f32 aspect_ratio = (f32) state.window.render_width / (f32) MAX(state.window.render_height, 1);
+		const HMM_Mat4 view_projection = mat4_perspective(HMM_AngleDeg(60.0f), aspect_ratio) *
+			HMM_LookAt_RH(camera.location, camera.location + camera.forward * 10, camera.up);
+		ImGuiViewport* viewport = ImGui::GetMainViewport();
+		ImDrawList* draw_list = ImGui::GetBackgroundDrawList(viewport);
+		constexpr f32 near_w = 0.01f;
+		auto to_screen = [&](HMM_Vec4 in_clip) {
+			// Viewports are Y-flipped, so NDC +Y is up.
+			return ImVec2(
+				viewport->Pos.x + (in_clip.X / in_clip.W * 0.5f + 0.5f) * viewport->Size.x,
+				viewport->Pos.y + (0.5f - in_clip.Y / in_clip.W * 0.5f) * viewport->Size.y);
+		};
+		for (const DebugDraw::Line& line : lines)
+		{
+			HMM_Vec4 a = view_projection * HMM_V4V(line.from, 1.0f);
+			HMM_Vec4 b = view_projection * HMM_V4V(line.to, 1.0f);
+			if (a.W < near_w && b.W < near_w)
+			{
+				continue;
+			}
+			// Clip the part behind the camera so it doesn't wrap around the screen.
+			if (a.W < near_w) a = HMM_LerpV4(a, (near_w - a.W) / (b.W - a.W), b);
+			if (b.W < near_w) b = HMM_LerpV4(b, (near_w - b.W) / (a.W - b.W), a);
+			draw_list->AddLine(to_screen(a), to_screen(b), line.color, 2.0f);
+		}
+	}
+
 	inline void draw_controls(State& state, GI_Scene& gi_scene)
 	{
+		// World-space debug overlays stay up while the menu is hidden (Ctrl+I).
+		draw_character_debug(state);
 		if (!state.debug_ui.visible) { return; }
 		ImGui::Begin("DEBUG");
 		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
@@ -220,6 +275,25 @@ namespace ImGuiLayer
 			ImGui::TextUnformatted("Hold Shift to move 5x faster.");
 		}
 
+		if (ImGui::CollapsingHeader("Character"))
+		{
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::SliderFloat("Leg Max Extension", &state.character.leg_ik_max_extension_scale, 0.0f, 1.0f, "%.2fx");
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::SliderFloat("Leg IK Position Rate", &state.character.leg_ik_position_lerp_rate, 1.0f, 60.0f, "%.1f /s");
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::SliderFloat("Leg IK Rotation Rate", &state.character.leg_ik_rotation_lerp_rate, 1.0f, 60.0f, "%.1f /s");
+			ImGui::Checkbox("Collider Debug View", &state.character.show_collider);
+			ImGui::Checkbox("IK Debug View", &state.character.show_ik);
+			if (state.character.show_ik)
+			{
+				ImGui::TextUnformatted("White: solved chain  Yellow: target / aim");
+				ImGui::TextUnformatted("Green/Red: foot ray hit/miss  Cyan: ground normal / muzzle");
+				ImGui::TextUnformatted("Orange: too steep (treated flat)  Blue: hock target");
+				ImGui::TextUnformatted("Magenta: knee/elbow pole, authored sole");
+			}
+		}
+
 		if (ImGui::CollapsingHeader("Animation"))
 		{
 			if (ImGui::Button("Play")) state.animation.is_playing = true;
@@ -228,8 +302,6 @@ namespace ImGuiLayer
 			ImGui::SetNextItemWidth(160.0f);
 			ImGui::DragFloat("Playback Rate", &state.animation.playback_rate, 0.01f, 0.0f, 4.0f, "%.2fx");
 			ImGui::Checkbox("Skinning Debug View", &state.animation.skinning_debug_view);
-			ImGui::SetNextItemWidth(160.0f);
-			ImGui::SliderFloat("Leg Max Extension", &state.animation.leg_ik_max_extension_scale, 0.0f, 1.0f, "%.2fx");
 			scene_ensure_indexes(state);
 			for (i32 unique_id : state.scene.indexes.armature_object_ids)
 			{

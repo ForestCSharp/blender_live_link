@@ -37,16 +37,21 @@ struct Character
 	JPH::Character* jph_character = nullptr;
 };
 
+// settings.height is the capsule's total height, end caps included. Jolt's
+// CapsuleShape takes only the cylinder part's half-height, so subtract the
+// caps; it must stay positive, so a radius >= height/2 leaves a tiny cylinder.
+float character_capsule_half_height(const CharacterSettings& in_settings)
+{
+	return MAX(0.5f * in_settings.height - in_settings.radius, 0.001f);
+}
+
 Character character_create(JoltState& in_jolt_state, const CharacterSettings& in_settings)
 {
 	// Create Character's Jolt Shape
-	const float character_height = in_settings.height;
-	const float character_radius = in_settings.radius;
-
 	JPH::RefConst<JPH::Shape> character_shape = JPH::RotatedTranslatedShapeSettings(
 		JPH::Vec3::sZero(), 
 		JPH::Quat::sRotation(JPH::Vec3::sAxisX(), Constants::Pi / 2.0), 
-		new JPH::CapsuleShape(0.5f * character_height, character_radius)
+		new JPH::CapsuleShape(character_capsule_half_height(in_settings), in_settings.radius)
 	).Create().Get();
 
 	// Create and Setup Jolt Character Settings

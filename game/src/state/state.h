@@ -148,12 +148,21 @@ struct MechArmPose
 	i32 template_uid = -1;
 };
 
+// Smoothed leg IK inputs, so ground changes and ray misses ease in instead of snapping.
+struct MechLegIKBlend
+{
+	f32 ground_offset = 0.0f;
+	HMM_Vec3 ground_normal = {0.0f, 0.0f, 1.0f};
+	bool valid = false;
+};
+
 struct MechInstance
 {
 	i32 runtime_id = -1;
 	i32 character_uid = -1;
 	MechLoadout loadout;
 	MechArmPose arm_poses[2];
+	MechLegIKBlend leg_ik_blends[2];
 	std::vector<MechWeaponInstance> weapons;
 	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
@@ -216,9 +225,19 @@ struct State
 		bool is_playing = true;
 		f32 playback_rate = 1.0f;
 		bool skinning_debug_view = false;
-		// Debug scale on leg IK's max reach (thigh + shin), 1.0 = full natural extension.
-		f32 leg_ik_max_extension_scale = 1.0f;
 	} animation;
+
+	struct CharacterDebugState
+	{
+		// Debug scale on leg IK's max reach (thigh + shin), 1.0 = full natural extension.
+		f32 leg_ik_max_extension_scale = 0.8f;
+		// Exponential lerp rates (1/s) for leg IK: the foot's height change and its
+		// tilt toward the ground normal. ~0.15-0.2s to settle; prevents single-frame snaps.
+		f32 leg_ik_position_lerp_rate = 20.0f;
+		f32 leg_ik_rotation_lerp_rate = 15.0f;
+		bool show_collider = false;
+		bool show_ik = false;
+	} character;
 
 	struct WindowState
 	{

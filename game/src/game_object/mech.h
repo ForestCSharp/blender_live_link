@@ -11,7 +11,8 @@
 #include "animation/arm_ik.h"
 #include "animation/leg_ik.h"
 
-void update_mech_transforms();
+// in_delta_time drives leg IK smoothing; setup-time calls pass 0 and hold it still.
+void update_mech_transforms(f32 in_delta_time = 0.0f);
 
 char* mech_instance_name(const char* in_template_name, i32 in_mech_id)
 {
@@ -610,8 +611,10 @@ void mech_update_weapon_transforms(MechInstance& io_mech, std::string& io_diagno
 	}
 }
 
-void update_mech_transforms()
+void update_mech_transforms(f32 in_delta_time)
 {
+	// IK re-records its debug lines on every pass; keep only the latest.
+	DebugDraw::lines.clear();
 	// Reconciliation may add rigs, so it runs first. Then resample every rig from
 	// its clip; IK overrides the sampled pose and must never feed back into it.
 	for (auto& [mech_id, mech] : state.mech.instances)
@@ -729,7 +732,7 @@ void update_mech_transforms()
 		}
 
 		ArmIK::update(mech, diagnostics);
-		LegIK::update(mech, diagnostics);
+		LegIK::update(mech, diagnostics, in_delta_time);
 		mech_update_weapon_transforms(mech, diagnostics, has_instanced_lights);
 		if (diagnostics != mech.last_diagnostic_signature)
 		{

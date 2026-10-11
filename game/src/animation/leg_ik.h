@@ -12,6 +12,7 @@
 
 #include "state/state.h"
 #include "physics/physics_system.h"
+#include "render/debug_draw.h"
 
 // Procedural ground placement for the mech's feet. Runs after base poses are
 // sampled and after arm IK, so it sees the frame's finalized Legs transform
@@ -340,7 +341,7 @@ namespace LegIK
 	// leg reach plus a small step-down margin leaves the leg's already-sampled
 	// pose untouched rather than snapping it to a grotesque full stretch.
 	bool find_ground_target(const Armature& in_rig, const Chain& in_chain, const HMM_Mat4& in_rig_world,
-		f32 in_root_ground_z, HMM_Vec3& out_target_world, HMM_Vec3& out_normal_world, std::string& out_error)
+		f32 in_rig_sole_z, f32& out_ground_offset, HMM_Vec3& out_normal_world, std::string& out_error)
 	{
 		const f32 length = leg_length(in_rig, in_chain);
 		if (length < 0.0f)
@@ -349,7 +350,8 @@ namespace LegIK
 			return false;
 		}
 
-		const HMM_Vec3 animated_foot_world = transform_point(in_rig_world, in_rig.evaluated_pose[in_chain.foot].Columns[3].XYZ);
+		const HMM_Vec3 animated_foot = in_rig.evaluated_pose[in_chain.foot].Columns[3].XYZ;
+		const HMM_Vec3 animated_foot_world = transform_point(in_rig_world, animated_foot);
 		if (!is_finite(animated_foot_world))
 		{
 			out_error = "degenerate rig transform";
@@ -357,23 +359,41 @@ namespace LegIK
 		}
 
 		// Start above the foot so a step up is still found.
+		const HMM_Vec3 ray_start = animated_foot_world + HMM_V3(0, 0, ground_cast_up_bias_m);
+		const f32 ray_length = ground_cast_up_bias_m + length + ground_cast_step_down_margin_m;
 		f32 foot_ground_z = 0.0f;
-		if (!ground_below(animated_foot_world + HMM_V3(0, 0, ground_cast_up_bias_m),
-			ground_cast_up_bias_m + length + ground_cast_step_down_margin_m, foot_ground_z, &out_normal_world))
+		if (!ground_below(ray_start, ray_length, foot_ground_z, &out_normal_world))
 		{
+			if (state.character.show_ik)
+			{
+				DebugDraw::line(ray_start, ray_start - HMM_V3(0, 0, ray_length), DebugDraw::red);
+			}
 			out_error = "no ground within reach";
 			return false;
 		}
 		// A ray grazing a ledge can report the side face; don't stand the foot on its side.
-		if (out_normal_world.Z < max_ground_tilt_cos)
+		const bool too_steep = out_normal_world.Z < max_ground_tilt_cos;
+		if (state.character.show_ik)
+		{
+			const HMM_Vec3 hit = HMM_V3(ray_start.X, ray_start.Y, foot_ground_z);
+			DebugDraw::line(ray_start, hit, DebugDraw::green);
+			DebugDraw::line(hit, hit + out_normal_world * 0.4f, too_steep ? DebugDraw::orange : DebugDraw::cyan);
+		}
+		if (too_steep)
 		{
 			out_normal_world = HMM_V3(0, 0, 1);
 		}
 
 		// The foot bone's head is the ankle, not the sole, so it can't sit on the
-		// hit point. The animation is authored for the ground under the mech, so
-		// only shift the animated foot by how much its own ground differs.
-		out_target_world = animated_foot_world + HMM_V3(0, 0, foot_ground_z - in_root_ground_z);
+		// hit point. Move the animated foot by the gap between the real ground and
+		// the sole plane the animation was authored on, which keeps the ankle's
+		// height above the sole and any lift from the walk cycle.
+		const f32 authored_ground_z = transform_point(in_rig_world, HMM_V3(animated_foot.X, animated_foot.Y, in_rig_sole_z)).Z;
+		out_ground_offset = foot_ground_z - authored_ground_z;
+		if (state.character.show_ik)
+		{
+			DebugDraw::point(HMM_V3(animated_foot_world.X, animated_foot_world.Y, authored_ground_z), DebugDraw::magenta);
+		}
 		return true;
 	}
 
@@ -460,10 +480,10 @@ namespace LegIK
 		const f32 lower_sq = shin_length * shin_length;
 		const f32 full_reach = thigh_length + shin_length;
 		const f32 min_reach = fabsf(thigh_length - shin_length) + epsilon * full_reach;
-		// Debug-only: state.animation.leg_ik_max_extension_scale lets a developer
+		// Debug-only: state.character.leg_ik_max_extension_scale lets a developer
 		// shrink how far the thigh/shin pair is allowed to straighten, to see the
-		// solver visibly react (the "Leg Max Extension" slider under Animation).
-		const f32 max_reach = std::max(min_reach, full_reach * state.animation.leg_ik_max_extension_scale);
+		// solver visibly react (the "Leg Max Extension" slider under Character).
+		const f32 max_reach = std::max(min_reach, full_reach * state.character.leg_ik_max_extension_scale);
 
 		// Back the thigh/shin target off the ground point by the hock segment.
 		// It keeps its animated slant when the target is in reach; past that it
@@ -586,13 +606,20 @@ namespace LegIK
 				return false;
 			}
 		}
+		if (state.character.show_ik)
+		{
+			auto world = [&](i32 in_bone) { return transform_point(in_rig_world, pose[in_bone].Columns[3].XYZ); };
+			DebugDraw::chain({world(in_chain.hip), world(in_chain.knee), world(in_chain.hock), world(in_chain.foot)}, DebugDraw::white);
+			DebugDraw::point(transform_point(in_rig_world, hock_target), DebugDraw::blue);
+			DebugDraw::line(world(in_chain.knee), world(in_chain.knee) + HMM_NormV3(direction(in_rig_world, pole)) * 0.4f, DebugDraw::magenta);
+		}
 		io_rig.evaluated_pose = std::move(pose);
 		return true;
 	}
 
 	// ---- Mech integration ----
 
-	void update(MechInstance& io_mech, std::string& io_diagnostics)
+	void update(MechInstance& io_mech, std::string& io_diagnostics, f32 in_delta_time)
 	{
 		auto report = [&](i32 in_side, const std::string& in_error) {
 			io_diagnostics += std::string(in_side == 0 ? " error[Left Leg IK]=" : " error[Right Leg IK]=") + in_error;
@@ -627,40 +654,74 @@ namespace LegIK
 
 		const HMM_Mat4 rig_world = object_get_model_matrix(legs->second) * legs->second.mesh.armature_to_mesh;
 
-		// Ground under the mech, cast once for both legs. Starts at the rig origin
-		// with no upward bias, so geometry overhead (a doorway, a bridge) can't be
-		// mistaken for the ground.
-		const Armature& armature = rig->second.armature;
-		if (armature.evaluated_pose.size() != armature.bone_count)
+		// The legs mesh's lowest rest-pose point is the sole plane the animation was authored on.
+		// shortcut: assumes armature_to_mesh has no tilt; take the min over transformed corners if a rig needs it.
+		const f32 rig_sole_z = transform_point(HMM_InvGeneralM4(legs->second.mesh.armature_to_mesh), legs->second.mesh.bounding_box.min).Z;
+		if (rig->second.armature.evaluated_pose.size() != rig->second.armature.bone_count || !std::isfinite(rig_sole_z))
 		{
 			report(0, "pose is unavailable");
 			report(1, "pose is unavailable");
 			return;
 		}
-		const f32 root_cast_distance = std::max(leg_length(armature, left_chain), leg_length(armature, right_chain)) + ground_cast_step_down_margin_m;
-		f32 root_ground_z = 0.0f;
-		if (!ground_below(rig_world.Columns[3].XYZ, root_cast_distance, root_ground_z, nullptr))
-		{
-			report(0, "no ground under mech");
-			report(1, "no ground under mech");
-			return;
-		}
 		// Confirmed project convention: Blender/game forward is +Y, up is +Z.
 		const HMM_Vec3 legs_forward_world = direction(HMM_QToM4(legs->second.current_transform.rotation), HMM_V3(0, 1, 0));
+
+		// Frame-rate independent exponential approach toward each frame's desired values.
+		const f32 position_blend = 1.0f - expf(-state.character.leg_ik_position_lerp_rate * in_delta_time);
+		const f32 rotation_blend = 1.0f - expf(-state.character.leg_ik_rotation_lerp_rate * in_delta_time);
 
 		const Chain chains[2] = {left_chain, right_chain};
 		for (i32 side = 0; side < 2; ++side)
 		{
-			HMM_Vec3 target_world;
-			HMM_Vec3 ground_normal_world;
-			std::string ground_error;
-			if (!find_ground_target(rig->second.armature, chains[side], rig_world, root_ground_z, target_world, ground_normal_world, ground_error))
+			const Armature& armature = rig->second.armature;
+			const HMM_Mat4& animated_foot = armature.evaluated_pose[chains[side].foot];
+			const HMM_Vec3 animated_foot_world = transform_point(rig_world, animated_foot.Columns[3].XYZ);
+			// The foot's own up as animated: the rest-pose rig +Z carried through the animated foot.
+			const HMM_Vec3 foot_rest_up = direction(armature.bones[chains[side].foot].inverse_bind_matrix, HMM_V3(0, 0, 1));
+			const HMM_Vec3 animated_up_world = HMM_NormV3(direction(rig_world * animated_foot, foot_rest_up));
+			if (!is_finite(animated_foot_world) || !is_finite(animated_up_world))
 			{
-				report(side, ground_error);
+				report(side, "degenerate rig transform");
 				continue;
 			}
+
+			// With no ground, ease back to the plain animation rather than snapping to it.
+			f32 desired_offset = 0.0f;
+			HMM_Vec3 desired_normal = animated_up_world;
+			std::string ground_error;
+			const bool has_ground = find_ground_target(armature, chains[side], rig_world, rig_sole_z, desired_offset, desired_normal, ground_error);
+			if (!has_ground)
+			{
+				report(side, ground_error);
+				desired_offset = 0.0f;
+				desired_normal = animated_up_world;
+			}
+
+			MechLegIKBlend& blend = io_mech.leg_ik_blends[side];
+			if (!blend.valid)
+			{
+				blend = {desired_offset, desired_normal, true};
+			}
+			else
+			{
+				blend.ground_offset += (desired_offset - blend.ground_offset) * position_blend;
+				const HMM_Vec3 normal = HMM_LerpV3(blend.ground_normal, rotation_blend, desired_normal);
+				blend.ground_normal = HMM_LenSqrV3(normal) > epsilon ? HMM_NormV3(normal) : desired_normal;
+			}
+
+			// Fully eased out: leave the sampled pose exactly as animated.
+			if (!has_ground && fabsf(blend.ground_offset) < 1e-3f && HMM_DotV3(blend.ground_normal, animated_up_world) > 0.9999f)
+			{
+				continue;
+			}
+
+			const HMM_Vec3 target_world = animated_foot_world + HMM_V3(0, 0, blend.ground_offset);
+			if (state.character.show_ik)
+			{
+				DebugDraw::point(target_world, DebugDraw::yellow, 0.12f);
+			}
 			std::string solve_error;
-			if (!solve(rig->second.armature, chains[side], rig_world, target_world, ground_normal_world, legs_forward_world, solve_error))
+			if (!solve(rig->second.armature, chains[side], rig_world, target_world, blend.ground_normal, legs_forward_world, solve_error))
 			{
 				report(side, solve_error);
 			}

@@ -91,6 +91,8 @@ static void test_foot_follows_sloped_ground()
 
 int main()
 {
+	// Reach expectations assume the full natural extension, not the UI default.
+	state.character.leg_ik_max_extension_scale = 1.0f;
 	test_target_at_animated_foot_changes_nothing();
 	test_lower_target_is_reached_with_flat_foot();
 	test_out_of_reach_target_straightens_without_nans();
