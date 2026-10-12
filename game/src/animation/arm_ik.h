@@ -1,12 +1,8 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
 #include <string>
-#include <utility>
-#include <vector>
 
-#include "state/state.h"
+#include "animation/ik_common.h"
 #include "game_object/attachment_point.h"
 #include "render/debug_draw.h"
 
@@ -14,12 +10,11 @@
 // sampled and before weapons attach, so sockets and skinning see the result.
 namespace ArmIK
 {
-	constexpr f32 epsilon = 1e-6f;
+	using namespace IK;
+
 	// Minimum elbow bend while aiming, in degrees away from straight. Rest poses
 	// bent further keep their authored bend.
 	constexpr f32 min_elbow_bend_degrees = 50.0f;
-	// Rest bends below this are treated as straight modeling noise.
-	constexpr f32 authored_bend_degrees = 2.0f;
 
 	struct Chain
 	{
@@ -29,126 +24,6 @@ namespace ArmIK
 
 		bool operator==(const Chain&) const = default;
 	};
-
-	// ---- Math helpers ----
-
-	bool is_finite(const HMM_Vec3& in_vector)
-	{
-		return std::isfinite(in_vector.X) && std::isfinite(in_vector.Y) && std::isfinite(in_vector.Z);
-	}
-
-	bool is_finite(const HMM_Mat4& in_matrix)
-	{
-		for (i32 column = 0; column < 4; ++column)
-		{
-			for (i32 row = 0; row < 4; ++row)
-			{
-				if (!std::isfinite(in_matrix.Elements[column][row]))
-				{
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	bool nearly_equal(const HMM_Mat4& in_a, const HMM_Mat4& in_b)
-	{
-		for (i32 column = 0; column < 4; ++column)
-		{
-			for (i32 row = 0; row < 4; ++row)
-			{
-				if (fabsf(in_a.Elements[column][row] - in_b.Elements[column][row]) >= epsilon)
-				{
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	HMM_Vec3 direction(const HMM_Mat4& in_matrix, HMM_Vec3 in_vector)
-	{
-		return (in_matrix * HMM_V4V(in_vector, 0.0f)).XYZ;
-	}
-
-	HMM_Vec3 any_perpendicular(HMM_Vec3 in_vector)
-	{
-		const HMM_Vec3 reference = fabsf(in_vector.Z) < 0.9f ? HMM_V3(0, 0, 1) : HMM_V3(1, 0, 0);
-		return HMM_NormV3(HMM_Cross(in_vector, reference));
-	}
-
-	// Deterministic shortest-arc rotation, including the antiparallel case.
-	HMM_Mat4 swing(HMM_Vec3 in_from, HMM_Vec3 in_to)
-	{
-		const HMM_Vec3 from = HMM_NormV3(in_from);
-		const HMM_Vec3 to = HMM_NormV3(in_to);
-		const f32 dot = HMM_Clamp(-1.0f, HMM_DotV3(from, to), 1.0f);
-		if (dot < -1.0f + epsilon)
-		{
-			const HMM_Vec3 axis = any_perpendicular(from);
-			return HMM_QToM4(HMM_Q(axis.X, axis.Y, axis.Z, 0.0f));
-		}
-		const HMM_Vec3 axis = HMM_Cross(from, to);
-		return HMM_QToM4(HMM_NormQ(HMM_Q(axis.X, axis.Y, axis.Z, 1.0f + dot)));
-	}
-
-	HMM_Mat4 rotate_about(const HMM_Mat4& in_rotation, HMM_Vec3 in_pivot)
-	{
-		return HMM_Translate(in_pivot) * in_rotation * HMM_Translate(-in_pivot);
-	}
-
-	// ---- Bone hierarchy ----
-
-	i32 named_bone(const Armature& in_rig, const std::string& in_name)
-	{
-		for (u32 bone_idx = 0; bone_idx < in_rig.bone_count; ++bone_idx)
-		{
-			if (in_rig.bones[bone_idx].name && in_name == in_rig.bones[bone_idx].name)
-			{
-				return (i32) bone_idx;
-			}
-		}
-		return -1;
-	}
-
-	// Parent steps from in_bone up to in_root, or -1 when in_bone is outside
-	// in_root's subtree. Bounded, so malformed parent cycles terminate.
-	i32 depth_below(const Armature& in_rig, i32 in_bone, i32 in_root)
-	{
-		for (i32 depth = 0; depth < (i32) in_rig.bone_count; ++depth)
-		{
-			if (in_bone < 0 || in_bone >= (i32) in_rig.bone_count)
-			{
-				return -1;
-			}
-			if (in_bone == in_root)
-			{
-				return depth;
-			}
-			in_bone = in_rig.bones[in_bone].parent_index;
-		}
-		return -1;
-	}
-
-	// True when walking parents from in_bone reaches a root without leaving the
-	// rig or revisiting a bone.
-	bool has_rooted_ancestry(const Armature& in_rig, i32 in_bone)
-	{
-		for (u32 step = 0; step <= in_rig.bone_count; ++step)
-		{
-			if (in_bone == -1)
-			{
-				return true;
-			}
-			if (in_bone < 0 || in_bone >= (i32) in_rig.bone_count)
-			{
-				return false;
-			}
-			in_bone = in_rig.bones[in_bone].parent_index;
-		}
-		return false;
-	}
 
 	// Explicit names win. An empty hand falls back to the rig's single
 	// attachment-labeled bone; an empty elbow or shoulder uses the parent.
@@ -250,30 +125,8 @@ namespace ArmIK
 		}
 		aim = HMM_NormV3(aim);
 
-		// Shoulder subtree as (depth, bone), sorted so parents precede children.
-		std::vector<std::pair<i32, i32>> subtree;
-		for (u32 bone_idx = 0; bone_idx < io_rig.bone_count; ++bone_idx)
-		{
-			const i32 depth = depth_below(io_rig, (i32) bone_idx, in_chain.shoulder);
-			if (depth >= 0)
-			{
-				subtree.push_back({depth, (i32) bone_idx});
-			}
-		}
-		std::sort(subtree.begin(), subtree.end());
-
-		// pose[parent] * inverse_bind[parent] is the parent's bind-to-pose delta,
-		// so each bone keeps its rest local relative to its parent.
-		std::vector<HMM_Mat4> pose = io_rig.evaluated_pose;
-		for (const auto& [depth, bone] : subtree)
-		{
-			const i32 parent = io_rig.bones[bone].parent_index;
-			pose[bone] = HMM_InvGeneralM4(io_rig.bones[bone].inverse_bind_matrix);
-			if (parent >= 0)
-			{
-				pose[bone] = pose[parent] * io_rig.bones[parent].inverse_bind_matrix * pose[bone];
-			}
-		}
+		const Subtree subtree = collect_subtree(io_rig, in_chain.shoulder);
+		std::vector<HMM_Mat4> pose = rest_pose_under_parent(io_rig, subtree);
 
 		const HMM_Vec3 shoulder = pose[in_chain.shoulder].Columns[3].XYZ;
 		const HMM_Vec3 elbow = pose[in_chain.elbow].Columns[3].XYZ;
@@ -288,69 +141,19 @@ namespace ArmIK
 			return false;
 		}
 
-		// Point the rest arm along the view first; this sets the baseline twist.
-		const HMM_Mat4 arm_rotation = rotate_about(swing(hand - shoulder, aim), shoulder);
-		for (const auto& [depth, bone] : subtree)
-		{
-			pose[bone] = arm_rotation * pose[bone];
-		}
-
-		// ---- Work out where the bent elbow and hand should go ----
-
-		// Rest elbow angle, measured as deviation from a straight arm (0 = straight).
-		const f32 rest_bend = acosf(HMM_Clamp(-1.0f, HMM_DotV3(elbow - shoulder, hand - elbow) / (upper_length * lower_length), 1.0f));
-		const f32 bend_angle = std::max(rest_bend, HMM_AngleDeg(min_elbow_bend_degrees));
-
-		// Shoulder-to-hand distance for that bend (law of cosines), kept within what the arm can reach.
-		const f32 upper_sq = upper_length * upper_length;
-		const f32 lower_sq = lower_length * lower_length;
-        // u² + l² is the reach at a 90° elbow; 2ul·cos θ adjusts it for any other bend (0 = straight).
-		const f32 bent_reach = sqrtf(upper_sq + lower_sq + 2.0f * upper_length * lower_length * cosf(bend_angle));
+		// Shoulder-to-hand distance for the elbow bend (law of cosines), kept within what the arm can reach.
+		const f32 rest_bend = bend_angle(shoulder, elbow, hand);
+		const f32 elbow_bend = std::max(rest_bend, HMM_AngleDeg(min_elbow_bend_degrees));
+		// u² + l² is the reach at a 90° elbow; 2ul·cos θ adjusts it for any other bend (0 = straight).
+		const f32 bent_reach = sqrtf(upper_length * upper_length + lower_length * lower_length +
+			2.0f * upper_length * lower_length * cosf(elbow_bend));
 		const f32 max_reach = upper_length + lower_length;
 		const f32 min_reach = fabsf(upper_length - lower_length) + epsilon * max_reach;
 		const f32 target_reach = HMM_Clamp(min_reach, bent_reach, max_reach);
 
-		// Elbow position relative to the aim line: distance along it, then distance off it.
-		const f32 along_unclamped = (upper_sq - lower_sq + target_reach * target_reach) / (2.0f * target_reach);
-		const f32 along = HMM_Clamp(-upper_length, along_unclamped, upper_length);
-		const f32 bend = sqrtf(std::max(0.0f, upper_sq - along * along));
-
-		// Pole: which way the elbow sticks out, perpendicular to aim. Prefer the rest bend's direction.
-		const HMM_Vec3 aimed_elbow = pose[in_chain.elbow].Columns[3].XYZ;
-		HMM_Vec3 pole = (aimed_elbow - shoulder) - aim * HMM_DotV3(aimed_elbow - shoulder, aim);
-		if (rest_bend < HMM_AngleDeg(authored_bend_degrees) || HMM_LenSqrV3(pole) < epsilon * upper_length * upper_length)
-		{
-			// Straight rest arm: bend toward world down, projected perpendicular to aim.
-			const HMM_Vec3 down = direction(world_to_rig, HMM_V3(0, 0, -1));
-			pole = down - aim * HMM_DotV3(down, aim);
-			if (HMM_LenSqrV3(pole) < epsilon * HMM_LenSqrV3(down))
-			{
-				// Aiming straight up or down: any fixed perpendicular will do.
-				pole = any_perpendicular(aim);
-			}
-		}
-		pole = HMM_NormV3(pole);
-
-		// Target joint positions: hand on the aim line, elbow offset from it along the pole.
-		const HMM_Vec3 bent_elbow = shoulder + aim * along + pole * bend;
-		const HMM_Vec3 bent_hand = shoulder + aim * target_reach;
-
-		// Swing the upper arm onto the new elbow, then the forearm onto the hand.
-		const HMM_Mat4 upper_rotation = rotate_about(swing(aimed_elbow - shoulder, bent_elbow - shoulder), shoulder);
-		for (const auto& [depth, bone] : subtree)
-		{
-			pose[bone] = upper_rotation * pose[bone];
-		}
-
-		const HMM_Vec3 swung_hand = pose[in_chain.hand].Columns[3].XYZ;
-		const HMM_Mat4 lower_rotation = rotate_about(swing(swung_hand - bent_elbow, bent_hand - bent_elbow), bent_elbow);
-		for (const auto& [depth, bone] : subtree)
-		{
-			if (depth_below(io_rig, bone, in_chain.elbow) >= 0)
-			{
-				pose[bone] = lower_rotation * pose[bone];
-			}
-		}
+		// A straight rest arm bends toward world down.
+		const HMM_Vec3 pole = place_two_bone(io_rig, subtree, in_chain.shoulder, in_chain.elbow, in_chain.hand,
+			aim, target_reach, rest_bend, direction(world_to_rig, HMM_V3(0, 0, -1)), pose);
 
 		// Weapon roots take the attachment's world rotation and their own
 		// authored scale, so align the scaled muzzle axis rather than bone +Y.
@@ -370,33 +173,21 @@ namespace ArmIK
 		aimed_hand_world.Columns[3] = hand_world.Columns[3];
 
 		// Carry the wrist correction down to the hand and its children.
-		const HMM_Mat4 wrist_delta = world_to_rig * aimed_hand_world * HMM_InvGeneralM4(pose[in_chain.hand]);
-		for (const auto& [depth, bone] : subtree)
-		{
-			if (depth_below(io_rig, bone, in_chain.hand) >= 0)
-			{
-				pose[bone] = wrist_delta * pose[bone];
-			}
-		}
+		transform_below(io_rig, subtree, in_chain.hand, world_to_rig * aimed_hand_world * HMM_InvGeneralM4(pose[in_chain.hand]), pose);
 
-		for (const auto& [depth, bone] : subtree)
+		if (!commit_if_finite(io_rig, subtree, pose, out_error))
 		{
-			if (!is_finite(pose[bone]))
-			{
-				out_error = "non-finite solved pose";
-				return false;
-			}
+			return false;
 		}
 		if (state.character.show_ik)
 		{
-			auto world = [&](i32 in_bone) { return (in_rig_world * pose[in_bone].Columns[3]).XYZ; };
+			auto world = [&](i32 in_bone) { return transform_point(in_rig_world, io_rig.evaluated_pose[in_bone].Columns[3].XYZ); };
 			const HMM_Vec3 hand_at = world(in_chain.hand);
 			DebugDraw::chain({world(in_chain.shoulder), world(in_chain.elbow), hand_at}, DebugDraw::white);
 			DebugDraw::line(world(in_chain.shoulder), world(in_chain.shoulder) + HMM_NormV3(in_forward) * 3.0f, DebugDraw::yellow);
 			DebugDraw::line(world(in_chain.elbow), world(in_chain.elbow) + HMM_NormV3(direction(in_rig_world, pole)) * 0.4f, DebugDraw::magenta);
 			DebugDraw::line(hand_at, hand_at + HMM_NormV3(direction(aimed_hand_world, in_muzzle_axis)) * 1.0f, DebugDraw::cyan);
 		}
-		io_rig.evaluated_pose = std::move(pose);
 		return true;
 	}
 

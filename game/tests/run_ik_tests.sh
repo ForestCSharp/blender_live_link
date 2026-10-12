@@ -12,7 +12,7 @@ includes=(-I src -I extern -I extern/glfw/include -I extern/imgui -I data
 if [[ -n "${VULKAN_SDK:-}" ]]; then includes+=(-I "$VULKAN_SDK/include"); fi
 cache="bin/build/$platform/Debug"
 clang++ -std=c++20 -O0 -g -Wno-c99-designator -DWITH_DEBUG_UI=0 -DGAME_ENABLE_VALIDATION=1 \
-  tests/leg_ik_tests.cpp "${includes[@]}" \
+  tests/ik_tests.cpp "${includes[@]}" \
   "$cache/libglfw.a" "$cache/libvma.a" "$cache/libjolt.a" "${system_libs[@]}" \
-  -o /tmp/leg_ik_tests
-/tmp/leg_ik_tests
+  -o /tmp/ik_tests
+/tmp/ik_tests

@@ -1,16 +1,12 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 
-#include "state/state.h"
+#include "animation/ik_common.h"
 #include "physics/physics_system.h"
 #include "render/debug_draw.h"
 
@@ -19,9 +15,8 @@
 // and the already-stepped physics world.
 namespace LegIK
 {
-	constexpr f32 epsilon = 1e-6f;
-	// Rest bends below this are treated as straight modeling noise.
-	constexpr f32 authored_bend_degrees = 2.0f;
+	using namespace IK;
+
 	// Margin above the animated foot the raycast starts from.
 	constexpr f32 ground_cast_up_bias_m = 1.0f;
 	// Extra reach below full leg extension, so a step down still finds ground.
@@ -39,115 +34,7 @@ namespace LegIK
 		bool operator==(const Chain&) const = default;
 	};
 
-	// ---- Math helpers ----
-
-	bool is_finite(const HMM_Vec3& in_vector)
-	{
-		return std::isfinite(in_vector.X) && std::isfinite(in_vector.Y) && std::isfinite(in_vector.Z);
-	}
-
-	bool is_finite(const HMM_Mat4& in_matrix)
-	{
-		for (i32 column = 0; column < 4; ++column)
-		{
-			for (i32 row = 0; row < 4; ++row)
-			{
-				if (!std::isfinite(in_matrix.Elements[column][row]))
-				{
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	HMM_Vec3 direction(const HMM_Mat4& in_matrix, HMM_Vec3 in_vector)
-	{
-		return (in_matrix * HMM_V4V(in_vector, 0.0f)).XYZ;
-	}
-
-	HMM_Vec3 transform_point(const HMM_Mat4& in_matrix, HMM_Vec3 in_point)
-	{
-		return (in_matrix * HMM_V4V(in_point, 1.0f)).XYZ;
-	}
-
-	HMM_Vec3 any_perpendicular(HMM_Vec3 in_vector)
-	{
-		const HMM_Vec3 reference = fabsf(in_vector.Z) < 0.9f ? HMM_V3(0, 0, 1) : HMM_V3(1, 0, 0);
-		return HMM_NormV3(HMM_Cross(in_vector, reference));
-	}
-
-	// Deterministic shortest-arc rotation, including the antiparallel case.
-	HMM_Mat4 swing(HMM_Vec3 in_from, HMM_Vec3 in_to)
-	{
-		const HMM_Vec3 from = HMM_NormV3(in_from);
-		const HMM_Vec3 to = HMM_NormV3(in_to);
-		const f32 dot = HMM_Clamp(-1.0f, HMM_DotV3(from, to), 1.0f);
-		if (dot < -1.0f + epsilon)
-		{
-			const HMM_Vec3 axis = any_perpendicular(from);
-			return HMM_QToM4(HMM_Q(axis.X, axis.Y, axis.Z, 0.0f));
-		}
-		const HMM_Vec3 axis = HMM_Cross(from, to);
-		return HMM_QToM4(HMM_NormQ(HMM_Q(axis.X, axis.Y, axis.Z, 1.0f + dot)));
-	}
-
-	HMM_Mat4 rotate_about(const HMM_Mat4& in_rotation, HMM_Vec3 in_pivot)
-	{
-		return HMM_Translate(in_pivot) * in_rotation * HMM_Translate(-in_pivot);
-	}
-
 	// ---- Bone hierarchy ----
-
-	i32 named_bone(const Armature& in_rig, const std::string& in_name)
-	{
-		for (u32 bone_idx = 0; bone_idx < in_rig.bone_count; ++bone_idx)
-		{
-			if (in_rig.bones[bone_idx].name && in_name == in_rig.bones[bone_idx].name)
-			{
-				return (i32) bone_idx;
-			}
-		}
-		return -1;
-	}
-
-	// Parent steps from in_bone up to in_root, or -1 when in_bone is outside
-	// in_root's subtree. Bounded, so malformed parent cycles terminate.
-	i32 depth_below(const Armature& in_rig, i32 in_bone, i32 in_root)
-	{
-		for (i32 depth = 0; depth < (i32) in_rig.bone_count; ++depth)
-		{
-			if (in_bone < 0 || in_bone >= (i32) in_rig.bone_count)
-			{
-				return -1;
-			}
-			if (in_bone == in_root)
-			{
-				return depth;
-			}
-			in_bone = in_rig.bones[in_bone].parent_index;
-		}
-		return -1;
-	}
-
-	// True when walking parents from in_bone reaches a root without leaving the
-	// rig or revisiting a bone.
-	bool has_rooted_ancestry(const Armature& in_rig, i32 in_bone)
-	{
-		for (u32 step = 0; step <= in_rig.bone_count; ++step)
-		{
-			if (in_bone == -1)
-			{
-				return true;
-			}
-			if (in_bone < 0 || in_bone >= (i32) in_rig.bone_count)
-			{
-				return false;
-			}
-			in_bone = in_rig.bones[in_bone].parent_index;
-		}
-		return false;
-	}
 
 	// Bind-pose armature-space X, used only to tell the rig's two labeled feet
 	// apart when neither is explicitly named.
@@ -436,30 +323,8 @@ namespace LegIK
 			return false;
 		}
 
-		// Hip subtree as (depth, bone), sorted so parents precede children.
-		std::vector<std::pair<i32, i32>> subtree;
-		for (u32 bone_idx = 0; bone_idx < io_rig.bone_count; ++bone_idx)
-		{
-			const i32 depth = depth_below(io_rig, (i32) bone_idx, in_chain.hip);
-			if (depth >= 0)
-			{
-				subtree.push_back({depth, (i32) bone_idx});
-			}
-		}
-		std::sort(subtree.begin(), subtree.end());
-
-		// pose[parent] * inverse_bind[parent] is the parent's bind-to-pose delta,
-		// so each bone keeps its rest local relative to its parent.
-		std::vector<HMM_Mat4> pose = io_rig.evaluated_pose;
-		for (const auto& [depth, bone] : subtree)
-		{
-			const i32 parent = io_rig.bones[bone].parent_index;
-			pose[bone] = HMM_InvGeneralM4(io_rig.bones[bone].inverse_bind_matrix);
-			if (parent >= 0)
-			{
-				pose[bone] = pose[parent] * io_rig.bones[parent].inverse_bind_matrix * pose[bone];
-			}
-		}
+		const Subtree subtree = collect_subtree(io_rig, in_chain.hip);
+		std::vector<HMM_Mat4> pose = rest_pose_under_parent(io_rig, subtree);
 
 		const HMM_Vec3 hip = pose[in_chain.hip].Columns[3].XYZ;
 		const HMM_Vec3 knee = pose[in_chain.knee].Columns[3].XYZ;
@@ -476,8 +341,6 @@ namespace LegIK
 			return false;
 		}
 
-		const f32 upper_sq = thigh_length * thigh_length;
-		const f32 lower_sq = shin_length * shin_length;
 		const f32 full_reach = thigh_length + shin_length;
 		const f32 min_reach = fabsf(thigh_length - shin_length) + epsilon * full_reach;
 		// Debug-only: state.character.leg_ik_max_extension_scale lets a developer
@@ -511,76 +374,19 @@ namespace LegIK
 		}
 		const HMM_Vec3 hock_target = hock_target_at(straighten);
 
-		// Point the rest leg at the hock target first; this sets the baseline twist.
-		const HMM_Vec3 aim = HMM_NormV3(hock_target - hip);
-		const HMM_Mat4 leg_rotation = rotate_about(swing(hock - hip, aim), hip);
-		for (const auto& [depth, bone] : subtree)
-		{
-			pose[bone] = leg_rotation * pose[bone];
-		}
-
-		// ---- Work out where the bent knee and hock should go ----
-
-		// Rest knee angle, measured as deviation from a straight leg (0 = straight).
-		const f32 rest_bend = acosf(HMM_Clamp(-1.0f, HMM_DotV3(knee - hip, hock - knee) / (thigh_length * shin_length), 1.0f));
-
 		// Unlike arm IK, the reach comes from the hock target's distance, not a chosen bend angle.
-		const f32 hock_distance = HMM_LenV3(hock_target - hip);
-		const f32 target_reach = HMM_Clamp(min_reach, hock_distance, max_reach);
-
-		// Knee position relative to the aim line: distance along it, then distance off it.
-		const f32 along_unclamped = (upper_sq - lower_sq + target_reach * target_reach) / (2.0f * target_reach);
-		const f32 along = HMM_Clamp(-thigh_length, along_unclamped, thigh_length);
-		const f32 bend = sqrtf(std::max(0.0f, upper_sq - along * along));
-
-		// Pole: which way the knee sticks out, perpendicular to aim. Prefer the rest bend's direction.
-		const HMM_Vec3 aimed_knee = pose[in_chain.knee].Columns[3].XYZ;
-		HMM_Vec3 pole = (aimed_knee - hip) - aim * HMM_DotV3(aimed_knee - hip, aim);
-		if (rest_bend < HMM_AngleDeg(authored_bend_degrees) || HMM_LenSqrV3(pole) < epsilon * thigh_length * thigh_length)
-		{
-			// Straight rest leg: bend the knee forward, projected perpendicular to aim.
-			pole = pole_hint - aim * HMM_DotV3(pole_hint, aim);
-			if (HMM_LenSqrV3(pole) < epsilon * HMM_LenSqrV3(pole_hint))
-			{
-				// Target directly above or below the hip: any fixed perpendicular will do.
-				pole = any_perpendicular(aim);
-			}
-		}
-		pole = HMM_NormV3(pole);
-
-		// Target joint positions: hock on the aim line, knee offset from it along the pole.
-		const HMM_Vec3 bent_knee = hip + aim * along + pole * bend;
-		const HMM_Vec3 bent_hock = hip + aim * target_reach;
-
-		// Swing the thigh onto the new knee, then the shin onto the hock.
-		const HMM_Mat4 upper_rotation = rotate_about(swing(aimed_knee - hip, bent_knee - hip), hip);
-		for (const auto& [depth, bone] : subtree)
-		{
-			pose[bone] = upper_rotation * pose[bone];
-		}
-
-		const HMM_Vec3 swung_hock = pose[in_chain.hock].Columns[3].XYZ;
-		const HMM_Mat4 lower_rotation = rotate_about(swing(swung_hock - bent_knee, bent_hock - bent_knee), bent_knee);
-		for (const auto& [depth, bone] : subtree)
-		{
-			if (depth_below(io_rig, bone, in_chain.knee) >= 0)
-			{
-				pose[bone] = lower_rotation * pose[bone];
-			}
-		}
+		// A straight rest leg bends the knee forward.
+		const HMM_Vec3 aim = HMM_NormV3(hock_target - hip);
+		const f32 target_reach = HMM_Clamp(min_reach, HMM_LenV3(hock_target - hip), max_reach);
+		const HMM_Vec3 pole = place_two_bone(io_rig, subtree, in_chain.hip, in_chain.knee, in_chain.hock,
+			aim, target_reach, bend_angle(hip, knee, hock), pole_hint, pose);
 
 		// ---- Aim the hock the rest of the way at the actual ground target ----
 
 		const HMM_Vec3 placed_hock = pose[in_chain.hock].Columns[3].XYZ;
 		const HMM_Vec3 placed_foot = pose[in_chain.foot].Columns[3].XYZ;
-		const HMM_Mat4 hock_rotation = rotate_about(swing(placed_foot - placed_hock, target - placed_hock), placed_hock);
-		for (const auto& [depth, bone] : subtree)
-		{
-			if (depth_below(io_rig, bone, in_chain.hock) >= 0)
-			{
-				pose[bone] = hock_rotation * pose[bone];
-			}
-		}
+		transform_below(io_rig, subtree, in_chain.hock,
+			rotate_about(swing(placed_foot - placed_hock, target - placed_hock), placed_hock), pose);
 
 		// Place the foot flat on the ground at its solved position: keep the
 		// animated heading, but tilt it so its rest-pose up (the rig's +Z, where
@@ -589,31 +395,21 @@ namespace LegIK
 		const HMM_Vec3 foot_rest_up = direction(io_rig.bones[in_chain.foot].inverse_bind_matrix, HMM_V3(0, 0, 1));
 		const HMM_Mat4 flatten = rotate_about(swing(direction(animated_foot, foot_rest_up), ground_normal), animated_foot_position);
 		const HMM_Vec3 solved_foot = pose[in_chain.foot].Columns[3].XYZ;
-		const HMM_Mat4 foot_correction = HMM_Translate(solved_foot - animated_foot_position) * flatten * animated_foot * HMM_InvGeneralM4(pose[in_chain.foot]);
-		for (const auto& [depth, bone] : subtree)
-		{
-			if (depth_below(io_rig, bone, in_chain.foot) >= 0)
-			{
-				pose[bone] = foot_correction * pose[bone];
-			}
-		}
+		transform_below(io_rig, subtree, in_chain.foot,
+			HMM_Translate(solved_foot - animated_foot_position) * flatten * animated_foot * HMM_InvGeneralM4(pose[in_chain.foot]), pose);
 
-		for (const auto& [depth, bone] : subtree)
+		// animated_foot refers into io_rig.evaluated_pose; don't use it past this commit.
+		if (!commit_if_finite(io_rig, subtree, pose, out_error))
 		{
-			if (!is_finite(pose[bone]))
-			{
-				out_error = "non-finite solved pose";
-				return false;
-			}
+			return false;
 		}
 		if (state.character.show_ik)
 		{
-			auto world = [&](i32 in_bone) { return transform_point(in_rig_world, pose[in_bone].Columns[3].XYZ); };
+			auto world = [&](i32 in_bone) { return transform_point(in_rig_world, io_rig.evaluated_pose[in_bone].Columns[3].XYZ); };
 			DebugDraw::chain({world(in_chain.hip), world(in_chain.knee), world(in_chain.hock), world(in_chain.foot)}, DebugDraw::white);
 			DebugDraw::point(transform_point(in_rig_world, hock_target), DebugDraw::blue);
 			DebugDraw::line(world(in_chain.knee), world(in_chain.knee) + HMM_NormV3(direction(in_rig_world, pole)) * 0.4f, DebugDraw::magenta);
 		}
-		io_rig.evaluated_pose = std::move(pose);
 		return true;
 	}
 
@@ -664,7 +460,7 @@ namespace LegIK
 			return;
 		}
 		// Confirmed project convention: Blender/game forward is +Y, up is +Z.
-		const HMM_Vec3 legs_forward_world = direction(HMM_QToM4(legs->second.current_transform.rotation), HMM_V3(0, 1, 0));
+		const HMM_Vec3 legs_forward_world = quat_forward(legs->second.current_transform.rotation);
 
 		// Frame-rate independent exponential approach toward each frame's desired values.
 		const f32 position_blend = 1.0f - expf(-state.character.leg_ik_position_lerp_rate * in_delta_time);
