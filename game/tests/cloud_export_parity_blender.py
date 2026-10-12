@@ -62,7 +62,7 @@ print("CLOUD_EXPORT_PARITY_OK")
 if os.environ.get("CLOUD_RUNTIME_SMOKE") == "1":
     from bl_ext.user_default.blender_live_link import extension_main
     import time
-    extension_main.send_full_scene_update("cloud_runtime_smoke")
+    extension_main.send_full_scene_update()
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         extension_main.live_link_timer()

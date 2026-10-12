@@ -20,6 +20,7 @@ struct PendingImage
 	i32 width = 0;
 	i32 height = 0;
 	u8* pixels = nullptr;	// malloc'd RGBA8, width*height*4, validated at parse
+	u64 content_hash = 0;	// size + pixels; Blender resends unchanged images with every export
 };
 
 struct PendingMaterial

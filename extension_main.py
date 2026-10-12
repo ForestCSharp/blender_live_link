@@ -422,9 +422,6 @@ class LiveLinkConnection():
         if export_stats is not None:
             export_stats.add_timing(key, elapsed_seconds)
 
-    def mesh_needs_triangulation(self, mesh):
-        return any(polygon.loop_total != 3 for polygon in mesh.polygons)
-
     def export_scene_for_object(self, blender_object):
         """Scene and view layer that own blender_object during this export.
 
@@ -2024,19 +2021,12 @@ class LiveLinkConnection():
         )
         return output
 
-    def send_object_list(self, updated_objects, deleted_object_uids, update_reason="object_list"):
-        if not self.transport.ready:
-            if not self.is_connected():
-                self.needs_full_sync = True
-            return False
-        return self.send(self.make_update(updated_objects, deleted_object_uids, update_reason=update_reason))
-
     def save_to_file(self, in_objects, in_filename, update_reason="save_to_file"):
         update = self.make_update(in_objects, [], update_reason=update_reason)
         with open(in_filename, 'wb') as f:
             f.write(update)
 
-    def send_reset(self, update_reason="manual_reset"):
+    def send_reset(self):
         if not self.is_connected():
             return False
         self.reset_pending = True
@@ -2077,7 +2067,7 @@ def queue_object_updates(objects, update_reason):
 def queue_object_update(obj, update_reason):
     queue_object_updates((obj,), update_reason)
 
-def clear_batched_depsgraph_updates(update_reason="unknown"):
+def clear_batched_depsgraph_updates():
     global batched_force_full
     batched_dirty_ids.clear()
     batched_force_full = False
@@ -2088,21 +2078,17 @@ def ensure_live_link_timer():
         bpy.app.timers.register(live_link_timer, first_interval=0.01)
 
 
-def send_full_scene_update(update_reason="full_update"):
+def send_full_scene_update():
     live_link_connection.needs_full_sync = True
     ensure_live_link_timer()
-
-
-def schedule_automatic_initial_full_update(update_reason="startup"):
-    send_full_scene_update(update_reason)
 
 
 @persistent
 def automatic_initial_full_update_load_post(_):
     live_link_connection.close_socket()
     live_link_connection.instance_uid_registry.clear()
-    clear_batched_depsgraph_updates(update_reason="blend_file_loaded")
-    schedule_automatic_initial_full_update(update_reason="blend_file_loaded")
+    clear_batched_depsgraph_updates()
+    send_full_scene_update()
 
 
 send_due_at = 0.0
@@ -2164,7 +2150,7 @@ def depsgraph_update_post_callback(scene, depsgraph):
 
     if depsgraph_update_post_callback.suppress_next:
         depsgraph_update_post_callback.suppress_next = False
-        clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
+        clear_batched_depsgraph_updates()
         return
 
     global batched_force_full
@@ -2224,7 +2210,7 @@ depsgraph_update_post_callback.suppress_next = False
 
 def live_link_python_export_fallback_update(self, context):
     depsgraph_update_post_callback.suppress_next = True
-    clear_batched_depsgraph_updates(update_reason="python_export_fallback_toggled")
+    clear_batched_depsgraph_updates()
 
 # Begin OpLiveLinkSendFullUpdate
 class OpLiveLinkSendFullUpdate(bpy.types.Operator):
@@ -2235,7 +2221,7 @@ class OpLiveLinkSendFullUpdate(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        send_full_scene_update(update_reason="manual_full_update")
+        send_full_scene_update()
         return {'FINISHED'}
 # End OpLiveLinkSendFullUpdate 
 
@@ -2274,7 +2260,7 @@ class OpLiveLinkSendReset(bpy.types.Operator):
 
     # Called when operator is run
     def execute(self, context):
-        if not live_link_connection.send_reset(update_reason="manual_reset"):
+        if not live_link_connection.send_reset():
             self.report({'WARNING'}, "Live Link is not connected to the game")
             return {'CANCELLED'}
         ensure_live_link_timer()
@@ -3386,7 +3372,7 @@ def register():
     )
 
     # Timer runs after registration; load_post restarts it for the loaded file.
-    schedule_automatic_initial_full_update(update_reason="addon_registered")
+    send_full_scene_update()
 
 def unregister():
     if bpy.app.timers.is_registered(live_link_timer):

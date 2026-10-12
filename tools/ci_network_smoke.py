@@ -41,7 +41,6 @@ def run():
         # Real exporter entry points must short-circuit before touching bpy.
         with patch.object(connection, 'export_evaluation_context', side_effect=AssertionError('offline export')):
             assert not connection.send_scene_changes(set(), 'offline', True)
-            assert not connection.send_object_list([], [])
             assert not connection.send_reset()
 
         with patch.object(connection, 'send_scene_changes', side_effect=serialize_scene), \

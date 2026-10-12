@@ -23,6 +23,7 @@
 	#include <cerrno>
 	#include <fcntl.h>
 	#include <netdb.h>  /* Needed for getaddrinfo() and freeaddrinfo() */
+	#include <sys/select.h>
 	#include <unistd.h> /* Needed for close() */
 	typedef int SOCKET;
 	#define INVALID_SOCKET -1
@@ -98,15 +99,15 @@ size_t socket_recv(SOCKET in_socket, void* in_buffer, size_t in_len, int in_flag
 #endif
 }
 
-void socket_set_recv_timeout(SOCKET in_socket, const struct timeval& in_timeval)
+// Sleeps until in_socket is readable (data, EOF, or a pending accept) or the
+// timeout passes. Lets nonblocking sockets idle without spinning a core.
+bool socket_wait_readable(SOCKET in_socket, int in_timeout_ms)
 {
-	#if defined(SOCKET_PLATFORM_WINDOWS)
-		int timeout = in_timeval.tv_sec * 1000 + in_timeval.tv_usec / 1000;
-		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof timeout);
-	#else
-		// MAC & LINUX
-		setsockopt(in_socket, SOL_SOCKET, SO_RCVTIMEO, (const void*)&in_timeval, sizeof(in_timeval));
-	#endif
+	fd_set read_set;
+	FD_ZERO(&read_set);
+	FD_SET(in_socket, &read_set);
+	struct timeval timeout = {.tv_sec = in_timeout_ms / 1000, .tv_usec = (in_timeout_ms % 1000) * 1000};
+	return select((int) in_socket + 1, &read_set, nullptr, nullptr, &timeout) > 0;
 }
 
 int socket_get_last_error();

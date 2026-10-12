@@ -353,7 +353,7 @@ struct State
 	// buffer is a fixed MAX_MATERIALS-slot stream buffer created at init and
 	// kept alive across resets — descriptor set 0 binding 2 is written every
 	// frame and must always have a buffer.
-	// Registered entries are append-only between resets.
+	// Indices are stable between resets; changed values overwrite in place.
 	struct MaterialState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
@@ -362,11 +362,12 @@ struct State
 	} materials;
 
 	// Registered images backing the bindless texture array. Indices remain
-	// stable until a scene reset.
+	// stable until a scene reset; changed pixels replace the image in place.
 	struct ImageState
 	{
 		ankerl::unordered_dense::map<i32, i32> id_to_index;
 		DynamicArray<GpuImage> items;
+		DynamicArray<u64> content_hashes;	// parallel to items
 		bool enable_debug_fullscreen = false;
 		i32 debug_index = 0;
 	} images;
@@ -1069,9 +1070,9 @@ void init_materials_buffer(State& in_state)
 	});
 }
 
-// Uploads the whole registered-material array. Append-only updates are safe
-// vs frames in flight: existing prefix bytes are rewritten with identical
-// values because registered materials never change.
+// Uploads the whole registered-material array. Appends are safe vs frames in
+// flight (the prefix is rewritten with identical bytes); register_material
+// idles the GPU before an in-place edit changes existing bytes.
 void update_materials_buffer(State& in_state)
 {
 	if (in_state.materials.items.length() == 0)

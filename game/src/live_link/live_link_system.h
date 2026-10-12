@@ -149,11 +149,19 @@ namespace LiveLinkSystem
 			return;
 		}
 
+		// Trust boundary: bytes come from any local process (or a -f file), and
+		// unverified offsets read out of bounds. Bad frames are dropped.
+		flatbuffers::Verifier verifier(flatbuffer_data.data(), (size_t) flatbuffer_data.length());
+		if (!Blender::LiveLink::VerifySizePrefixedUpdateBuffer(verifier))
+		{
+			printf("[live-link] dropping malformed update (%zu bytes)\n", flatbuffer_data.length());
+			return;
+		}
+
 		capture_flatbuffer_payload(flatbuffer_data);
-	
+
 		// Interpret Flatbuffer data
 		auto* update = Blender::LiveLink::GetSizePrefixedUpdate(flatbuffer_data.data());
-		assert(update);
 	
 		// Everything in this Update is packaged into one SceneUpdate message and
 		// registered/applied on the main thread at drain time
@@ -241,12 +249,18 @@ namespace LiveLinkSystem
 	
 				u8* pixels = (u8*) malloc(expected_size);
 				memcpy(pixels, image_data->data(), expected_size);
-	
+
+				// Hashed here, off the main thread, so the drain can skip re-uploading unchanged images
+				const u64 size_hash = ((u64) width << 32) | (u32) height;
+				const u64 pixel_hash = ankerl::unordered_dense::hash<std::string_view>{}(
+					std::string_view((const char*) pixels, expected_size));
+
 				scene_update.images.add((PendingImage) {
 					.unique_id = image->unique_id(),
 					.width = width,
 					.height = height,
 					.pixels = pixels,
+					.content_hash = pixel_hash ^ (size_hash * 0x9E3779B97F4A7C15ull),
 				});
 			}
 		}
@@ -292,11 +306,7 @@ namespace LiveLinkSystem
 			for (u32 idx = 0; idx < objects->size(); ++idx)
 			{
 				auto object = objects->Get(idx);
-				if (auto object_name = object->name())
-				{
-					printf("\tObject Name: %s\n", object_name->c_str());
-				}
-	
+
 				int unique_id = object->unique_id();
 				bool visibility = object->visibility();
 	
@@ -609,8 +619,10 @@ namespace LiveLinkSystem
 							break;
 						}
 						default:
-							printf("\t\tUnsupported Light Type\n");
-							exit(0);
+							printf("\t\tUnsupported light type %i on object UID %i; dropping light\n",
+								(i32) light_type, unique_id);
+							game_object.has_light = false;
+							break;
 					}
 				}
 	
@@ -996,7 +1008,10 @@ namespace LiveLinkSystem
 					const int error = socket_get_last_error();
 					if (error == socket_error_again() || error == socket_error_would_block()
 						|| error == socket_error_timed_out())
+					{
+						socket_wait_readable(state.live_link.connection_socket, 250);
 						continue;
+					}
 					printf("live link: receive error %i; waiting for reconnect\n", error);
 					return false;
 				}
@@ -1007,6 +1022,10 @@ namespace LiveLinkSystem
 
 		while (state.runtime.game_running)
 		{
+			// Bounded wait so shutdown (game_running = false) is seen within 250ms.
+			if (!socket_wait_readable(state.live_link.blender_socket, 250))
+				continue;
+
 			struct sockaddr_storage their_addr;
 			socklen_t addr_size = sizeof their_addr;
 			state.live_link.connection_socket = accept(
@@ -1014,8 +1033,6 @@ namespace LiveLinkSystem
 			if (!socket_is_valid(state.live_link.connection_socket))
 				continue;
 
-			struct timeval recv_timeout = {.tv_sec = 1, .tv_usec = 0};
-			socket_set_recv_timeout(state.live_link.connection_socket, recv_timeout);
 			while (state.runtime.game_running)
 			{
 				u8 prefix[sizeof(flatbuffers::uoffset_t)];
@@ -1047,25 +1064,23 @@ namespace LiveLinkSystem
 	// Registers one image (main thread): creates + uploads the GPU image backing
 	// a bindless array slot. Takes ownership of pending.pixels and frees it in
 	// all paths.
-	void register_image(const PendingImage& in_pending)
+	// Retirement keeps old views/allocations alive until their frame fence.
+	void retire_image(GpuImage& in_image)
 	{
-		if (state.images.id_to_index.contains(in_pending.unique_id))
+		ImGuiLayer::unregister_texture(in_image.view);
+		for (VkImageView layer_view : in_image.layer_views)
 		{
-			free(in_pending.pixels);
-			return;
+			ImGuiLayer::unregister_texture(layer_view);
 		}
-	
-		if (state.images.items.length() >= MAX_BINDLESS_IMAGES)
-		{
-			printf("Exceeded MAX_BINDLESS_IMAGES (%i); skipping image UID %i\n", MAX_BINDLESS_IMAGES, in_pending.unique_id);
-			free(in_pending.pixels);
-			return;
-		}
-	
+		vulkan_context_retire_image(&state.vk, in_image);
+	}
+
+	GpuImage create_image(const PendingImage& in_pending)
+	{
 		// UNORM (not SRGB): the addon sends linear-encoded bytes (Blender
 		// image.pixels are scene-linear floats * 255). Banding in
 		// darks is the known tradeoff until the addon sends sRGB-encoded data.
-		GpuImage image = gpu_image_create_from_data(
+		return gpu_image_create_from_data(
 			&state.vk,
 			(u32) in_pending.width,
 			(u32) in_pending.height,
@@ -1073,46 +1088,63 @@ namespace LiveLinkSystem
 			in_pending.pixels,
 			(u64) in_pending.width * (u64) in_pending.height * 4
 		);
-		free(in_pending.pixels);
+	}
+
+	void register_image(const PendingImage& in_pending)
+	{
+		if (auto found = state.images.id_to_index.find(in_pending.unique_id); found != state.images.id_to_index.end())
+		{
+			// Same slot, new image: the per-frame descriptor caches see the new
+			// view and rewrite their bindless entry.
+			const i32 index = found->second;
+			if (state.images.content_hashes[index] != in_pending.content_hash)
+			{
+				retire_image(state.images.items[index]);
+				state.images.items[index] = create_image(in_pending);
+				state.images.content_hashes[index] = in_pending.content_hash;
+			}
+			free(in_pending.pixels);
+			return;
+		}
+
+		if (state.images.items.length() >= MAX_BINDLESS_IMAGES)
+		{
+			printf("Exceeded MAX_BINDLESS_IMAGES (%i); skipping image UID %i\n", MAX_BINDLESS_IMAGES, in_pending.unique_id);
+			free(in_pending.pixels);
+			return;
+		}
 	
 		state.images.id_to_index[in_pending.unique_id] = (i32) state.images.items.length();
-		state.images.items.add(image);
+		state.images.items.add(create_image(in_pending));
+		state.images.content_hashes.add(in_pending.content_hash);
+		free(in_pending.pixels);
 	}
-	
-	// Images are only destroyed on scene reset; individual removal is unsupported.
-	// Retirement keeps old views/allocations alive until their frame fence.
+
+	// Images are only destroyed on scene reset or replaced in place;
+	// individual removal is unsupported.
 	void reset_images()
 	{
-		if (state.images.items.length() > 0)
+		for (GpuImage& image : state.images.items)
 		{
-			for (GpuImage& image : state.images.items)
-			{
-				ImGuiLayer::unregister_texture(image.view);
-				for (VkImageView layer_view : image.layer_views)
-				{
-					ImGuiLayer::unregister_texture(layer_view);
-				}
-				vulkan_context_retire_image(&state.vk, image);
-			}
+			retire_image(image);
 		}
 		state.images.items.reset();
+		state.images.content_hashes.reset();
 		state.images.id_to_index.clear();
 	}
 	
-	// Registers one material (main thread). Returns true when it was newly
-	// appended. Updates to an already registered id are ignored until a scene
-	// reset.
+	// Registers one material (main thread). Returns true when the GPU buffer
+	// needs an upload: newly appended, or an existing id whose values changed
+	// (Blender resends every referenced material with each export).
 	bool register_material(const PendingMaterial& in_pending)
 	{
-		if (state.materials.id_to_index.contains(in_pending.unique_id))
+		auto existing = state.materials.id_to_index.find(in_pending.unique_id);
+		const bool is_new = existing == state.materials.id_to_index.end();
+		if (is_new && state.materials.items.length() >= MAX_MATERIALS)
 		{
+			// Meshes using it resolve to -1 (missing material), like a skipped image.
+			printf("Exceeded MAX_MATERIALS (%i); skipping material UID %i\n", MAX_MATERIALS, in_pending.unique_id);
 			return false;
-		}
-	
-		if (state.materials.items.length() >= MAX_MATERIALS)
-		{
-			printf("Exceeded MAX_MATERIALS (%i)\n", MAX_MATERIALS);
-			exit(0);
 		}
 	
 		Material material = {
@@ -1129,21 +1161,50 @@ namespace LiveLinkSystem
 	
 		// Resolve image ids -> bindless indices (images in the same update were
 		// registered just before materials; id 0 means no image).
-		auto resolve_image_index = [](i32 in_image_id) -> i32
+		i32 missing_image_id = 0;
+		auto resolve_image_index = [&](i32 in_image_id) -> i32
 		{
 			if (in_image_id <= 0)
 			{
 				return -1;
 			}
+			// Missing when register_image skipped it (malformed or over MAX_BINDLESS_IMAGES).
 			auto found = state.images.id_to_index.find(in_image_id);
-			assert(found != state.images.id_to_index.end());
+			if (found == state.images.id_to_index.end())
+			{
+				missing_image_id = in_image_id;
+				return -1;
+			}
 			return found->second;
 		};
 		material.base_color_image_index = resolve_image_index(in_pending.base_color_image_id);
 		material.emission_color_image_index = resolve_image_index(in_pending.emission_color_image_id);
 		material.metallic_image_index = resolve_image_index(in_pending.metallic_image_id);
 		material.roughness_image_index = resolve_image_index(in_pending.roughness_image_id);
-	
+
+		// Material mirrors a std430 struct with explicit padding, so memcmp is exact.
+		Material* slot = is_new ? nullptr : &state.materials.items[existing->second];
+		if (slot && memcmp(slot, &material, sizeof(Material)) == 0)
+		{
+			return false;	// unchanged resend; any missing-image warning was already printed
+		}
+
+		if (missing_image_id != 0)
+		{
+			printf("\tMaterial UID %i: image UID %i not registered; using no texture\n",
+				in_pending.unique_id, missing_image_id);
+		}
+
+		if (slot)
+		{
+			// The materials SSBO is one host-visible buffer that in-flight frames
+			// still read; rewriting changed bytes under them is a data race.
+			// shortcut: idles the GPU once per edited material, fine at editing rates; move materials to a ResizableGpuStreamRing if edits ever stream every frame.
+			VK_CHECK(vulkan_device_wait_idle(&state.vk));
+			*slot = material;
+			return true;
+		}
+
 		state.materials.id_to_index[in_pending.unique_id] = (i32) state.materials.items.length();
 		state.materials.items.add(material);
 		return true;
@@ -1251,9 +1312,7 @@ namespace LiveLinkSystem
 			{
 				state.data_oriented.frame.live_link_updated_objects += 1;
 				i32 updated_object_uid = updated_object.unique_id;
-	
-				printf("Updating Object. UID: %i\n", updated_object_uid);
-	
+
 				if (updated_object.has_mesh)
 				{
 					resolve_mesh_material_indices(updated_object.mesh);
