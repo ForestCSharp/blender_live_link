@@ -105,6 +105,65 @@ void test_unknown_light_type_drops_only_the_light()
 	assert(state.scene.objects.contains(321) && !state.scene.objects.at(321).has_light);
 }
 
+// One object at the origin with whatever mesh, armature or light is given.
+const Object& apply_object(flatbuffers::FlatBufferBuilder& in_builder, i32 in_uid,
+	flatbuffers::Offset<LL::Mesh> in_mesh, flatbuffers::Offset<LL::Armature> in_armature = 0,
+	flatbuffers::Offset<LL::Light> in_light = 0)
+{
+	const LL::Vec3 zero(0, 0, 0), one(1, 1, 1);
+	const LL::Quat identity(0, 0, 0, 1);
+	const auto object = LL::CreateObject(in_builder, 0, in_uid, true, &zero, &one, &identity, in_mesh, in_armature, nullptr, in_light);
+	in_builder.FinishSizePrefixed(LL::CreateUpdate(in_builder, in_builder.CreateVector(&object, 1)));
+	apply(in_builder);
+	return state.scene.objects.at(in_uid);
+}
+
+void test_light_with_missing_fields_drops_only_the_light()
+{
+	flatbuffers::FlatBufferBuilder no_color;
+	assert(!apply_object(no_color, 330, 0, 0, LL::CreateLight(no_color, LL::LightType_Point)).has_light);
+
+	const LL::Vec3 one(1, 1, 1);
+	flatbuffers::FlatBufferBuilder no_point_table;
+	assert(!apply_object(no_point_table, 331, 0, 0, LL::CreateLight(no_point_table, LL::LightType_Point, &one)).has_light);
+}
+
+void test_animation_counts_must_match_matrix_data()
+{
+	// Huge counts with no data: dropped instead of a 57 GB allocation.
+	flatbuffers::FlatBufferBuilder huge;
+	const auto huge_clip = LL::CreateAnimationDirect(huge, "huge", 24, 1, 30000, 30000);
+	const Object& huge_object = apply_object(huge, 340, 0, LL::CreateArmature(huge, 0, huge.CreateVector(&huge_clip, 1)));
+	assert(huge_object.has_armature && huge_object.armature.animations[0].skin_matrices == nullptr);
+
+	// One frame of one bone, 16 floats: kept.
+	flatbuffers::FlatBufferBuilder valid;
+	const std::vector<f32> matrix = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1};
+	const auto valid_clip = LL::CreateAnimationDirect(valid, "valid", 24, 1, 1, 1, &matrix);
+	const Object& valid_object = apply_object(valid, 341, 0, LL::CreateArmature(valid, 0, valid.CreateVector(&valid_clip, 1)));
+	assert(valid_object.armature.animations[0].skin_matrices != nullptr);
+	assert(valid_object.armature.animations[0].skin_matrices[0].Elements[3][0] == 2.0f);
+}
+
+void test_mesh_indices_must_address_existing_data()
+{
+	const std::vector<f32> positions = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+	const std::vector<f32> normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
+	const std::vector<f32> texcoords = {0, 0, 1, 0, 0, 1};
+	const std::vector<f32> weights = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+
+	const std::vector<u32> past_end = {0, 1, 5};
+	flatbuffers::FlatBufferBuilder bad_indices;
+	assert(!apply_object(bad_indices, 350, LL::CreateMeshDirect(bad_indices, &positions, &normals, &texcoords, &past_end)).has_mesh);
+
+	const std::vector<u32> triangle = {0, 1, 2};
+	const std::vector<i32> negative_joint = {0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0};
+	flatbuffers::FlatBufferBuilder bad_joints;
+	const Object& skinned = apply_object(bad_joints, 351, LL::CreateMeshDirect(bad_joints, &positions, &normals, &texcoords,
+		&triangle, &negative_joint, &weights, nullptr, 1));
+	assert(skinned.has_mesh && !skinned.mesh.has_skinned_vertices);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -123,6 +182,9 @@ int main()
 	test_missing_image_resolves_to_no_texture();
 	test_material_limit_skips_instead_of_exiting();
 	test_unknown_light_type_drops_only_the_light();
+	test_light_with_missing_fields_drops_only_the_light();
+	test_animation_counts_must_match_matrix_data();
+	test_mesh_indices_must_address_existing_data();
 
 	LiveLinkSystem::cleanup_imported_resources(state);
 	state.materials.buffer.destroy_gpu_buffer();

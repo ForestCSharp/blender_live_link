@@ -399,13 +399,16 @@ namespace LiveLinkSystem
 						}
 						else
 						{
+							i32 min_joint_index = 0;
 							i32 max_joint_index = 0;
 							skinned_vertices = (SkinnedVertex*) malloc(sizeof(SkinnedVertex) * num_vertices);
 							for (u32 vertex_idx = 0; vertex_idx < num_vertices; ++vertex_idx)
 							{
 								for (u32 influence_idx = 0; influence_idx < 4; ++influence_idx)
 								{
-									max_joint_index = MAX(max_joint_index, flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx));
+									const i32 joint_index = flatbuffer_joint_indices->Get(vertex_idx * 4 + influence_idx);
+									min_joint_index = MIN(min_joint_index, joint_index);
+									max_joint_index = MAX(max_joint_index, joint_index);
 								}
 	
 								skinned_vertices[vertex_idx] = {
@@ -423,7 +426,21 @@ namespace LiveLinkSystem
 									},
 								};
 							}
-							skin_matrix_count = (u32) max_joint_index + 1;
+							// Joint indices address the per-mesh skin matrix array, which is
+							// sized from the largest one.
+							// shortcut: fixed cap instead of the armature's bone count (not known
+							// until drain); lower it if a real rig ever gets near it.
+							constexpr i32 MAX_JOINT_INDEX = 65535;
+							if (min_joint_index < 0 || max_joint_index > MAX_JOINT_INDEX)
+							{
+								printf("\tDropping skinning with joint index outside [0, %i] on object UID: %i\n", MAX_JOINT_INDEX, unique_id);
+								free(skinned_vertices);
+								skinned_vertices = nullptr;
+							}
+							else
+							{
+								skin_matrix_count = (u32) max_joint_index + 1;
+							}
 						}
 					}
 	
@@ -439,9 +456,20 @@ namespace LiveLinkSystem
 						{
 							num_indices = flatbuffer_indices->size();
 							indices = (u32*) malloc(sizeof(u32) * num_indices);
+							u32 max_index = 0;
 							for (u32 indices_idx = 0; indices_idx < num_indices; ++indices_idx)
 							{
 								indices[indices_idx] = flatbuffer_indices->Get(indices_idx);
+								max_index = MAX(max_index, indices[indices_idx]);
+							}
+							// An index past the vertex stream makes the GPU read another
+							// mesh's vertices (or past the geometry arena).
+							if (num_indices > 0 && max_index >= num_vertices)
+							{
+								printf("\tDropping triangle indices past vertex count %u on object UID: %i\n", num_vertices, unique_id);
+								free(indices);
+								indices = nullptr;
+								num_indices = 0;
 							}
 						}
 					}
@@ -537,36 +565,35 @@ namespace LiveLinkSystem
 							animation.frame_count = flatbuffer_animation->frame_count();
 							animation.bone_count = flatbuffer_animation->bone_count();
 	
-							const i32 matrix_count = MAX(0, animation.frame_count * animation.bone_count);
-							scene_update.stats.animation_matrix_count += matrix_count;
-							if (matrix_count > 0)
+							// The counts and the matrix data arrive separately: keep the clip's
+							// matrices only when the data is exactly frame_count * bone_count
+							// matrices. Without them armature_sample_pose uses the bind pose.
+							auto flatbuffer_skin_matrices = flatbuffer_animation->skin_matrices();
+							const u32 available_float_count = flatbuffer_skin_matrices ? flatbuffer_skin_matrices->size() : 0;
+							const bool has_matching_matrices =
+								animation.frame_count > 0 &&
+								animation.bone_count > 0 &&
+								available_float_count % 16 == 0 &&
+								(i64) animation.frame_count * animation.bone_count == available_float_count / 16;
+							if (has_matching_matrices)
 							{
+								const u32 matrix_count = available_float_count / 16;
+								scene_update.stats.animation_matrix_count += (i32) matrix_count;
 								animation.skin_matrices = (HMM_Mat4*) malloc(sizeof(HMM_Mat4) * matrix_count);
-								for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+								for (u32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
 								{
-									animation.skin_matrices[matrix_idx] = HMM_M4D(1.0f);
-								}
-	
-								if (auto flatbuffer_skin_matrices = flatbuffer_animation->skin_matrices())
-								{
-									const i32 available_float_count = (i32) flatbuffer_skin_matrices->size();
-									for (i32 matrix_idx = 0; matrix_idx < matrix_count; ++matrix_idx)
+									for (u32 col = 0; col < 4; ++col)
 									{
-										const i32 base_float_idx = matrix_idx * 16;
-										if (base_float_idx + 15 >= available_float_count)
+										for (u32 row = 0; row < 4; ++row)
 										{
-											break;
-										}
-	
-										for (i32 col = 0; col < 4; ++col)
-										{
-											for (i32 row = 0; row < 4; ++row)
-											{
-												animation.skin_matrices[matrix_idx].Elements[col][row] = flatbuffer_skin_matrices->Get(base_float_idx + col * 4 + row);
-											}
+											animation.skin_matrices[matrix_idx].Elements[col][row] = flatbuffer_skin_matrices->Get(matrix_idx * 16 + col * 4 + row);
 										}
 									}
 								}
+							}
+							else if (available_float_count > 0 || animation.frame_count * (i64) animation.bone_count != 0)
+							{
+								printf("\tDropping malformed animation matrices on object UID: %i\n", unique_id);
 							}
 						}
 					}
@@ -576,53 +603,63 @@ namespace LiveLinkSystem
 				{
 					LightType light_type = (LightType) object_light->type();
 	
-					game_object.has_light = true;
-					game_object.light = (Light){
-						.type = light_type,
-						.color = flatbuffer_helpers::to_hmm_vec3(object_light->color()),
-					};
-	
-					switch (game_object.light.type)
+					// color and the per-type tables are optional in the schema: a
+					// missing one drops only the light, like an unknown type does.
+					const auto* light_color = object_light->color();
+					game_object.has_light = light_color != nullptr;
+					if (!light_color)
 					{
-						case LightType::Point:
+						printf("\t\tLight on object UID %i has no color; dropping light\n", unique_id);
+					}
+					else
+					{
+						game_object.light = (Light){
+							.type = light_type,
+							.color = flatbuffer_helpers::to_hmm_vec3(light_color),
+						};
+
+						switch (light_type)
 						{
-							auto point_light = object_light->point_light();
-							assert(point_light);
-							game_object.light.point = (PointLight) {
-								.power = point_light->power(),
-							};
-							break;
+							case LightType::Point:
+							{
+								auto point_light = object_light->point_light();
+								if (!point_light) { game_object.has_light = false; break; }
+								game_object.light.point = (PointLight) {
+									.power = point_light->power(),
+								};
+								break;
+							}
+							case LightType::Spot:
+							{
+								auto spot_light = object_light->spot_light();
+								if (!spot_light) { game_object.has_light = false; break; }
+								game_object.light.spot = (SpotLight) {
+									.power = spot_light->power(),
+									.beam_angle = spot_light->beam_angle(),
+									.edge_blend = spot_light->edge_blend(),
+								};
+								break;
+							}
+							case LightType::Sun:
+							{
+								auto sun_light = object_light->sun_light();
+								if (!sun_light) { game_object.has_light = false; break; }
+								game_object.light.sun = (SunLight) {
+									.power = sun_light->power(),
+									.cast_shadows = sun_light->cast_shadows(),
+								};
+								break;
+							}
+							case LightType::Area:
+							{
+								break;
+							}
+							default:
+								printf("\t\tUnsupported light type %i on object UID %i; dropping light\n",
+									(i32) light_type, unique_id);
+								game_object.has_light = false;
+								break;
 						}
-						case LightType::Spot:
-						{
-							auto spot_light = object_light->spot_light();
-							assert(spot_light);
-							game_object.light.spot = (SpotLight) {
-								.power = spot_light->power(),
-								.beam_angle = spot_light->beam_angle(),
-								.edge_blend = spot_light->edge_blend(),
-							};
-							break;
-						}
-						case LightType::Sun:
-						{
-							auto sun_light = object_light->sun_light();
-							assert(sun_light);
-							game_object.light.sun = (SunLight) {
-								.power = sun_light->power(),
-								.cast_shadows = sun_light->cast_shadows(),
-							};
-							break;
-						}
-						case LightType::Area:
-						{
-							break;
-						}
-						default:
-							printf("\t\tUnsupported light type %i on object UID %i; dropping light\n",
-								(i32) light_type, unique_id);
-							game_object.has_light = false;
-							break;
 					}
 				}
 	
