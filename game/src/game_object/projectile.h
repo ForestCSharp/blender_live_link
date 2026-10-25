@@ -10,6 +10,39 @@ constexpr f32 PROJECTILE_MASS_KG = 0.1f;
 constexpr f32 PROJECTILE_SPEED_M_S = 30.0f;
 constexpr f32 PROJECTILE_LIFETIME_S = 5.0f;
 constexpr size_t MAX_ACTIVE_PROJECTILES = 64;
+// Negative so it can't collide with Blender material ids
+constexpr i32 PROJECTILE_MATERIAL_ID = -1000;
+
+// Registers the projectile material on first use (and again after a scene
+// reset clears materials). Returns its index, or -1 if the table is full.
+i32 projectile_material_index()
+{
+	auto found = state.materials.id_to_index.find(PROJECTILE_MATERIAL_ID);
+	if (found != state.materials.id_to_index.end())
+	{
+		return found->second;
+	}
+	if (state.materials.items.length() >= MAX_MATERIALS)
+	{
+		return -1;
+	}
+	const i32 index = (i32) state.materials.items.length();
+	state.materials.items.add((Material) {
+		.base_color = HMM_V4(1.0f, 0.4f, 0.05f, 1.0f),
+		.emission_color = HMM_V4(1.0f, 0.4f, 0.05f, 1.0f),
+		.metallic = 0.0f,
+		.roughness = 0.5f,
+		.emission_strength = 15.0f,
+		.base_color_image_index = -1,
+		.emission_color_image_index = -1,
+		.metallic_image_index = -1,
+		.roughness_image_index = -1,
+	});
+	state.materials.id_to_index[PROJECTILE_MATERIAL_ID] = index;
+	// Appending only, so in-flight frames still read identical prefix bytes
+	update_materials_buffer(state);
+	return index;
+}
 
 void projectile_remove_oldest()
 {
@@ -57,6 +90,9 @@ bool projectile_spawn(HMM_Vec3 in_origin, HMM_Vec3 in_direction)
 	sphere.storage_kind = ObjectStorageKind::RuntimeProjectile;
 	sphere.has_mesh = true;
 	sphere.mesh = make_mesh(mesh_init_data_uv_sphere(PROJECTILE_RADIUS_M, 12, 16));
+	sphere.mesh.material_indices_count = 1;
+	sphere.mesh.material_indices = (i32*) malloc(sizeof(i32));
+	sphere.mesh.material_indices[0] = projectile_material_index();
 	sphere.has_rigid_body = true;
 	sphere.rigid_body.is_dynamic = true;
 	sphere.rigid_body.mass = PROJECTILE_MASS_KG;

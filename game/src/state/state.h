@@ -164,6 +164,10 @@ struct MechInstance
 	MechArmPose arm_poses[2];
 	MechLegIKBlend leg_ik_blends[2];
 	std::vector<MechWeaponInstance> weapons;
+	// Non-player mechs (enemy AI) drive these; the player's come from camera + mouse.
+	// A zero aim_direction leaves the arms in their animated pose.
+	HMM_Vec3 aim_direction = {0, 0, 0};
+	i32 fire_requests = 0;	// consumed by WeaponSystem::update each frame
 	i32 part_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 part_instance_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};
 	i32 socket_template_uids[(i32) PartType::Count] = {-1, -1, -1, -1, -1};

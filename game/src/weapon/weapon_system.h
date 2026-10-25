@@ -8,31 +8,10 @@
 
 namespace WeaponSystem
 {
-	// Called after mech attachment and animation transforms have been updated.
-	void update(f32 in_delta_seconds)
+	// Fires one mech's weapons for this frame's trigger input.
+	void fire_mech(MechInstance& io_mech, i32 in_requests, bool in_fire_held, f32 in_delta_seconds)
 	{
-		const i32 requests = state.input.pending_fire_requests;
-		state.input.pending_fire_requests = 0;
-		const bool firing_suppressed = !state.runtime.is_simulating || state.debug_camera.active ||
-			(state.gi.probe_isolation_enable && state.gi.show_probes);
-		if (firing_suppressed || !state.scene.player_character_id)
-		{
-			state.input.weapon_fire_held = false;
-			return;
-		}
-
-		auto mech_id = state.mech.character_to_instance.find(*state.scene.player_character_id);
-		if (mech_id == state.mech.character_to_instance.end())
-		{
-			return;
-		}
-		auto mech = state.mech.instances.find(mech_id->second);
-		if (mech == state.mech.instances.end())
-		{
-			return;
-		}
-
-		for (MechWeaponInstance& equipped : mech->second.weapons)
+		for (MechWeaponInstance& equipped : io_mech.weapons)
 		{
 			// May go negative while the trigger is held, carrying the overdue
 			// time into the next shot. Idle time never accumulates a burst.
@@ -51,11 +30,11 @@ namespace WeaponSystem
 			}
 
 			const f32 interval = weapon_template->second.weapon.rate_of_fire_seconds;
-			i32 shots = requests;
+			i32 shots = in_requests;
 			if (std::isfinite(interval) && interval > 0.0f)
 			{
-				const bool triggered = requests > 0;
-				if ((!triggered && !state.input.weapon_fire_held) || cooldown > 0.0f)
+				const bool triggered = in_requests > 0;
+				if ((!triggered && !in_fire_held) || cooldown > 0.0f)
 				{
 					continue;
 				}
@@ -93,6 +72,43 @@ namespace WeaponSystem
 			{
 				projectile_spawn(origin, direction);
 			}
+		}
+	}
+
+	// Called after mech attachment and animation transforms have been updated.
+	void update(f32 in_delta_seconds)
+	{
+		const i32 requests = state.input.pending_fire_requests;
+		state.input.pending_fire_requests = 0;
+		if (!state.runtime.is_simulating)
+		{
+			state.input.weapon_fire_held = false;
+			for (auto& [mech_id, mech] : state.mech.instances) mech.fire_requests = 0;
+			return;
+		}
+		// Debug camera / probe picking only silence the player's trigger.
+		const bool player_suppressed = state.debug_camera.active ||
+			(state.gi.probe_isolation_enable && state.gi.show_probes);
+		if (player_suppressed)
+		{
+			state.input.weapon_fire_held = false;
+		}
+
+		for (auto& [mech_id, mech] : state.mech.instances)
+		{
+			const bool is_player = state.scene.player_character_id == mech.character_uid;
+			if (is_player)
+			{
+				if (!player_suppressed)
+				{
+					fire_mech(mech, requests, state.input.weapon_fire_held, in_delta_seconds);
+				}
+			}
+			else
+			{
+				fire_mech(mech, mech.fire_requests, false, in_delta_seconds);
+			}
+			mech.fire_requests = 0;
 		}
 	}
 }

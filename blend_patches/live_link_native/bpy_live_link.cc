@@ -1505,6 +1505,19 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentPhysics, value.Union()));
     }
+    else if (type == "ENEMY") {
+      PyPtr enemy(PyObject_GetAttrString(component, "enemy"));
+      if (!enemy) {
+        PyErr_Clear();
+        continue;
+      }
+      const auto value = ll::CreateGameplayComponentEnemy(
+          builder,
+          py_float_attr(enemy, "roam_radius", 15.0f),
+          py_float_attr(enemy, "engage_range", 40.0f));
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentEnemy, value.Union()));
+    }
     else if (type == "PART") {
       PyPtr part(PyObject_GetAttrString(component, "part"));
       if (!part) {
@@ -2899,6 +2912,15 @@ void compare_component(DiffList &diffs,
     compare_exact(diffs, path + ".physics.is_dynamic",
                   native_physics->is_dynamic(), python_physics->is_dynamic());
     compare_float(diffs, path + ".physics.mass", native_physics->mass(), python_physics->mass());
+    return;
+  }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentEnemy &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentEnemy)
+  {
+    const auto *native_enemy = native_value->value_as_GameplayComponentEnemy();
+    const auto *python_enemy = python_value->value_as_GameplayComponentEnemy();
+    compare_float(diffs, path + ".enemy.roam_radius", native_enemy->roam_radius(), python_enemy->roam_radius());
+    compare_float(diffs, path + ".enemy.engage_range", native_enemy->engage_range(), python_enemy->engage_range());
     return;
   }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&

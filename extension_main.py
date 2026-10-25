@@ -51,6 +51,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosp
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSystem
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentWeapon
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPhysics
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentEnemy
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import CloudLayer
 from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
@@ -2948,6 +2949,37 @@ class Component_Physics(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentPhysics
 
+class Component_Enemy(Component):
+    # Blender UI Info
+    type_name = 'ENEMY'
+    label = 'Enemy'
+
+    # Properties
+    roam_radius: FloatProperty(
+        name="Roam Radius",
+        description="How far from its spawn point the enemy wanders",
+        default=15.0,
+        min=0.0,
+        update=gameplay_component_property_update,
+    )
+    engage_range: FloatProperty(
+        name="Engage Range",
+        description="Distance at which the enemy turns to aim and fire at the player",
+        default=40.0,
+        min=0.0,
+        update=gameplay_component_property_update,
+    )
+
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_value(self, builder, **_kwargs):
+        GameplayComponentEnemy.Start(builder)
+        GameplayComponentEnemy.AddRoamRadius(builder, self.roam_radius)
+        GameplayComponentEnemy.AddEngageRange(builder, self.engage_range)
+        return GameplayComponentEnemy.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentEnemy
+
 COMPONENT_SPECS = [
     (Component_Character, 'player'),
     (Component_CameraControl, 'camera_control'),
@@ -2958,6 +2990,7 @@ COMPONENT_SPECS = [
     (Component_SkyAtmosphere, 'sky_atmosphere'),
     (Component_CloudSystem, 'cloud_system'),
     (Component_Physics, 'physics'),
+    (Component_Enemy, 'enemy'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -2986,6 +3019,7 @@ class ComponentContainer(PropertyGroup):
     sky_atmosphere: PointerProperty(type=Component_SkyAtmosphere)
     cloud_system:   PointerProperty(type=Component_CloudSystem)
     physics:        PointerProperty(type=Component_Physics)
+    enemy:          PointerProperty(type=Component_Enemy)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(
@@ -3090,7 +3124,12 @@ class OBJECT_OT_add_custom_item(Operator):
             self.report({'WARNING'}, "Physics can only be added to a mesh object")
             return {'CANCELLED'}
 
-        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name, Component_Weapon.type_name, Component_Physics.type_name}:
+        if settings.add_type == Component_Enemy.type_name and not any(
+                component.type == Component_Character.type_name for component in settings.components):
+            self.report({'WARNING'}, "Add a Character component before Enemy")
+            return {'CANCELLED'}
+
+        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name, Component_Weapon.type_name, Component_Physics.type_name, Component_Enemy.type_name}:
             if any(component.type == settings.add_type for component in settings.components):
                 self.report({'WARNING'}, f"{settings.add_type.replace('_', ' ').title()} already exists on this object")
                 return {'CANCELLED'}

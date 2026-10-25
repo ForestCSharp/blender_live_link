@@ -142,6 +142,9 @@ try:
     bpy.context.collection.objects.link(npc)
     npc.location = (10, 0, 4)
     component(npc, 'CHARACTER').player_controlled = False
+    npc_enemy = component(npc, 'ENEMY')
+    npc_enemy.roam_radius = 5
+    npc_enemy.engage_range = 15  # the player starts 10 m away
 
     # Two linked collection occurrences carry the same labels but independent rig IDs.
     library = bpy.data.collections.new('WeaponTestLibrary')

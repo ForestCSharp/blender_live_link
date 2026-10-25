@@ -38,6 +38,54 @@ void check_attachment(const MechWeaponInstance& equipped)
 	}
 }
 
+// The fixture NPC is an Enemy 10 m from the player with engage_range 15.
+void check_enemy_ai()
+{
+	std::mt19937 rng(7);
+	const HMM_Vec3 home = HMM_V3(3, -4, 2);
+	for (int i = 0; i < 1000; ++i)
+	{
+		const HMM_Vec3 target = enemy_pick_wander_target(home, 5.0f, rng);
+		assert(HMM_LenV3(HMM_V3(target.X - home.X, target.Y - home.Y, 0)) <= 5.0f + 1e-4f && target.Z == home.Z);
+	}
+
+	Object* enemy_object = nullptr;
+	i32 enemy_uid = -1;
+	for (auto& [uid, object] : state.scene.objects)
+		if (object.has_enemy) { enemy_object = &object; enemy_uid = uid; }
+	assert(enemy_object && enemy_object->enemy.settings.engage_range == 15.0f && enemy_object->enemy.settings.roam_radius == 5.0f);
+	MechInstance& enemy_mech = state.mech.instances.at(state.mech.character_to_instance.at(enemy_uid));
+	assert(!enemy_mech.weapons.empty());
+	for (auto& equipped : enemy_mech.weapons)
+		state.scene.objects.at(equipped.weapon_template_uid).weapon.muzzle_valid = true;
+
+	// In range: turns toward the player, aims at them, then fires.
+	bool fired = false;
+	const size_t projectiles_before = state.projectiles.size();
+	for (int frame = 0; frame < 120 && !fired; ++frame)
+	{
+		EnemySystem::update(1.0f / 60.0f);
+		fired = enemy_mech.fire_requests > 0;
+	}
+	assert(fired);
+	const HMM_Vec3 to_player = HMM_NormV3(EnemySystem::character_position(state.scene.objects.at(*state.scene.player_character_id).character) -
+		EnemySystem::character_position(enemy_object->character));
+	assert(HMM_DotV3(enemy_mech.aim_direction, to_player) > 0.9f);
+	update_mech_transforms();
+	WeaponSystem::update(0.0f);
+	assert(enemy_mech.fire_requests == 0 && state.projectiles.size() > projectiles_before);
+
+	// Out of range: roams with arms down and holds fire.
+	enemy_object->enemy.settings.engage_range = 1.0f;
+	enemy_object->enemy.pause_seconds = 0.0f;
+	EnemySystem::update(1.0f / 60.0f);
+	assert(enemy_mech.fire_requests == 0 && HMM_LenSqrV3(enemy_mech.aim_direction) == 0.0f);
+	assert(enemy_object->enemy.has_wander_target);
+	const HMM_Vec3 home_location = enemy_object->character.settings.initial_location.XYZ;
+	const HMM_Vec3 wander = enemy_object->enemy.wander_target;
+	assert(HMM_LenV3(HMM_V3(wander.X - home_location.X, wander.Y - home_location.Y, 0)) <= 5.0f + 1e-4f);
+}
+
 void seed_for_first_candidate()
 {
 	// std::uniform_int_distribution mappings differ between libc++ and libstdc++.
@@ -125,6 +173,7 @@ int main()
 	state.window.handle = window;
 	jolt_init();
 	vulkan_context_init(&state.vk, window);
+	init_materials_buffer(state);	// projectiles register their emissive material on spawn
 	seed_for_first_candidate();
 	assert(LiveLinkSystem::load_initial_file(state, "/tmp/weapon_fixture.bin"));
 	LiveLinkSystem::drain(state);
@@ -132,8 +181,9 @@ int main()
 	assert(player_mech().weapons.size() == 2);
 	for (const auto& weapon : player_mech().weapons) check_attachment(weapon);
 	assert(state.mech.instances.size() == 2);
+	// Non-player mechs (enemies) equip weapons through the same selection path.
 	for (const auto& [id, mech] : state.mech.instances)
-		if (mech.character_uid != *state.scene.player_character_id) assert(mech.weapons.empty());
+		if (mech.character_uid != *state.scene.player_character_id) assert(!mech.weapons.empty());
 	const auto original = player_mech().weapons;
 	assert(fabsf(state.scene.objects.at(original[0].weapon_template_uid).weapon.rate_of_fire_seconds - .2f) < 1e-5f);
 	// Exercise the existing click-only checks with the backwards-compatible default.
@@ -141,12 +191,15 @@ int main()
 		if (object.has_weapon) object.weapon.rate_of_fire_seconds = 0.0f;
 	assert(state.scene.objects.at(original[0].instance_uid).mesh.has_skinned_vertices);
 	// Unequipping a skinned weapon must release its otherwise unused cloned rig.
-	const int player_id = *state.scene.player_character_id;
+	// Every mech equips now, so unequip by withdrawing all weapon templates.
 	const int player_mech_id = player_mech().runtime_id;
-	state.scene.player_character_id.reset();
+	std::vector<int> template_uids;
+	for (auto& [uid, object] : state.scene.objects)
+		if (object.has_weapon && !object_is_runtime_instance(object)) template_uids.push_back(uid);
+	for (int uid : template_uids) state.scene.objects.at(uid).has_weapon = false;
 	update_mech_transforms();
 	assert(state.mech.instances.at(player_mech_id).armature_instances.length() == 2);
-	state.scene.player_character_id = player_id;
+	for (int uid : template_uids) state.scene.objects.at(uid).has_weapon = true;
 	seed_for_first_candidate();
 	update_mech_transforms();
 	const auto equipped_again = player_mech().weapons;
@@ -183,6 +236,11 @@ int main()
 		const HMM_Vec3 expected_direction = HMM_NormV3(HMM_V3(muzzle.Elements[1][0], muzzle.Elements[1][1], muzzle.Elements[1][2]));
 		for (int axis = 0; axis < 3; ++axis)
 			assert(fabsf(velocity[axis] / PROJECTILE_SPEED_M_S - expected_direction.Elements[axis]) < 1e-4f);
+		// Both shots share one emissive orange material
+		assert(sphere.mesh.material_indices_count == 1);
+		const i32 material_index = sphere.mesh.material_indices[0];
+		assert(material_index == state.materials.id_to_index.at(PROJECTILE_MATERIAL_ID));
+		assert(state.materials.items[material_index].emission_strength > 1.0f);
 	}
 	// One hidden gun does not emit; an invalid shared template silences both.
 	state.scene.objects.at(player_mech().weapons[0].instance_uid).visibility = false;
@@ -293,18 +351,25 @@ int main()
 		if (rig.bones[i].attachment_label) rig.bones[i].attachment_label[0] = '\0';
 	mech_reconcile_instances();
 	assert(player_mech().weapons.size() == 1);
-	// Losing player control removes equipment even without a Live Link rebuild.
+	// Losing player control keeps the mech armed (enemies use the same path),
+	// but the mouse trigger no longer fires it.
 	const int player = *state.scene.player_character_id;
 	const int mech_id = player_mech().runtime_id;
 	state.scene.player_character_id.reset();
 	update_mech_transforms();
-	assert(state.mech.instances.at(mech_id).weapons.empty());
+	assert(state.mech.instances.at(mech_id).weapons.size() == 1);
+	const size_t projectiles_unowned = state.projectiles.size();
+	state.input.pending_fire_requests = 1;
+	WeaponSystem::update(0.0f);
+	assert(state.projectiles.size() == projectiles_unowned);
 	state.scene.player_character_id = player;
 	update_mech_transforms();
 	assert(player_mech().weapons.size() == 1);
 	state.input.pending_fire_requests = 1;
 	WeaponSystem::update(0.0f);
 	assert(!state.projectiles.empty());
+
+	check_enemy_ai();
 
 	VK_CHECK(vulkan_device_wait_idle(&state.vk));
 	mech_reset_all();
@@ -315,6 +380,7 @@ int main()
 	assert(state.projectiles.empty());
 	LiveLinkSystem::cleanup_imported_resources(state);
 	jolt_shutdown();
+	state.materials.buffer.destroy_gpu_buffer();
 	vulkan_context_shutdown(&state.vk);
 	glfwDestroyWindow(window);
 	glfwTerminate();

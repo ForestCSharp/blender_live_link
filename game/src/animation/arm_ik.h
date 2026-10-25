@@ -6,7 +6,7 @@
 #include "game_object/attachment_point.h"
 #include "render/debug_draw.h"
 
-// Procedural aim for the active player's arms. Runs after base poses are
+// Procedural aim for mech arms (player: camera forward, others: aim_direction). Runs after base poses are
 // sampled and before weapons attach, so sockets and skinning see the result.
 namespace ArmIK
 {
@@ -251,7 +251,8 @@ namespace ArmIK
 				arm_pose.template_uid = io_mech.part_template_uids[part_idx];
 				arm_pose.mode = ArmPoseMode::AimIK;
 			}
-			if (!is_player || arm_pose.mode == ArmPoseMode::Animation)
+			const bool has_ai_aim = HMM_LenSqrV3(io_mech.aim_direction) > epsilon;
+			if ((!is_player && !has_ai_aim) || arm_pose.mode == ArmPoseMode::Animation)
 			{
 				continue;
 			}
@@ -262,7 +263,7 @@ namespace ArmIK
 			{
 				continue;
 			}
-			if (camera == state.scene.objects.end() || !camera->second.has_camera_control)
+			if (is_player && (camera == state.scene.objects.end() || !camera->second.has_camera_control))
 			{
 				report(slot, "player camera is missing");
 				continue;
@@ -327,8 +328,9 @@ namespace ArmIK
 				continue;
 			}
 			std::string error;
+			const HMM_Vec3 aim_forward = is_player ? camera->second.camera_control.camera.forward : io_mech.aim_direction;
 			if (!solve(target.rig_object->armature, target.chain, target.rig_world,
-				camera->second.camera_control.camera.forward, target.aim_axis, error))
+				aim_forward, target.aim_axis, error))
 			{
 				report(target.slot, error);
 			}

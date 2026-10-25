@@ -78,6 +78,7 @@ using std::optional;
 #include "automation/automated_screenshot.h"
 #include "animation/animation_system.h"
 #include "weapon/weapon_system.h"
+#include "ai/enemy_system.h"
 
 #include "render/passes/imgui/imgui_layer.h"
 #include "input/input_system.h"
@@ -132,6 +133,7 @@ void frame(f32 in_delta_time)
 		if (state.runtime.is_simulating)
 		{
 			InputSystem::update_player_character(state, in_delta_time);
+			EnemySystem::update(in_delta_time);
 			jolt_update(in_delta_time);
 		}
 	}

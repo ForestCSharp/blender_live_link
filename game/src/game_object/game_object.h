@@ -16,6 +16,7 @@
 
 // Character code
 #include "character.h"
+#include "enemy.h"
 
 // Camera code
 #include "camera.h"
@@ -348,6 +349,9 @@ struct Object
 
 	bool has_attachment_point = false;
 	AttachmentPoint attachment_point;
+
+	bool has_enemy = false;
+	Enemy enemy;
 };
 
 bool object_is_runtime_instance(const Object& in_object)

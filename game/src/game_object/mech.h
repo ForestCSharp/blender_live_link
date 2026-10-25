@@ -440,14 +440,10 @@ bool mech_is_weapon_template(const Object& in_object)
 		!object_is_runtime_instance(armature->second);
 }
 
-// Every attachment-labeled bone on the player's arm rigs is a weapon target.
+// Every attachment-labeled bone on a mech's arm rigs is a weapon target.
 std::vector<MechWeaponInstance> mech_collect_weapon_targets(const MechInstance& in_mech)
 {
 	std::vector<MechWeaponInstance> targets;
-	if (state.scene.player_character_id != in_mech.character_uid)
-	{
-		return targets;
-	}
 	for (PartType slot : {PartType::LeftArm, PartType::RightArm})
 	{
 		auto arm = state.scene.objects.find(in_mech.part_instance_uids[(i32) slot]);
@@ -617,9 +613,21 @@ void update_mech_transforms(f32 in_delta_time)
 	DebugDraw::lines.clear();
 	// Reconciliation may add rigs, so it runs first. Then resample every rig from
 	// its clip; IK overrides the sampled pose and must never feed back into it.
+	// The player draws from the shared weapon RNG first, so adding or removing
+	// enemies never reshuffles the player's random loadout.
+	auto player_mech = state.scene.player_character_id
+		? state.mech.character_to_instance.find(*state.scene.player_character_id)
+		: state.mech.character_to_instance.end();
+	if (player_mech != state.mech.character_to_instance.end())
+	{
+		mech_reconcile_weapons(state.mech.instances.at(player_mech->second));
+	}
 	for (auto& [mech_id, mech] : state.mech.instances)
 	{
-		mech_reconcile_weapons(mech);
+		if (player_mech == state.mech.character_to_instance.end() || mech_id != player_mech->second)
+		{
+			mech_reconcile_weapons(mech);
+		}
 	}
 	for (auto& [uid, object] : state.scene.objects)
 	{

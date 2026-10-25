@@ -75,6 +75,7 @@ def validate_compression_registries(extension_module) -> None:
         ("SKY_ATMOSPHERE", "sky_atmosphere"),
         ("CLOUD_SYSTEM", "cloud_system"),
         ("PHYSICS", "physics"),
+        ("ENEMY", "enemy"),
     ]
     actual_components = [
         (component_class.type_name, group_name)
@@ -321,6 +322,14 @@ def create_synthetic_scene():
     second_character_component.player.hide_mesh_in_game = False
     add_component(second_character_object, "CAMERA_CONTROL")
 
+    enemy_object = bpy.data.objects.new("CI Enemy", None)
+    bpy.context.scene.collection.objects.link(enemy_object)
+    enemy_object.location = (-8.0, 0.0, 0.0)
+    add_component(enemy_object, "CHARACTER").player.player_controlled = False
+    enemy_component = add_component(enemy_object, "ENEMY").enemy
+    enemy_component.roam_radius = 7.5
+    enemy_component.engage_range = 22.0
+
     blender_hidden_character_object = bpy.data.objects.new("CI Blender Hidden Character", None)
     bpy.context.scene.collection.objects.link(blender_hidden_character_object)
     blender_hidden_character_component = add_component(blender_hidden_character_object, "CHARACTER")
@@ -360,6 +369,7 @@ def create_synthetic_scene():
         head_socket,
         character_object,
         second_character_object,
+        enemy_object,
         blender_hidden_character_object,
         light_object,
         weapon_object,
@@ -484,6 +494,17 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
                 value = container.Value()
                 return value
             return None
+
+        enemy_union = component_of_type(
+            exported_objects["CI Enemy"],
+            extension_module.GameplayComponent.GameplayComponent.GameplayComponentEnemy,
+        )
+        if enemy_union is None:
+            raise AssertionError("CI Enemy has no Enemy component")
+        enemy = extension_module.GameplayComponentEnemy.GameplayComponentEnemy()
+        enemy.Init(enemy_union.Bytes, enemy_union.Pos)
+        if abs(enemy.RoamRadius() - 7.5) > 1.0e-6 or abs(enemy.EngageRange() - 22.0) > 1.0e-6:
+            raise AssertionError(f"Enemy fields changed during export: {enemy.RoamRadius()}, {enemy.EngageRange()}")
 
         physics_type_enum = extension_module.PhysicsType.PhysicsType
         for name, expected_type, expected_dynamic in (

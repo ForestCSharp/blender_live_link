@@ -290,6 +290,14 @@ table GameplayComponentPhysics
 	mass		: float = 1.0;
 }
 
+// Roaming AI for a non-player Character: wanders near its spawn point and
+// aims/fires at the player when in range
+table GameplayComponentEnemy
+{
+	roam_radius		: float = 15.0;
+	engage_range	: float = 40.0;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
@@ -302,7 +310,8 @@ union GameplayComponent
 	GameplayComponentSkyAtmosphere,
 	GameplayComponentCloudSystem,
 	GameplayComponentWeapon,
-	GameplayComponentPhysics
+	GameplayComponentPhysics,
+	GameplayComponentEnemy
 }
 
 table GameplayComponentContainer

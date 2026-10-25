@@ -698,6 +698,20 @@ namespace LiveLinkSystem
 								};
 								break;
 							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentEnemy:
+							{
+								const auto* enemy_component = reinterpret_cast<const Blender::LiveLink::GameplayComponentEnemy*>(component);
+								auto non_negative = [](f32 value, f32 fallback) { return std::isfinite(value) ? MAX(value, 0.0f) : fallback; };
+								game_object.has_enemy = true;
+								game_object.enemy = {};
+								game_object.enemy.settings = {
+									.roam_radius = non_negative(enemy_component->roam_radius(), 15.0f),
+									.engage_range = non_negative(enemy_component->engage_range(), 40.0f),
+								};
+								// Seeded by uid so each enemy roams differently but reproducibly
+								game_object.enemy.rng.seed((u32) unique_id);
+								break;
+							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentFogController:
 							{
 								using Blender::LiveLink::GameplayComponentFogController;
