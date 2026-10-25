@@ -57,7 +57,6 @@
 #include "DNA_modifier_types.h"
 #include "DNA_node_types.h"
 #include "DNA_object_types.h"
-#include "DNA_rigidbody_types.h"
 
 #include "BKE_node_legacy_types.hh"
 
@@ -1491,6 +1490,21 @@ std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay
       components_out.push_back(ll::CreateGameplayComponentContainer(
           builder, ll::GameplayComponent_GameplayComponentWeapon, value.Union()));
     }
+    else if (type == "PHYSICS") {
+      PyPtr physics(PyObject_GetAttrString(component, "physics"));
+      if (!physics) {
+        PyErr_Clear();
+        continue;
+      }
+      const auto value = ll::CreateGameplayComponentPhysics(
+          builder,
+          py_string_attr(physics, "physics_type", "CONVEX") == "PER_POLY" ? ll::PhysicsType_PerPoly :
+                                                                            ll::PhysicsType_Convex,
+          py_bool_attr(physics, "is_dynamic", false),
+          py_float_attr(physics, "mass", 1.0f));
+      components_out.push_back(ll::CreateGameplayComponentContainer(
+          builder, ll::GameplayComponent_GameplayComponentPhysics, value.Union()));
+    }
     else if (type == "PART") {
       PyPtr part(PyObject_GetAttrString(component, "part"));
       if (!part) {
@@ -1704,16 +1718,6 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
 
   flatbuffers::Offset<ll::Light> light_fb = export_light(builder, object_eval);
 
-  ll::RigidBody rigid_body_fb(false, 0.0f);
-  const ll::RigidBody *rigid_body_ptr = nullptr;
-  if (object->rigidbody_object) {
-    const RigidBodyOb *rigid_body = object->rigidbody_object;
-    rigid_body_fb = ll::RigidBody(rigid_body->type == RBO_TYPE_ACTIVE &&
-                                      (rigid_body->flag & RBO_FLAG_DISABLED) == 0 &&
-                                      (rigid_body->flag & RBO_FLAG_KINEMATIC) == 0,
-                                  object->rigidbody_object->mass);
-    rigid_body_ptr = &rigid_body_fb;
-  }
 
   std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
       export_gameplay_components(builder, py_object, object, depsgraph, record.reference_uid_map);
@@ -1728,7 +1732,6 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
                           &rotation_fb,
                           mesh_fb,
                           armature_fb,
-                          rigid_body_ptr,
                           light_fb,
                           components_fb);
 }
@@ -2715,18 +2718,6 @@ void compare_mesh(DiffList &diffs, const std::string &path, const ll::Mesh *nati
             std::to_string(python_fingerprint.triangle_count));
 }
 
-void compare_rigid_body(DiffList &diffs,
-                        const std::string &path,
-                        const ll::RigidBody *native_value,
-                        const ll::RigidBody *python_value)
-{
-  compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
-  if (native_value && python_value) {
-    compare_exact(diffs, path + ".is_dynamic", native_value->is_dynamic(), python_value->is_dynamic());
-    compare_float(diffs, path + ".mass", native_value->mass(), python_value->mass());
-  }
-}
-
 void compare_light(DiffList &diffs, const std::string &path, const ll::Light *native_value, const ll::Light *python_value)
 {
   compare_exact(diffs, path + ".present", native_value != nullptr, python_value != nullptr);
@@ -2898,6 +2889,18 @@ void compare_component(DiffList &diffs,
                   native_weapon->rate_of_fire_seconds(), python_weapon->rate_of_fire_seconds());
     return;
   }
+  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPhysics &&
+      python_value->value_type() == ll::GameplayComponent_GameplayComponentPhysics)
+  {
+    const auto *native_physics = native_value->value_as_GameplayComponentPhysics();
+    const auto *python_physics = python_value->value_as_GameplayComponentPhysics();
+    compare_exact(diffs, path + ".physics.type",
+                  static_cast<int>(native_physics->type()), static_cast<int>(python_physics->type()));
+    compare_exact(diffs, path + ".physics.is_dynamic",
+                  native_physics->is_dynamic(), python_physics->is_dynamic());
+    compare_float(diffs, path + ".physics.mass", native_physics->mass(), python_physics->mass());
+    return;
+  }
   if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&
       python_value->value_type() == ll::GameplayComponent_GameplayComponentPart)
   {
@@ -3024,7 +3027,6 @@ void compare_object(DiffList &diffs,
   compare_quat(diffs, path + ".rotation", native_value.rotation(), python_value.rotation());
   compare_mesh(diffs, path + ".mesh", native_value.mesh(), python_value.mesh());
   compare_armature(diffs, path + ".armature", native_value.armature(), python_value.armature());
-  compare_rigid_body(diffs, path + ".rigid_body", native_value.rigid_body(), python_value.rigid_body());
   compare_light(diffs, path + ".light", native_value.light(), python_value.light());
   compare_components(diffs, path + ".components", native_value, python_value);
 }

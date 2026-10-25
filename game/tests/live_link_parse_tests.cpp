@@ -99,7 +99,7 @@ void test_unknown_light_type_drops_only_the_light()
 	const LL::Vec3 zero(0, 0, 0), one(1, 1, 1);
 	const LL::Quat identity(0, 0, 0, 1);
 	const auto light = LL::CreateLight(builder, (LL::LightType) 42, &one);
-	const auto object = LL::CreateObject(builder, 0, 321, true, &zero, &one, &identity, 0, 0, nullptr, light);
+	const auto object = LL::CreateObject(builder, 0, 321, true, &zero, &one, &identity, 0, 0, light);
 	builder.FinishSizePrefixed(LL::CreateUpdate(builder, builder.CreateVector(&object, 1)));
 	apply(builder);
 	assert(state.scene.objects.contains(321) && !state.scene.objects.at(321).has_light);
@@ -112,7 +112,7 @@ const Object& apply_object(flatbuffers::FlatBufferBuilder& in_builder, i32 in_ui
 {
 	const LL::Vec3 zero(0, 0, 0), one(1, 1, 1);
 	const LL::Quat identity(0, 0, 0, 1);
-	const auto object = LL::CreateObject(in_builder, 0, in_uid, true, &zero, &one, &identity, in_mesh, in_armature, nullptr, in_light);
+	const auto object = LL::CreateObject(in_builder, 0, in_uid, true, &zero, &one, &identity, in_mesh, in_armature, in_light);
 	in_builder.FinishSizePrefixed(LL::CreateUpdate(in_builder, in_builder.CreateVector(&object, 1)));
 	apply(in_builder);
 	return state.scene.objects.at(in_uid);

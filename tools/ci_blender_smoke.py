@@ -74,6 +74,7 @@ def validate_compression_registries(extension_module) -> None:
         ("ATTACHMENT_POINT", "attachment_point"),
         ("SKY_ATMOSPHERE", "sky_atmosphere"),
         ("CLOUD_SYSTEM", "cloud_system"),
+        ("PHYSICS", "physics"),
     ]
     actual_components = [
         (component_class.type_name, group_name)
@@ -363,6 +364,19 @@ def create_synthetic_scene():
         light_object,
         weapon_object,
     ]
+
+    for name, physics_type, is_dynamic in (
+        ("CI Per Poly Collider", "PER_POLY", False),
+        ("CI Convex Collider", "CONVEX", True),
+    ):
+        collider_object = bpy.data.objects.new(name, mesh)
+        bpy.context.scene.collection.objects.link(collider_object)
+        physics = add_component(collider_object, "PHYSICS").physics
+        physics.physics_type = physics_type
+        physics.is_dynamic = is_dynamic
+        physics.mass = 3.0 if is_dynamic else 1.0
+        synthetic_objects.append(collider_object)
+
     for scene_object in synthetic_objects:
         if not hasattr(scene_object, "live_link_settings"):
             raise AssertionError("Live Link object properties were not registered")
@@ -471,6 +485,24 @@ def validate_synthetic_export(extension_module, capture_path: Path) -> None:
                 return value
             return None
 
+        physics_type_enum = extension_module.PhysicsType.PhysicsType
+        for name, expected_type, expected_dynamic in (
+            ("CI Per Poly Collider", physics_type_enum.PerPoly, False),
+            ("CI Convex Collider", physics_type_enum.Convex, True),
+        ):
+            physics_union = component_of_type(
+                exported_objects[name],
+                extension_module.GameplayComponent.GameplayComponent.GameplayComponentPhysics,
+            )
+            if physics_union is None:
+                raise AssertionError(f"{name} has no Physics component")
+            physics = extension_module.GameplayComponentPhysics.GameplayComponentPhysics()
+            physics.Init(physics_union.Bytes, physics_union.Pos)
+            expected_mass = 3.0 if expected_dynamic else 1.0
+            if (physics.Type() != expected_type or physics.IsDynamic() != expected_dynamic
+                    or abs(physics.Mass() - expected_mass) > 1.0e-6):
+                raise AssertionError(
+                    f"{name} exported physics ({physics.Type()}, {physics.IsDynamic()}, {physics.Mass()})")
         sky_union = component_of_type(
             exported_objects["CI Sun"],
             extension_module.GameplayComponent.GameplayComponent.GameplayComponentSkyAtmosphere,

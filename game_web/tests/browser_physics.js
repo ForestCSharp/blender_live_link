@@ -17,7 +17,7 @@ async (page) => {
       const scene = new THREE.Scene(), resources = new SceneResources(scene);
       const positions = [-.5,-.5,-.5,.5,-.5,-.5,-.5,.5,-.5,.5,.5,-.5,-.5,-.5,.5,.5,-.5,.5,-.5,.5,.5,.5,.5,.5];
       const box = (id,z,dynamic=true) => ({id,name:`Box ${id}`,position:[0,0,z],rotation:[0,0,0,1],scale:[1,1,1],visible:true,
-        rigidBody:{isDynamic:dynamic,mass:2},mesh:{positions:[...positions],indices:[0,2,1,1,2,3,4,5,6,5,7,6,0,1,4,1,5,4,2,6,3,3,6,7,0,4,2,2,4,6,1,3,5,3,7,5],normals:[],materialIds:[]}});
+        rigidBody:{isDynamic:dynamic,perPoly:false,mass:2},mesh:{positions:[...positions],indices:[0,2,1,1,2,3,4,5,6,5,7,6,0,1,4,1,5,4,2,6,3,3,6,7,0,4,2,2,4,6,1,3,5,3,7,5],normals:[],materialIds:[]}});
       const floor = box(1,-.5,false); floor.scale=[20,20,1];
       const body = box(2,4), stacked = box(3,6);
       const sun={id:10,name:'Sun',position:[0,0,8],rotation:[0,0,0,1],scale:[1,1,1],visible:true,light:{type:2,color:[1,1,1],power:1361,shadows:true}};
@@ -61,8 +61,10 @@ async (page) => {
         replaced.mesh.positions=replaced.mesh.positions.map(v=>v*2);
         await resources.apply({kind:'delta',batches:[{objects:[{id:9,mesh:replaced.mesh}],materials:[]}]});
         assert(resources.meshes.get(9).position.z===8,'Collider replacement did not reset pose');
-        await resources.apply({kind:'delta',batches:[{objects:[{id:9,rigidBody:{isDynamic:true,mass:4}}],materials:[]}]});
+        await resources.apply({kind:'delta',batches:[{objects:[{id:9,rigidBody:{isDynamic:true,perPoly:false,mass:4}}],materials:[]}]});
         assert(Math.abs(resources.physics.bodies.get(9).body.GetMotionProperties().GetInverseMass()-.25)<1e-6,'Mass edit ignored');
+        await resources.apply({kind:'delta',batches:[{objects:[{id:9,rigidBody:{isDynamic:false,perPoly:false,mass:4}}],materials:[]}]});
+        assert(resources.physics.diagnostics().dynamicBodies===0,'Is Dynamic edit ignored');
         // Off-center mirrored hull retains the exported origin and settles by its geometry.
         const offset=box(4,5); offset.mesh.positions=positions.map((v,i)=>i%3===2?v+2:v);
         offset.scale=[-2,1,1]; offset.rotation=[0,0,Math.sin(.2),Math.cos(.2)];

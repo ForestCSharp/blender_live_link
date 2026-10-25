@@ -146,13 +146,14 @@ bridge serves `.wasm` as `application/wasm`; `build.sh -norun` checks asset hash
 A browser with WebAssembly SIMD support is required. Initialization failures leave
 the static viewer usable and appear in the physics status.
 
-Only meshes with Blender rigid bodies collide. Active, enabled, non-kinematic
-bodies are dynamic; other exported rigid bodies are static. Both use convex hulls
-of exported mesh positions with signed object scale, matching the native shape
-choice. Dynamic bodies use exported mass, calculated inertia, and Jolt defaults
-for friction, restitution, and damping. Gravity is `(0, 0, -10)` and the world
-supports 1,024 bodies. Invalid mass, scale, or hulls leave the mesh visible with an
-object-specific error. Visibility does not disable collision.
+Only meshes with a Live Link **Physics** component collide. **Is Dynamic** bodies
+move; the rest are static. All bodies use convex hulls of exported mesh positions
+with signed object scale. **Per Poly** is not implemented on web yet and falls back
+to a convex hull (native `game/` builds a triangle mesh for static Per Poly bodies).
+Dynamic bodies use the component's Mass, calculated inertia, and Jolt defaults for friction,
+restitution, and damping. Gravity is `(0, 0, -10)` and the world supports 1,024
+bodies. Invalid mass, scale, or hulls leave the mesh visible with an object-specific error.
+Visibility does not disable collision.
 
 Physics starts automatically on source selection. **Pause/Resume physics** stops
 or restarts simulation; **Reset physics** restores the latest authored poses and
@@ -166,7 +167,7 @@ rebuilding GPU geometry. Native `game/` currently vendors Jolt 5.2.1 and uses a
 variable timestep; web/native results are behaviorally comparable, not guaranteed
 bit-identical.
 
-The HTTP object JSON includes `rigidBody: { isDynamic, mass } | null`; null removes
+The HTTP object JSON includes `rigidBody: { isDynamic, perPoly, mass } | null`; null removes
 the body. Scene responses include `generation`, incremented on reset/reconnect.
 History-recovery snapshots retain the generation and preserve unchanged bodies,
 velocities, and GPU geometry. Authored transform, scale, collider positions, mass,
@@ -291,7 +292,7 @@ real WASM with non-local requests blocked. It checks collisions, stack settling,
 off-center mirrored hulls, edits, pause/reset, recovery snapshots, frame rates,
 and repeated resource replacement. Run `tests/blender_physics_smoke.py` through
 Blender's `--background --factory-startup --python` options while the bridge is
-running; it sends real rigid bodies and writes `/tmp/game_web_physics_blender.bin`
+running; it sends real Physics components and writes `/tmp/game_web_physics_blender.bin`
 for snapshot checks. Python physics protocol tests run with the suite above.
 
 Character/mech checks: `tests/browser_gameplay.js` verifies two independently

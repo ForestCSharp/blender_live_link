@@ -99,6 +99,7 @@ export class ScenePhysics {
     const J = this.J, owned = [];
     const own = value => { owned.push(value); return value; };
     try {
+      // shortcut: perPoly still builds a convex hull here; add a MeshShape when web needs per-poly parity.
       const { isDynamic, mass } = object.rigidBody;
       if (!Number.isFinite(mass) || isDynamic && mass <= 0) throw new Error('Invalid rigid-body mass');
       if (object.scale.some(v => !Number.isFinite(v) || v === 0)) throw new Error('Invalid collider scale');

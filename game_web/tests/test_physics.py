@@ -8,8 +8,8 @@ from fixtures import encode, QUAD
 class PhysicsTests(unittest.TestCase):
     def test_metadata_and_removal(self):
         scene = Scene()
-        scene.apply(decode(encode(objects=[{'id':1,'mesh':QUAD,'rigidBody':{'isDynamic':True,'mass':2.5}}])[4:]))
-        self.assertEqual(scene.view()['objects'][0]['rigidBody'], {'isDynamic':True,'mass':2.5})
+        scene.apply(decode(encode(objects=[{'id':1,'mesh':QUAD,'rigidBody':{'isDynamic':True,'perPoly':True,'mass':2.5}}])[4:]))
+        self.assertEqual(scene.view()['objects'][0]['rigidBody'], {'isDynamic':True,'perPoly':True,'mass':2.5})
         scene.apply(decode(encode(objects=[{'id':1}])[4:]))
         self.assertIsNone(scene.view()['objects'][0]['rigidBody'])
         self.assertIn('mesh', scene.view()['objects'][0])

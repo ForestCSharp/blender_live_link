@@ -162,8 +162,27 @@ void test_channel_concurrency()
 	assert(!channel.receive());
 }
 
+static void test_copy_assign_reuses_capacity()
+{
+	DynamicArray<i32> source;
+	DynamicArray<i32> destination;
+	for (i32 i = 0; i < 100; ++i) destination.add(-i);
+	for (i32 i = 0; i < 10; ++i) source.add(i);
+
+	const i32* buffer = destination.data();
+	destination = source;
+	assert(destination.data() == buffer);
+	assert(destination.length() == 10 && destination[9] == 9);
+
+	// Growing past capacity still copies correctly.
+	for (i32 i = 10; i < 500; ++i) source.add(i);
+	destination = source;
+	assert(destination.length() == 500 && destination[499] == 499);
+}
+
 int main()
 {
+	test_copy_assign_reuses_capacity();
 	test_trivial_storage();
 	test_non_trivial_storage();
 	test_aligned_storage();

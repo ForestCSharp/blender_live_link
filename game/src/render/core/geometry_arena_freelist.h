@@ -107,6 +107,34 @@ inline void geometry_arena_release_block(
 	}
 }
 
+// A released block that in-flight frames may still read. It joins the free list
+// only once in_frame_number reaches reusable_at_frame.
+struct GeometryRetiredBlock
+{
+	u32 offset;
+	u32 count;
+	u64 reusable_at_frame;
+};
+
+inline void geometry_arena_reclaim_retired(
+	DynamicArray<GeometryRetiredBlock>& in_out_retired,
+	DynamicArray<GeometryFreeBlock>& in_out_free_list,
+	u64 in_frame_number)
+{
+	for (size_t index = 0; index < in_out_retired.length();)
+	{
+		const GeometryRetiredBlock block = in_out_retired[index];
+		if (in_frame_number < block.reusable_at_frame)
+		{
+			++index;
+			continue;
+		}
+		geometry_arena_release_block(in_out_free_list, block.offset, block.count);
+		in_out_retired[index] = in_out_retired.last();
+		in_out_retired.pop();
+	}
+}
+
 inline u64 geometry_arena_free_elements(DynamicArray<GeometryFreeBlock>& in_free_list)
 {
 	u64 total = 0;

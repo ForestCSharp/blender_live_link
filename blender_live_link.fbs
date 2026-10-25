@@ -85,17 +85,6 @@ table Armature
 	animations	: [Animation];
 }
 
-struct RigidBody
-{
-	// Does this rigid body actively participate in the simulation?
-	is_dynamic	: bool;
-
-	// Mass in kg
-	mass		: float;
-
-	//TODO: Shape Enum or Shape Union
-}
-
 enum LightType : byte
 { 
 	Point	= 0,
@@ -285,6 +274,22 @@ table GameplayComponentWeapon
 	rate_of_fire_seconds : float = 0.0;
 }
 
+enum PhysicsType : byte
+{
+	Convex,
+	// Per-poly triangle mesh. Static bodies only; dynamic bodies fall back to Convex
+	PerPoly,
+}
+
+table GameplayComponentPhysics
+{
+	type		: PhysicsType = Convex;
+	is_dynamic	: bool = false;
+
+	// Mass in kg (dynamic bodies only)
+	mass		: float = 1.0;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
@@ -296,7 +301,8 @@ union GameplayComponent
 	GameplayComponentAttachmentPoint,
 	GameplayComponentSkyAtmosphere,
 	GameplayComponentCloudSystem,
-	GameplayComponentWeapon
+	GameplayComponentWeapon,
+	GameplayComponentPhysics
 }
 
 table GameplayComponentContainer
@@ -321,8 +327,9 @@ table Object
 	// optional armature data
 	armature 	: Armature;
 
-	// optional rigid body data
-	rigid_body  : RigidBody;
+	// Former rigid_body slot (now GameplayComponentPhysics). Keeps later field
+	// ids stable so existing captured payloads stay readable.
+	removed_rigid_body : bool (deprecated);
 
 	// optional light data
 	light 		: Light;

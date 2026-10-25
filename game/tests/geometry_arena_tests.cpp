@@ -163,6 +163,28 @@ static TestVertex make_vertex(f32 in_value)
 	return vertex;
 }
 
+static void test_retired_blocks_wait_for_frame()
+{
+	DynamicArray<GeometryFreeBlock> free_list;
+	DynamicArray<GeometryRetiredBlock> retired;
+	u32 high_water = 0;
+	u32 offset = 0;
+
+	geometry_arena_suballocate(free_list, high_water, 100, 10, offset);	// [0,10)
+	retired.add({ .offset = 0, .count = 10, .reusable_at_frame = 5 });
+
+	// Still possibly in flight: the block must not be handed out again.
+	geometry_arena_reclaim_retired(retired, free_list, 4);
+	assert(retired.length() == 1 && free_list.length() == 0);
+	assert(geometry_arena_suballocate(free_list, high_water, 100, 10, offset));
+	assert(offset == 10);
+
+	geometry_arena_reclaim_retired(retired, free_list, 5);
+	assert(retired.length() == 0 && geometry_arena_free_elements(free_list) == 10);
+	assert(geometry_arena_suballocate(free_list, high_water, 100, 10, offset));
+	assert(offset == 0);
+}
+
 static void test_hash_is_deterministic()
 {
 	TestVertex vertices[3] = { make_vertex(0.0f), make_vertex(1.0f), make_vertex(2.0f) };
@@ -268,6 +290,7 @@ int main()
 	test_coalescing();
 	test_release_is_lossless();
 	test_zero_sized_release_is_noop();
+	test_retired_blocks_wait_for_frame();
 	test_hash_is_deterministic();
 	test_hash_separates_identical_from_perturbed();
 	test_hash_covers_indices_and_order();

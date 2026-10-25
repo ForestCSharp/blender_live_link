@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from compiled_schemas.python import flatbuffers
-from compiled_schemas.python.Blender.LiveLink import Update, Object, Mesh, Vec3, Vec4, Quat, Material, Image, EditorCamera, Light, PointLight, SpotLight, SunLight, RigidBody, Matrix, Bone, Armature, Animation, GameplayComponentContainer, GameplayComponentCharacter, GameplayComponentCameraControl, GameplayComponentPart, GameplayComponentAttachmentPoint
+from compiled_schemas.python.Blender.LiveLink import Update, Object, Mesh, Vec3, Vec4, Quat, Material, Image, EditorCamera, Light, PointLight, SpotLight, SunLight, Matrix, Bone, Armature, Animation, GameplayComponentContainer, GameplayComponentCharacter, GameplayComponentCameraControl, GameplayComponentPart, GameplayComponentAttachmentPoint, GameplayComponentPhysics
 
 CAMERA = {'position': [0, -7, 3], 'forward': [0, 1, -0.3], 'up': [0, 0, 1]}
 QUAD = {'positions': [-2,0,0, 2,0,0, 2,0,3, -2,0,3], 'normals': [0,-1,0]*4,
@@ -56,7 +56,8 @@ def encode(*, objects=(), materials=(), images=(), camera=None, deleted=(), rese
             light_offset = Light.End(b)
         component_offsets = []
         for kind, key, module in [(1,'character',GameplayComponentCharacter), (2,'cameraControl',GameplayComponentCameraControl),
-                                  (4,'part',GameplayComponentPart),(5,'attachment',GameplayComponentAttachmentPoint)]:
+                                  (4,'part',GameplayComponentPart),(5,'attachment',GameplayComponentAttachmentPoint),
+                                  (9,'rigidBody',GameplayComponentPhysics)]:
             value = obj.get(key)
             if value is None: continue
             if key == 'attachment':
@@ -69,6 +70,8 @@ def encode(*, objects=(), materials=(), images=(), camera=None, deleted=(), rese
             elif key == 'cameraControl':
                 module.AddFollowDistance(b,value['followDistance']);module.AddFollowSpeed(b,value['followSpeed'])
             elif key == 'part': module.AddPartType(b,value['type'])
+            elif key == 'rigidBody':
+                module.AddType(b,1 if value.get('perPoly') else 0);module.AddIsDynamic(b,value['isDynamic']);module.AddMass(b,value.get('mass',1.0))
             else:
                 module.AddOwnerPartId(b,value['ownerPartId']);module.AddPartType(b,value['type'])
                 module.AddBindingType(b,value.get('bindingType',0));module.AddArmatureId(b,value.get('armatureId',-1))
@@ -101,9 +104,6 @@ def encode(*, objects=(), materials=(), images=(), camera=None, deleted=(), rese
         Object.AddLocation(b, Vec3.CreateVec3(b, *obj.get('position', [0,0,0])))
         Object.AddScale(b, Vec3.CreateVec3(b, *obj.get('scale', [1,1,1])))
         Object.AddRotation(b, Quat.CreateQuat(b, *obj.get('rotation', [0,0,0,1])))
-        if obj.get('rigidBody') is not None:
-            rigid = obj['rigidBody']
-            Object.AddRigidBody(b, RigidBody.CreateRigidBody(b, rigid['isDynamic'], rigid['mass']))
         if mesh_offset is not None: Object.AddMesh(b, mesh_offset)
         if light_offset is not None: Object.AddLight(b, light_offset)
         object_offsets.append(Object.End(b))

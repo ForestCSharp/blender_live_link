@@ -4,6 +4,7 @@ from compiled_schemas.python.Blender.LiveLink.GameplayComponentCharacter import 
 from compiled_schemas.python.Blender.LiveLink.GameplayComponentCameraControl import GameplayComponentCameraControl
 from compiled_schemas.python.Blender.LiveLink.GameplayComponentPart import GameplayComponentPart
 from compiled_schemas.python.Blender.LiveLink.GameplayComponentAttachmentPoint import GameplayComponentAttachmentPoint
+from compiled_schemas.python.Blender.LiveLink.GameplayComponentPhysics import GameplayComponentPhysics
 
 IDENTITY = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
 
@@ -24,7 +25,8 @@ def decode_gameplay(obj, item, vector, bounds):
         return values
 
     types = {1: ('character', GameplayComponentCharacter), 2: ('cameraControl', GameplayComponentCameraControl),
-             4: ('part', GameplayComponentPart), 5: ('attachment', GameplayComponentAttachmentPoint)}
+             4: ('part', GameplayComponentPart), 5: ('attachment', GameplayComponentAttachmentPoint),
+             9: ('rigidBody', GameplayComponentPhysics)}
     for name, _ in types.values():
         item[name] = None
     for container in vector(obj, 'Components'):
@@ -49,6 +51,12 @@ def decode_gameplay(obj, item, vector, bounds):
             if distance <= 0 or speed < 0:
                 raise ValueError('Invalid follow-camera settings')
             item[name] = dict(followDistance=distance, followSpeed=speed)
+        elif name == 'rigidBody':
+            if value.Type() not in (0, 1):
+                raise ValueError('Invalid physics type')
+            if not math.isfinite(value.Mass()):
+                raise ValueError('Invalid rigid-body mass')
+            item[name] = dict(isDynamic=value.IsDynamic(), perPoly=value.Type() == 1, mass=value.Mass())
         elif name == 'part':
             if not 0 <= value.PartType() < 5:
                 raise ValueError('Invalid part type')

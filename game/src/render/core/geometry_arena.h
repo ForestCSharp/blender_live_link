@@ -60,6 +60,10 @@ struct GeometryArena
 
 	DynamicArray<GeometryFreeBlock> vertex_free;
 	DynamicArray<GeometryFreeBlock> index_free;
+	// Released blocks wait here until no in-flight frame can still read them;
+	// write_range on the mapped path would otherwise overwrite live geometry.
+	DynamicArray<GeometryRetiredBlock> vertex_retired;
+	DynamicArray<GeometryRetiredBlock> index_retired;
 
 	// Bumped whenever the backing buffers are reallocated, so callers can tell
 	// that every previously handed-out slice is now stale.
@@ -116,6 +120,10 @@ inline void geometry_arena_create_buffers(u32 in_vertex_capacity, u32 in_index_c
 	arena.index_high_water = 0;
 	arena.vertex_free.clear();
 	arena.index_free.clear();
+	// The old buffers are retired through the deletion queue, so pending blocks
+	// referring to them can simply be dropped.
+	arena.vertex_retired.clear();
+	arena.index_retired.clear();
 	// Every slice handed out before this point is stale, so the dedup registry
 	// that points at them has to go too.
 	arena.shared_by_hash.clear();
@@ -206,6 +214,9 @@ inline bool geometry_arena_acquire(
 		content_hash = {};
 	}
 
+	geometry_arena_reclaim_retired(arena.vertex_retired, arena.vertex_free, g_vulkan_context->frame_number);
+	geometry_arena_reclaim_retired(arena.index_retired, arena.index_free, g_vulkan_context->frame_number);
+
 	u32 vertex_offset = 0;
 	if (!geometry_arena_suballocate(
 		arena.vertex_free, arena.vertex_high_water, arena.vertex_capacity, in_vertex_count, vertex_offset))
@@ -273,8 +284,11 @@ inline void geometry_arena_release(MeshArenaSlice& in_out_slice)
 		}
 	}
 
-	geometry_arena_release_block(arena.vertex_free, in_out_slice.vertex_offset, in_out_slice.vertex_count);
-	geometry_arena_release_block(arena.index_free, in_out_slice.first_index, in_out_slice.index_count);
+	// Frames up to the current one may have recorded draws from this slice. The
+	// extra frame covers a release made between end_frame and the next fence wait.
+	const u64 reusable_at_frame = g_vulkan_context->frame_number + MAX_FRAMES_IN_FLIGHT + 1;
+	arena.vertex_retired.add({ in_out_slice.vertex_offset, in_out_slice.vertex_count, reusable_at_frame });
+	arena.index_retired.add({ in_out_slice.first_index, in_out_slice.index_count, reusable_at_frame });
 	in_out_slice = {};
 }
 
@@ -292,6 +306,8 @@ inline void geometry_arena_shutdown()
 	arena.index_buffer.destroy_gpu_buffer();
 	arena.vertex_free.reset();
 	arena.index_free.reset();
+	arena.vertex_retired.reset();
+	arena.index_retired.reset();
 	arena.shared_by_hash.clear();
 	arena.vertex_capacity = 0;
 	arena.index_capacity = 0;

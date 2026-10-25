@@ -15,11 +15,11 @@ bpy.context.scene.live_link_use_python_export_fallback = True
 extension.get_editor_camera_snapshot = lambda context=None: (8,-12,8, -.4,.8,-.4, 0,0,1)
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
-for name, location, scale, kind in [('Physics ground',(0,0,-.5),(6,6,.5),'PASSIVE'),
-                                    ('Physics falling cube',(0,0,4),(.5,.5,.5),'ACTIVE')]:
+for name, location, scale, dynamic in [('Physics ground',(0,0,-.5),(6,6,.5),False),
+                                       ('Physics falling cube',(0,0,4),(.5,.5,.5),True)]:
     bpy.ops.mesh.primitive_cube_add(location=location)
     obj=bpy.context.object; obj.name=name; obj.scale=scale
-    bpy.ops.rigidbody.object_add(); obj.rigid_body.type=kind; obj.rigid_body.mass=2
+    physics=obj.live_link_settings.components.add(); physics.type='PHYSICS'; physics.physics.is_dynamic=dynamic; physics.physics.mass=2
 bpy.context.view_layer.update()
 path=Path('/tmp/game_web_physics_blender.bin')
 extension.live_link_connection.save_to_file(list(bpy.context.scene.objects),str(path))

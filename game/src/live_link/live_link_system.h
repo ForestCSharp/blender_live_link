@@ -663,16 +663,6 @@ namespace LiveLinkSystem
 					}
 				}
 	
-				if (auto object_rigid_body = object->rigid_body())
-				{
-					game_object.has_rigid_body = true;
-					game_object.rigid_body = (RigidBody) {
-						.is_dynamic = object_rigid_body->is_dynamic(),
-						.mass = object_rigid_body->mass(),
-						.jolt_body = nullptr,	// created at drain on the main thread
-					};
-				}
-	
 				// Custom gameplay components we've specified on our blender objects
 				if (auto object_components = object->components())
 				{
@@ -831,6 +821,18 @@ namespace LiveLinkSystem
 									[](const CloudLayer& a, const CloudLayer& b) {
 										return a.base_altitude_m < b.base_altitude_m;
 									});
+								break;
+							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentPhysics:
+							{
+								const auto* physics_component = reinterpret_cast<const Blender::LiveLink::GameplayComponentPhysics*>(component);
+								game_object.has_rigid_body = true;
+								game_object.rigid_body = (RigidBody) {
+									.is_dynamic = physics_component->is_dynamic(),
+									.mass = std::isfinite(physics_component->mass()) ? MAX(physics_component->mass(), 0.001f) : 1.0f,
+									.is_mesh_collider = physics_component->type() == Blender::LiveLink::PhysicsType_PerPoly,
+									.jolt_body = nullptr,	// created at drain on the main thread
+								};
 								break;
 							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
@@ -1037,7 +1039,7 @@ namespace LiveLinkSystem
 			{
 				const int received = (int) socket_recv(
 					state.live_link.connection_socket, destination + offset,
-					std::min(count - offset, size_t(4096)), 0);
+					std::min(count - offset, size_t(1) << 20), 0); // capped so the int return can't overflow
 				if (received == 0)
 					return false; // EOF: discard this connection's partial frame.
 				if (received < 0)

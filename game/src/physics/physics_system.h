@@ -20,6 +20,7 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Core/UnorderedMap.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
@@ -221,9 +222,12 @@ void jolt_init()
 
 void jolt_update(float in_delta_time)
 {
-	/* 	If you take larger steps than 1 / 60th of a second you need to do multiple collision steps in order to 
-		keep the simulation stable. Do 1 collision step per 1 / 60th of a second (round up). */
-	const int num_collision_steps = 1;
+	/* 	If you take larger steps than 1 / 60th of a second you need to do multiple collision steps in order to
+		keep the simulation stable. Do 1 collision step per 1 / 60th of a second (round up).
+		Hitches (e.g. building a large per-poly collider) are clamped to 0.1s so bodies slow down
+		briefly instead of tunnelling through floors. */
+	in_delta_time = MIN(in_delta_time, 0.1f);
+	const int num_collision_steps = MAX(1, (int) ceilf(in_delta_time * 60.0f));
 
 	// FCS TODO: store this? Use a real allocator?
     static JPH::TempAllocatorImpl temp_allocator(10 * 1024 * 1024);

@@ -23,7 +23,7 @@ for index in range(2):
     if index==0:
         camera=obj.live_link_settings.components.add();camera.type='CAMERA_CONTROL';camera.camera_control.follow_distance=20;camera.camera_control.follow_speed=5
 bpy.ops.mesh.primitive_cube_add(location=(0,0,-1));floor=bpy.context.object;floor.name='Web Ground';floor.scale=(50,50,1)
-bpy.ops.rigidbody.object_add();floor.rigid_body.type='PASSIVE'
+floor.live_link_settings.components.add().type='PHYSICS'
 bpy.context.view_layer.update()
 for obj in bpy.context.scene.objects:
     components=[c.type for c in obj.live_link_settings.components]

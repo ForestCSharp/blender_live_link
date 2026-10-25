@@ -38,7 +38,7 @@ The live link protocol currently covers:
 - Point, spot, and sun lights.
 - Armatures and baked animation matrices.
 - Local and library-linked collection instances, including nested instances.
-- Rigid body metadata.
+- Physics colliders (convex or per-poly, static or dynamic) via the Physics gameplay component.
 - Gameplay component payloads for character and camera-control experiments.
 - Python exporter and native Blender exporter parity checks.
 
@@ -57,7 +57,9 @@ The Blender extension provides the UI, operators, connection management, and
 packaging in both modes. The build mode controls where the
 `Blender.LiveLink.Update` FlatBuffer bytes are created: either by native C++
 compiled into a local Blender build, or by the Python exporter code bundled with
-the extension. The runtime owns accepted payload data after import and updates
+the extension. Schema changes must therefore be made in both exporters
+(`extension_main.py` and `blend_patches/live_link_native/bpy_live_link.cc`).
+The runtime owns accepted payload data after import and updates
 its object, material, image, lighting, skinning, and debug-stat resources from
 each batch.
 

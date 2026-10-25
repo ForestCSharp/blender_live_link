@@ -39,7 +39,7 @@ from .compiled_schemas.python import flatbuffers
 from .compiled_schemas.python.Blender.LiveLink import Armature
 from .compiled_schemas.python.Blender.LiveLink import Animation
 from .compiled_schemas.python.Blender.LiveLink import AttachmentBindingType
-from .compiled_schemas.python.Blender.LiveLink import Bone 
+from .compiled_schemas.python.Blender.LiveLink import Bone
 from .compiled_schemas.python.Blender.LiveLink import EditorCamera
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponent
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentAttachmentPoint
@@ -50,6 +50,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentFogContro
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentSkyAtmosphere
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSystem
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentWeapon
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPhysics
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import CloudLayer
 from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
@@ -62,8 +63,8 @@ from .compiled_schemas.python.Blender.LiveLink import Mesh
 from .compiled_schemas.python.Blender.LiveLink import Object
 from .compiled_schemas.python.Blender.LiveLink import PointLight
 from .compiled_schemas.python.Blender.LiveLink import PartType
+from .compiled_schemas.python.Blender.LiveLink import PhysicsType
 from .compiled_schemas.python.Blender.LiveLink import Quat
-from .compiled_schemas.python.Blender.LiveLink import RigidBody 
 from .compiled_schemas.python.Blender.LiveLink import SpotLight
 from .compiled_schemas.python.Blender.LiveLink import SunLight
 from .compiled_schemas.python.Blender.LiveLink import Update
@@ -1450,18 +1451,6 @@ class LiveLinkConnection():
         if light_fb is not None:
             Object.AddLight(builder, light_fb)
 
-        # Add Rigid Body Data if it exists
-        if obj.rigid_body:
-            Object.AddRigidBody(builder, RigidBody.CreateRigidBody(
-                builder, 
-                isDynamic = (
-                    obj.rigid_body.type == 'ACTIVE'
-                    and obj.rigid_body.enabled
-                    and not obj.rigid_body.kinematic
-                ),
-                mass = obj.rigid_body.mass
-            ))
-
         # Add Gameplay Components data if it exists
         if gameplay_components is not None:
             Object.AddComponents(builder, gameplay_components)
@@ -2171,6 +2160,10 @@ def depsgraph_update_post_callback(scene, depsgraph):
             # it every material tweak falls into the conservative branch below
             # and re-sends the whole scene, images included.
             bpy.types.NodeTree,
+            # Light/camera data is in each object's dependency set via obj.data,
+            # so a light tweak re-sends one object instead of the whole scene.
+            bpy.types.Light,
+            bpy.types.Camera,
         )
         if blender_type is not None
     )
@@ -2910,6 +2903,51 @@ class Component_AttachmentPoint(Component):
     def get_flatbuffers_value_type(self):
         return GameplayComponent.GameplayComponent().GameplayComponentAttachmentPoint
 
+PHYSICS_TYPE_TO_FLATBUFFER = {
+    'CONVEX': PhysicsType.PhysicsType.Convex,
+    'PER_POLY': PhysicsType.PhysicsType.PerPoly,
+}
+
+class Component_Physics(Component):
+    # Blender UI Info
+    type_name = 'PHYSICS'
+    label = 'Physics'
+
+    # Properties
+    physics_type: EnumProperty(
+        name="Type",
+        items=[
+            ('CONVEX', "Convex", "Convex hull around the mesh vertices"),
+            ('PER_POLY', "Per Poly", "Collide against every triangle. Static objects only; dynamic objects fall back to Convex"),
+        ],
+        default='CONVEX',
+        update=gameplay_component_property_update,
+    )
+    is_dynamic: BoolProperty(
+        name="Is Dynamic",
+        description="Whether or not the object can move",
+        default=False,
+        update=gameplay_component_property_update,
+    )
+    mass: FloatProperty(
+        name="Mass",
+        description="Mass in kg (dynamic objects only)",
+        default=1.0,
+        min=0.001,
+        update=gameplay_component_property_update,
+    )
+
+    # Adds component to flatbuffers component list
+    def create_flatbuffers_value(self, builder, **_kwargs):
+        GameplayComponentPhysics.Start(builder)
+        GameplayComponentPhysics.AddType(builder, PHYSICS_TYPE_TO_FLATBUFFER[self.physics_type])
+        GameplayComponentPhysics.AddIsDynamic(builder, self.is_dynamic)
+        GameplayComponentPhysics.AddMass(builder, self.mass)
+        return GameplayComponentPhysics.End(builder)
+
+    def get_flatbuffers_value_type(self):
+        return GameplayComponent.GameplayComponent().GameplayComponentPhysics
+
 COMPONENT_SPECS = [
     (Component_Character, 'player'),
     (Component_CameraControl, 'camera_control'),
@@ -2919,6 +2957,7 @@ COMPONENT_SPECS = [
     (Component_AttachmentPoint, 'attachment_point'),
     (Component_SkyAtmosphere, 'sky_atmosphere'),
     (Component_CloudSystem, 'cloud_system'),
+    (Component_Physics, 'physics'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -2946,6 +2985,7 @@ class ComponentContainer(PropertyGroup):
     attachment_point: PointerProperty(type=Component_AttachmentPoint)
     sky_atmosphere: PointerProperty(type=Component_SkyAtmosphere)
     cloud_system:   PointerProperty(type=Component_CloudSystem)
+    physics:        PointerProperty(type=Component_Physics)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(
@@ -3046,7 +3086,11 @@ class OBJECT_OT_add_custom_item(Operator):
                 self.report({'WARNING'}, "Cloud System already exists on this object")
                 return {'CANCELLED'}
 
-        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name, Component_Weapon.type_name}:
+        if settings.add_type == Component_Physics.type_name and obj.type != 'MESH':
+            self.report({'WARNING'}, "Physics can only be added to a mesh object")
+            return {'CANCELLED'}
+
+        if settings.add_type in {Component_Part.type_name, Component_AttachmentPoint.type_name, Component_Weapon.type_name, Component_Physics.type_name}:
             if any(component.type == settings.add_type for component in settings.components):
                 self.report({'WARNING'}, f"{settings.add_type.replace('_', ' ').title()} already exists on this object")
                 return {'CANCELLED'}

@@ -87,8 +87,8 @@ CpuTimings& cpu_timings_get()
 void cpu_timings_begin_frame()
 {
 	CpuTimings& timings = cpu_timings_get();
-	timings.current_frame.reset();
-	timings.active_scope_stack.reset();
+	timings.current_frame.clear();
+	timings.active_scope_stack.clear();
 	timings.current_frame_index = timings.next_frame_index++;
 	timings.frame_active = true;
 }
@@ -203,7 +203,7 @@ void cpu_timings_end_frame()
 	timings.previous_frame_index = timings.current_frame_index;
 	for (i32 frame_index = CPU_TIMINGS_MAX_HISTORY_FRAMES - 1; frame_index > 0; --frame_index)
 	{
-		timings.previous_frames[frame_index] = timings.previous_frames[frame_index - 1];
+		std::swap(timings.previous_frames[frame_index], timings.previous_frames[frame_index - 1]);
 		timings.previous_frame_indices[frame_index] = timings.previous_frame_indices[frame_index - 1];
 	}
 	timings.previous_frames[0] = timings.current_frame;
@@ -211,7 +211,7 @@ void cpu_timings_end_frame()
 	timings.previous_frame_count = std::min(timings.previous_frame_count + 1, CPU_TIMINGS_MAX_HISTORY_FRAMES);
 	++timings.previous_frame_generation;
 
-	timings.active_scope_stack.reset();
+	timings.active_scope_stack.clear();
 	timings.frame_active = false;
 }
 
@@ -600,7 +600,7 @@ void gpu_timings_record_completed_frame_events(i64 in_frame_index, const GpuTimi
 		timings.next_history_frame_index = (timings.next_history_frame_index + 1) % GPU_TIMINGS_MAX_HISTORY_FRAMES;
 	}
 
-	frame->events.reset();
+	frame->events.clear();
 	frame->frame_index = in_frame_index;
 	frame->valid = true;
 
@@ -641,7 +641,7 @@ void gpu_timings_copy_display_frames_locked(GpuTimings& timings, bool in_freeze,
 	{
 		const i64 cpu_frame_index = cpu_timings_get_display_frame_index(in_freeze, frame_index);
 		GpuTimingFrame& display_frame = timings.display_frames[frame_index];
-		display_frame.events.reset();
+		display_frame.events.clear();
 		display_frame.frame_index = cpu_frame_index;
 		display_frame.valid = false;
 
@@ -688,7 +688,7 @@ bool gpu_timings_copy_display_frame(bool in_freeze, i32 in_frame_index, GpuTimin
 	std::lock_guard<std::mutex> lock(timings.mutex);
 	if (timings.display_frame_count <= 0)
 	{
-		out_frame.events.reset();
+		out_frame.events.clear();
 		out_frame.frame_index = -1;
 		out_frame.valid = false;
 		return false;
@@ -811,7 +811,7 @@ bool gpu_timings_copy_history_frame(i64 in_frame_index, GpuTimingFrame& out_fram
 		out_frame = *frame;
 		return true;
 	}
-	out_frame.events.reset();
+	out_frame.events.clear();
 	out_frame.frame_index = -1;
 	out_frame.valid = false;
 	return false;

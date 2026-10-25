@@ -65,6 +65,9 @@ struct RigidBody
 	bool is_dynamic;
 	float mass;
 
+	// Per-poly MeshShape instead of a convex hull (static bodies only)
+	bool is_mesh_collider = false;
+
 	// Jolt Body
 	JPH::Body* jolt_body = nullptr;
 };
@@ -406,20 +409,64 @@ void object_add_jolt_body(Object& in_object)
 
 	JPH::BodyInterface& body_interface = jolt_state.physics_system.GetBodyInterface();
 
-	//FCS TODO: Support various shape types from blender...
-
 	Mesh& mesh = in_object.mesh;
 
-	JPH::Array<JPH::Vec3> convex_hull_points;
-	for (u32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+	// Jolt can't compute mass for, or collide against, a dynamic MeshShape
+	const bool use_mesh_shape = in_object.rigid_body.is_mesh_collider && !in_object.rigid_body.is_dynamic;
+	if (in_object.rigid_body.is_mesh_collider && in_object.rigid_body.is_dynamic)
 	{
-		Vertex& mesh_vertex = mesh.vertices[vertex_index];
-		HMM_Vec4 position = mesh_vertex.position;
-		convex_hull_points.emplace_back(JPH::Vec3(position.X, position.Y, position.Z));
+		printf("jolt_add_body warning: mesh collider on a dynamic body, using convex hull instead\n");
 	}
 
-	JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
-	JPH::ShapeSettings::ShapeResult shape_result = shape_settings.Create();
+	JPH::ShapeSettings::ShapeResult shape_result;
+	if (use_mesh_shape)
+	{
+		// Vertices are split per loop at UV/normal seams. Weld by position so Jolt
+		// sees shared edges, otherwise every seam becomes a ghost-collision edge.
+		JPH::VertexList welded_vertices;
+		JPH::Array<JPH::uint32> remap(mesh.vertex_count);
+		JPH::UnorderedMap<JPH::Float3, JPH::uint32> welded_index_by_position;
+		for (u32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+		{
+			HMM_Vec4 position = mesh.vertices[vertex_index].position;
+			JPH::Float3 key(position.X, position.Y, position.Z);
+			auto [it, inserted] = welded_index_by_position.try_emplace(key, (JPH::uint32) welded_vertices.size());
+			if (inserted)
+			{
+				welded_vertices.push_back(key);
+			}
+			remap[vertex_index] = it->second;
+		}
+
+		JPH::IndexedTriangleList triangles;
+		triangles.reserve(mesh.index_count / 3);
+		for (u32 index = 0; index + 2 < mesh.index_count; index += 3)
+		{
+			triangles.emplace_back(remap[mesh.indices[index]], remap[mesh.indices[index + 1]], remap[mesh.indices[index + 2]], 0);
+		}
+
+		JPH::MeshShapeSettings shape_settings(std::move(welded_vertices), std::move(triangles));
+		shape_result = shape_settings.Create();
+	}
+	else
+	{
+		JPH::Array<JPH::Vec3> convex_hull_points;
+		for (u32 vertex_index = 0; vertex_index < mesh.vertex_count; ++vertex_index)
+		{
+			Vertex& mesh_vertex = mesh.vertices[vertex_index];
+			HMM_Vec4 position = mesh_vertex.position;
+			convex_hull_points.emplace_back(JPH::Vec3(position.X, position.Y, position.Z));
+		}
+
+		JPH::ConvexHullShapeSettings shape_settings(convex_hull_points, JPH::cDefaultConvexRadius);
+		shape_result = shape_settings.Create();
+	}
+
+	if (shape_result.HasError())
+	{
+		printf("jolt_add_body error: shape creation failed: %s\n", shape_result.GetError().c_str());
+		return;
+	}
 
 	const Transform& current_transform = in_object.current_transform;
 
@@ -438,10 +485,13 @@ void object_add_jolt_body(Object& in_object)
 	);
 
 	// Set Rigid Body Mass
-	JPH::MassProperties msp;
-	msp.ScaleToMass(in_object.rigid_body.mass);
-	body_creation_settings.mMassPropertiesOverride = msp;
-	body_creation_settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+	if (in_object.rigid_body.is_dynamic)
+	{
+		JPH::MassProperties msp;
+		msp.ScaleToMass(in_object.rigid_body.mass);
+		body_creation_settings.mMassPropertiesOverride = msp;
+		body_creation_settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+	}
 
 	// Note that if we run out of bodies this can return nullptr
 	in_object.rigid_body.jolt_body = body_interface.CreateBody(body_creation_settings);

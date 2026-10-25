@@ -86,13 +86,6 @@ def decode(payload):
             item = dict(id=obj.UniqueId(), name=(obj.Name() or b'').decode('utf-8', 'replace'),
                         visible=obj.Visibility(), position=components(obj.Location(), 'XYZ'),
                         scale=components(obj.Scale(), 'XYZ'), rotation=components(obj.Rotation(), 'XYZW'))
-            rigid = obj.RigidBody()
-            item['rigidBody'] = None
-            if rigid is not None:
-                mass = rigid.Mass()
-                if not math.isfinite(mass):
-                    raise ValueError('Invalid rigid-body mass')
-                item['rigidBody'] = dict(isDynamic=rigid.IsDynamic(), mass=mass)
             mesh = obj.Mesh()
             if mesh is not None:
                 table_bounds(mesh)

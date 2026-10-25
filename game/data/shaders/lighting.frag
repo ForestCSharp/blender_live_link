@@ -492,13 +492,16 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 
 #endif // SHADOWS_ENABLED
 
-float sample_gi_shadow_visibility(vec3 surface_position, vec3 surface_normal)
+// in_cached_visibility < 0 means the sun loop did not sample the first casting sun.
+float sample_gi_shadow_visibility(vec3 surface_position, vec3 surface_normal, float in_cached_visibility)
 {
 	for (int i = 0; i < num_sun_lights; ++i)
 	{
 		if (sun_lights[i].cast_shadows != 0)
 		{
-			float visibility = sample_shadow_visibility(surface_position, surface_normal, sun_lights[i].direction.xyz);
+			float visibility = in_cached_visibility >= 0.0
+				? in_cached_visibility
+				: sample_shadow_visibility(surface_position, surface_normal, sun_lights[i].direction.xyz);
 			float normal_light = saturate(dot(normalize(surface_normal), normalize(-sun_lights[i].direction.xyz)));
 			return visibility * normal_light;
 		}
@@ -538,7 +541,6 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
-			const float gi_shadow_multiplier = mix(0.5, 1.0, sample_gi_shadow_visibility(position, normal));
 			const vec3 view_direction = normalize(view_position - position);
 			const vec3 reflection_direction = reflect(-view_direction, normal);
 			const float n_dot_v = max(dot(normal, view_direction), 0.0);
@@ -554,6 +556,9 @@ void main()
 				return;
 			}
 #endif
+
+			// Cascade visibility of the first shadow-casting sun, reused by GI below.
+			float first_sun_cascade_visibility = -1.0;
 
 			if (direct_lighting_enable != 0)
 			{
@@ -576,6 +581,10 @@ void main()
 					float sun_shadow_visibility = sun_lights[i].cast_shadows != 0
 						? sample_shadow_visibility(position, normal, sun_lights[i].direction.xyz)
 						: 1.0;
+					if (first_sun_cascade_visibility < 0.0 && sun_lights[i].cast_shadows != 0)
+					{
+						first_sun_cascade_visibility = sun_shadow_visibility;
+					}
 
 					if (screen_space_shadows_enable != 0 && sun_lights[i].cast_shadows != 0)
 					{
@@ -608,6 +617,8 @@ void main()
 
 			if (gi_enable != 0)
 			{
+				const float gi_shadow_multiplier = mix(0.5, 1.0,
+					sample_gi_shadow_visibility(position, normal, first_sun_cascade_visibility));
 				int cell_index = find_gi_octree_payload_index(position);
 				bool probe_isolation_active = isolated_probe_index != -1;
 
