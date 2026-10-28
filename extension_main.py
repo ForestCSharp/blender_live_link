@@ -14,6 +14,7 @@ from bpy.app.handlers import persistent
 
 import bmesh
 import builtins
+import inspect
 import math
 import numpy as np
 from .live_link_transport import LiveLinkTransport
@@ -114,6 +115,8 @@ class ExportOccurrence:
     occurrence_key: tuple = field(default_factory=tuple)
     instancer_path: tuple = field(default_factory=tuple)
     dependency_ids: frozenset = field(default_factory=frozenset)
+    # Filled just before native export: the native exporter copies components instead of re-deriving them
+    components_bytes: bytes = b""
 
     @property
     def matrix_world_values(self):
@@ -1589,6 +1592,25 @@ class LiveLinkConnection():
                 self.export_snapshot = current_snapshot
             return self.send(output, on_complete=commit_snapshot)
 
+    def make_components_bytes(self, occurrence):
+        """Standalone Object buffer holding only the occurrence's gameplay components."""
+        obj = occurrence.source_object
+        if len(obj.live_link_settings.components) == 0:
+            return b""
+        builder = flatbuffers.Builder(256)
+        components = builder_create_gameplay_components(
+            builder,
+            obj.live_link_settings,
+            obj,
+            occurrence.dependency_graph,
+            self,
+            export_occurrence=occurrence,
+        )
+        Object.Start(builder)
+        Object.AddComponents(builder, components)
+        builder.Finish(Object.End(builder))
+        return bytes(builder.Output())
+
     def make_update_native(
         self,
         in_object_list,
@@ -1603,6 +1625,8 @@ class LiveLinkConnection():
             raise RuntimeError("Native Live Link export is not available")
         if dependency_graph is None:
             dependency_graph = bpy.context.evaluated_depsgraph_get()
+        for occurrence in in_object_list:
+            occurrence.components_bytes = self.make_components_bytes(occurrence)
 
         print(
             "\nLive Link Native Export Requested: "
@@ -2335,7 +2359,60 @@ def gameplay_component_property_update(self, _context):
 def sky_atmosphere_property_update(self, context):
     gameplay_component_property_update(self, context)
 
-class Component(PropertyGroup):
+def flatbuffers_field_name(property_name):
+    # flatc's Python object API camel-cases schema fields: wind_speed_m_s -> windSpeedMS
+    head, *rest = property_name.split('_')
+    return head + ''.join(part.title() for part in rest)
+
+def flatbuffers_enum_name(identifier):
+    # Blender enum identifiers are the schema enum names upper-snake-cased: LEFT_ARM -> LeftArm
+    return ''.join(part.title() for part in identifier.split('_'))
+
+def flatbuffers_matrix_t(exporter, matrix):
+    matrix_t = Matrix.MatrixT()
+    matrix_t.elements = exporter.matrix_to_column_major_array(matrix)
+    return matrix_t
+
+class FlatbuffersBacked:
+    """PropertyGroup mixin: each property named after a field of the schema table fb_t
+    is written to it on export and, for Bool/Int/Float properties without an explicit
+    default=, takes its Blender default from the schema."""
+    fb_t = None
+    fb_renames = {}  # property name -> schema field name, where the two differ
+    fb_enums = {}    # EnumProperty name -> generated schema enum class
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._fb_properties = list(inspect.get_annotations(cls).items())
+        if cls.fb_t is None:
+            return
+        schema_defaults = cls.fb_t()
+        for name, prop in cls._fb_properties:
+            field_name = flatbuffers_field_name(cls.fb_renames.get(name, name))
+            if (prop.function in (BoolProperty, IntProperty, FloatProperty)
+                    and 'default' not in prop.keywords and hasattr(schema_defaults, field_name)):
+                prop.keywords['default'] = getattr(schema_defaults, field_name)
+
+    def to_flatbuffers_t(self, **_context):
+        t = self.fb_t()
+        for name, prop in self._fb_properties:
+            field_name = flatbuffers_field_name(self.fb_renames.get(name, name))
+            if not hasattr(t, field_name):
+                continue  # UI-only property, e.g. a PointerProperty resolved by an override
+            value = getattr(self, name)
+            if name in self.fb_enums:
+                value = getattr(self.fb_enums[name], flatbuffers_enum_name(value))
+            elif prop.function is FloatVectorProperty:
+                vector_t = Vec2.Vec2T() if len(value) == 2 else Vec3.Vec3T()
+                for axis, component in zip('xyz', value):
+                    setattr(vector_t, axis, component)
+                value = vector_t
+            elif prop.function is CollectionProperty:
+                value = [item.to_flatbuffers_t() for item in value]
+            setattr(t, field_name, value)
+        return t
+
+class Component(FlatbuffersBacked, PropertyGroup):
     # Blender UI Info
     type_name = 'INVALID'
     label = 'INVALID'
@@ -2370,23 +2447,25 @@ class Component(PropertyGroup):
             GameplayComponentContainer.AddValue(builder, value)
         return GameplayComponentContainer.End(builder)
 
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        return None
+    def create_flatbuffers_value(self, builder, **context):
+        return self.to_flatbuffers_t(**context).Pack(builder)
 
     def get_flatbuffers_value_type(self):
-        return None
+        # The union member shares the table's name: GameplayComponentEnemyT -> GameplayComponentEnemy
+        return getattr(GameplayComponent.GameplayComponent, self.fb_t.__name__[:-1])
 
 class Component_Character(Component):
     # Blender UI Info
     type_name = 'CHARACTER'
     label = 'Character'
+    fb_t = GameplayComponentCharacter.GameplayComponentCharacterT
 
     # Properties
-    player_controlled: BoolProperty(name="Player Controlled", default=False)
-    move_speed: FloatProperty(name="Move Speed", default=20.0)
-    jump_speed: FloatProperty(name="Jump Speed", default=10.0)
-    height: FloatProperty(name="Height", default=6.0, min=0.0, description="Total capsule height, including the rounded ends")
-    radius: FloatProperty(name="Radius", default=1.0, min=0.0)
+    player_controlled: BoolProperty(name="Player Controlled")
+    move_speed: FloatProperty(name="Move Speed")
+    jump_speed: FloatProperty(name="Jump Speed")
+    height: FloatProperty(name="Height", min=0.0, description="Total capsule height, including the rounded ends")
+    radius: FloatProperty(name="Radius", min=0.0)
     hide_mesh_in_game: BoolProperty(
         name="Hide Mesh in Game",
         description="Hide this object's mesh in-game while keeping character collision and gameplay active",
@@ -2394,52 +2473,33 @@ class Component_Character(Component):
         update=gameplay_component_property_update,
     )
 
-    # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentCharacter.Start(builder)
-        GameplayComponentCharacter.AddPlayerControlled(builder, self.player_controlled)
-        GameplayComponentCharacter.AddMoveSpeed(builder, self.move_speed)
-        GameplayComponentCharacter.AddJumpSpeed(builder, self.jump_speed)
-        GameplayComponentCharacter.AddHeight(builder, self.height)
-        GameplayComponentCharacter.AddRadius(builder, self.radius)
-        return GameplayComponentCharacter.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentCharacter
 
 class Component_CameraControl(Component):
     # Blender UI Info
     type_name = 'CAMERA_CONTROL'
     label = 'Camera Control'
+    fb_t = GameplayComponentCameraControl.GameplayComponentCameraControlT
 
     # Properties
-    follow_distance: FloatProperty(name="Follow Distance", default=10.0)
-    follow_speed: FloatProperty(name="Follow Speed", default=10.0)
+    follow_distance: FloatProperty(name="Follow Distance")
+    follow_speed: FloatProperty(name="Follow Speed")
 
-    # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentCameraControl.Start(builder)
-        GameplayComponentCameraControl.AddFollowDistance(builder, self.follow_distance)
-        GameplayComponentCameraControl.AddFollowSpeed(builder, self.follow_speed)
-        return GameplayComponentCameraControl.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentCameraControl
 
 class Component_FogController(Component):
     # Blender UI Info
     type_name = 'FOG_CONTROLLER'
     label = 'Fog Controller'
+    fb_t = GameplayComponentFogController.GameplayComponentFogControllerT
 
     # Properties
-    enabled: BoolProperty(name="Enabled", default=True)
-    density: FloatProperty(name="Density", default=0.015, min=0.0)
-    base_height: FloatProperty(name="Base Height", default=0.0)
-    scale_height: FloatProperty(name="Scale Height", default=25.0, min=0.001)
-    max_distance: FloatProperty(name="Max Distance", default=500.0, min=0.0)
-    ceiling_enabled: BoolProperty(name="Ceiling Enabled", default=False)
-    ceiling_height: FloatProperty(name="Ceiling Height", default=100.0)
-    ceiling_fade: FloatProperty(name="Ceiling Fade", default=25.0, min=0.0)
+    enabled: BoolProperty(name="Enabled")
+    density: FloatProperty(name="Density", min=0.0)
+    base_height: FloatProperty(name="Base Height")
+    scale_height: FloatProperty(name="Scale Height", min=0.001)
+    max_distance: FloatProperty(name="Max Distance", min=0.0)
+    ceiling_enabled: BoolProperty(name="Ceiling Enabled")
+    ceiling_height: FloatProperty(name="Ceiling Height")
+    ceiling_fade: FloatProperty(name="Ceiling Fade", min=0.0)
     fog_color: FloatVectorProperty(
         name="Fog Color",
         subtype='COLOR',
@@ -2448,102 +2508,60 @@ class Component_FogController(Component):
         min=0.0,
         max=1.0
     )
-    ambient_intensity: FloatProperty(name="Ambient Intensity", default=0.4, min=0.0)
-    sun_intensity: FloatProperty(name="Sun Intensity", default=1.0, min=0.0)
-    anisotropy: FloatProperty(name="Anisotropy", default=0.2, min=-0.95, max=0.95)
+    ambient_intensity: FloatProperty(name="Ambient Intensity", min=0.0)
+    sun_intensity: FloatProperty(name="Sun Intensity", min=0.0)
+    anisotropy: FloatProperty(name="Anisotropy", min=-0.95, max=0.95)
 
-    # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentFogController.Start(builder)
-        fog_color = Vec3.CreateVec3(builder, self.fog_color[0], self.fog_color[1], self.fog_color[2])
-        GameplayComponentFogController.AddFogColor(builder, fog_color)
-        GameplayComponentFogController.AddEnabled(builder, self.enabled)
-        GameplayComponentFogController.AddDensity(builder, self.density)
-        GameplayComponentFogController.AddBaseHeight(builder, self.base_height)
-        GameplayComponentFogController.AddScaleHeight(builder, self.scale_height)
-        GameplayComponentFogController.AddMaxDistance(builder, self.max_distance)
-        GameplayComponentFogController.AddCeilingEnabled(builder, self.ceiling_enabled)
-        GameplayComponentFogController.AddCeilingHeight(builder, self.ceiling_height)
-        GameplayComponentFogController.AddCeilingFade(builder, self.ceiling_fade)
-        GameplayComponentFogController.AddAmbientIntensity(builder, self.ambient_intensity)
-        GameplayComponentFogController.AddSunIntensity(builder, self.sun_intensity)
-        GameplayComponentFogController.AddAnisotropy(builder, self.anisotropy)
-        return GameplayComponentFogController.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentFogController
 
 class Component_SkyAtmosphere(Component):
     type_name = 'SKY_ATMOSPHERE'
     label = 'Sky Atmosphere'
+    fb_t = GameplayComponentSkyAtmosphere.GameplayComponentSkyAtmosphereT
 
-    enabled: BoolProperty(name="Enabled", default=True, update=sky_atmosphere_property_update)
+    enabled: BoolProperty(name="Enabled", update=sky_atmosphere_property_update)
     planet_center_z_m: FloatProperty(
         name="Planet Center Z", description="World-space Z coordinate of the fixed Earth center, in meters",
-        default=-6360000.0, min=-1.0e9, max=1.0e9,
+        min=-1.0e9, max=1.0e9,
         update=sky_atmosphere_property_update)
     air_density: FloatProperty(
-        name="Air Density", default=1.0, min=0.0, max=4.0,
+        name="Air Density", min=0.0, max=4.0,
         update=sky_atmosphere_property_update)
     aerosol_density: FloatProperty(
-        name="Aerosol / Dust Density", default=1.0, min=0.0, max=10.0,
+        name="Aerosol / Dust Density", min=0.0, max=10.0,
         update=sky_atmosphere_property_update)
     ozone_density: FloatProperty(
-        name="Ozone Density", default=1.0, min=0.0, max=4.0,
+        name="Ozone Density", min=0.0, max=4.0,
         update=sky_atmosphere_property_update)
     ground_albedo: FloatVectorProperty(
         name="Ground Albedo", subtype='COLOR', size=3,
         default=(0.1, 0.1, 0.1), min=0.0, max=1.0,
         update=sky_atmosphere_property_update)
     sky_intensity: FloatProperty(
-        name="Sky Intensity", default=1.0, min=0.0, max=20.0,
+        name="Sky Intensity", min=0.0, max=20.0,
         update=sky_atmosphere_property_update)
     sun_disc_angular_diameter_degrees: FloatProperty(
         name="Sun Disc Diameter", description="Angular diameter in degrees",
-        default=0.5357, min=0.01, max=10.0,
+        min=0.01, max=10.0,
         update=sky_atmosphere_property_update)
     sun_disc_intensity: FloatProperty(
-        name="Sun Disc Intensity", default=1.0, min=0.0, max=20.0,
+        name="Sun Disc Intensity", min=0.0, max=20.0,
         update=sky_atmosphere_property_update)
     atmosphere_height_m: FloatProperty(
-        name="Atmosphere Height", default=60000.0, min=10000.0, max=200000.0,
+        name="Atmosphere Height", min=10000.0, max=200000.0,
         update=sky_atmosphere_property_update)
     rayleigh_scale_height_m: FloatProperty(
-        name="Rayleigh Scale Height", default=8000.0, min=1000.0, max=30000.0,
+        name="Rayleigh Scale Height", min=1000.0, max=30000.0,
         update=sky_atmosphere_property_update)
     mie_scale_height_m: FloatProperty(
-        name="Mie Scale Height", default=1200.0, min=100.0, max=10000.0,
+        name="Mie Scale Height", min=100.0, max=10000.0,
         update=sky_atmosphere_property_update)
     mie_anisotropy: FloatProperty(
-        name="Mie Anisotropy", default=0.8, min=0.0, max=0.95,
+        name="Mie Anisotropy", min=0.0, max=0.95,
         update=sky_atmosphere_property_update)
     max_sun_zenith_angle_degrees: FloatProperty(
-        name="Maximum Sun Zenith", default=102.0, min=90.0, max=120.0,
+        name="Maximum Sun Zenith", min=90.0, max=120.0,
         update=sky_atmosphere_property_update)
 
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentSkyAtmosphere.Start(builder)
-        GameplayComponentSkyAtmosphere.AddEnabled(builder, self.enabled)
-        GameplayComponentSkyAtmosphere.AddPlanetCenterZM(builder, self.planet_center_z_m)
-        GameplayComponentSkyAtmosphere.AddAirDensity(builder, self.air_density)
-        GameplayComponentSkyAtmosphere.AddAerosolDensity(builder, self.aerosol_density)
-        GameplayComponentSkyAtmosphere.AddOzoneDensity(builder, self.ozone_density)
-        ground_albedo = Vec3.CreateVec3(builder, *self.ground_albedo)
-        GameplayComponentSkyAtmosphere.AddGroundAlbedo(builder, ground_albedo)
-        GameplayComponentSkyAtmosphere.AddSkyIntensity(builder, self.sky_intensity)
-        GameplayComponentSkyAtmosphere.AddSunDiscAngularDiameterDegrees(
-            builder, self.sun_disc_angular_diameter_degrees)
-        GameplayComponentSkyAtmosphere.AddSunDiscIntensity(builder, self.sun_disc_intensity)
-        GameplayComponentSkyAtmosphere.AddAtmosphereHeightM(builder, self.atmosphere_height_m)
-        GameplayComponentSkyAtmosphere.AddRayleighScaleHeightM(builder, self.rayleigh_scale_height_m)
-        GameplayComponentSkyAtmosphere.AddMieScaleHeightM(builder, self.mie_scale_height_m)
-        GameplayComponentSkyAtmosphere.AddMieAnisotropy(builder, self.mie_anisotropy)
-        GameplayComponentSkyAtmosphere.AddMaxSunZenithAngleDegrees(
-            builder, self.max_sun_zenith_angle_degrees)
-        return GameplayComponentSkyAtmosphere.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentSkyAtmosphere
 
 CLOUD_PROFILE_ITEMS = [
     ('STRATUS', 'Stratus', 'Low, broad, softly eroded sheet clouds'),
@@ -2575,13 +2593,6 @@ CLOUD_PROFILE_DEFAULTS = {
                    multi_scattering_strength=0.35),
 }
 
-CLOUD_PROFILE_TO_FLATBUFFER = {
-    'STRATUS': CloudLayerProfile.CloudLayerProfile.Stratus,
-    'CUMULUS': CloudLayerProfile.CloudLayerProfile.Cumulus,
-    'CUMULONIMBUS': CloudLayerProfile.CloudLayerProfile.Cumulonimbus,
-    'CIRRUS': CloudLayerProfile.CloudLayerProfile.Cirrus,
-}
-
 def apply_cloud_profile_defaults(layer, profile=None):
     for name, value in CLOUD_PROFILE_DEFAULTS[profile or layer.profile].items():
         setattr(layer, name, value)
@@ -2590,136 +2601,100 @@ def cloud_layer_profile_update(self, context):
     apply_cloud_profile_defaults(self)
     gameplay_component_property_update(self, context)
 
-class CloudLayerSettings(PropertyGroup):
-    enabled: BoolProperty(name="Enabled", default=True, update=gameplay_component_property_update)
+class CloudLayerSettings(FlatbuffersBacked, PropertyGroup):
+    fb_t = CloudLayer.CloudLayerT
+    fb_enums = {'profile': CloudLayerProfile.CloudLayerProfile}
+
+    enabled: BoolProperty(name="Enabled", update=gameplay_component_property_update)
     profile: EnumProperty(name="Profile", items=CLOUD_PROFILE_ITEMS, default='CUMULUS',
                           update=cloud_layer_profile_update)
-    seed_offset: IntProperty(name="Seed Offset", default=0, min=0, max=2147483647,
+    seed_offset: IntProperty(name="Seed Offset", min=0, max=2147483647,
                              update=gameplay_component_property_update)
-    base_altitude_m: FloatProperty(name="Base Altitude", default=1800.0, min=0.0,
+    base_altitude_m: FloatProperty(name="Base Altitude", min=0.0,
                                    soft_max=20000.0, subtype='DISTANCE', unit='LENGTH',
                                    update=gameplay_component_property_update)
-    thickness_m: FloatProperty(name="Thickness", default=3000.0, min=10.0,
+    thickness_m: FloatProperty(name="Thickness", min=10.0,
                                soft_max=20000.0, subtype='DISTANCE', unit='LENGTH',
                                update=gameplay_component_property_update)
-    coverage: FloatProperty(name="Coverage", default=0.5, min=0.0, max=1.0,
+    coverage: FloatProperty(name="Coverage", min=0.0, max=1.0,
                             update=gameplay_component_property_update)
-    density: FloatProperty(name="Density", default=1.0, min=0.0, max=4.0,
+    density: FloatProperty(name="Density", min=0.0, max=4.0,
                            update=gameplay_component_property_update)
-    shape_scale_m: FloatProperty(name="Shape Scale", default=8000.0, min=100.0,
+    shape_scale_m: FloatProperty(name="Shape Scale", min=100.0,
                                  soft_max=50000.0, subtype='DISTANCE', unit='LENGTH',
                                  update=gameplay_component_property_update)
-    detail_scale_m: FloatProperty(name="Detail Scale", default=1000.0, min=10.0,
+    detail_scale_m: FloatProperty(name="Detail Scale", min=10.0,
                                   soft_max=10000.0, subtype='DISTANCE', unit='LENGTH',
                                   update=gameplay_component_property_update)
-    erosion: FloatProperty(name="Erosion", default=0.65, min=0.0, max=1.0,
+    erosion: FloatProperty(name="Erosion", min=0.0, max=1.0,
                            update=gameplay_component_property_update)
-    anvil_bias: FloatProperty(name="Anvil Bias", default=0.1, min=0.0, max=1.0,
+    anvil_bias: FloatProperty(name="Anvil Bias", min=0.0, max=1.0,
                               update=gameplay_component_property_update)
-    wind_multiplier: FloatProperty(name="Wind Multiplier", default=1.0, min=-4.0, max=4.0,
+    wind_multiplier: FloatProperty(name="Wind Multiplier", min=-4.0, max=4.0,
                                    update=gameplay_component_property_update)
-    phase_forward: FloatProperty(name="Forward Phase", default=0.75, min=-0.95, max=0.95,
+    phase_forward: FloatProperty(name="Forward Phase", min=-0.95, max=0.95,
                                  update=gameplay_component_property_update)
-    phase_backward: FloatProperty(name="Backward Phase", default=-0.25, min=-0.95, max=0.95,
+    phase_backward: FloatProperty(name="Backward Phase", min=-0.95, max=0.95,
                                   update=gameplay_component_property_update)
-    phase_blend: FloatProperty(name="Forward Phase Blend", default=0.8, min=0.0, max=1.0,
+    phase_blend: FloatProperty(name="Forward Phase Blend", min=0.0, max=1.0,
                                update=gameplay_component_property_update)
-    ambient_scale: FloatProperty(name="Ambient Scale", default=0.6, min=0.0, max=2.0,
+    ambient_scale: FloatProperty(name="Ambient Scale", min=0.0, max=2.0,
                                  update=gameplay_component_property_update)
-    multi_scattering_strength: FloatProperty(name="Multiple Scattering", default=0.8,
-                                              min=0.0, max=1.0,
+    multi_scattering_strength: FloatProperty(name="Multiple Scattering", min=0.0, max=1.0,
                                               update=gameplay_component_property_update)
 
-    def create_flatbuffers_value(self, builder):
-        CloudLayer.Start(builder)
-        CloudLayer.AddEnabled(builder, self.enabled)
-        CloudLayer.AddProfile(builder, CLOUD_PROFILE_TO_FLATBUFFER[self.profile])
-        CloudLayer.AddSeedOffset(builder, self.seed_offset)
-        CloudLayer.AddBaseAltitudeM(builder, self.base_altitude_m)
-        CloudLayer.AddThicknessM(builder, self.thickness_m)
-        CloudLayer.AddCoverage(builder, self.coverage)
-        CloudLayer.AddDensity(builder, self.density)
-        CloudLayer.AddShapeScaleM(builder, self.shape_scale_m)
-        CloudLayer.AddDetailScaleM(builder, self.detail_scale_m)
-        CloudLayer.AddErosion(builder, self.erosion)
-        CloudLayer.AddAnvilBias(builder, self.anvil_bias)
-        CloudLayer.AddWindMultiplier(builder, self.wind_multiplier)
-        CloudLayer.AddPhaseForward(builder, self.phase_forward)
-        CloudLayer.AddPhaseBackward(builder, self.phase_backward)
-        CloudLayer.AddPhaseBlend(builder, self.phase_blend)
-        CloudLayer.AddAmbientScale(builder, self.ambient_scale)
-        CloudLayer.AddMultiScatteringStrength(builder, self.multi_scattering_strength)
-        return CloudLayer.End(builder)
 
 class Component_CloudSystem(Component):
     type_name = 'CLOUD_SYSTEM'
     label = 'Cloud System'
+    fb_t = GameplayComponentCloudSystem.GameplayComponentCloudSystemT
 
-    enabled: BoolProperty(name="Enabled", default=True, update=gameplay_component_property_update)
-    seed: IntProperty(name="Seed", default=1, min=0, max=2147483647,
+    enabled: BoolProperty(name="Enabled", update=gameplay_component_property_update)
+    seed: IntProperty(name="Seed", min=0, max=2147483647,
                       update=gameplay_component_property_update)
-    weather_world_scale_m: FloatProperty(name="Weather World Scale", default=100000.0,
-                                         min=1000.0, soft_max=500000.0,
+    weather_world_scale_m: FloatProperty(name="Weather World Scale", min=1000.0, soft_max=500000.0,
                                          subtype='DISTANCE', unit='LENGTH',
                                          update=gameplay_component_property_update)
     wind_direction: FloatVectorProperty(name="Wind Direction", size=2, default=(1.0, 0.0),
                                         min=-1.0, max=1.0,
                                         update=gameplay_component_property_update)
-    wind_speed_m_s: FloatProperty(name="Wind Speed", default=20.0, min=0.0, max=200.0,
+    wind_speed_m_s: FloatProperty(name="Wind Speed", min=0.0, max=200.0,
                                   update=gameplay_component_property_update)
-    shadow_enabled: BoolProperty(name="Cast Cloud Shadows", default=True,
-                                 update=gameplay_component_property_update)
-    shadow_extent_m: FloatProperty(name="Shadow Extent", default=8000.0, min=1000.0,
+    shadow_enabled: BoolProperty(name="Cast Cloud Shadows", update=gameplay_component_property_update)
+    shadow_extent_m: FloatProperty(name="Shadow Extent", min=1000.0,
                                    soft_max=200000.0, subtype='DISTANCE', unit='LENGTH',
                                    update=gameplay_component_property_update)
     layers: CollectionProperty(type=CloudLayerSettings)
 
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        layer_offsets = [self.layers[index].create_flatbuffers_value(builder)
-                         for index in range(min(len(self.layers), 4))]
-        layers = build_offset_vector(
-            builder, layer_offsets, GameplayComponentCloudSystem.StartLayersVector)
-        GameplayComponentCloudSystem.Start(builder)
-        GameplayComponentCloudSystem.AddEnabled(builder, self.enabled)
-        GameplayComponentCloudSystem.AddSeed(builder, self.seed)
-        GameplayComponentCloudSystem.AddWeatherWorldScaleM(builder, self.weather_world_scale_m)
-        wind_direction = Vec2.CreateVec2(builder, self.wind_direction[0], self.wind_direction[1])
-        GameplayComponentCloudSystem.AddWindDirection(builder, wind_direction)
-        GameplayComponentCloudSystem.AddWindSpeedMS(builder, self.wind_speed_m_s)
-        GameplayComponentCloudSystem.AddShadowEnabled(builder, self.shadow_enabled)
-        GameplayComponentCloudSystem.AddShadowExtentM(builder, self.shadow_extent_m)
-        if layers is not None:
-            GameplayComponentCloudSystem.AddLayers(builder, layers)
-        return GameplayComponentCloudSystem.End(builder)
+    def to_flatbuffers_t(self, **_context):
+        t = super().to_flatbuffers_t()
+        t.layers = t.layers[:4]
+        return t
 
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentCloudSystem
 
 PART_TYPE_SPECS = [
-    ('BODY', 'Body', PartType.PartType.Body, False),
-    ('LEGS', 'Legs', PartType.PartType.Legs, True),
-    ('LEFT_ARM', 'Left Arm', PartType.PartType.LeftArm, True),
-    ('RIGHT_ARM', 'Right Arm', PartType.PartType.RightArm, True),
-    ('HEAD', 'Head', PartType.PartType.Head, True),
+    ('BODY', 'Body', False),
+    ('LEGS', 'Legs', True),
+    ('LEFT_ARM', 'Left Arm', True),
+    ('RIGHT_ARM', 'Right Arm', True),
+    ('HEAD', 'Head', True),
 ]
 
 PART_TYPE_ITEMS = [
     (identifier, label, '')
-    for identifier, label, _flatbuffer_enum, _attachment_eligible in PART_TYPE_SPECS
+    for identifier, label, _attachment_eligible in PART_TYPE_SPECS
 ]
 ATTACHMENT_PART_TYPE_ITEMS = [
     (identifier, label, '')
-    for identifier, label, _flatbuffer_enum, attachment_eligible in PART_TYPE_SPECS
+    for identifier, label, attachment_eligible in PART_TYPE_SPECS
     if attachment_eligible
 ]
-PART_TYPE_TO_FLATBUFFER = {
-    identifier: flatbuffer_enum
-    for identifier, _label, flatbuffer_enum, _attachment_eligible in PART_TYPE_SPECS
-}
 
 class Component_Part(Component):
     type_name = 'PART'
     label = 'Part'
+    fb_t = GameplayComponentPart.GameplayComponentPartT
+    fb_enums = {'part_type': PartType.PartType}
 
     part_type: EnumProperty(
         name="Part Type",
@@ -2774,35 +2749,6 @@ class Component_Part(Component):
         update=gameplay_component_property_update,
     )
 
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        shoulder = builder.CreateString(self.ik_shoulder_bone)
-        elbow = builder.CreateString(self.ik_elbow_bone)
-        hand = builder.CreateString(self.ik_hand_bone)
-        left_hip = builder.CreateString(self.ik_left_hip_bone)
-        left_knee = builder.CreateString(self.ik_left_knee_bone)
-        left_hock = builder.CreateString(self.ik_left_hock_bone)
-        left_foot = builder.CreateString(self.ik_left_foot_bone)
-        right_hip = builder.CreateString(self.ik_right_hip_bone)
-        right_knee = builder.CreateString(self.ik_right_knee_bone)
-        right_hock = builder.CreateString(self.ik_right_hock_bone)
-        right_foot = builder.CreateString(self.ik_right_foot_bone)
-        GameplayComponentPart.Start(builder)
-        GameplayComponentPart.AddIkShoulderBone(builder, shoulder)
-        GameplayComponentPart.AddIkElbowBone(builder, elbow)
-        GameplayComponentPart.AddIkHandBone(builder, hand)
-        GameplayComponentPart.AddIkLeftHipBone(builder, left_hip)
-        GameplayComponentPart.AddIkLeftKneeBone(builder, left_knee)
-        GameplayComponentPart.AddIkLeftHockBone(builder, left_hock)
-        GameplayComponentPart.AddIkLeftFootBone(builder, left_foot)
-        GameplayComponentPart.AddIkRightHipBone(builder, right_hip)
-        GameplayComponentPart.AddIkRightKneeBone(builder, right_knee)
-        GameplayComponentPart.AddIkRightHockBone(builder, right_hock)
-        GameplayComponentPart.AddIkRightFootBone(builder, right_foot)
-        GameplayComponentPart.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
-        return GameplayComponentPart.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentPart
 
 def weapon_muzzle_poll(self, obj):
     owner = getattr(self, "id_data", None)
@@ -2812,6 +2758,7 @@ def weapon_muzzle_poll(self, obj):
 class Component_Weapon(Component):
     type_name = 'WEAPON'
     label = 'Weapon'
+    fb_t = GameplayComponentWeapon.GameplayComponentWeaponT
 
     accepted_bone_label: StringProperty(
         name="Accepted Bone Label", default="Hand",
@@ -2819,8 +2766,7 @@ class Component_Weapon(Component):
     )
 
     rate_of_fire_seconds: FloatProperty(
-        name="Rate of Fire (Seconds)", default=0.0,
-        description="Seconds between shots while holding LMB; zero or less fires once per click",
+        name="Rate of Fire (Seconds)", description="Seconds between shots while holding LMB; zero or less fires once per click",
         update=gameplay_component_property_update,
     )
 
@@ -2831,9 +2777,8 @@ class Component_Weapon(Component):
         update=gameplay_component_property_update,
     )
 
-    def create_flatbuffers_value(self, builder, source_object=None,
-                                 dependency_graph=None, exporter=None, **_kwargs):
-        label = builder.CreateString(self.accepted_bone_label)
+    def to_flatbuffers_t(self, source_object=None, dependency_graph=None, exporter=None, **_context):
+        t = super().to_flatbuffers_t()
         muzzle = self.muzzle_object
         valid = bool(muzzle and source_object and muzzle.parent == source_object
                      and muzzle.parent_type == 'OBJECT')
@@ -2846,20 +2791,15 @@ class Component_Weapon(Component):
             local = local.to_4x4() if hasattr(local, 'to_4x4') else local
             location, rotation, _scale = local.decompose()
             local = MathMatrix.Translation(location) @ rotation.to_matrix().to_4x4()
-        local_fb = exporter.make_flatbuffer_matrix(builder, local)
-        GameplayComponentWeapon.Start(builder)
-        GameplayComponentWeapon.AddAcceptedBoneLabel(builder, label)
-        GameplayComponentWeapon.AddMuzzleLocalTransform(builder, local_fb)
-        GameplayComponentWeapon.AddMuzzleValid(builder, valid)
-        GameplayComponentWeapon.AddRateOfFireSeconds(builder, self.rate_of_fire_seconds)
-        return GameplayComponentWeapon.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentWeapon
+        t.muzzleLocalTransform = flatbuffers_matrix_t(exporter, local)
+        t.muzzleValid = valid
+        return t
 
 class Component_AttachmentPoint(Component):
     type_name = 'ATTACHMENT_POINT'
     label = 'Attachment Point'
+    fb_t = GameplayComponentAttachmentPoint.GameplayComponentAttachmentPointT
+    fb_enums = {'part_type': PartType.PartType}
 
     owner_part: PointerProperty(
         name="Owner Body",
@@ -2873,46 +2813,30 @@ class Component_AttachmentPoint(Component):
         update=gameplay_component_property_update,
     )
 
-    def create_flatbuffers_value(
-        self,
-        builder,
-        source_object=None,
-        dependency_graph=None,
-        exporter=None,
-        export_occurrence=None,
-    ):
+    def to_flatbuffers_t(self, source_object=None, dependency_graph=None, exporter=None,
+                         export_occurrence=None):
         resolved = exporter.resolve_attachment_point(
             source_object,
             self,
             dependency_graph,
             export_occurrence=export_occurrence,
         )
-        bone_name = builder.CreateString(resolved["bone_name"]) if resolved["bone_name"] else None
-        local_transform = exporter.make_flatbuffer_matrix(builder, resolved["local_transform"])
-
-        GameplayComponentAttachmentPoint.Start(builder)
-        GameplayComponentAttachmentPoint.AddOwnerPartId(builder, resolved["owner_id"])
-        GameplayComponentAttachmentPoint.AddPartType(builder, PART_TYPE_TO_FLATBUFFER[self.part_type])
-        GameplayComponentAttachmentPoint.AddBindingType(builder, resolved["binding_type"])
-        GameplayComponentAttachmentPoint.AddArmatureId(builder, resolved["armature_id"])
-        if bone_name is not None:
-            GameplayComponentAttachmentPoint.AddBoneName(builder, bone_name)
-        GameplayComponentAttachmentPoint.AddLocalTransform(builder, local_transform)
-        GameplayComponentAttachmentPoint.AddValid(builder, resolved["valid"])
-        return GameplayComponentAttachmentPoint.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentAttachmentPoint
-
-PHYSICS_TYPE_TO_FLATBUFFER = {
-    'CONVEX': PhysicsType.PhysicsType.Convex,
-    'PER_POLY': PhysicsType.PhysicsType.PerPoly,
-}
+        t = super().to_flatbuffers_t()
+        t.ownerPartId = resolved["owner_id"]
+        t.bindingType = resolved["binding_type"]
+        t.armatureId = resolved["armature_id"]
+        t.boneName = resolved["bone_name"] or None
+        t.localTransform = flatbuffers_matrix_t(exporter, resolved["local_transform"])
+        t.valid = resolved["valid"]
+        return t
 
 class Component_Physics(Component):
     # Blender UI Info
     type_name = 'PHYSICS'
     label = 'Physics'
+    fb_t = GameplayComponentPhysics.GameplayComponentPhysicsT
+    fb_renames = {'physics_type': 'type'}
+    fb_enums = {'physics_type': PhysicsType.PhysicsType}
 
     # Properties
     physics_type: EnumProperty(
@@ -2927,58 +2851,36 @@ class Component_Physics(Component):
     is_dynamic: BoolProperty(
         name="Is Dynamic",
         description="Whether or not the object can move",
-        default=False,
         update=gameplay_component_property_update,
     )
     mass: FloatProperty(
         name="Mass",
         description="Mass in kg (dynamic objects only)",
-        default=1.0,
         min=0.001,
         update=gameplay_component_property_update,
     )
 
-    # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentPhysics.Start(builder)
-        GameplayComponentPhysics.AddType(builder, PHYSICS_TYPE_TO_FLATBUFFER[self.physics_type])
-        GameplayComponentPhysics.AddIsDynamic(builder, self.is_dynamic)
-        GameplayComponentPhysics.AddMass(builder, self.mass)
-        return GameplayComponentPhysics.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentPhysics
 
 class Component_Enemy(Component):
     # Blender UI Info
     type_name = 'ENEMY'
     label = 'Enemy'
+    fb_t = GameplayComponentEnemy.GameplayComponentEnemyT
 
     # Properties
     roam_radius: FloatProperty(
         name="Roam Radius",
         description="How far from its spawn point the enemy wanders",
-        default=15.0,
         min=0.0,
         update=gameplay_component_property_update,
     )
     engage_range: FloatProperty(
         name="Engage Range",
         description="Distance at which the enemy turns to aim and fire at the player",
-        default=40.0,
         min=0.0,
         update=gameplay_component_property_update,
     )
 
-    # Adds component to flatbuffers component list
-    def create_flatbuffers_value(self, builder, **_kwargs):
-        GameplayComponentEnemy.Start(builder)
-        GameplayComponentEnemy.AddRoamRadius(builder, self.roam_radius)
-        GameplayComponentEnemy.AddEngageRange(builder, self.engage_range)
-        return GameplayComponentEnemy.End(builder)
-
-    def get_flatbuffers_value_type(self):
-        return GameplayComponent.GameplayComponent().GameplayComponentEnemy
 
 COMPONENT_SPECS = [
     (Component_Character, 'player'),

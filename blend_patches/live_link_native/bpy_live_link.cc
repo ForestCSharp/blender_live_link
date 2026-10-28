@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -177,36 +178,6 @@ bool py_bool_attr(PyObject *object, const char *name, const bool default_value)
   return truth != 0;
 }
 
-float py_float_attr(PyObject *object, const char *name, const float default_value)
-{
-  PyPtr value(PyObject_GetAttrString(object, name));
-  if (!value) {
-    PyErr_Clear();
-    return default_value;
-  }
-  const double result = PyFloat_AsDouble(value);
-  if (PyErr_Occurred()) {
-    PyErr_Clear();
-    return default_value;
-  }
-  return float(result);
-}
-
-uint32_t py_uint_attr(PyObject *object, const char *name, const uint32_t default_value)
-{
-  PyPtr value(PyObject_GetAttrString(object, name));
-  if (!value) {
-    PyErr_Clear();
-    return default_value;
-  }
-  const unsigned long result = PyLong_AsUnsignedLong(value);
-  if (PyErr_Occurred() || result > UINT32_MAX) {
-    PyErr_Clear();
-    return default_value;
-  }
-  return uint32_t(result);
-}
-
 std::string py_string_attr(PyObject *object, const char *name, const char *default_value = "")
 {
   PyPtr value(PyObject_GetAttrString(object, name));
@@ -326,6 +297,8 @@ struct ExportRecordData {
   float matrix_world[4][4];
   ReferenceUidMap reference_uid_map;
   bool raw_object_input = false;
+  /* Blender.LiveLink.Object buffer holding only this object's components, packed by Python. */
+  std::string components_bytes;
 };
 
 int32_t remap_object_uid(const ReferenceUidMap &reference_uid_map, const Object *object)
@@ -467,6 +440,25 @@ bool export_record_from_py(PyObject *value,
       !reference_uid_map_from_record(value, r_record.reference_uid_map))
   {
     return false;
+  }
+
+  PyPtr components_bytes(PyObject_GetAttrString(value, "components_bytes"));
+  if (!components_bytes) {
+    return false;
+  }
+  char *components_data = nullptr;
+  Py_ssize_t components_size = 0;
+  if (PyBytes_AsStringAndSize(components_bytes.value, &components_data, &components_size) != 0) {
+    return false;
+  }
+  r_record.components_bytes.assign(components_data, size_t(components_size));
+  if (!r_record.components_bytes.empty()) {
+    flatbuffers::Verifier verifier(reinterpret_cast<const uint8_t *>(r_record.components_bytes.data()),
+                                   r_record.components_bytes.size());
+    if (!verifier.VerifyBuffer<ll::Object>(nullptr)) {
+      PyErr_SetString(PyExc_ValueError, "components_bytes must be a valid Blender.LiveLink.Object buffer");
+      return false;
+    }
   }
   return true;
 }
@@ -1216,420 +1208,6 @@ flatbuffers::Offset<ll::Light> export_light(flatbuffers::FlatBufferBuilder &buil
                          static_cast<const ll::SunLight *>(sun_ptr));
 }
 
-std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> export_gameplay_components(
-    flatbuffers::FlatBufferBuilder &builder,
-    PyObject *py_object,
-    Object *object,
-    Depsgraph *depsgraph,
-    const ReferenceUidMap &reference_uid_map)
-{
-  std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components_out;
-
-  PyPtr settings(PyObject_GetAttrString(py_object, "live_link_settings"));
-  if (!settings) {
-    PyErr_Clear();
-    return components_out;
-  }
-
-  PyPtr components(PyObject_GetAttrString(settings, "components"));
-  if (!components) {
-    PyErr_Clear();
-    return components_out;
-  }
-
-  PyPtr sequence(PySequence_Fast(components, "live_link_settings.components must be a sequence"));
-  if (!sequence) {
-    PyErr_Clear();
-    return components_out;
-  }
-
-  const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
-  components_out.reserve(size);
-  auto part_type_from_string = [](const std::string &value) {
-    if (value == "LEGS") return ll::PartType_Legs;
-    if (value == "LEFT_ARM") return ll::PartType_LeftArm;
-    if (value == "RIGHT_ARM") return ll::PartType_RightArm;
-    if (value == "HEAD") return ll::PartType_Head;
-    return ll::PartType_Body;
-  };
-
-  for (Py_ssize_t index = 0; index < size; index++) {
-    PyObject *component = PySequence_Fast_GET_ITEM(sequence.value, index);
-    const std::string type = py_string_attr(component, "type");
-    if (type == "CHARACTER") {
-      PyPtr player(PyObject_GetAttrString(component, "player"));
-      if (!player) {
-        PyErr_Clear();
-        continue;
-      }
-      const auto value = ll::CreateGameplayComponentCharacter(
-          builder,
-          py_bool_attr(player, "player_controlled", false),
-          py_float_attr(player, "move_speed", 20.0f),
-          py_float_attr(player, "jump_speed", 10.0f),
-          py_float_attr(player, "height", 6.0f),
-          py_float_attr(player, "radius", 1.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentCharacter, value.Union()));
-    }
-    else if (type == "CAMERA_CONTROL") {
-      PyPtr camera_control(PyObject_GetAttrString(component, "camera_control"));
-      if (!camera_control) {
-        PyErr_Clear();
-        continue;
-      }
-      const auto value = ll::CreateGameplayComponentCameraControl(
-          builder,
-          py_float_attr(camera_control, "follow_distance", 10.0f),
-          py_float_attr(camera_control, "follow_speed", 10.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentCameraControl, value.Union()));
-    }
-    else if (type == "FOG_CONTROLLER") {
-      PyPtr fog_controller(PyObject_GetAttrString(component, "fog_controller"));
-      if (!fog_controller) {
-        PyErr_Clear();
-        continue;
-      }
-      PyPtr fog_color_attr(PyObject_GetAttrString(fog_controller, "fog_color"));
-      float fog_color_values[3] = {0.55f, 0.65f, 0.75f};
-      if (fog_color_attr) {
-        PyPtr fog_color_sequence(PySequence_Fast(fog_color_attr, "fog_controller.fog_color must be a sequence"));
-        if (fog_color_sequence) {
-          const Py_ssize_t fog_color_size = PySequence_Fast_GET_SIZE(fog_color_sequence);
-          for (Py_ssize_t color_index = 0; color_index < fog_color_size && color_index < 3; color_index++) {
-            PyObject *color_value = PySequence_Fast_GET_ITEM(fog_color_sequence.value, color_index);
-            const double parsed_color = PyFloat_AsDouble(color_value);
-            if (!PyErr_Occurred()) {
-              fog_color_values[color_index] = float(parsed_color);
-            }
-            else {
-              PyErr_Clear();
-            }
-          }
-        }
-        else {
-          PyErr_Clear();
-        }
-      }
-      else {
-        PyErr_Clear();
-      }
-
-      const ll::Vec3 fog_color(fog_color_values[0], fog_color_values[1], fog_color_values[2]);
-      const auto value = ll::CreateGameplayComponentFogController(
-          builder,
-          py_bool_attr(fog_controller, "enabled", true),
-          py_float_attr(fog_controller, "density", 0.015f),
-          py_float_attr(fog_controller, "base_height", 0.0f),
-          py_float_attr(fog_controller, "scale_height", 25.0f),
-          py_float_attr(fog_controller, "max_distance", 500.0f),
-          py_bool_attr(fog_controller, "ceiling_enabled", false),
-          py_float_attr(fog_controller, "ceiling_height", 100.0f),
-          py_float_attr(fog_controller, "ceiling_fade", 25.0f),
-          &fog_color,
-          py_float_attr(fog_controller, "ambient_intensity", 0.4f),
-          py_float_attr(fog_controller, "sun_intensity", 1.0f),
-          py_float_attr(fog_controller, "anisotropy", 0.2f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentFogController, value.Union()));
-    }
-    else if (type == "SKY_ATMOSPHERE") {
-      PyPtr sky(PyObject_GetAttrString(component, "sky_atmosphere"));
-      if (!sky) {
-        PyErr_Clear();
-        continue;
-      }
-      float albedo_values[3] = {0.1f, 0.1f, 0.1f};
-      PyPtr albedo_attr(PyObject_GetAttrString(sky, "ground_albedo"));
-      PyPtr albedo_sequence(albedo_attr ?
-                                PySequence_Fast(albedo_attr, "sky_atmosphere.ground_albedo must be a sequence") :
-                                nullptr);
-      if (albedo_sequence) {
-        const Py_ssize_t albedo_size = PySequence_Fast_GET_SIZE(albedo_sequence);
-        for (Py_ssize_t color_index = 0; color_index < albedo_size && color_index < 3; color_index++) {
-          const double parsed = PyFloat_AsDouble(
-              PySequence_Fast_GET_ITEM(albedo_sequence.value, color_index));
-          if (!PyErr_Occurred()) albedo_values[color_index] = float(parsed);
-          else PyErr_Clear();
-        }
-      }
-      else {
-        PyErr_Clear();
-      }
-      const ll::Vec3 ground_albedo(albedo_values[0], albedo_values[1], albedo_values[2]);
-      const auto value = ll::CreateGameplayComponentSkyAtmosphere(
-          builder,
-          py_bool_attr(sky, "enabled", true),
-          py_float_attr(sky, "planet_center_z_m", -6360000.0f),
-          py_float_attr(sky, "air_density", 1.0f),
-          py_float_attr(sky, "aerosol_density", 1.0f),
-          py_float_attr(sky, "ozone_density", 1.0f),
-          &ground_albedo,
-          py_float_attr(sky, "sky_intensity", 1.0f),
-          py_float_attr(sky, "sun_disc_angular_diameter_degrees", 0.5357f),
-          py_float_attr(sky, "sun_disc_intensity", 1.0f),
-          py_float_attr(sky, "atmosphere_height_m", 60000.0f),
-          py_float_attr(sky, "rayleigh_scale_height_m", 8000.0f),
-          py_float_attr(sky, "mie_scale_height_m", 1200.0f),
-          py_float_attr(sky, "mie_anisotropy", 0.8f),
-          py_float_attr(sky, "max_sun_zenith_angle_degrees", 102.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentSkyAtmosphere, value.Union()));
-    }
-    else if (type == "CLOUD_SYSTEM") {
-      PyPtr cloud(PyObject_GetAttrString(component, "cloud_system"));
-      if (!cloud) {
-        PyErr_Clear();
-        continue;
-      }
-
-      auto cloud_profile_from_string = [](const std::string &profile) {
-        if (profile == "STRATUS") return ll::CloudLayerProfile_Stratus;
-        if (profile == "CUMULONIMBUS") return ll::CloudLayerProfile_Cumulonimbus;
-        if (profile == "CIRRUS") return ll::CloudLayerProfile_Cirrus;
-        return ll::CloudLayerProfile_Cumulus;
-      };
-      std::vector<flatbuffers::Offset<ll::CloudLayer>> layers;
-      PyPtr layers_attr(PyObject_GetAttrString(cloud, "layers"));
-      PyPtr layers_sequence(layers_attr ?
-                                PySequence_Fast(layers_attr, "cloud_system.layers must be a sequence") :
-                                nullptr);
-      if (layers_sequence) {
-        const Py_ssize_t layer_count = std::min<Py_ssize_t>(
-            PySequence_Fast_GET_SIZE(layers_sequence), 4);
-        layers.reserve(layer_count);
-        for (Py_ssize_t layer_index = 0; layer_index < layer_count; ++layer_index) {
-          PyObject *layer = PySequence_Fast_GET_ITEM(layers_sequence.value, layer_index);
-          layers.push_back(ll::CreateCloudLayer(
-              builder,
-              py_bool_attr(layer, "enabled", true),
-              cloud_profile_from_string(py_string_attr(layer, "profile", "CUMULUS")),
-              py_uint_attr(layer, "seed_offset", 0),
-              py_float_attr(layer, "base_altitude_m", 1800.0f),
-              py_float_attr(layer, "thickness_m", 3000.0f),
-              py_float_attr(layer, "coverage", 0.5f),
-              py_float_attr(layer, "density", 1.0f),
-              py_float_attr(layer, "shape_scale_m", 8000.0f),
-              py_float_attr(layer, "detail_scale_m", 1000.0f),
-              py_float_attr(layer, "erosion", 0.65f),
-              py_float_attr(layer, "anvil_bias", 0.1f),
-              py_float_attr(layer, "wind_multiplier", 1.0f),
-              py_float_attr(layer, "phase_forward", 0.75f),
-              py_float_attr(layer, "phase_backward", -0.25f),
-              py_float_attr(layer, "phase_blend", 0.8f),
-              py_float_attr(layer, "ambient_scale", 0.6f),
-              py_float_attr(layer, "multi_scattering_strength", 0.8f)));
-        }
-      }
-      else {
-        PyErr_Clear();
-      }
-
-      float wind_values[2] = {1.0f, 0.0f};
-      PyPtr wind_attr(PyObject_GetAttrString(cloud, "wind_direction"));
-      PyPtr wind_sequence(wind_attr ?
-                              PySequence_Fast(wind_attr, "cloud_system.wind_direction must be a sequence") :
-                              nullptr);
-      if (wind_sequence) {
-        for (Py_ssize_t axis = 0;
-             axis < PySequence_Fast_GET_SIZE(wind_sequence) && axis < 2;
-             ++axis)
-        {
-          const double parsed = PyFloat_AsDouble(
-              PySequence_Fast_GET_ITEM(wind_sequence.value, axis));
-          if (!PyErr_Occurred()) wind_values[axis] = float(parsed);
-          else PyErr_Clear();
-        }
-      }
-      else {
-        PyErr_Clear();
-      }
-      const ll::Vec2 wind_direction(wind_values[0], wind_values[1]);
-      const auto layers_fb = builder.CreateVector(layers);
-      const auto value = ll::CreateGameplayComponentCloudSystem(
-          builder,
-          py_bool_attr(cloud, "enabled", true),
-          py_uint_attr(cloud, "seed", 1),
-          py_float_attr(cloud, "weather_world_scale_m", 100000.0f),
-          &wind_direction,
-          py_float_attr(cloud, "wind_speed_m_s", 20.0f),
-          py_bool_attr(cloud, "shadow_enabled", true),
-          py_float_attr(cloud, "shadow_extent_m", 8000.0f),
-          layers_fb);
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentCloudSystem, value.Union()));
-    }
-    else if (type == "WEAPON") {
-      PyPtr weapon(PyObject_GetAttrString(component, "weapon"));
-      if (!weapon) {
-        PyErr_Clear();
-        continue;
-      }
-      float muzzle_local[4][4];
-      unit_m4(muzzle_local);
-      bool muzzle_valid = false;
-      PyPtr muzzle_py(PyObject_GetAttrString(weapon, "muzzle_object"));
-      Object *muzzle = muzzle_py && muzzle_py.value != Py_None ? object_from_py(muzzle_py) : nullptr;
-      if (muzzle && muzzle->parent == object && (muzzle->partype & PARTYPE) == PAROBJECT) {
-        Object *weapon_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
-        Object *muzzle_eval = depsgraph ? DEG_get_evaluated(depsgraph, muzzle) : muzzle;
-        float inverse_weapon[4][4];
-        invert_m4_m4(inverse_weapon, weapon_eval->object_to_world().ptr());
-        mul_m4_m4m4(muzzle_local, inverse_weapon, muzzle_eval->object_to_world().ptr());
-        normalize_m4(muzzle_local);
-        muzzle_valid = true;
-      }
-      else if (!muzzle_py) {
-        PyErr_Clear();
-      }
-      const auto value = ll::CreateGameplayComponentWeapon(
-          builder, builder.CreateString(py_string_attr(weapon, "accepted_bone_label", "Hand")),
-          create_matrix(builder, muzzle_local), muzzle_valid,
-          py_float_attr(weapon, "rate_of_fire_seconds", 0.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentWeapon, value.Union()));
-    }
-    else if (type == "PHYSICS") {
-      PyPtr physics(PyObject_GetAttrString(component, "physics"));
-      if (!physics) {
-        PyErr_Clear();
-        continue;
-      }
-      const auto value = ll::CreateGameplayComponentPhysics(
-          builder,
-          py_string_attr(physics, "physics_type", "CONVEX") == "PER_POLY" ? ll::PhysicsType_PerPoly :
-                                                                            ll::PhysicsType_Convex,
-          py_bool_attr(physics, "is_dynamic", false),
-          py_float_attr(physics, "mass", 1.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentPhysics, value.Union()));
-    }
-    else if (type == "ENEMY") {
-      PyPtr enemy(PyObject_GetAttrString(component, "enemy"));
-      if (!enemy) {
-        PyErr_Clear();
-        continue;
-      }
-      const auto value = ll::CreateGameplayComponentEnemy(
-          builder,
-          py_float_attr(enemy, "roam_radius", 15.0f),
-          py_float_attr(enemy, "engage_range", 40.0f));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentEnemy, value.Union()));
-    }
-    else if (type == "PART") {
-      PyPtr part(PyObject_GetAttrString(component, "part"));
-      if (!part) {
-        PyErr_Clear();
-        continue;
-      }
-      const auto value = ll::CreateGameplayComponentPart(
-          builder, part_type_from_string(py_string_attr(part, "part_type", "BODY")),
-          builder.CreateString(py_string_attr(part, "ik_shoulder_bone", "")),
-          builder.CreateString(py_string_attr(part, "ik_elbow_bone", "")),
-          builder.CreateString(py_string_attr(part, "ik_hand_bone", "")));
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentPart, value.Union()));
-    }
-    else if (type == "ATTACHMENT_POINT") {
-      PyPtr attachment(PyObject_GetAttrString(component, "attachment_point"));
-      if (!attachment) {
-        PyErr_Clear();
-        continue;
-      }
-
-      PyPtr owner_py(PyObject_GetAttrString(attachment, "owner_part"));
-      Object *owner = owner_py && owner_py.value != Py_None ? object_from_py(owner_py) : nullptr;
-      const int32_t owner_id = remap_object_uid(reference_uid_map, owner);
-      const ll::PartType part_type = part_type_from_string(
-          py_string_attr(attachment, "part_type", "LEGS"));
-      ll::AttachmentBindingType binding_type = ll::AttachmentBindingType_Object;
-      int32_t armature_id = -1;
-      const char *bone_name = "";
-      bool valid = false;
-
-      float local_transform[4][4];
-      copy_m4_m4(local_transform, object->object_to_world().ptr());
-
-      bool owner_is_body = false;
-      if (owner_py && owner_py.value != Py_None) {
-        PyPtr owner_settings(PyObject_GetAttrString(owner_py, "live_link_settings"));
-        PyPtr owner_components(owner_settings ? PyObject_GetAttrString(owner_settings, "components") : nullptr);
-        PyPtr owner_sequence(owner_components ?
-                                 PySequence_Fast(owner_components,
-                                                 "owner live_link_settings.components must be a sequence") :
-                                 nullptr);
-        if (owner_sequence) {
-          const Py_ssize_t owner_component_count = PySequence_Fast_GET_SIZE(owner_sequence);
-          for (Py_ssize_t owner_component_index = 0;
-               owner_component_index < owner_component_count;
-               owner_component_index++)
-          {
-            PyObject *owner_component = PySequence_Fast_GET_ITEM(owner_sequence.value,
-                                                                  owner_component_index);
-            if (py_string_attr(owner_component, "type") != "PART") continue;
-            PyPtr owner_part(PyObject_GetAttrString(owner_component, "part"));
-            owner_is_body = owner_part && py_string_attr(owner_part, "part_type") == "BODY";
-            if (owner_is_body) break;
-          }
-        }
-        else {
-          PyErr_Clear();
-        }
-      }
-
-      Object *object_eval = depsgraph ? DEG_get_evaluated(depsgraph, object) : object;
-      if (owner && owner_is_body && object->parent == owner &&
-          (object->partype & PARTYPE) == PAROBJECT)
-      {
-        Object *owner_eval = depsgraph ? DEG_get_evaluated(depsgraph, owner) : owner;
-        float inverse_owner_world[4][4];
-        invert_m4_m4(inverse_owner_world, owner_eval->object_to_world().ptr());
-        mul_m4_m4m4(local_transform, inverse_owner_world, object_eval->object_to_world().ptr());
-        valid = true;
-      }
-      else if (owner && owner_is_body && object->parent &&
-               (object->partype & PARTYPE) == PARBONE)
-      {
-        Object *armature = object->parent;
-        Object *owner_armature = mesh_armature_object(owner);
-        binding_type = ll::AttachmentBindingType_Bone;
-        armature_id = remap_object_uid(reference_uid_map, armature);
-        bone_name = object->parsubstr;
-        if (armature == owner_armature && bone_name[0] != '\0') {
-          Object *armature_eval = depsgraph ? DEG_get_evaluated(depsgraph, armature) : armature;
-          bPoseChannel *pose_channel = armature_eval->pose ?
-                                           BKE_pose_channel_find_name(armature_eval->pose, bone_name) :
-                                           nullptr;
-          if (pose_channel) {
-            float bone_world[4][4];
-            float inverse_bone_world[4][4];
-            mul_m4_m4m4(bone_world, armature_eval->object_to_world().ptr(), pose_channel->pose_mat);
-            invert_m4_m4(inverse_bone_world, bone_world);
-            mul_m4_m4m4(local_transform, inverse_bone_world, object_eval->object_to_world().ptr());
-            valid = true;
-          }
-        }
-      }
-
-      const auto value = ll::CreateGameplayComponentAttachmentPoint(
-          builder,
-          owner_id,
-          part_type,
-          binding_type,
-          armature_id,
-          bone_name[0] != '\0' ? builder.CreateString(bone_name) : 0,
-          create_matrix(builder, local_transform),
-          valid);
-      components_out.push_back(ll::CreateGameplayComponentContainer(
-          builder, ll::GameplayComponent_GameplayComponentAttachmentPoint, value.Union()));
-    }
-  }
-
-  return components_out;
-}
-
 flatbuffers::Offset<ll::Armature> export_armature(flatbuffers::FlatBufferBuilder &builder,
                                                   Object *armature_object,
                                                   Main *bmain,
@@ -1694,7 +1272,6 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
                                               Main *bmain,
                                               ReferencedMaterials &referenced_materials)
 {
-  PyObject *py_object = record.py_object;
   Object *object = record.object;
   Object *evaluation_object = record.evaluation_object;
   Depsgraph *depsgraph = record.depsgraph;
@@ -1732,8 +1309,17 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
   flatbuffers::Offset<ll::Light> light_fb = export_light(builder, object_eval);
 
 
-  std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components =
-      export_gameplay_components(builder, py_object, object, depsgraph, record.reference_uid_map);
+  /* Python owns component serialization; offsets can't cross builders, so round-trip through the object API. */
+  std::vector<flatbuffers::Offset<ll::GameplayComponentContainer>> components;
+  if (!record.components_bytes.empty()) {
+    const auto *python_components = flatbuffers::GetRoot<ll::Object>(record.components_bytes.data())->components();
+    if (python_components) {
+      for (const ll::GameplayComponentContainer *component : *python_components) {
+        const std::unique_ptr<ll::GameplayComponentContainerT> unpacked(component->UnPack());
+        components.push_back(ll::CreateGameplayComponentContainer(builder, unpacked.get()));
+      }
+    }
+  }
   const auto components_fb = components.empty() ? 0 : builder.CreateVector(components);
 
   return ll::CreateObject(builder,
@@ -2767,192 +2353,12 @@ void compare_component(DiffList &diffs,
     return;
   }
   compare_exact(diffs, path + ".value_type", int(native_value->value_type()), int(python_value->value_type()));
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCharacter &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentCharacter)
-  {
-    const ll::GameplayComponentCharacter *native_character = native_value->value_as_GameplayComponentCharacter();
-    const ll::GameplayComponentCharacter *python_character = python_value->value_as_GameplayComponentCharacter();
-    compare_exact(diffs, path + ".character.present", native_character != nullptr, python_character != nullptr);
-    if (native_character && python_character) {
-      compare_exact(diffs, path + ".character.player_controlled", native_character->player_controlled(), python_character->player_controlled());
-      compare_float(diffs, path + ".character.move_speed", native_character->move_speed(), python_character->move_speed());
-      compare_float(diffs, path + ".character.jump_speed", native_character->jump_speed(), python_character->jump_speed());
-      compare_float(diffs, path + ".character.height", native_character->height(), python_character->height());
-      compare_float(diffs, path + ".character.radius", native_character->radius(), python_character->radius());
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCameraControl &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentCameraControl)
-  {
-    const ll::GameplayComponentCameraControl *native_camera = native_value->value_as_GameplayComponentCameraControl();
-    const ll::GameplayComponentCameraControl *python_camera = python_value->value_as_GameplayComponentCameraControl();
-    compare_exact(diffs, path + ".camera_control.present", native_camera != nullptr, python_camera != nullptr);
-    if (native_camera && python_camera) {
-      compare_float(diffs, path + ".camera_control.follow_distance", native_camera->follow_distance(), python_camera->follow_distance());
-      compare_float(diffs, path + ".camera_control.follow_speed", native_camera->follow_speed(), python_camera->follow_speed());
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentFogController &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentFogController)
-  {
-    const ll::GameplayComponentFogController *native_fog = native_value->value_as_GameplayComponentFogController();
-    const ll::GameplayComponentFogController *python_fog = python_value->value_as_GameplayComponentFogController();
-    compare_exact(diffs, path + ".fog_controller.present", native_fog != nullptr, python_fog != nullptr);
-    if (native_fog && python_fog) {
-      compare_exact(diffs, path + ".fog_controller.enabled", native_fog->enabled(), python_fog->enabled());
-      compare_float(diffs, path + ".fog_controller.density", native_fog->density(), python_fog->density());
-      compare_float(diffs, path + ".fog_controller.base_height", native_fog->base_height(), python_fog->base_height());
-      compare_float(diffs, path + ".fog_controller.scale_height", native_fog->scale_height(), python_fog->scale_height());
-      compare_float(diffs, path + ".fog_controller.max_distance", native_fog->max_distance(), python_fog->max_distance());
-      compare_exact(diffs, path + ".fog_controller.ceiling_enabled", native_fog->ceiling_enabled(), python_fog->ceiling_enabled());
-      compare_float(diffs, path + ".fog_controller.ceiling_height", native_fog->ceiling_height(), python_fog->ceiling_height());
-      compare_float(diffs, path + ".fog_controller.ceiling_fade", native_fog->ceiling_fade(), python_fog->ceiling_fade());
-      compare_vec3(diffs, path + ".fog_controller.fog_color", native_fog->fog_color(), python_fog->fog_color());
-      compare_float(diffs, path + ".fog_controller.ambient_intensity", native_fog->ambient_intensity(), python_fog->ambient_intensity());
-      compare_float(diffs, path + ".fog_controller.sun_intensity", native_fog->sun_intensity(), python_fog->sun_intensity());
-      compare_float(diffs, path + ".fog_controller.anisotropy", native_fog->anisotropy(), python_fog->anisotropy());
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentSkyAtmosphere &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentSkyAtmosphere)
-  {
-    const ll::GameplayComponentSkyAtmosphere *native_sky = native_value->value_as_GameplayComponentSkyAtmosphere();
-    const ll::GameplayComponentSkyAtmosphere *python_sky = python_value->value_as_GameplayComponentSkyAtmosphere();
-    compare_exact(diffs, path + ".sky.present", native_sky != nullptr, python_sky != nullptr);
-    if (native_sky && python_sky) {
-      compare_exact(diffs, path + ".sky.enabled", native_sky->enabled(), python_sky->enabled());
-      compare_float(diffs, path + ".sky.planet_center_z_m", native_sky->planet_center_z_m(), python_sky->planet_center_z_m());
-      compare_float(diffs, path + ".sky.air_density", native_sky->air_density(), python_sky->air_density());
-      compare_float(diffs, path + ".sky.aerosol_density", native_sky->aerosol_density(), python_sky->aerosol_density());
-      compare_float(diffs, path + ".sky.ozone_density", native_sky->ozone_density(), python_sky->ozone_density());
-      compare_vec3(diffs, path + ".sky.ground_albedo", native_sky->ground_albedo(), python_sky->ground_albedo());
-      compare_float(diffs, path + ".sky.sky_intensity", native_sky->sky_intensity(), python_sky->sky_intensity());
-      compare_float(diffs, path + ".sky.sun_disc_angular_diameter_degrees", native_sky->sun_disc_angular_diameter_degrees(), python_sky->sun_disc_angular_diameter_degrees());
-      compare_float(diffs, path + ".sky.sun_disc_intensity", native_sky->sun_disc_intensity(), python_sky->sun_disc_intensity());
-      compare_float(diffs, path + ".sky.atmosphere_height_m", native_sky->atmosphere_height_m(), python_sky->atmosphere_height_m());
-      compare_float(diffs, path + ".sky.rayleigh_scale_height_m", native_sky->rayleigh_scale_height_m(), python_sky->rayleigh_scale_height_m());
-      compare_float(diffs, path + ".sky.mie_scale_height_m", native_sky->mie_scale_height_m(), python_sky->mie_scale_height_m());
-      compare_float(diffs, path + ".sky.mie_anisotropy", native_sky->mie_anisotropy(), python_sky->mie_anisotropy());
-      compare_float(diffs, path + ".sky.max_sun_zenith_angle_degrees", native_sky->max_sun_zenith_angle_degrees(), python_sky->max_sun_zenith_angle_degrees());
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentCloudSystem &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentCloudSystem)
-  {
-    const ll::GameplayComponentCloudSystem *native_cloud =
-        native_value->value_as_GameplayComponentCloudSystem();
-    const ll::GameplayComponentCloudSystem *python_cloud =
-        python_value->value_as_GameplayComponentCloudSystem();
-    compare_exact(diffs, path + ".cloud.present", native_cloud != nullptr, python_cloud != nullptr);
-    if (native_cloud && python_cloud) {
-      compare_exact(diffs, path + ".cloud.enabled", native_cloud->enabled(), python_cloud->enabled());
-      compare_exact(diffs, path + ".cloud.seed", native_cloud->seed(), python_cloud->seed());
-      compare_float(diffs, path + ".cloud.weather_world_scale_m", native_cloud->weather_world_scale_m(), python_cloud->weather_world_scale_m());
-      compare_exact(diffs, path + ".cloud.wind_direction.present", native_cloud->wind_direction() != nullptr, python_cloud->wind_direction() != nullptr);
-      if (native_cloud->wind_direction() && python_cloud->wind_direction()) {
-        compare_float(diffs, path + ".cloud.wind_direction.x", native_cloud->wind_direction()->x(), python_cloud->wind_direction()->x());
-        compare_float(diffs, path + ".cloud.wind_direction.y", native_cloud->wind_direction()->y(), python_cloud->wind_direction()->y());
-      }
-      compare_float(diffs, path + ".cloud.wind_speed_m_s", native_cloud->wind_speed_m_s(), python_cloud->wind_speed_m_s());
-      compare_exact(diffs, path + ".cloud.shadow_enabled", native_cloud->shadow_enabled(), python_cloud->shadow_enabled());
-      compare_float(diffs, path + ".cloud.shadow_extent_m", native_cloud->shadow_extent_m(), python_cloud->shadow_extent_m());
-      const size_t native_layer_count = native_cloud->layers() ? native_cloud->layers()->size() : 0;
-      const size_t python_layer_count = python_cloud->layers() ? python_cloud->layers()->size() : 0;
-      compare_exact(diffs, path + ".cloud.layers.length", native_layer_count, python_layer_count);
-      for (size_t layer_index = 0;
-           layer_index < std::min(native_layer_count, python_layer_count);
-           ++layer_index)
-      {
-        const ll::CloudLayer *a = native_cloud->layers()->Get(layer_index);
-        const ll::CloudLayer *b = python_cloud->layers()->Get(layer_index);
-        const std::string layer_path = path + ".cloud.layers[" + std::to_string(layer_index) + "]";
-        compare_exact(diffs, layer_path + ".enabled", a->enabled(), b->enabled());
-        compare_exact(diffs, layer_path + ".profile", int(a->profile()), int(b->profile()));
-        compare_exact(diffs, layer_path + ".seed_offset", a->seed_offset(), b->seed_offset());
-        compare_float(diffs, layer_path + ".base_altitude_m", a->base_altitude_m(), b->base_altitude_m());
-        compare_float(diffs, layer_path + ".thickness_m", a->thickness_m(), b->thickness_m());
-        compare_float(diffs, layer_path + ".coverage", a->coverage(), b->coverage());
-        compare_float(diffs, layer_path + ".density", a->density(), b->density());
-        compare_float(diffs, layer_path + ".shape_scale_m", a->shape_scale_m(), b->shape_scale_m());
-        compare_float(diffs, layer_path + ".detail_scale_m", a->detail_scale_m(), b->detail_scale_m());
-        compare_float(diffs, layer_path + ".erosion", a->erosion(), b->erosion());
-        compare_float(diffs, layer_path + ".anvil_bias", a->anvil_bias(), b->anvil_bias());
-        compare_float(diffs, layer_path + ".wind_multiplier", a->wind_multiplier(), b->wind_multiplier());
-        compare_float(diffs, layer_path + ".phase_forward", a->phase_forward(), b->phase_forward());
-        compare_float(diffs, layer_path + ".phase_backward", a->phase_backward(), b->phase_backward());
-        compare_float(diffs, layer_path + ".phase_blend", a->phase_blend(), b->phase_blend());
-        compare_float(diffs, layer_path + ".ambient_scale", a->ambient_scale(), b->ambient_scale());
-        compare_float(diffs, layer_path + ".multi_scattering_strength", a->multi_scattering_strength(), b->multi_scattering_strength());
-      }
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentWeapon &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentWeapon)
-  {
-    const auto *native_weapon = native_value->value_as_GameplayComponentWeapon();
-    const auto *python_weapon = python_value->value_as_GameplayComponentWeapon();
-    compare_string(diffs, path + ".weapon.accepted_bone_label",
-                   fb_string(native_weapon->accepted_bone_label()),
-                   fb_string(python_weapon->accepted_bone_label()));
-    compare_matrix(diffs, path + ".weapon.muzzle_local_transform",
-                   native_weapon->muzzle_local_transform(), python_weapon->muzzle_local_transform(), 1e-4);
-    compare_exact(diffs, path + ".weapon.muzzle_valid",
-                  native_weapon->muzzle_valid(), python_weapon->muzzle_valid());
-    compare_float(diffs, path + ".weapon.rate_of_fire_seconds",
-                  native_weapon->rate_of_fire_seconds(), python_weapon->rate_of_fire_seconds());
-    return;
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPhysics &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentPhysics)
-  {
-    const auto *native_physics = native_value->value_as_GameplayComponentPhysics();
-    const auto *python_physics = python_value->value_as_GameplayComponentPhysics();
-    compare_exact(diffs, path + ".physics.type",
-                  static_cast<int>(native_physics->type()), static_cast<int>(python_physics->type()));
-    compare_exact(diffs, path + ".physics.is_dynamic",
-                  native_physics->is_dynamic(), python_physics->is_dynamic());
-    compare_float(diffs, path + ".physics.mass", native_physics->mass(), python_physics->mass());
-    return;
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentEnemy &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentEnemy)
-  {
-    const auto *native_enemy = native_value->value_as_GameplayComponentEnemy();
-    const auto *python_enemy = python_value->value_as_GameplayComponentEnemy();
-    compare_float(diffs, path + ".enemy.roam_radius", native_enemy->roam_radius(), python_enemy->roam_radius());
-    compare_float(diffs, path + ".enemy.engage_range", native_enemy->engage_range(), python_enemy->engage_range());
-    return;
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentPart &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentPart)
-  {
-    const ll::GameplayComponentPart *native_part = native_value->value_as_GameplayComponentPart();
-    const ll::GameplayComponentPart *python_part = python_value->value_as_GameplayComponentPart();
-    compare_exact(diffs, path + ".part.present", native_part != nullptr, python_part != nullptr);
-    if (native_part && python_part) {
-      compare_exact(diffs, path + ".part.part_type", int(native_part->part_type()), int(python_part->part_type()));
-      compare_string(diffs, path + ".part.ik_shoulder_bone", fb_string(native_part->ik_shoulder_bone()), fb_string(python_part->ik_shoulder_bone()));
-      compare_string(diffs, path + ".part.ik_elbow_bone", fb_string(native_part->ik_elbow_bone()), fb_string(python_part->ik_elbow_bone()));
-      compare_string(diffs, path + ".part.ik_hand_bone", fb_string(native_part->ik_hand_bone()), fb_string(python_part->ik_hand_bone()));
-    }
-  }
-  if (native_value->value_type() == ll::GameplayComponent_GameplayComponentAttachmentPoint &&
-      python_value->value_type() == ll::GameplayComponent_GameplayComponentAttachmentPoint)
-  {
-    const ll::GameplayComponentAttachmentPoint *native_attachment =
-        native_value->value_as_GameplayComponentAttachmentPoint();
-    const ll::GameplayComponentAttachmentPoint *python_attachment =
-        python_value->value_as_GameplayComponentAttachmentPoint();
-    compare_exact(diffs, path + ".attachment.present", native_attachment != nullptr, python_attachment != nullptr);
-    if (native_attachment && python_attachment) {
-      compare_exact(diffs, path + ".attachment.owner_part_id", native_attachment->owner_part_id(), python_attachment->owner_part_id());
-      compare_exact(diffs, path + ".attachment.part_type", int(native_attachment->part_type()), int(python_attachment->part_type()));
-      compare_exact(diffs, path + ".attachment.binding_type", int(native_attachment->binding_type()), int(python_attachment->binding_type()));
-      compare_exact(diffs, path + ".attachment.armature_id", native_attachment->armature_id(), python_attachment->armature_id());
-      compare_string(diffs, path + ".attachment.bone_name", fb_string(native_attachment->bone_name()), fb_string(python_attachment->bone_name()));
-      compare_matrix(diffs, path + ".attachment.local_transform", native_attachment->local_transform(), python_attachment->local_transform(), 1e-4);
-      compare_exact(diffs, path + ".attachment.valid", native_attachment->valid(), python_attachment->valid());
-    }
+  /* Both exporters ship bytes packed by the same Python code, so any difference is a copy bug. */
+  const std::unique_ptr<ll::GameplayComponentContainerT> native_unpacked(native_value->UnPack());
+  const std::unique_ptr<ll::GameplayComponentContainerT> python_unpacked(python_value->UnPack());
+  if (!(*native_unpacked == *python_unpacked)) {
+    diffs.add(path + "." + ll::EnumNameGameplayComponent(native_value->value_type()) +
+              ": native and python component values differ");
   }
 }
 

@@ -401,11 +401,11 @@ prepare_flatbuffers_and_schemas() {
 		# compile schema for cpp
 		touch compiled_schemas/__init__.py || exit
 		echo "FLATC IS $FLATC_BINARY"
-		"$FLATC_BINARY" -o compiled_schemas/cpp --cpp blender_live_link.fbs || exit
+		"$FLATC_BINARY" -o compiled_schemas/cpp --cpp --gen-object-api --gen-compare blender_live_link.fbs || exit
 
 		mkdir -p compiled_schemas/python || exit
 		touch compiled_schemas/python/__init__.py || exit
-		"$FLATC_BINARY" -o compiled_schemas/python --python blender_live_link.fbs || exit
+		"$FLATC_BINARY" -o compiled_schemas/python --python --gen-object-api blender_live_link.fbs || exit
 
 		# copy flatbuffers python package
 		cp -a flatbuffers/python/flatbuffers/. compiled_schemas/python/flatbuffers || exit
@@ -440,6 +440,9 @@ rewrite_python_schema_imports() {
 		s/^from flatbuffers\.compat import import_numpy$/from ...flatbuffers.compat import import_numpy/mg;
 		s/^(\s*)from flatbuffers\.table import Table$/${1}from ...flatbuffers.table import Table/mg;
 		s/^(\s*)from Blender\.LiveLink\.([A-Za-z_][A-Za-z0-9_]*) import ([A-Za-z_][A-Za-z0-9_]*)$/${1}from .${2} import ${3}/mg;
+		# Object-API modules import siblings absolutely and name them fully qualified; alias so a sibling never shadows a class defined in the same module
+		s/^(\s*)import Blender\.LiveLink\.([A-Za-z_][A-Za-z0-9_]*)$/${1}from . import ${2} as _ll_${2}/mg;
+		s/\bBlender\.LiveLink\.([A-Za-z_][A-Za-z0-9_]*)\./_ll_${1}./g;
 	' "$schema_dir"/*.py || return
 }
 

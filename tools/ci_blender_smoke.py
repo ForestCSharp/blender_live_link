@@ -86,16 +86,24 @@ def validate_compression_registries(extension_module) -> None:
     if extension_module.TYPE_TO_GROUP != dict(expected_components):
         raise AssertionError("Component type-to-group mapping diverged from COMPONENT_SPECS")
 
+    part_type = extension_module.PartType.PartType
     expected_parts = [
-        ("BODY", "Body", extension_module.PartType.PartType.Body, False),
-        ("LEGS", "Legs", extension_module.PartType.PartType.Legs, True),
-        ("LEFT_ARM", "Left Arm", extension_module.PartType.PartType.LeftArm, True),
-        ("RIGHT_ARM", "Right Arm", extension_module.PartType.PartType.RightArm, True),
-        ("HEAD", "Head", extension_module.PartType.PartType.Head, True),
+        ("BODY", "Body", False),
+        ("LEGS", "Legs", True),
+        ("LEFT_ARM", "Left Arm", True),
+        ("RIGHT_ARM", "Right Arm", True),
+        ("HEAD", "Head", True),
     ]
     if extension_module.PART_TYPE_SPECS != expected_parts:
-        raise AssertionError("Part registry identifiers or wire mappings changed")
-    expected_attachment_ids = [spec[0] for spec in expected_parts if spec[3]]
+        raise AssertionError("Part registry identifiers changed")
+    expected_wire = [part_type.Body, part_type.Legs, part_type.LeftArm, part_type.RightArm, part_type.Head]
+    actual_wire = [
+        getattr(part_type, extension_module.flatbuffers_enum_name(identifier))
+        for identifier, _label, _eligible in expected_parts
+    ]
+    if actual_wire != expected_wire:
+        raise AssertionError("Part identifiers no longer map to their wire values")
+    expected_attachment_ids = [spec[0] for spec in expected_parts if spec[2]]
     actual_attachment_ids = [
         identifier
         for identifier, _label, _description in extension_module.ATTACHMENT_PART_TYPE_ITEMS

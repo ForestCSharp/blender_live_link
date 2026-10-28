@@ -57,8 +57,12 @@ The Blender extension provides the UI, operators, connection management, and
 packaging in both modes. The build mode controls where the
 `Blender.LiveLink.Update` FlatBuffer bytes are created: either by native C++
 compiled into a local Blender build, or by the Python exporter code bundled with
-the extension. Schema changes must therefore be made in both exporters
-(`extension_main.py` and `blend_patches/live_link_native/bpy_live_link.cc`).
+the extension. Mesh, armature, material, image, and light schema changes must
+therefore be made in both exporters (`extension_main.py` and
+`blend_patches/live_link_native/bpy_live_link.cc`). Gameplay components are
+written only by Python: a new component field is one schema line plus one
+Blender property of the same name, which takes its default from the schema,
+and the native exporter copies the Python-packed component bytes.
 The runtime owns accepted payload data after import and updates
 its object, material, image, lighting, skinning, and debug-stat resources from
 each batch.
