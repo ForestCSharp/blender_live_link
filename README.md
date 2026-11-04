@@ -62,7 +62,9 @@ therefore be made in both exporters (`extension_main.py` and
 `blend_patches/live_link_native/bpy_live_link.cc`). Gameplay components are
 written only by Python: a new component field is one schema line plus one
 Blender property of the same name, which takes its default from the schema,
-and the native exporter copies the Python-packed component bytes.
+and the native exporter copies the Python-packed component bytes. The copy
+goes through the compiled C++ schema, so native Blender must be rebuilt
+(`./build.sh` does this incrementally) before a new field survives it.
 The runtime owns accepted payload data after import and updates
 its object, material, image, lighting, skinning, and debug-stat resources from
 each batch.
