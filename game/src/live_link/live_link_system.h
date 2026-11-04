@@ -280,10 +280,13 @@ namespace LiveLinkSystem
 					.metallic = material->metallic(),
 					.roughness = material->roughness(),
 					.emission_strength = material->emission_strength(),
+					.displacement_scale = material->displacement_scale(),
+					.displacement_midpoint = material->displacement_midpoint(),
 					.base_color_image_id = material->base_color_image_id(),
 					.emission_color_image_id = material->emission_color_image_id(),
 					.metallic_image_id = material->metallic_image_id(),
 					.roughness_image_id = material->roughness_image_id(),
+					.displacement_image_id = material->displacement_image_id(),
 				};
 				if (auto base_color = material->base_color())
 				{
@@ -849,6 +852,17 @@ namespace LiveLinkSystem
 								};
 								break;
 							}
+							case Blender::LiveLink::GameplayComponent_GameplayComponentTessellation:
+							{
+								const auto* tessellation_component = reinterpret_cast<const Blender::LiveLink::GameplayComponentTessellation*>(component);
+								game_object.has_tessellation = true;
+								game_object.tessellation = (TessellationSettings) {
+									.displacement_scale = std::isfinite(tessellation_component->displacement_scale())
+										? MAX(tessellation_component->displacement_scale(), 0.0f) : 1.0f,
+									.max_factor_override = CLAMP(tessellation_component->max_factor_override(), 0, 31),
+								};
+								break;
+							}
 							case Blender::LiveLink::GameplayComponent_GameplayComponentCameraControl:
 							{
 								using Blender::LiveLink::GameplayComponentCameraControl;
@@ -1210,6 +1224,9 @@ namespace LiveLinkSystem
 			.emission_color_image_index = -1,
 			.metallic_image_index = -1,
 			.roughness_image_index = -1,
+			.displacement_image_index = -1,
+			.displacement_scale = in_pending.displacement_scale,
+			.displacement_midpoint = in_pending.displacement_midpoint,
 		};
 	
 		// Resolve image ids -> bindless indices (images in the same update were
@@ -1234,6 +1251,7 @@ namespace LiveLinkSystem
 		material.emission_color_image_index = resolve_image_index(in_pending.emission_color_image_id);
 		material.metallic_image_index = resolve_image_index(in_pending.metallic_image_id);
 		material.roughness_image_index = resolve_image_index(in_pending.roughness_image_id);
+		material.displacement_image_index = resolve_image_index(in_pending.displacement_image_id);
 
 		// Material mirrors a std430 struct with explicit padding, so memcmp is exact.
 		Material* slot = is_new ? nullptr : &state.materials.items[existing->second];

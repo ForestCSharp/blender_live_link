@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "core/timings.h"
+#include "render/core/frame_data.h"
 #include "render/core/frame_render_graph.h"
 #include "render/core/fullscreen_pipeline.h"
 #include "state/state.h"
@@ -18,8 +19,13 @@ namespace Tessellation
 		i32 count = 0;
 		i32 base_index = 0;
 		f32 phong_strength = 0.0f;
-		i32 padding0 = 0;
+		i32 material_index = -1;
+		f32 displacement_texel_step = 0.0f;
+		f32 object_scale = 1.0f;
+		i32 displacement_enabled = 0;
+		f32 displacement_strength = 1.0f;
 	};
+	static_assert(sizeof(ComputeParams) == 32, "ComputeParams shader layout mismatch");
 
 	struct PlanParams
 	{
@@ -35,12 +41,12 @@ namespace Tessellation
 		i32 virtual_patch_max_depth = 0;
 		i32 tessellation_mode = 0;
 		i32 fixed_factor = 1;
-		i32 plan_padding0 = 0;
-		i32 plan_padding1 = 0;
+		i32 material_index = -1;
+		i32 displacement_enabled = 0;
 		f32 fov_radians = 0.0f;
 		f32 render_height = 0.0f;
 		f32 target_pixels_per_segment = 1.0f;
-		f32 padding0 = 0.0f;
+		f32 displacement_detail_strength = 0.0f;
 	};
 	static_assert(sizeof(PlanParams) == 144, "PlanParams shader layout mismatch");
 
@@ -95,6 +101,11 @@ namespace Tessellation
 			.shader_path = shader_path,
 			.bindings = bindings.data(),
 			.binding_count = binding_count,
+			// Set 1 = the per-frame scene set, for material + displacement map
+			// access. Every tessellation shader includes tessellation_common.h
+			// and therefore declares it, so all of them take the layout even
+			// when only the planner and vertex emitter sample from it.
+			.global_set_layout = frame_data.per_frame_layout,
 		});
 	}
 
@@ -127,6 +138,9 @@ namespace Tessellation
 		}
 		writer.commit();
 		effect.bind(ctx, writer.set);
+		// Set 1: materials + bindless textures for displacement sampling. The
+		// per-frame set is already written for this frame by frame_data_update.
+		effect.bind_global_set(ctx, frame_data.per_frame_sets[ctx->frame_index]);
 	}
 
 	// Only pay for the diagnostics copy when something will actually display it.
@@ -215,9 +229,55 @@ namespace Tessellation
 		return true;
 	}
 
+	// Material backing this mesh's displacement. Mirrors
+	// object_make_render_data's choice of the first material index, so the
+	// displacement the tessellator applies matches the material the raster
+	// passes shade with. -1 when the mesh has no material.
+	inline i32 displacement_material_index(const Object& object)
+	{
+		return object.mesh.material_indices_count > 0
+			? object.mesh.material_indices[0] : -1;
+	}
+
+	// Largest axis scale of the object transform. Displacement is authored in
+	// world units but applied to local-space positions, so the shader divides
+	// this out. The max (rather than per-axis) keeps the offset uniform along
+	// the normal for non-uniformly scaled objects.
+	inline f32 object_uniform_scale(const Object& object)
+	{
+		const HMM_Vec3 scale = object.current_transform.scale;
+		return MAX(MAX(fabsf(scale.X), fabsf(scale.Y)), fabsf(scale.Z));
+	}
+
+	// True when this mesh should sample a displacement map at all. Texcoords
+	// are required: without UVs there is nothing to look the height up with.
+	inline bool displacement_active(const State& state, const Object& object)
+	{
+		return state.tessellation.displacement_enabled
+			&& state.tessellation.displacement_strength != 0.0f
+			&& object.tessellation.displacement_scale != 0.0f
+			&& displacement_material_index(object) >= 0;
+	}
+
+	// Global displacement strength folded with this object's own multiplier.
+	inline f32 object_displacement_strength(const State& state, const Object& object)
+	{
+		return state.tessellation.displacement_strength
+			* object.tessellation.displacement_scale;
+	}
+
+	// The object's max factor, honouring its override when it set one.
+	inline u32 object_max_factor(const State& state, const Object& object)
+	{
+		const i32 requested = object.tessellation.max_factor_override > 0
+			? object.tessellation.max_factor_override : state.tessellation.max_factor;
+		return CLAMP((u32) requested, 1u, MAX_FACTOR);
+	}
+
 	inline PlanParams make_plan_params(State& state, Object& object, const Camera& camera,
 		f32 fov, TessellatedGeometry::GpuSlot& slot, u32 triangle_count, u32 base_triangle)
 	{
+		const bool displacement = displacement_active(state, object);
 		return (PlanParams) {
 			.model_matrix = transform_matrix(object.current_transform),
 			.camera_position = HMM_V4V(camera.location, 1.0f),
@@ -226,14 +286,39 @@ namespace Tessellation
 			.max_patch_count = (i32) slot.patch_capacity,
 			.max_vertex_count = (i32) slot.vertex_capacity,
 			.max_index_count = (i32) slot.index_capacity,
-			.max_factor = state.tessellation.max_factor,
+			.max_factor = (i32) object_max_factor(state, object),
 			.virtual_patches_enabled = state.tessellation.virtual_patches_enabled ? 1 : 0,
 			.virtual_patch_max_depth = state.tessellation.virtual_patch_max_depth,
 			.tessellation_mode = (i32) state.tessellation.mode,
 			.fixed_factor = state.tessellation.fixed_factor,
+			.material_index = displacement ? displacement_material_index(object) : -1,
+			.displacement_enabled = displacement ? 1 : 0,
 			.fov_radians = fov,
 			.render_height = (f32) state.window.render_height,
 			.target_pixels_per_segment = state.tessellation.target_pixels_per_segment,
+			// Relief is measured from the material's own scale, so the global
+			// strength multiplier has to be folded in here for the planner to
+			// judge the height the emitter will actually apply.
+			.displacement_detail_strength = displacement
+				? state.tessellation.displacement_detail_strength
+					* fabsf(object_displacement_strength(state, object))
+				: 0.0f,
+		};
+	}
+
+	inline ComputeParams make_compute_params(State& state, Object& object,
+		u32 patch_capacity, u32 base_index)
+	{
+		const bool displacement = displacement_active(state, object);
+		return (ComputeParams) {
+			.count = (i32) patch_capacity,
+			.base_index = (i32) base_index,
+			.phong_strength = state.tessellation.phong_strength,
+			.material_index = displacement ? displacement_material_index(object) : -1,
+			.displacement_texel_step = state.tessellation.displacement_normal_texel_step,
+			.object_scale = object_uniform_scale(object),
+			.displacement_enabled = displacement ? 1 : 0,
+			.displacement_strength = object_displacement_strength(state, object),
 		};
 	}
 
@@ -270,7 +355,7 @@ namespace Tessellation
 		if (slot_idx >= TessellatedGeometry::GPU_SLOT_COUNT) { return tessellated.active; }
 
 		const u32 triangle_count = mesh.index_count / 3;
-		const u32 max_factor = CLAMP((u32) state.tessellation.max_factor, 1u, MAX_FACTOR);
+		const u32 max_factor = object_max_factor(state, object);
 		u32 patch_capacity, vertex_capacity, index_capacity;
 		if (!adaptive)
 		{
@@ -372,9 +457,8 @@ namespace Tessellation
 			for (u32 base = 0; base < patch_capacity;
 				base += MAX_COMPUTE_GROUPS_PER_DISPATCH)
 			{
-				ComputeParams params = { .count = (i32) patch_capacity,
-					.base_index = (i32) base,
-					.phong_strength = state.tessellation.phong_strength };
+				ComputeParams params = make_compute_params(
+					state, object, patch_capacity, base);
 				VkBuffer vertex_buffers[] = { source_vertex_buffer, source_index_buffer,
 					patch_buffer, vertex_buffer, counters_buffer };
 				bind_set(ctx, emit_vertices.effect, vertex_buffers, 5);
@@ -458,7 +542,9 @@ namespace Tessellation
 	inline void consume_stats(VulkanContext* ctx, State& state)
 	{
 		if (!stats_wanted(state)) { return; }
-		for (i32 object_id : state.scene.indexes.mesh_object_ids)
+		// Only opted-in objects ever issue a readback, so the rest cannot have
+		// one pending.
+		for (i32 object_id : state.scene.indexes.tessellation_object_ids)
 		{
 			auto found = state.scene.objects.find(object_id);
 			if (found == state.scene.objects.end()) { continue; }
@@ -497,8 +583,15 @@ namespace Tessellation
 		scene_ensure_indexes(state);
 		consume_stats(ctx, state);
 		reset_stats(state);
-		state.data_oriented.frame.tessellation_candidate_count += (i32) state.scene.indexes.mesh_object_ids.length();
-		if (!state.tessellation.enabled)
+		// Candidates are the opted-in objects, not every mesh: an object with
+		// no Tessellation component is not a candidate that got rejected, it
+		// was never in the running.
+		state.data_oriented.frame.tessellation_candidate_count += (i32) state.scene.indexes.tessellation_object_ids.length();
+		// Deactivate across every mesh, not just opted-in ones. An object that
+		// just lost its component (or the whole feature being switched off)
+		// must stop drawing its stale tessellated buffers; walking only the
+		// opt-in index here would leave them active forever.
+		if (!state.tessellation.enabled || state.scene.indexes.tessellation_object_ids.length() == 0)
 		{
 			for (i32 object_id : state.scene.indexes.mesh_object_ids)
 			{
@@ -509,6 +602,12 @@ namespace Tessellation
 		}
 		CPU_TIMING_SCOPE("Tessellation Update");
 		for (i32 object_id : state.scene.indexes.mesh_object_ids)
+		{
+			auto found = state.scene.objects.find(object_id);
+			if (found == state.scene.objects.end() || found->second.has_tessellation) { continue; }
+			found->second.mesh.tessellated_geometry.active = false;
+		}
+		for (i32 object_id : state.scene.indexes.tessellation_object_ids)
 		{
 			auto found = state.scene.objects.find(object_id);
 			if (found == state.scene.objects.end()) { continue; }
@@ -533,6 +632,7 @@ namespace Tessellation
 	inline void shutdown(VulkanContext* ctx)
 	{
 		if (!initialized) { return; }
+		write_draw_commands.shutdown(ctx);
 		emit_indices.shutdown(ctx);
 		emit_vertices.shutdown(ctx);
 		plan_patches.shutdown(ctx);

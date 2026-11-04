@@ -53,6 +53,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentCloudSyst
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentWeapon
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPhysics
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentEnemy
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentTessellation
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import CloudLayer
 from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
@@ -1811,6 +1812,9 @@ class LiveLinkConnection():
                     self.emission_color = (0.0,0.0,0.0,0.0)
                     self.emission_color_image_id = None
                     self.emission_strength = 0.0
+                    self.displacement_image_id = None
+                    self.displacement_scale = 0.0
+                    self.displacement_midpoint = 0.5
 
 
 
@@ -1860,6 +1864,33 @@ class LiveLinkConnection():
                     material_data.emission_color_image_id = extract_image_id(emission_color_input)
                     material_data.emission_strength = emission_strength_input.default_value
 
+                # Displacement is not a Principled BSDF input - it hangs off the
+                # Material Output node's Displacement socket, usually through a
+                # Displacement node (Height/Midlevel/Scale) but sometimes as a
+                # bare image. Handle both so a plain height map still exports.
+                output_node = material.node_tree.nodes.get("Material Output")
+                displacement_input = (
+                    output_node.inputs.get("Displacement") if output_node else None
+                )
+                if displacement_input and displacement_input.is_linked:
+                    displacement_node = displacement_input.links[0].from_node
+                    if displacement_node.type == 'DISPLACEMENT':
+                        height_input = displacement_node.inputs["Height"]
+                        material_data.displacement_image_id = extract_image_id(height_input)
+                        material_data.displacement_scale = (
+                            displacement_node.inputs["Scale"].default_value)
+                        material_data.displacement_midpoint = (
+                            displacement_node.inputs["Midlevel"].default_value)
+                    else:
+                        # Image wired straight into Displacement: no scale node
+                        # to read, so fall back to a 1-unit default the runtime
+                        # (and the UI's global strength) can scale down.
+                        material_data.displacement_image_id = extract_image_id(
+                            displacement_input)
+                        if material_data.displacement_image_id is not None:
+                            material_data.displacement_scale = 1.0
+                            material_data.displacement_midpoint = 0.5
+
             # End current flatbuffers Material and add to list
 
             # Need to create Material Name String before starting material table
@@ -1896,6 +1927,12 @@ class LiveLinkConnection():
             if material_data.emission_color_image_id is not None:
                 Material.AddEmissionColorImageId(builder, material_data.emission_color_image_id)
             Material.AddEmissionStrength(builder, material_data.emission_strength)
+
+            # Displacement (height map for runtime GPU tessellation)
+            if material_data.displacement_image_id is not None:
+                Material.AddDisplacementImageId(builder, material_data.displacement_image_id)
+            Material.AddDisplacementScale(builder, material_data.displacement_scale)
+            Material.AddDisplacementMidpoint(builder, material_data.displacement_midpoint)
 
             flatbuffer_material = Material.End(builder)
             flatbuffer_materials.append(flatbuffer_material)
@@ -2882,6 +2919,32 @@ class Component_Enemy(Component):
     )
 
 
+class Component_Tessellation(Component):
+    # Blender UI Info
+    type_name = 'TESSELLATION'
+    label = 'Tessellation'
+    fb_t = GameplayComponentTessellation.GameplayComponentTessellationT
+
+    # Properties
+    displacement_scale: FloatProperty(
+        name="Displacement Scale",
+        description="Multiplies this object's displacement height on top of the "
+                    "material and global strength",
+        default=1.0,
+        min=0.0,
+        update=gameplay_component_property_update,
+    )
+    max_factor_override: IntProperty(
+        name="Max Factor Override",
+        description="Overrides the global maximum tessellation factor for this "
+                    "object. 0 keeps the global value",
+        default=0,
+        min=0,
+        max=31,
+        update=gameplay_component_property_update,
+    )
+
+
 COMPONENT_SPECS = [
     (Component_Character, 'player'),
     (Component_CameraControl, 'camera_control'),
@@ -2893,6 +2956,7 @@ COMPONENT_SPECS = [
     (Component_CloudSystem, 'cloud_system'),
     (Component_Physics, 'physics'),
     (Component_Enemy, 'enemy'),
+    (Component_Tessellation, 'tessellation'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -2922,6 +2986,7 @@ class ComponentContainer(PropertyGroup):
     cloud_system:   PointerProperty(type=Component_CloudSystem)
     physics:        PointerProperty(type=Component_Physics)
     enemy:          PointerProperty(type=Component_Enemy)
+    tessellation:   PointerProperty(type=Component_Tessellation)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(

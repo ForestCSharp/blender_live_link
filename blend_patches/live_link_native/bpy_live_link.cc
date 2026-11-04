@@ -1345,6 +1345,9 @@ struct MaterialExportData {
   ll::Vec4 emission_color = ll::Vec4(0.0f, 0.0f, 0.0f, 0.0f);
   int32_t emission_color_image_id = 0;
   float emission_strength = 0.0f;
+  int32_t displacement_image_id = 0;
+  float displacement_scale = 0.0f;
+  float displacement_midpoint = 0.5f;
 };
 
 const bNode *find_principled_bsdf(const Material &material)
@@ -1417,33 +1420,79 @@ int32_t linked_image_id(const bNodeSocket *socket, ReferencedImages &referenced_
   return referenced_images.add(reinterpret_cast<Image *>(from_node->id), image_user_ptr);
 }
 
+const bNode *find_material_output(const Material &material)
+{
+  if (!material.nodetree) {
+    return nullptr;
+  }
+  for (const bNode *node = static_cast<const bNode *>(material.nodetree->nodes.first); node;
+       node = node->next)
+  {
+    if (node->type_legacy == SH_NODE_OUTPUT_MATERIAL ||
+        std::strcmp(node->idname, "ShaderNodeOutputMaterial") == 0)
+    {
+      return node;
+    }
+  }
+  return nullptr;
+}
+
 MaterialExportData extract_material_data(const Material &material,
                                          ReferencedImages &referenced_images)
 {
   MaterialExportData data;
   const bNode *bsdf = find_principled_bsdf(material);
-  if (!bsdf) {
-    return data;
+  if (bsdf) {
+    const bNodeSocket *base_color = find_input_socket(*bsdf, "Base Color");
+    data.base_color = socket_rgba_default(base_color, data.base_color);
+    data.base_color_image_id = linked_image_id(base_color, referenced_images);
+
+    const bNodeSocket *metallic = find_input_socket(*bsdf, "Metallic");
+    data.metallic = socket_float_default(metallic, data.metallic);
+    data.metallic_image_id = linked_image_id(metallic, referenced_images);
+
+    const bNodeSocket *roughness = find_input_socket(*bsdf, "Roughness");
+    data.roughness = socket_float_default(roughness, data.roughness);
+    data.roughness_image_id = linked_image_id(roughness, referenced_images);
+
+    const bNodeSocket *emission_color = find_input_socket(*bsdf, "Emission Color");
+    data.emission_color = socket_rgba_default(emission_color, data.emission_color);
+    data.emission_color_image_id = linked_image_id(emission_color, referenced_images);
+
+    const bNodeSocket *emission_strength = find_input_socket(*bsdf, "Emission Strength");
+    data.emission_strength = socket_float_default(emission_strength, data.emission_strength);
   }
 
-  const bNodeSocket *base_color = find_input_socket(*bsdf, "Base Color");
-  data.base_color = socket_rgba_default(base_color, data.base_color);
-  data.base_color_image_id = linked_image_id(base_color, referenced_images);
-
-  const bNodeSocket *metallic = find_input_socket(*bsdf, "Metallic");
-  data.metallic = socket_float_default(metallic, data.metallic);
-  data.metallic_image_id = linked_image_id(metallic, referenced_images);
-
-  const bNodeSocket *roughness = find_input_socket(*bsdf, "Roughness");
-  data.roughness = socket_float_default(roughness, data.roughness);
-  data.roughness_image_id = linked_image_id(roughness, referenced_images);
-
-  const bNodeSocket *emission_color = find_input_socket(*bsdf, "Emission Color");
-  data.emission_color = socket_rgba_default(emission_color, data.emission_color);
-  data.emission_color_image_id = linked_image_id(emission_color, referenced_images);
-
-  const bNodeSocket *emission_strength = find_input_socket(*bsdf, "Emission Strength");
-  data.emission_strength = socket_float_default(emission_strength, data.emission_strength);
+  /* Displacement is not a Principled BSDF input: it is wired into the Material
+   * Output node's Displacement socket, normally via a Displacement node
+   * carrying Height/Midlevel/Scale. Extracted independently of the BSDF so a
+   * material with only a displacement chain still exports it. */
+  if (const bNode *output_node = find_material_output(material)) {
+    const bNodeSocket *displacement = find_input_socket(*output_node, "Displacement");
+    if (displacement && displacement->link && displacement->link->fromnode) {
+      const bNode *displacement_node = displacement->link->fromnode;
+      const bool is_displacement_node =
+          displacement_node->type_legacy == SH_NODE_DISPLACEMENT ||
+          std::strcmp(displacement_node->idname, "ShaderNodeDisplacement") == 0;
+      if (is_displacement_node) {
+        const bNodeSocket *height = find_input_socket(*displacement_node, "Height");
+        data.displacement_image_id = linked_image_id(height, referenced_images);
+        data.displacement_scale = socket_float_default(
+            find_input_socket(*displacement_node, "Scale"), data.displacement_scale);
+        data.displacement_midpoint = socket_float_default(
+            find_input_socket(*displacement_node, "Midlevel"), data.displacement_midpoint);
+      }
+      else {
+        /* Image wired straight into Displacement: no scale node to read, so
+         * default to one unit and let the runtime's global strength tune it. */
+        data.displacement_image_id = linked_image_id(displacement, referenced_images);
+        if (data.displacement_image_id != 0) {
+          data.displacement_scale = 1.0f;
+          data.displacement_midpoint = 0.5f;
+        }
+      }
+    }
+  }
 
   return data;
 }
@@ -1532,7 +1581,10 @@ flatbuffers::Offset<ll::Material> export_material(flatbuffers::FlatBufferBuilder
                             data.roughness_image_id,
                             &data.emission_color,
                             data.emission_color_image_id,
-                            data.emission_strength);
+                            data.emission_strength,
+                            data.displacement_image_id,
+                            data.displacement_scale,
+                            data.displacement_midpoint);
 }
 
 struct DiffList {

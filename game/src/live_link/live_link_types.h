@@ -31,12 +31,15 @@ struct PendingMaterial
 	f32 metallic = 0.0f;
 	f32 roughness = 0.5f;
 	f32 emission_strength = 0.0f;
+	f32 displacement_scale = 0.0f;
+	f32 displacement_midpoint = 0.5f;
 
 	// Raw flatbuffer image ids (0 = none); resolved to indices at drain
 	i32 base_color_image_id = 0;
 	i32 emission_color_image_id = 0;
 	i32 metallic_image_id = 0;
 	i32 roughness_image_id = 0;
+	i32 displacement_image_id = 0;
 };
 
 struct SceneUpdate

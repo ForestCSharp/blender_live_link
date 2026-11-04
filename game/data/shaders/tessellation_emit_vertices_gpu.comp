@@ -6,7 +6,11 @@ layout(push_constant) uniform cs_params {
 	int count;
 	int base_index;
 	float phong_strength;
-	int padding0;
+	int material_index;
+	float displacement_texel_step;
+	float object_scale;
+	int displacement_enabled;
+	float displacement_strength;
 };
 
 layout(set=0, binding=0, std430) readonly buffer GpuSourceVerticesBuffer {
@@ -34,6 +38,12 @@ layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
 /**
  * emit_vertices_gpu builds the generated vertex grid for each planned patch.
  * It remaps patch-local barycentrics through the patch domain, applies edge LOD morphing, and writes interpolated vertex attributes.
+ *
+ * This is also where displacement is applied: the extra vertices tessellation
+ * creates are only worth their cost if something moves them off the source
+ * plane, and the material's height map is that something. Normals are rebuilt
+ * from the height gradient so the added detail lights correctly instead of
+ * showing up only in the silhouette.
  */
 void main()
 {
@@ -66,6 +76,28 @@ void main()
 	vec3 domain_p1 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u1, tess_patch.domain_v1));
 	vec3 domain_p2 = tess_source_position_from_uv(p0, p1, p2, vec2(tess_patch.domain_u2, tess_patch.domain_v2));
 
+	// Resolve displacement once per patch: the material and the source
+	// triangle's tangent frame are constant across the whole grid, so only the
+	// per-vertex height sample has to happen in the loop below.
+	bool apply_displacement = displacement_enabled != 0 && material_index >= 0
+		&& displacement_strength != 0.0;
+	Material material;
+	vec3 tangent_u = vec3(0.0);
+	vec3 tangent_v = vec3(0.0);
+	bool has_tangent_frame = false;
+	if (apply_displacement)
+	{
+		material = material_data_array[material_index];
+		apply_displacement = material_has_displacement(material);
+		if (apply_displacement)
+		{
+			has_tangent_frame = tess_source_tangents(
+				p0, p1, p2,
+				v0.texcoord, v1.texcoord, v2.texcoord,
+				tangent_u, tangent_v);
+		}
+	}
+
 	for (uint local_vertex_index = gl_LocalInvocationID.x; local_vertex_index < tess_patch.vertex_count; local_vertex_index += gl_WorkGroupSize.x)
 	{
 		uint row, col;
@@ -83,10 +115,32 @@ void main()
 			phong_project(linear_position, p1, v1.normal.xyz) * source_b1 +
 			phong_project(linear_position, p2, v2.normal.xyz) * source_b2;
 
+		vec3 position = mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0));
+		vec3 normal = normalize(v0.normal.xyz * source_b0 + v1.normal.xyz * source_b1 + v2.normal.xyz * source_b2);
+		vec2 texcoord = v0.texcoord * source_b0 + v1.texcoord * source_b1 + v2.texcoord * source_b2;
+
+		if (apply_displacement)
+		{
+			// Displace along the smooth (pre-displacement) normal, then derive
+			// the new normal from the height field. Order matters: using the
+			// rebuilt normal to displace would feed the gradient back into
+			// itself.
+			position = tess_apply_displacement(
+				position, normal, texcoord, material, object_scale,
+				displacement_strength);
+			if (has_tangent_frame)
+			{
+				normal = tess_displaced_normal(
+					normal, texcoord, tangent_u, tangent_v, material,
+					object_scale, displacement_strength,
+					displacement_texel_step);
+			}
+		}
+
 		TessellationVertex out_vertex;
-		out_vertex.position = vec4(mix(linear_position, projected_position, clamp(phong_strength, 0.0, 1.0)), 1.0);
-		out_vertex.normal = vec4(normalize(v0.normal.xyz * source_b0 + v1.normal.xyz * source_b1 + v2.normal.xyz * source_b2), 0.0);
-		out_vertex.texcoord = v0.texcoord * source_b0 + v1.texcoord * source_b1 + v2.texcoord * source_b2;
+		out_vertex.position = vec4(position, 1.0);
+		out_vertex.normal = vec4(normal, 0.0);
+		out_vertex.texcoord = texcoord;
 		out_vertex.padding0 = 0.0;
 		out_vertex.padding1 = 0.0;
 		gpu_generated_vertices[tess_patch.generated_vertex_offset + local_vertex_index] = out_vertex;

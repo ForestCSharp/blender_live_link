@@ -1,6 +1,14 @@
 #ifndef GAME2_TESSELLATION_COMMON_H
 #define GAME2_TESSELLATION_COMMON_H
 
+// Tessellation compute shaders own descriptor set 0 for their storage buffers,
+// so the shared scene resources (materials + bindless textures, needed for
+// displacement sampling) are bound at set 1 instead. Must be defined before
+// shader_common.h declares them. No effect in the C++ branch.
+#if !defined(__cplusplus)
+#define SHADER_COMMON_SET 1
+#endif
+
 #include "shader_common.h"
 
 #if defined(__cplusplus)
@@ -339,6 +347,209 @@ vec3 phong_project(vec3 p, vec3 source_position, vec3 source_normal)
 {
 	vec3 n = normalize(source_normal);
 	return p - dot(p - source_position, n) * n;
+}
+
+/**
+ * Displaces a generated vertex along its normal by the material's height map.
+ *
+ * The offset is applied in local space while displacement_scale is authored in
+ * world units, so the model matrix's scale is divided out. Without this a
+ * scaled object would displace by its scale factor, and non-uniformly scaled
+ * objects would displace differently per axis.
+ *
+ * strength is the global scene-wide multiplier on top of the material's own
+ * scale, letting the effect be tuned or switched off without editing materials.
+ */
+vec3 tess_apply_displacement(
+	vec3 local_position,
+	vec3 local_normal,
+	vec2 texcoord,
+	Material material,
+	float object_scale,
+	float strength)
+{
+	float height = material_sample_displacement(material, texcoord) * strength;
+	if (height == 0.0)
+	{
+		return local_position;
+	}
+	return local_position
+		+ normalize(local_normal) * (height / max(object_scale, 0.0001));
+}
+
+/**
+ * Rebuilds a normal for a displaced vertex by finite-differencing the height
+ * map across the surface tangent frame.
+ *
+ * Displacement that moves positions but leaves normals alone produces visible
+ * geometry with flat lighting - the detail is in the silhouette but not in the
+ * shading. Sampling two neighbor heights in UV space recovers the slope the
+ * displacement introduced.
+ *
+ * texel_step is the UV distance to the neighbor samples; it should be about one
+ * texel of the height map so the gradient matches the map's real frequency.
+ */
+vec3 tess_displaced_normal(
+	vec3 local_normal,
+	vec2 texcoord,
+	vec3 tangent_u,
+	vec3 tangent_v,
+	Material material,
+	float object_scale,
+	float strength,
+	float texel_step)
+{
+	if (!material_has_displacement(material) || strength == 0.0)
+	{
+		return normalize(local_normal);
+	}
+
+	float height_multiplier = strength / max(object_scale, 0.0001);
+	float step_uv = max(texel_step, 0.0001);
+	float height_center = material_sample_displacement(material, texcoord) * height_multiplier;
+	float height_u = material_sample_displacement(
+		material, texcoord + vec2(step_uv, 0.0)) * height_multiplier;
+	float height_v = material_sample_displacement(
+		material, texcoord + vec2(0.0, step_uv)) * height_multiplier;
+
+	vec3 n = normalize(local_normal);
+	// Degenerate UVs (zero-area in texture space) leave no frame to differentiate
+	// against; keep the interpolated normal rather than producing garbage.
+	if (dot(tangent_u, tangent_u) < 1e-12 || dot(tangent_v, tangent_v) < 1e-12)
+	{
+		return n;
+	}
+
+	// Walk along each tangent to the neighbor sample and lift by its height.
+	// The cross product of the two resulting edges is the displaced normal.
+	vec3 edge_u = tangent_u * step_uv + n * (height_u - height_center);
+	vec3 edge_v = tangent_v * step_uv + n * (height_v - height_center);
+	vec3 displaced = cross(edge_u, edge_v);
+	if (dot(displaced, displaced) < 1e-16)
+	{
+		return n;
+	}
+	displaced = normalize(displaced);
+	// Keep the original facing: cross order depends on UV winding, which can be
+	// mirrored per triangle.
+	return dot(displaced, n) < 0.0 ? -displaced : displaced;
+}
+
+/**
+ * Surface tangents for a source triangle, i.e. the local-space directions that
+ * one unit of U and one unit of V move along the surface.
+ *
+ * Solves the standard 2x2 UV-to-position system. Returns false when the
+ * triangle has no area in UV space, leaving the outputs untouched.
+ */
+bool tess_source_tangents(
+	vec3 p0, vec3 p1, vec3 p2,
+	vec2 uv0, vec2 uv1, vec2 uv2,
+	out vec3 tangent_u,
+	out vec3 tangent_v)
+{
+	vec3 edge1 = p1 - p0;
+	vec3 edge2 = p2 - p0;
+	vec2 duv1 = uv1 - uv0;
+	vec2 duv2 = uv2 - uv0;
+
+	float determinant = duv1.x * duv2.y - duv2.x * duv1.y;
+	if (abs(determinant) < 1e-12)
+	{
+		tangent_u = vec3(0.0);
+		tangent_v = vec3(0.0);
+		return false;
+	}
+
+	float inv_determinant = 1.0 / determinant;
+	tangent_u = (edge1 * duv2.y - edge2 * duv1.y) * inv_determinant;
+	tangent_v = (edge2 * duv1.x - edge1 * duv2.x) * inv_determinant;
+	return true;
+}
+
+/**
+ * Peak-to-trough displacement relief along a single edge, in world units.
+ *
+ * Deliberately a function of the edge's two endpoints only. Edge LODs decide
+ * where boundary vertices land (tess_morph_oriented_edge_coord), so two patches
+ * sharing an edge must compute the identical value or the shared boundary
+ * cracks. Sampling the edge alone - rather than the triangle it belongs to -
+ * is what makes the two agree.
+ *
+ * Direction-invariance is structural, not incidental: a neighbour traverses the
+ * shared edge with uv_a/uv_b swapped, and mix() is not bitwise symmetric, so
+ * individual tap coordinates DO differ by an ULP or so. It does not matter
+ * because the tap parameters (0, .25, .5, .75, 1) are symmetric about 0.5 -
+ * both directions visit the same point set - and min/max over a set is
+ * order-free. Keep the taps symmetric and the endpoint count odd if this is
+ * ever retuned; an asymmetric pattern would reintroduce cracks.
+ */
+float tess_displacement_relief_edge(Material material, vec2 uv_a, vec2 uv_b)
+{
+	if (!material_has_displacement(material))
+	{
+		return 0.0;
+	}
+
+	float lowest = 0.0;
+	float highest = 0.0;
+	// 5 evenly spaced taps including both endpoints: symmetric under a<->b.
+	for (int tap_index = 0; tap_index < 5; ++tap_index)
+	{
+		float t = float(tap_index) * 0.25;
+		float height = material_sample_displacement(material, mix(uv_a, uv_b, t));
+		lowest = min(lowest, height);
+		highest = max(highest, height);
+	}
+	return highest - lowest;
+}
+
+/**
+ * Peak absolute displacement height across a source triangle, in world units.
+ *
+ * Used by the planner to decide how much tessellation a triangle deserves: a
+ * triangle whose height map is flat gains nothing from subdivision regardless
+ * of how large it is on screen, while one crossing a tall feature needs enough
+ * vertices to actually resolve it. Samples a small fixed barycentric pattern -
+ * cheap, and enough to catch whether any relief exists at all.
+ *
+ * Unlike the per-edge version this covers patch interiors, so it may only ever
+ * raise tess_factor, never an edge LOD.
+ */
+float tess_displacement_relief(
+	Material material,
+	vec2 uv0,
+	vec2 uv1,
+	vec2 uv2)
+{
+	if (!material_has_displacement(material))
+	{
+		return 0.0;
+	}
+
+	// Corners, edge midpoints, and the centroid: 7 taps over the triangle.
+	const vec3 barycentric_taps[7] = vec3[7](
+		vec3(1.0, 0.0, 0.0),
+		vec3(0.0, 1.0, 0.0),
+		vec3(0.0, 0.0, 1.0),
+		vec3(0.5, 0.5, 0.0),
+		vec3(0.0, 0.5, 0.5),
+		vec3(0.5, 0.0, 0.5),
+		vec3(0.3333333, 0.3333333, 0.3333333));
+
+	float lowest = 0.0;
+	float highest = 0.0;
+	for (int tap_index = 0; tap_index < 7; ++tap_index)
+	{
+		vec3 weights = barycentric_taps[tap_index];
+		vec2 uv = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
+		float height = material_sample_displacement(material, uv);
+		lowest = min(lowest, height);
+		highest = max(highest, height);
+	}
+	// The spread matters, not the absolute offset: a triangle sitting on a
+	// uniformly raised plateau is still flat and still needs no subdivision.
+	return highest - lowest;
 }
 
 #endif

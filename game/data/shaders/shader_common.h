@@ -101,8 +101,12 @@ struct SunLightData		// 64 bytes
 	vec4 direction;		// xyz = light travel direction
 };
 
-// Material data uses a std430-compatible 64-byte stride. Field order is
+// Material data uses a std430-compatible 80-byte stride. Field order is
 // part of the GPU ABI; keep the image-index ordering unchanged.
+//
+// The displacement block is read by the tessellation compute shaders, which
+// is why bindings 4/5 below are visible to the compute stage: a displacement
+// map is the detail source that makes subdividing a triangle worth anything.
 struct Material
 {
 	vec4 base_color;
@@ -114,40 +118,84 @@ struct Material
 	int emission_color_image_index;
 	int metallic_image_index;
 	int roughness_image_index;
-	int _pad0;
+	int displacement_image_index;
+	// World-space units at a sampled height of 1.0. Zero disables displacement
+	// even when an image is bound, so the map can stay authored while off.
+	float displacement_scale;
+	// Sampled height treated as the neutral surface. Blender height maps are
+	// conventionally 0-centered at 0.5, so geometry does not inflate outward.
+	float displacement_midpoint;
+	float _pad0;
+	float _pad1;
 };
 
 #if !defined(__cplusplus)
 #extension GL_EXT_nonuniform_qualifier : require
-layout(set = 0, binding = 0, std140) uniform PerFrameBlock
+
+// Which descriptor set these global resources live in. Raster passes bind the
+// global set at 0 and get the default. Compute passes that already own set 0
+// for their own storage buffers (tessellation) define this to 1 before
+// including this header and bind the global set second.
+#if !defined(SHADER_COMMON_SET)
+#define SHADER_COMMON_SET 0
+#endif
+
+layout(set = SHADER_COMMON_SET, binding = 0, std140) uniform PerFrameBlock
 {
 	PerFrameData per_frame;
 };
 
 // Named object_data_array because "object_data" is a reserved address-space
 // keyword in Metal, which breaks MoltenVK's SPIRV->MSL pass
-layout(set = 0, binding = 1, std430) readonly buffer ObjectDataBlock
+layout(set = SHADER_COMMON_SET, binding = 1, std430) readonly buffer ObjectDataBlock
 {
 	ObjectData object_data_array[];
 };
 
-layout(set = 0, binding = 2, std430) readonly buffer MaterialDataBlock
+layout(set = SHADER_COMMON_SET, binding = 2, std430) readonly buffer MaterialDataBlock
 {
 	Material material_data_array[];
 };
 
 // Per-frame skin matrix arena; each skinned draw indexes at its own offset
 // (push constant)
-layout(set = 0, binding = 3, std430) readonly buffer SkinMatrixBlock
+layout(set = SHADER_COMMON_SET, binding = 3, std430) readonly buffer SkinMatrixBlock
 {
 	mat4 skin_matrix_array[];
 };
 
 // Bindless scene textures: Material image indices index this array directly.
 // PARTIALLY_BOUND descriptor binding — only sample when image_index >= 0.
-layout(set = 0, binding = 4) uniform texture2D scene_textures[MAX_BINDLESS_IMAGES];
-layout(set = 0, binding = 5) uniform sampler scene_sampler;
+layout(set = SHADER_COMMON_SET, binding = 4) uniform texture2D scene_textures[MAX_BINDLESS_IMAGES];
+layout(set = SHADER_COMMON_SET, binding = 5) uniform sampler scene_sampler;
 #define SCENE_TEXTURE(image_index) scene_textures[nonuniformEXT(image_index)]
+
+// True when this material carries usable displacement. Scale zero means the
+// map is authored but switched off, which must read as "no displacement" so
+// the tessellator does not spend factor on flat geometry.
+bool material_has_displacement(Material material)
+{
+	return material.displacement_image_index >= 0
+		&& abs(material.displacement_scale) > 0.0;
+}
+
+// Signed world-space height for this material at these UVs, relative to the
+// material's neutral midpoint. Returns zero when displacement is off, so
+// callers can add it unconditionally.
+//
+// textureLod with an explicit level is required: compute shaders have no
+// implicit derivatives, and an implicit-LOD sample there is undefined.
+float material_sample_displacement(Material material, vec2 texcoord)
+{
+	if (!material_has_displacement(material))
+	{
+		return 0.0;
+	}
+	float height = textureLod(sampler2D(
+		SCENE_TEXTURE(material.displacement_image_index), scene_sampler),
+		texcoord, 0.0).r;
+	return (height - material.displacement_midpoint) * material.displacement_scale;
+}
 
 // Weighted 4-bone skin matrix; identity when total weight is ~zero.
 // in_base_offset selects the mesh's slice of the per-frame matrix arena.

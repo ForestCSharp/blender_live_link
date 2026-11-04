@@ -298,6 +298,23 @@ table GameplayComponentEnemy
 	engage_range	: float = 40.0;
 }
 
+// Opts an object into runtime GPU tessellation. Tessellation is off for every
+// object without this component, even when globally enabled: subdividing a mesh
+// costs real time and only pays off on surfaces that carry displacement detail,
+// so it has to be asked for per object rather than applied to the whole scene.
+table GameplayComponentTessellation
+{
+	// Per-object multiplier on the material's displacement_scale, on top of the
+	// global strength. Lets one object be pushed harder than another sharing
+	// the same material.
+	displacement_scale		: float = 1.0;
+
+	// Overrides the global max tessellation factor when > 0, so a hero asset
+	// can go denser than the scene default without raising the cost of
+	// everything else. 0 keeps the global value.
+	max_factor_override		: int = 0;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
@@ -311,7 +328,8 @@ union GameplayComponent
 	GameplayComponentCloudSystem,
 	GameplayComponentWeapon,
 	GameplayComponentPhysics,
-	GameplayComponentEnemy
+	GameplayComponentEnemy,
+	GameplayComponentTessellation
 }
 
 table GameplayComponentContainer
@@ -364,6 +382,15 @@ table Material
 	emission_color			: Vec4;
 	emission_color_image_id	: int;
 	emission_strength		: float;
+
+	// Displacement / height map, consumed by the runtime's GPU tessellation to
+	// add real geometric detail. Appended last to keep field ids stable for
+	// older clients.
+	displacement_image_id	: int;
+	// World-space units at a sampled height of 1.0; 0 disables displacement.
+	displacement_scale		: float = 0.0;
+	// Sampled height treated as the neutral surface (0.5 for 0-centered maps).
+	displacement_midpoint	: float = 0.5;
 }
 
 table Image

@@ -73,6 +73,19 @@ struct RigidBody
 	JPH::Body* jolt_body = nullptr;
 };
 
+// Per-object tessellation overrides. Presence of the component is the opt-in;
+// these only tune how much an already-opted-in object gets.
+struct TessellationSettings
+{
+	// Multiplies the material's displacement height for this object, on top of
+	// the global strength.
+	f32 displacement_scale = 1.0f;
+
+	// Replaces the global max factor when > 0, so one asset can go denser
+	// without raising the cost of the whole scene.
+	i32 max_factor_override = 0;
+};
+
 struct FogController
 {
 	bool enabled = true;
@@ -321,6 +334,13 @@ struct Object
 	// Rigid Body Data, stored inline
 	bool has_rigid_body = false;
 	RigidBody rigid_body;
+
+	// Tessellation opt-in. Objects without this component are never
+	// tessellated, even when state.tessellation.enabled is on: subdividing a
+	// mesh is only worth the cost where there is displacement detail to
+	// resolve, so it is requested per object rather than scene-wide.
+	bool has_tessellation = false;
+	TessellationSettings tessellation;
 
 	// Character Data, stored inline
 	bool has_character = false;

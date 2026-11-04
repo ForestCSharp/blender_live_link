@@ -15,12 +15,12 @@ layout(push_constant) uniform plan_params {
 	int virtual_patch_max_depth;
 	int tessellation_mode;
 	int fixed_factor;
-	int plan_padding0;
-	int plan_padding1;
+	int material_index;
+	int displacement_enabled;
 	float fov_radians;
 	float render_height;
 	float target_pixels_per_segment;
-	float padding0;
+	float displacement_detail_strength;
 };
 
 layout(set=0, binding=0, std430) readonly buffer PlanSourceVerticesBuffer {
@@ -223,10 +223,63 @@ vec3 plan_source_position_from_domain(vec3 p0, vec3 p1, vec3 p2, vec2 uv)
 }
 
 /**
+ * Converts a world-space displacement relief height into an LOD request.
+ *
+ * Relief is fed through the same angular->pixel conversion as a geometric edge:
+ * a bump R units tall deserves the same vertex density as a feature R units
+ * wide at the same distance. Returns 1.0 for flat input, which is the identity
+ * under max(), so displacement only ever adds detail where the map has some.
+ */
+float plan_relief_lod(float relief, float distance_to_camera, vec3 projection_parameters)
+{
+	if (relief <= 0.0)
+	{
+		return 1.0;
+	}
+	return max(tess_raw_lod_for_edge_at_distance(
+		relief * displacement_detail_strength,
+		distance_to_camera,
+		projection_parameters), 1.0);
+}
+
+/**
+ * Displacement LOD for one patch edge, from relief measured along that edge.
+ *
+ * Symmetric in (a, b) and independent of the rest of the patch, so the two
+ * patches sharing this edge derive the same value and their boundary vertices
+ * still coincide.
+ */
+float plan_displacement_edge_lod(
+	Material material,
+	vec3 a, vec3 b,
+	vec2 uv_a, vec2 uv_b,
+	vec3 projection_parameters)
+{
+	float relief = tess_displacement_relief_edge(material, uv_a, uv_b);
+	float distance_to_camera = max(
+		length((a + b) * 0.5 - camera_position.xyz), 0.001);
+	return plan_relief_lod(relief, distance_to_camera, projection_parameters);
+}
+
+/**
+ * Maps a patch domain UV through the source triangle's texture coordinates.
+ */
+vec2 plan_source_uv_from_domain(vec2 uv0, vec2 uv1, vec2 uv2, vec2 domain)
+{
+	float b1 = domain.x;
+	float b2 = domain.y;
+	float b0 = 1.0 - b1 - b2;
+	return uv0 * b0 + uv1 * b1 + uv2 * b2;
+}
+
+/**
  * Fills a planned patch with edge LODs, tessellation factor, and generated vertex/index counts.
  * Fixed and per-mesh modes use uniform factors, while per-triangle mode measures each patch domain edge.
  */
-void plan_fill_patch_lods(inout TessellationPatch out_patch, vec3 source_p0, vec3 source_p1, vec3 source_p2)
+void plan_fill_patch_lods(
+	inout TessellationPatch out_patch,
+	vec3 source_p0, vec3 source_p1, vec3 source_p2,
+	vec2 source_uv0, vec2 source_uv1, vec2 source_uv2)
 {
 	uint max_factor_u = uint(clamp(max_factor, 1, 31));
 	if (tessellation_mode == TESS_MODE_FIXED)
@@ -270,8 +323,55 @@ void plan_fill_patch_lods(inout TessellationPatch out_patch, vec3 source_p0, vec
 		tess_raw_lod_for_edge(
 			p2, p0, camera_position.xyz, projection_parameters),
 		1.0, float(max_factor_u));
+
 	float max_edge_lod = max(out_patch.edge_lod0, max(out_patch.edge_lod1, out_patch.edge_lod2));
-	out_patch.tess_factor = clamp(uint(ceil(max_edge_lod)), 1u, max_factor_u);
+	uint factor = clamp(uint(ceil(max_edge_lod)), 1u, max_factor_u);
+
+	if (displacement_enabled != 0 && material_index >= 0
+		&& displacement_detail_strength > 0.0)
+	{
+		Material material = material_data_array[material_index];
+		if (material_has_displacement(material))
+		{
+			vec2 uv0 = plan_source_uv_from_domain(
+				source_uv0, source_uv1, source_uv2, vec2(out_patch.domain_u0, out_patch.domain_v0));
+			vec2 uv1 = plan_source_uv_from_domain(
+				source_uv0, source_uv1, source_uv2, vec2(out_patch.domain_u1, out_patch.domain_v1));
+			vec2 uv2 = plan_source_uv_from_domain(
+				source_uv0, source_uv1, source_uv2, vec2(out_patch.domain_u2, out_patch.domain_v2));
+
+			// Each edge is raised by relief along that edge only, keeping the
+			// value identical for the patch on the other side of it.
+			out_patch.edge_lod0 = clamp(max(out_patch.edge_lod0,
+				plan_displacement_edge_lod(material, p0, p1, uv0, uv1, projection_parameters)),
+				1.0, float(max_factor_u));
+			out_patch.edge_lod1 = clamp(max(out_patch.edge_lod1,
+				plan_displacement_edge_lod(material, p1, p2, uv1, uv2, projection_parameters)),
+				1.0, float(max_factor_u));
+			out_patch.edge_lod2 = clamp(max(out_patch.edge_lod2,
+				plan_displacement_edge_lod(material, p2, p0, uv2, uv0, projection_parameters)),
+				1.0, float(max_factor_u));
+
+			// Interior relief can only raise tess_factor, never an edge LOD.
+			// Raising it is crack-safe: boundary vertices are placed by the
+			// edge LOD morph, and tess_factor stays >= every edge LOD so the
+			// clamp inside tess_morph_edge_coord never binds asymmetrically.
+			// Measured from the closest point so relief on the near end of a
+			// large patch is not judged by the far end's distance.
+			float interior_relief = tess_displacement_relief(material, uv0, uv1, uv2);
+			vec3 closest_point = plan_closest_point_on_triangle(
+				camera_position.xyz, p0, p1, p2);
+			float interior_lod = plan_relief_lod(interior_relief,
+				max(length(closest_point - camera_position.xyz), 0.001),
+				projection_parameters);
+
+			float boosted_edge_lod = max(out_patch.edge_lod0,
+				max(out_patch.edge_lod1, out_patch.edge_lod2));
+			factor = clamp(uint(ceil(max(boosted_edge_lod, interior_lod))), 1u, max_factor_u);
+		}
+	}
+
+	out_patch.tess_factor = factor;
 	out_patch.vertex_count = tess_vertex_count_for_factor(out_patch.tess_factor);
 	out_patch.index_count = tess_index_count_for_factor(out_patch.tess_factor);
 }
@@ -300,6 +400,9 @@ void main()
 	vec3 p0 = tess_world_position(model_matrix, plan_source_vertices[i0].position.xyz);
 	vec3 p1 = tess_world_position(model_matrix, plan_source_vertices[i1].position.xyz);
 	vec3 p2 = tess_world_position(model_matrix, plan_source_vertices[i2].position.xyz);
+	vec2 uv0 = plan_source_vertices[i0].texcoord;
+	vec2 uv1 = plan_source_vertices[i1].texcoord;
+	vec2 uv2 = plan_source_vertices[i2].texcoord;
 	uint split_segments = plan_split_segments(p0, p1, p2);
 	uint virtual_patch_count = split_segments * split_segments;
 	uint max_patch_count_u = uint(max(max_patch_count, 0));
@@ -311,7 +414,7 @@ void main()
 		TessellationPatch out_patch = split_segments > 1u
 			? plan_virtual_patch_domain(split_segments, virtual_patch_index)
 			: TessellationPatch(0u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
-		plan_fill_patch_lods(out_patch, p0, p1, p2);
+		plan_fill_patch_lods(out_patch, p0, p1, p2, uv0, uv1, uv2);
 		out_patch.source_index_offset = source_index_offset;
 		out_patch.source_triangle_index = source_triangle_index;
 

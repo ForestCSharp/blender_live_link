@@ -336,11 +336,36 @@ namespace ImGuiLayer
 				{
 					bool changed = false;
 					changed |= ImGui::Checkbox("Enable Tessellation", &state.tessellation.enabled);
+					// Opt-in is per object: without this the global toggle looks
+					// broken on a scene where nothing carries the component.
+					ImGui::TextDisabled("Opted-in objects: %d (needs a Tessellation component)",
+						(i32) state.scene.indexes.tessellation_object_ids.length());
 					changed |= ImGui::Combo("Mode", (i32*)&state.tessellation.mode, ETessellationModeNames, (i32)ETessellationMode::MAX);
 					changed |= ImGui::SliderInt("Fixed Factor", &state.tessellation.fixed_factor, 1, state.tessellation.max_factor);
 					changed |= ImGui::SliderInt("Max Factor", &state.tessellation.max_factor, 1, (i32)Tessellation::MAX_FACTOR);
 					changed |= ImGui::SliderFloat("Target Segment", &state.tessellation.target_pixels_per_segment, 1.0f, 64.0f, "%.1f px");
 					changed |= ImGui::SliderFloat("Phong Strength", &state.tessellation.phong_strength, 0.0f, 1.0f, "%.2f");
+					changed |= ImGui::Checkbox("Displacement", &state.tessellation.displacement_enabled);
+					ImGui::Indent();
+					ImGui::BeginDisabled(!state.tessellation.displacement_enabled);
+					{
+						changed |= ImGui::SliderFloat("Displacement Strength",
+							&state.tessellation.displacement_strength, 0.0f, 4.0f, "%.2fx");
+						changed |= ImGui::SliderFloat("Displacement Detail",
+							&state.tessellation.displacement_detail_strength, 0.0f, 4.0f, "%.2fx");
+						ImGui::SetItemTooltip(
+							"How much height relief raises the tessellation factor. "
+							"0 displaces geometry but leaves the factor screen-size driven.");
+						changed |= ImGui::SliderFloat("Displacement Normal Step",
+							&state.tessellation.displacement_normal_texel_step,
+							1.0f / 8192.0f, 1.0f / 64.0f, "%.5f uv",
+							ImGuiSliderFlags_Logarithmic);
+						ImGui::SetItemTooltip(
+							"UV distance between the taps used to rebuild normals from "
+							"the height gradient. About one texel of the height map.");
+					}
+					ImGui::EndDisabled();
+					ImGui::Unindent();
 					changed |= ImGui::Checkbox("Virtual Patches", &state.tessellation.virtual_patches_enabled);
 					changed |= ImGui::SliderInt("Virtual Patch Depth", &state.tessellation.virtual_patch_max_depth, 0, 4);
 					changed |= ImGui::DragInt("Max Patches", &state.tessellation.max_generated_patches, 256.0f, 1, 1024 * 1024);

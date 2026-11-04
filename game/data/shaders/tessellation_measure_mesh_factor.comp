@@ -15,12 +15,12 @@ layout(push_constant) uniform plan_params {
 	int virtual_patch_max_depth;
 	int tessellation_mode;
 	int fixed_factor;
-	int plan_padding0;
-	int plan_padding1;
+	int material_index;
+	int displacement_enabled;
 	float fov_radians;
 	float render_height;
 	float target_pixels_per_segment;
-	float padding0;
+	float displacement_detail_strength;
 };
 
 layout(set=0, binding=0, std430) readonly buffer MeasureSourceVerticesBuffer {
@@ -67,6 +67,30 @@ void main()
 				p1, p2, camera_position.xyz, projection_parameters),
 			tess_raw_lod_for_edge(
 				p2, p0, camera_position.xyz, projection_parameters)));
+
+	// Per-mesh mode picks one factor for the whole mesh, so displacement relief
+	// has to be folded in here as well - otherwise this mode would displace
+	// geometry without ever allocating the vertices needed to resolve it.
+	if (displacement_enabled != 0 && material_index >= 0
+		&& displacement_detail_strength > 0.0)
+	{
+		Material material = material_data_array[material_index];
+		float relief = tess_displacement_relief(
+			material,
+			measure_source_vertices[i0].texcoord,
+			measure_source_vertices[i1].texcoord,
+			measure_source_vertices[i2].texcoord);
+		if (relief > 0.0)
+		{
+			float mid_distance = length(
+				(p0 + p1 + p2) / 3.0 - camera_position.xyz);
+			max_lod = max(max_lod, tess_raw_lod_for_edge_at_distance(
+				relief * displacement_detail_strength,
+				mid_distance,
+				projection_parameters));
+		}
+	}
+
 	uint factor = clamp(uint(ceil(max_lod)), 1u, max_factor_u);
 	atomicMax(measure_counters[0].max_factor_seen, factor);
 }

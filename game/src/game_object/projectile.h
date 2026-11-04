@@ -37,6 +37,9 @@ i32 projectile_material_index()
 		.emission_color_image_index = -1,
 		.metallic_image_index = -1,
 		.roughness_image_index = -1,
+		// -1, not defaulted: 0 is a valid bindless slot, so leaving this zero
+		// would make the projectile sample image 0 as a height map.
+		.displacement_image_index = -1,
 	});
 	state.materials.id_to_index[PROJECTILE_MATERIAL_ID] = index;
 	// Appending only, so in-flight frames still read identical prefix bytes

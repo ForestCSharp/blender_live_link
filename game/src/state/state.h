@@ -304,6 +304,9 @@ struct State
 			DynamicArray<i32> skinned_mesh_object_ids;
 			DynamicArray<i32> part_object_ids;
 			DynamicArray<i32> attachment_point_object_ids;
+			// Meshes carrying a Tessellation component. Tessellation walks this
+			// instead of mesh_object_ids so an opted-out scene costs nothing.
+			DynamicArray<i32> tessellation_object_ids;
 		} indexes;
 	} scene;
 
@@ -540,12 +543,25 @@ struct State
 
 	struct TessellationState
 	{
-		bool enabled = false;
+		bool enabled = true;
 		ETessellationMode mode = ETessellationMode::AdaptiveAngularPerTriangle;
 		i32 fixed_factor = 4;
-		i32 max_factor = 24;
+		i32 max_factor = 12;
 		f32 target_pixels_per_segment = 20.0f;
 		f32 phong_strength = 0.0f;
+		// Displacement mapping. The height map is the detail source that makes
+		// subdivision worth its cost: without one, tessellation only produces
+		// more triangles describing the same surface.
+		bool displacement_enabled = true;
+		// Multiplies every material's displacement_scale. A global dial for
+		// tuning or disabling the effect scene-wide without touching materials.
+		f32 displacement_strength = 1.0f;
+		// How aggressively height relief raises the tessellation factor. 0
+		// displaces geometry but leaves factor purely screen-size driven.
+		f32 displacement_detail_strength = 1.0f;
+		// UV distance between the neighbour taps used to rebuild normals from
+		// the height gradient. Roughly one texel of a 1k map.
+		f32 displacement_normal_texel_step = 1.0f / 1024.0f;
 		bool virtual_patches_enabled = true;
 		i32 virtual_patch_max_depth = 2;
 		i32 max_generated_patches = 256 * 1024;
@@ -813,6 +829,7 @@ void scene_reset_indexes(State& in_state)
 	in_state.scene.indexes.skinned_mesh_object_ids.clear();
 	in_state.scene.indexes.part_object_ids.clear();
 	in_state.scene.indexes.attachment_point_object_ids.clear();
+	in_state.scene.indexes.tessellation_object_ids.clear();
 	in_state.scene.indexes.dirty = true;
 }
 
@@ -825,6 +842,7 @@ void scene_rebuild_indexes(State& in_state)
 	indexes.skinned_mesh_object_ids.clear();
 	indexes.part_object_ids.clear();
 	indexes.attachment_point_object_ids.clear();
+	indexes.tessellation_object_ids.clear();
 
 	ankerl::unordered_dense::map<i32, bool> catalog_armature_ids;
 	for (auto& [unique_id, object] : in_state.scene.objects)
@@ -848,6 +866,13 @@ void scene_rebuild_indexes(State& in_state)
 			if (object.mesh.has_skinned_vertices)
 			{
 				indexes.skinned_mesh_object_ids.add(unique_id);
+			}
+
+			// Opt-in only: no component, no tessellation, regardless of the
+			// global toggle.
+			if (object.has_tessellation)
+			{
+				indexes.tessellation_object_ids.add(unique_id);
 			}
 		}
 		if (object.has_light && !object.has_part && !object.has_weapon && !object.has_attachment_point)

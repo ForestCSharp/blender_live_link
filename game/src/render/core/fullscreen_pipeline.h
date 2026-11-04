@@ -513,6 +513,11 @@ struct ComputeEffectDesc
 	const DescriptorBindingSpec* bindings = nullptr;
 	u32 binding_count = 0;
 	u32 push_constant_size = 0;
+	// Optional second set appended at index 1, owned by someone else (the
+	// per-frame scene set, for compute passes that need materials/textures).
+	// The effect never allocates or writes it; callers bind it themselves via
+	// bind_global_set.
+	VkDescriptorSetLayout global_set_layout = VK_NULL_HANDLE;
 };
 
 struct ComputeEffect
@@ -520,6 +525,7 @@ struct ComputeEffect
 	DescriptorSetSchema descriptors;
 	EffectPipelineLayout pipeline_layout;
 	VkPipeline pipeline = VK_NULL_HANDLE;
+	bool has_global_set = false;
 
 	void init(VulkanContext* ctx, const ComputeEffectDesc& in_desc)
 	{
@@ -527,7 +533,10 @@ struct ComputeEffect
 		assert(in_desc.shader_path);
 		descriptors.init(ctx, in_desc.bindings, in_desc.binding_count,
 			EDescriptorSetAllocation::Transient);
-		pipeline_layout.init(ctx, &descriptors.layout, 1,
+		has_global_set = in_desc.global_set_layout != VK_NULL_HANDLE;
+		VkDescriptorSetLayout set_layouts[] = {
+			descriptors.layout, in_desc.global_set_layout };
+		pipeline_layout.init(ctx, set_layouts, has_global_set ? 2u : 1u,
 			in_desc.push_constant_size, VK_SHADER_STAGE_COMPUTE_BIT);
 
 		VkShaderModule module =
@@ -558,6 +567,17 @@ struct ComputeEffect
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 		vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 			pipeline_layout.layout, 0, 1, &in_set, 0, nullptr);
+	}
+
+	// Binds the externally owned set at index 1. Call after bind(), which sets
+	// the pipeline; the two sets are independent so order between them is free.
+	void bind_global_set(VulkanContext* ctx, VkDescriptorSet in_set) const
+	{
+		assert(has_global_set);
+		assert(in_set != VK_NULL_HANDLE);
+		vkCmdBindDescriptorSets(vulkan_current_command_buffer(ctx),
+			VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout.layout, 1, 1,
+			&in_set, 0, nullptr);
 	}
 
 	void dispatch(VulkanContext* ctx, u32 in_x, u32 in_y, u32 in_z,
@@ -610,6 +630,11 @@ struct TypedComputeEffect
 	void bind(VulkanContext* ctx, VkDescriptorSet in_set) const
 	{
 		effect.bind(ctx, in_set);
+	}
+
+	void bind_global_set(VulkanContext* ctx, VkDescriptorSet in_set) const
+	{
+		effect.bind_global_set(ctx, in_set);
 	}
 
 	void dispatch(VulkanContext* ctx, const PushT& in_push_constants,

@@ -9,7 +9,7 @@
 
 static_assert(sizeof(PerFrameData) == 320, "PerFrameData must match its std140 layout (vec4/mat4 members only)");
 static_assert(sizeof(ObjectData) == 144, "ObjectData must match the geometry shader SSBO stride");
-static_assert(sizeof(Material) == 64, "Material must match the geometry shader SSBO stride");
+static_assert(sizeof(Material) == 80, "Material must match the geometry shader SSBO stride");
 
 // Descriptor set 0 plumbing shared by scene passes, plus the sampled-input
 // set used by fullscreen passes (copy-to-swapchain now, post passes later).
@@ -66,31 +66,38 @@ void frame_data_init(VulkanContext* ctx)
 	}
 
 	// Layout A (scene passes):
-	//   0 = PerFrameData UBO          (VS|FS)
-	//   1 = ObjectData SSBO           (VS)
-	//   2 = Material SSBO             (FS)
+	//   0 = PerFrameData UBO          (VS|FS|CS)
+	//   1 = ObjectData SSBO           (VS|CS)
+	//   2 = Material SSBO             (FS|CS)
 	//   3 = skin matrix arena SSBO    (VS)
-	//   4 = bindless texture array    (FS, PARTIALLY_BOUND)
-	//   5 = immutable linear sampler  (FS)
+	//   4 = bindless texture array    (FS|CS, PARTIALLY_BOUND)
+	//   5 = immutable linear sampler  (FS|CS)
+	//
+	// The compute visibility exists for the tessellation passes, which sample
+	// a material's displacement map to decide where to add detail and how far
+	// to push generated vertices. Only the bindings tessellation actually
+	// touches are widened; the skin arena stays vertex-only because the
+	// GPU skinning pass owns its own descriptor set.
 	{
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{
 				.binding = 0,
 				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+							| VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 1,
 				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 2,
 				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 3,
@@ -102,13 +109,13 @@ void frame_data_init(VulkanContext* ctx)
 				.binding = 4,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 				.descriptorCount = MAX_BINDLESS_IMAGES,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 			},
 			{
 				.binding = 5,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
 				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 				.pImmutableSamplers = &frame_data.linear_sampler,
 			},
 		};
