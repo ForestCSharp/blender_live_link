@@ -602,18 +602,6 @@ struct State
 		i32 debug_view_mode = 0;
 		bool debug_show_cascade_selection = false;
 		f32 shadow_bias = 0.001f;
-
-		struct ScreenSpaceShadowState
-		{
-			bool enable = true;
-			bool debug_show_mask = false;
-			f32 ray_length = 1.0f;
-			f32 thickness = 0.08f;
-			f32 jitter_strength = 1.0f;
-			i32 max_steps = 24;
-			f32 intensity = 1.0f;
-			i32 filter_radius = 2;
-		} screen_space;
 	} shadow;
 
 	struct SsaoState

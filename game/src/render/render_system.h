@@ -20,7 +20,6 @@
 #include "render/passes/gpu_skinning/gpu_skinning.h"
 #include "render/passes/imgui/imgui_layer.h"
 #include "render/passes/lighting/lighting_pass.h"
-#include "render/passes/shadows/screen_space_shadows_pass.h"
 #include "render/passes/shadows/shadow_blur_pass.h"
 #include "render/passes/shadows/shadow_cascade_debug_pass.h"
 #include "render/passes/shadows/shadow_depth_pass.h"
@@ -202,7 +201,6 @@ namespace RenderSystem
 			ShadowBlurPass::init(&in_state.vk);
 			ssao_pass_init(&in_state.vk, frame_data.linear_sampler);
 			BlurPass::init(&in_state.vk, Render::SSAO_FORMAT);
-			ScreenSpaceShadowsPass::init(&in_state.vk, frame_data.linear_sampler);
 			fog_pass_init(&in_state.vk, frame_data.linear_sampler);
 			dof_combine_pass_init(&in_state.vk, frame_data.linear_sampler);
 			WireOverlayPass::init(&in_state.vk, frame_data.linear_sampler);
@@ -311,11 +309,6 @@ namespace RenderSystem
 			in_state.render_targets.init(RenderTargetId::SSAO, make_ssao_desc("SSAO"));
 			in_state.render_targets.init(RenderTargetId::SSAOBlurHorizontal, make_ssao_desc("SSAO Blur Horizontal"));
 			in_state.render_targets.init(RenderTargetId::SSAOBlurred, make_ssao_desc("SSAO Blur Vertical"));
-		
-			// Screen-space contact shadows share the SSAO target shape (half res,
-			// R8, clear 1 = fully visible)
-			in_state.render_targets.init(RenderTargetId::ScreenSpaceShadowTrace, make_ssao_desc("Screen Space Shadows Trace"));
-			in_state.render_targets.init(RenderTargetId::ScreenSpaceShadows, make_ssao_desc("Screen Space Shadows Filter"));
 		
 			in_state.render_targets.init(RenderTargetId::Geometry, (RenderPassDesc) {
 				.num_outputs = Render::GBUFFER_OUTPUT_COUNT,
@@ -876,19 +869,7 @@ namespace RenderSystem
 			RenderPass& ssao_render_pass = get_render_target(RenderTargetId::SSAO);
 			RenderPass& ssao_blur_horizontal = get_render_target(RenderTargetId::SSAOBlurHorizontal);
 			RenderPass& ssao_blurred = get_render_target(RenderTargetId::SSAOBlurred);
-			RenderPass& screen_space_shadow_trace = get_render_target(RenderTargetId::ScreenSpaceShadowTrace);
-			RenderPass& screen_space_shadows = get_render_target(RenderTargetId::ScreenSpaceShadows);
 		
-			// Screen-space contact shadows trace toward the shadow-casting sun
-			Object* screen_space_shadow_sun = in_state.shadow.rendering_enable && in_state.shadow.screen_space.enable
-				? ShadowDepthPass::get_valid_shadow_sun(in_state)
-				: nullptr;
-			const bool screen_space_shadows_valid = screen_space_shadow_sun != nullptr;
-			if (screen_space_shadows_valid)
-			{
-				lighting_fs_params.screen_space_shadows_enable = 1;
-				lighting_fs_params.screen_space_shadow_intensity = in_state.shadow.screen_space.intensity;
-			}
 			lighting_fs_params.atmosphere_sun_index =
 				in_state.lighting.active_atmosphere_sun_index;
 			lighting_fs_params.atmosphere_enabled =
@@ -915,7 +896,6 @@ namespace RenderSystem
 				geometry_render_pass.color_outputs.data(),
 				shadow_moments_view,
 				ssao_blurred.get_color_output(0).view,
-				screen_space_shadows.get_color_output(0).view,
 				in_state.lighting.point_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
 				in_state.lighting.spot_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
 				in_state.lighting.sun_buffers[in_state.lighting.buffer_index].get_gpu_buffer(),
@@ -947,25 +927,6 @@ namespace RenderSystem
 				ssao_render_pass.get_color_output(0).view,
 				ssao_blur_horizontal.get_color_output(0).view
 			);
-		
-			{
-				RenderPass& screen_space_trace_pass = screen_space_shadow_trace;
-				const HMM_Vec3 screen_space_sun_dir = screen_space_shadows_valid
-					? HMM_NormV3(HMM_RotateV3Q(HMM_V3(0.0f, 0.0f, -1.0f), screen_space_shadow_sun->current_transform.rotation))
-					: HMM_V3(0.0f, 0.0f, -1.0f);
-				ScreenSpaceShadowsPass::update(
-					&in_state.vk,
-					in_state,
-					HMM_V2((f32) screen_space_trace_pass.current_width, (f32) screen_space_trace_pass.current_height),
-					view_matrix,
-					projection_matrix,
-					screen_space_sun_dir,
-					screen_space_shadows_valid,
-					geometry_render_pass.get_color_output(1).view,	// world position
-					geometry_render_pass.get_color_output(2).view,	// world normal
-					screen_space_trace_pass.get_color_output(0).view
-				);
-			}
 		
 			// Shadow cascades: one moments slice per active cascade. Skipped entirely
 			// without a valid shadow sun; under depth_freeze the stale map remains a
@@ -1064,16 +1025,6 @@ namespace RenderSystem
 				4
 			);
 		
-			// Contact shadows trace + filter (skipped without a shadow sun; the
-			// transition keeps the bound mask image legal — the lighting shader only
-			// samples it when screen_space_shadows_enable is set)
-			if (screen_space_shadows_valid)
-			{
-				graph.make_sampled(frame_graph_color(geometry_render_pass, 1));
-				graph.make_sampled(frame_graph_color(geometry_render_pass, 2));
-				ScreenSpaceShadowsPass::execute(
-					&in_state.vk, screen_space_shadow_trace, screen_space_shadows);
-			}
 			// Update one interleaved quarter before deferred lighting so opaque
 			// surfaces receive this frame's cloud transmittance.
 			if (cloud_shadow_render_active)
@@ -1090,7 +1041,6 @@ namespace RenderSystem
 			graph.sampled(frame_graph_color(in_state.shadow.blur_enable
 				? shadow_blurred : shadow_render_pass));
 			graph.sampled(frame_graph_color(ssao_blurred));
-			graph.sampled(frame_graph_color(screen_space_shadows));
 			graph.sampled(frame_graph_color(cloud_shadow_render_pass));
 			graph.execute(lighting_render_pass, [&](i32)
 			{
@@ -1317,7 +1267,6 @@ namespace RenderSystem
 		dof_combine_pass_shutdown(&in_state.vk);
 		fog_pass_shutdown(&in_state.vk);
 		lighting_pass_shutdown(&in_state.vk);
-		ScreenSpaceShadowsPass::shutdown(&in_state.vk);
 		BlurPass::shutdown(&in_state.vk);
 		ssao_pass_shutdown(&in_state.vk);
 		ShadowBlurPass::shutdown(&in_state.vk);

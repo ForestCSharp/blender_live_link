@@ -192,7 +192,7 @@ struct LightingCapture
 
 	VkDescriptorPool pool = VK_NULL_HANDLE;
 
-	// 1x1 white fallback for unused lighting bindings (ssao/contact shadows)
+	// 1x1 white fallback for unused lighting bindings during probe capture
 	GpuImage default_image = {};
 	GpuImage default_array_image = {};
 
@@ -1069,7 +1069,7 @@ struct LightingCapture
 					.pBufferInfo = &light_infos[binding_idx - 6],
 				};
 			}
-			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14, 18, 19, 22 };
+			const u32 fallback_image_bindings[] = { 5, 9, 10, 13, 14, 18, 19 };
 			for (u32 binding_idx : fallback_image_bindings)
 			{
 				writes[write_count++] = (VkWriteDescriptorSet) {

@@ -13,17 +13,17 @@
 //   1-4 = G-buffer attachments 0-3        (FS, combined image samplers)
 //   5 = shadow moments texture array      (FS; written once shadows exist)
 //   6-8 = point/spot/sun light SSBOs      (FS)
-//   9-10 = SSAO/contact-shadow images     (FS)
+//   9 = blurred SSAO                      (FS)
+//   10 = cloud-shadow transmittance        (FS)
 //   11-12 = GI probe/cell SSBOs           (FS)
 //   13-14 = GI lighting/depth atlases     (FS)
 //   15-17 = SH9/SG9/octree SSBOs          (FS)
 //   18-19 = GI specular atlas/BRDF LUT     (FS)
 //   20-21 = Bruneton atmosphere UBO/transmittance LUT (FS)
-//   22 = camera-centered cloud-shadow transmittance (FS)
 
-static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 23;
+static constexpr u32 LIGHTING_DESCRIPTOR_BINDING_COUNT = 22;
 
-// C++ mirror of the lighting shader's fs_params UBO, including GI/SSAO/SSS.
+// C++ mirror of the lighting shader's fs_params UBO, including GI and SSAO.
 // The byte layout must remain identical to the shader declaration.
 struct LightingFsParams
 {
@@ -53,14 +53,10 @@ struct LightingFsParams
 	i32 shadow_cascade_placement_mode;
 	i32 shadow_debug_show_cascade_selection;
 	i32 isolated_probe_index;
-	i32 screen_space_shadows_enable;
 	f32 shadow_bias;
-	f32 screen_space_shadow_intensity;
 	i32 atmosphere_sun_index;
 	i32 atmosphere_enabled;
 	f32 atmosphere_planet_center_z;
-	f32 _atmosphere_pad0;
-	f32 _pad1;
 	HMM_Vec2 shadow_map_texel_size;
 	HMM_Vec4 shadow_cascade_distances;
 	HMM_Vec3 shadow_cascade_view_position;
@@ -71,7 +67,7 @@ struct LightingFsParams
 	// x = world extent in metres, y = enabled. The map is centered on view_position.xy.
 	HMM_Vec4 cloud_shadow_extent_enabled;
 };
-static_assert(sizeof(LightingFsParams) == 480, "Must match lighting.frag's std140 layout");
+static_assert(sizeof(LightingFsParams) == 464, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {
@@ -94,7 +90,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	lighting_pass.linear_sampler = in_linear_sampler;
 
 	// Layout C: b0 fs_params UBO, b1-4 G-buffer CIS, b5 shadow moments array
-	// CIS, b6-8 light SSBOs, b9 blurred SSAO CIS, b10 contact shadow CIS
+	// CIS, b6-8 light SSBOs, b9 blurred SSAO CIS, b10 cloud shadow CIS
 	{
 		VkDescriptorSetLayoutBinding bindings[LIGHTING_DESCRIPTOR_BINDING_COUNT] = {};
 		bindings[0] = (VkDescriptorSetLayoutBinding) {
@@ -169,12 +165,6 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 			.descriptorCount = 1,
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		};
-		bindings[22] = (VkDescriptorSetLayoutBinding) {
-			.binding = 22,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		};
 
 		VkDescriptorSetLayoutCreateInfo layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -188,7 +178,7 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
 			{ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT },
-			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 13 * MAX_FRAMES_IN_FLIGHT },
+			{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 12 * MAX_FRAMES_IN_FLIGHT },
 			{ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 * MAX_FRAMES_IN_FLIGHT },
 		};
 		VkDescriptorPoolCreateInfo pool_create_info = {
@@ -334,7 +324,6 @@ void lighting_pass_update(
 	const GpuImage* in_gbuffer_outputs,	// 4 attachments
 	VkImageView in_shadow_moments_view,
 	VkImageView in_ssao_view,
-	VkImageView in_screen_space_shadow_view,
 	VkBuffer in_point_lights_buffer,
 	VkBuffer in_spot_lights_buffer,
 	VkBuffer in_sun_lights_buffer,
@@ -431,20 +420,6 @@ void lighting_pass_update(
 		.pImageInfo = &ssao_info,
 	};
 
-	VkDescriptorImageInfo screen_space_shadow_info = {
-		.sampler = lighting_pass.linear_sampler,
-		.imageView = in_screen_space_shadow_view,
-		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-	};
-	writes[write_count++] = (VkWriteDescriptorSet) {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = lighting_pass.sets[frame_index],
-		.dstBinding = 10,
-		.descriptorCount = 1,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.pImageInfo = &screen_space_shadow_info,
-	};
-
 	for (u32 light_type_idx = 0; light_type_idx < 3; ++light_type_idx)
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
@@ -522,7 +497,7 @@ void lighting_pass_update(
 	VkDescriptorImageInfo cloud_shadow_image_info = descriptor_sampled(
 		lighting_pass.linear_sampler, in_cloud_shadow_view);
 	writes[write_count++] = descriptor_write_image(
-		lighting_pass.sets[frame_index], 22,
+		lighting_pass.sets[frame_index], 10,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloud_shadow_image_info);
 
 	vulkan_update_descriptor_sets(ctx, write_count, writes);

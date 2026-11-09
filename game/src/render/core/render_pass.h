@@ -45,8 +45,6 @@ enum class RenderTargetId : i32
 	SSAO,
 	SSAOBlurHorizontal,
 	SSAOBlurred,
-	ScreenSpaceShadowTrace,
-	ScreenSpaceShadows,
 	Lighting,
 	CloudRaymarch,
 	CloudHistory0,

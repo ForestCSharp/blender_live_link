@@ -266,8 +266,7 @@ and GI. Feature-specific environment overrides and scripted resize are removed.
   pass + 21-tap
   separable moments blur, Frustum/CenteredSquares placement) → G-buffer
   geometry (preferably 4× RGBA32F + D32, with the far-plane sky sampled directly
-  from precomputed Bruneton atmosphere LUTs) → half-res SSAO + blur → half-res
-  screen-space contact shadows (trace + edge-aware filter) → cook-torrance
+  from precomputed Bruneton atmosphere LUTs) → half-res SSAO + blur → Cook-Torrance
   lighting (point/spot/sun SSBO rings + EVSM cascade sampling) → height fog →
   DOF combine → optional shaded wireframe → temporal AA (jittered projection,
   ping-pong history) → fixed-grid auto-exposure/AWB metering → exposure-aware HDR bloom (13-tap half-resolution

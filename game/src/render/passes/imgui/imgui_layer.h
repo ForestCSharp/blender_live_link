@@ -704,22 +704,6 @@ namespace ImGuiLayer
 					ImGui::Checkbox("Show Cascade Selection", &state.shadow.debug_show_cascade_selection);
 				}
 			};
-			const auto draw_screen_space_shadow_controls = [&]()
-			{
-				if (ImGui::CollapsingHeader("Screen Space Shadows"))
-				{
-					ImGui::Checkbox("Enable Screen Space Shadows", &state.shadow.screen_space.enable);
-					ImGui::SliderFloat("Contact Ray Length", &state.shadow.screen_space.ray_length, 0.0f, 10.0f, "%.2f");
-					ImGui::SliderFloat("Thickness", &state.shadow.screen_space.thickness, 0.001f, 0.5f, "%.3f");
-					ImGui::SliderFloat("Jitter Strength", &state.shadow.screen_space.jitter_strength, 0.0f, 2.0f, "%.2f");
-					ImGui::SliderInt("Max Steps", &state.shadow.screen_space.max_steps, 1, 64);
-					ImGui::SliderFloat("Intensity", &state.shadow.screen_space.intensity, 0.0f, 1.0f, "%.2f");
-					ImGui::SliderInt("Filter Radius", &state.shadow.screen_space.filter_radius, 0, 2);
-					ImGui::Checkbox("Show Screen Space Shadow Mask", &state.shadow.screen_space.debug_show_mask);
-					if (state.shadow.screen_space.debug_show_mask)
-						ImGui::Image(texture(frame_data.linear_sampler, get_render_target(RenderTargetId::ScreenSpaceShadows).get_color_output(0).view), image_size(get_render_target(RenderTargetId::ScreenSpaceShadows).get_color_output(0), 256.0f));
-				}
-			};
 			const auto draw_lighting_controls = [&]()
 			{
 				if (ImGui::CollapsingHeader("Lighting"))
@@ -965,7 +949,6 @@ namespace ImGuiLayer
 			draw_tessellation_controls();
 			draw_shadow_map_controls();
 			draw_ssao_controls();
-			draw_screen_space_shadow_controls();
 			draw_lighting_controls();
 			draw_cloud_controls();
 			draw_fog_controls();

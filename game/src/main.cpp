@@ -59,7 +59,6 @@ using std::optional;
 #include "render/passes/shadows/shadow_cascade_debug_pass.h"
 #include "render/passes/ssao/ssao_pass.h"
 #include "render/passes/blur/blur_pass.h"
-#include "render/passes/shadows/screen_space_shadows_pass.h"
 #include "render/passes/fog/fog_pass.h"
 #include "render/passes/dof/dof_combine_pass.h"
 #include "render/passes/wire_overlay/wire_overlay_pass.h"

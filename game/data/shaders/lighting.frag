@@ -1,6 +1,6 @@
 #version 450
 
-// Deferred lighting, including probe GI, SSAO/contact shadows, and EVSM.
+// Deferred lighting, including probe GI, SSAO, and EVSM.
 
 #include "shader_common.h"
 #include "brdf.h"
@@ -39,13 +39,10 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	int shadow_cascade_placement_mode;
 	int shadow_debug_show_cascade_selection;
 	int isolated_probe_index;
-	int screen_space_shadows_enable;
 	float shadow_bias;
-	float screen_space_shadow_intensity;
 	int atmosphere_sun_index;
 	int atmosphere_enabled;
 	float atmosphere_planet_center_z;
-	float _atmosphere_pad0;
 	vec2 shadow_map_texel_size;
 	vec4 shadow_cascade_distances;
 	vec3 shadow_cascade_view_position;
@@ -70,9 +67,7 @@ layout(set = 0, binding = 6, std430) readonly buffer PointLightsBlock
 
 // Blurred half-res SSAO (BlurPass output)
 layout(set = 0, binding = 9) uniform sampler2D ssao_tex;
-
-// Filtered half-res screen-space contact shadow mask
-layout(set = 0, binding = 10) uniform sampler2D screen_space_shadow_tex;
+layout(set = 0, binding = 10) uniform sampler2D cloud_shadow_transmittance_tex;
 
 layout(set = 0, binding = 11, std430) readonly buffer GIProbesBlock
 {
@@ -105,7 +100,6 @@ layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
 layout(set = 0, binding = 18) uniform sampler2D specular_probe_atlas;
 layout(set = 0, binding = 19) uniform sampler2D brdf_lut;
 layout(set = 0, binding = 21) uniform sampler2D atmosphere_transmittance_tex;
-layout(set = 0, binding = 22) uniform sampler2D cloud_shadow_transmittance_tex;
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -584,12 +578,6 @@ void main()
 					if (first_sun_cascade_visibility < 0.0 && sun_lights[i].cast_shadows != 0)
 					{
 						first_sun_cascade_visibility = sun_shadow_visibility;
-					}
-
-					if (screen_space_shadows_enable != 0 && sun_lights[i].cast_shadows != 0)
-					{
-						float screen_space_shadow_visibility = texture(screen_space_shadow_tex, uv).r;
-						sun_shadow_visibility *= mix(1.0, screen_space_shadow_visibility, screen_space_shadow_intensity);
 					}
 
 					if (cloud_shadow_extent_enabled.y > 0.5
