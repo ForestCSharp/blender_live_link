@@ -60,7 +60,7 @@ struct GI_Scene
 
 	// Static Parameters
 	static constexpr i32 min_octree_depth = 1;
-	static constexpr i32 max_octree_depth = 4;
+	static constexpr i32 max_octree_depth = 6;
 	static constexpr f32 fallback_scene_extent = 30.0f;
 	static constexpr f32 minimum_scene_extent = 1.0f;
 	static constexpr f32 radial_depth_cell_scale = (f32) GI_RADIAL_DEPTH_CELL_SCALE;
