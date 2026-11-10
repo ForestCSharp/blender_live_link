@@ -98,14 +98,6 @@ inline FrameGraphBuffer frame_graph_buffer(VkBuffer in_buffer)
 	return { .buffer = in_buffer };
 }
 
-inline FrameGraphImage frame_graph_select(
-	bool in_condition,
-	FrameGraphImage in_enabled,
-	FrameGraphImage in_fallback)
-{
-	return in_condition ? in_enabled : in_fallback;
-}
-
 struct FrameGraphColorAttachment
 {
 	FrameGraphImage image;

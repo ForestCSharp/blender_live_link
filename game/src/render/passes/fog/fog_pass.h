@@ -5,7 +5,8 @@
 #include "render/core/render_types.h"
 #include "render/core/fullscreen_pipeline.h"
 #include "render/core/gpu_buffer.h"
-#include "render/passes/sky/bruneton_atmosphere_pass.h"
+#include "render/core/frame_render_graph.h"
+#include "render/passes/sky/sky_pass.h"
 
 // Exponential height fog over the lit scene and, when active, the cloud
 // composite. Runs after lighting and cloud compositing when an enabled fog
@@ -84,33 +85,58 @@ void fog_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	}, 0, "FogPass::fs_params");
 }
 
-// Uploads fs_params + rewrites this frame's set (after the fence wait, before
-// any binds record)
-void fog_pass_update(
-	VulkanContext* ctx,
-	const FogFsParams& in_fs_params,
-	VkImageView in_composite_color_view,
-	VkImageView in_geometry_position_view,
-	VkBuffer in_atmosphere_parameters_buffer,
-	VkImageView in_atmosphere_transmittance_view,
-	VkImageView in_background_color_view,
-	VkImageView in_cloud_metadata_view
-)
+FrameGraphImage fog_pass_record(
+	FrameRenderGraph& graph, State& in_state, const PerFrameData& per_frame_data,
+	FrameGraphImage scene_color, FrameGraphImage geometry_position,
+	FrameGraphImage lighting, FrameGraphImage cloud_metadata)
 {
-	DescriptorWriter writer = fog_pass.effect.writer(ctx, in_fs_params);
-	writer.sampled(1, fog_pass.linear_sampler, in_composite_color_view)
-		.sampled(2, fog_pass.nearest_sampler, in_geometry_position_view)
-		.buffer(3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu))
-		.sampled(4, fog_pass.linear_sampler, in_atmosphere_transmittance_view)
-		.sampled(5, fog_pass.linear_sampler, in_background_color_view)
-		.sampled(6, fog_pass.nearest_sampler, in_cloud_metadata_view)
-		.commit();
-}
+	const auto controller_id = in_state.fog.active_fog_controller_id;
+	if (!in_state.fog.active || !in_state.fog.debug_active || !controller_id)
+		return scene_color;
+	const auto controller = in_state.scene.objects.find(*controller_id);
+	if (controller == in_state.scene.objects.end()) return scene_color;
 
-void fog_pass_draw(VulkanContext* ctx)
-{
-	fog_pass.effect.draw(ctx);
+	const FogController& fog_controller = controller->second.fog_controller;
+	FogFsParams fog_fs_params = {
+		.camera_position = per_frame_data.camera_position.XYZ,
+		.fog_base_height = fog_controller.base_height,
+		.fog_color = fog_controller.fog_color,
+		.density = fog_controller.density,
+		.scale_height = fog_controller.scale_height,
+		.max_distance = fog_controller.max_distance,
+		.ceiling_enabled = fog_controller.ceiling_enabled ? 1 : 0,
+		.ceiling_height = fog_controller.ceiling_height,
+		.ceiling_fade = fog_controller.ceiling_fade,
+		.ambient_intensity = fog_controller.ambient_intensity,
+		.sun_intensity = fog_controller.sun_intensity,
+		.anisotropy = fog_controller.anisotropy,
+		// No real sun means no sun in-scatter; the PerFrameData fallback
+		// sun drives only the sky.
+		.sun_direction = in_state.scene.primary_sun_id ? per_frame_data.sun_direction.XYZ : HMM_V3(0.0f, 0.0f, -1.0f),
+		.sun_color = in_state.scene.primary_sun_id ? per_frame_data.sun_color.XYZ : HMM_V3(0.0f, 0.0f, 0.0f),
+		.atmosphere_enabled = sky_pass.has_active_atmosphere
+			&& bruneton_atmosphere_pass.has_precomputed ? 1 : 0,
+		.atmosphere_planet_center_z = sky_pass.active_parameters.planet_center_z_m,
+		.cloud_enabled = cloud_metadata ? 1 : 0,
+	};
+	const VkBuffer atmosphere_parameters =
+		bruneton_atmosphere_pass.parameter_buffers[in_state.vk.frame_index].get_gpu_buffer();
+	const FrameGraphImage transmittance = frame_graph_color(bruneton_atmosphere_pass.transmittance_pass);
+	const FrameGraphImage metadata = cloud_metadata ? cloud_metadata
+		: frame_graph_color(in_state.render_targets.get(RenderTargetId::Geometry));
+	graph.uniform(frame_graph_buffer(atmosphere_parameters), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	DescriptorWriter writer = fog_pass.effect.writer(&in_state.vk, fog_fs_params);
+	writer.sampled(1, fog_pass.linear_sampler, graph.sampled(scene_color).view())
+		.sampled(2, fog_pass.nearest_sampler, graph.sampled(geometry_position).view())
+		.buffer(3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, atmosphere_parameters, sizeof(BrunetonAtmosphereGpu))
+		.sampled(4, fog_pass.linear_sampler, graph.sampled(transmittance).view())
+		.sampled(5, fog_pass.linear_sampler, graph.sampled(lighting).view())
+		.sampled(6, fog_pass.nearest_sampler, graph.sampled(metadata).view())
+		.commit();
+
+	RenderPass& target = in_state.render_targets.get(RenderTargetId::Fog);
+	graph.execute(target, [&](i32) { fog_pass.effect.draw(&in_state.vk); });
+	return frame_graph_color(target);
 }
 
 void fog_pass_shutdown(VulkanContext* ctx)

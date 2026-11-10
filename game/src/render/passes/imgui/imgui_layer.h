@@ -212,11 +212,12 @@ namespace ImGuiLayer
 		}
 	}
 
-	inline void draw_controls(State& state, GI_Scene& gi_scene)
+	inline bool draw_controls(State& state, GI_Scene& gi_scene)
 	{
 		// World-space debug overlays stay up while the menu is hidden (Ctrl+I).
 		draw_character_debug(state);
-		if (!state.debug_ui.visible) { return; }
+		if (!state.debug_ui.visible) { return false; }
+		bool shadow_preview_requested = false;
 		ImGui::Begin("DEBUG");
 		if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen))
 		{
@@ -974,6 +975,7 @@ namespace ImGuiLayer
 			ImGui::SliderInt("Debug Cascade", &state.shadow.debug_cascade_index, 0, MAX(0, active_cascades - 1));
 			ImGui::Combo("Debug View", &state.shadow.debug_view_mode, "Moments\0Depth\0");
 			draw_texture(frame_data.linear_sampler, "Shadow Cascade Debug", get_render_target(RenderTargetId::ShadowCascadeDebug).get_color_output(0), 256.0f);
+			shadow_preview_requested = ImGui::IsItemVisible();
 
 			RenderPass& geometry = get_render_target(RenderTargetId::Geometry);
 			if (ImGui::TreeNode("Main Pass"))
@@ -1089,6 +1091,7 @@ namespace ImGuiLayer
 		if (!state.runtime.blender_data_loaded) { foreground->AddText(pos, IM_COL32_WHITE, "Waiting on data from Blender"); pos.y += 20.0f; }
 		if (state.debug_camera.active) { foreground->AddText(pos, IM_COL32_WHITE, "Debug Camera Active"); pos.y += 20.0f; }
 		if (!state.runtime.is_simulating) { foreground->AddText(pos, IM_COL32_WHITE, "Simulation Paused"); }
+		return shadow_preview_requested;
 	}
 
 	inline void draw_local_tonemapping_debug(
@@ -1367,7 +1370,7 @@ namespace ImGuiLayer
 	inline void handle_swapchain_recreated(VulkanContext*) {}
 	inline void unregister_texture(VkImageView) {}
 	inline void begin_frame() {}
-	inline void draw_controls(State&, GI_Scene&) {}
+	inline bool draw_controls(State&, GI_Scene&) { return false; }
 	inline void draw_local_tonemapping_debug(const State&, VkImageView) {}
 	inline void render(VulkanContext*, f32) {}
 	inline void shutdown() {}

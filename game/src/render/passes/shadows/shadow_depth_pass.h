@@ -1,12 +1,12 @@
 #pragma once
 
 #include "core/types.h"
+#include "render/core/mesh_draw.h"
 #include "render/core/vulkan_context.h"
 #include "render/core/render_types.h"
 #include "render/core/shader_module.h"
 #include "render/core/frame_data.h"
 #include "render/core/culling.h"
-#include "game_object/mesh.h"
 
 #include <cfloat>
 #include <cmath>
@@ -40,7 +40,6 @@ namespace ShadowDepthPass
 	inline VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	inline VkPipeline pipeline = VK_NULL_HANDLE;
 	inline VkPipeline skinned_pipeline = VK_NULL_HANDLE;
-	inline VkPipeline bound_pipeline = VK_NULL_HANDLE;
 
 	// Reverse-Z orthographic projection swaps near and far.
 	inline HMM_Mat4 mat4_orthographic(f32 left, f32 right, f32 bottom, f32 top, f32 near_plane, f32 far_plane)
@@ -418,11 +417,7 @@ namespace ShadowDepthPass
 			visible);
 
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-		bound_pipeline = VK_NULL_HANDLE;
-		// Arena-resident casters share one buffer pair, so the cascade binds once.
-		VkBuffer bound_vertex_buffer = VK_NULL_HANDLE;
-		VkBuffer bound_skinned_vertex_buffer = VK_NULL_HANDLE;
-		VkBuffer bound_index_buffer = VK_NULL_HANDLE;
+		MeshDrawBindings bindings;
 
 		vkCmdBindDescriptorSets(
 			command_buffer,
@@ -445,75 +440,10 @@ namespace ShadowDepthPass
 				continue;
 			}
 
-			Object& object = found->second;
-			Mesh& mesh = object.mesh;
-
-			// Ask the arena first; mesh_get_render_view lazily creates per-mesh
-			// VkBuffers that an arena-resident mesh never binds.
-			MeshArenaSlice arena_slice;
-			const bool from_arena = mesh_get_arena_slice(mesh, arena_slice);
-
-			MeshRenderView render_view = {};
-			bool skinned = false;
-			if (!from_arena)
+			if (!draw_indexed_mesh(ctx, found->second.mesh, render_object_index,
+				pipeline, skinned_pipeline, bindings))
 			{
-				render_view = mesh_get_render_view(mesh);
-				skinned = mesh.has_skinned_vertices && !render_view.is_tessellated;
-				if (skinned && mesh.skin_matrix_arena_offset < 0)
-				{
-					continue;
-				}
-			}
-
-			VkPipeline wanted_pipeline = skinned ? skinned_pipeline : pipeline;
-			if (bound_pipeline != wanted_pipeline)
-			{
-				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
-				bound_pipeline = wanted_pipeline;
-			}
-
-			VkBuffer vertex_buffer = from_arena
-				? g_geometry_arena.vertex_buffer.get_gpu_buffer()
-				: render_view.vertex_buffer;
-			VkBuffer index_buffer = from_arena
-				? g_geometry_arena.index_buffer.get_gpu_buffer()
-				: render_view.index_buffer;
-
-			if (bound_vertex_buffer != vertex_buffer)
-			{
-				VkDeviceSize vertex_offset = 0;
-				vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_offset);
-				bound_vertex_buffer = vertex_buffer;
-			}
-			if (skinned)
-			{
-				VkBuffer skinned_vertex_buffer = mesh.skinned_vertex_buffer.get_gpu_buffer();
-				if (bound_skinned_vertex_buffer != skinned_vertex_buffer)
-				{
-					VkDeviceSize skinned_offset = 0;
-					vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
-					bound_skinned_vertex_buffer = skinned_vertex_buffer;
-				}
-			}
-			if (bound_index_buffer != index_buffer)
-			{
-				vulkan_cmd_bind_index_buffer(ctx, index_buffer, 0, VK_INDEX_TYPE_UINT32);
-				bound_index_buffer = index_buffer;
-			}
-
-			if (from_arena)
-			{
-				vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
-					arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) render_object_index);
-			}
-			else if (render_view.is_tessellated)
-			{
-				vulkan_cmd_draw_indexed_indirect(ctx, render_view.draw_command_buffer, 0, 1,
-					sizeof(VkDrawIndexedIndirectCommand));
-			}
-			else
-			{
-				vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) render_object_index);
+				continue;
 			}
 			in_state.data_oriented.frame.draw_calls += 1;
 			in_state.data_oriented.frame.draw_mesh_count += 1;

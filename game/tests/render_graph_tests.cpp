@@ -47,7 +47,6 @@ int main()
 	}
 
 	GpuImage first;
-	GpuImage second;
 	first.extent = { 512, 256 };
 	first.mip_levels = 4;
 	first.array_layers = 3;
@@ -65,11 +64,6 @@ int main()
 	assert(layer.range.baseMipLevel == 0 && layer.range.levelCount == 4);
 	assert(layer.range.baseArrayLayer == 1 && layer.range.layerCount == 1);
 
-	const FrameGraphImage selected = frame_graph_select(
-		true, whole, { .image = &second });
-	assert(selected.image == &first);
-	assert(frame_graph_select(false, { .image = &first }, { .image = &second }).image
-		== &second);
 	const FrameGraphBuffer buffer = frame_graph_buffer(reinterpret_cast<VkBuffer>(4));
 	assert(buffer.buffer == reinterpret_cast<VkBuffer>(4));
 	FrameRenderGraph graph(nullptr);

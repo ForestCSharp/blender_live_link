@@ -4,7 +4,8 @@
 #include "render/core/vulkan_context.h"
 #include "render/core/render_types.h"
 #include "render/core/fullscreen_pipeline.h"
-#include "render/core/gpu_buffer.h"
+#include "render/core/frame_render_graph.h"
+#include "state/state.h"
 
 // Single-pass gather depth-of-field.
 // Reads the post-fog scene color and
@@ -54,24 +55,31 @@ void dof_combine_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 	}, 0, "DofCombinePass::fs_params");
 }
 
-// Uploads fs_params + rewrites this frame's set (after the fence wait, before
-// any binds record)
-void dof_combine_pass_update(
-	VulkanContext* ctx,
-	const DofCombineFsParams& in_fs_params,
-	VkImageView in_scene_color_view,
-	VkImageView in_gbuffer_position_view
-)
+FrameGraphImage dof_combine_pass_record(
+	FrameRenderGraph& graph, State& in_state, const Camera& camera,
+	FrameGraphImage scene_color, FrameGraphImage position)
 {
-	DescriptorWriter writer = dof_combine_pass.effect.writer(ctx, in_fs_params);
-	writer.sampled(1, dof_combine_pass.linear_sampler, in_scene_color_view)
-		.sampled(2, dof_combine_pass.linear_sampler, in_gbuffer_position_view)
-		.commit();
-}
+	if (!in_state.dof.enable) return scene_color;
 
-void dof_combine_pass_draw(VulkanContext* ctx)
-{
-	dof_combine_pass.effect.draw(ctx);
+	DofCombineFsParams dof_combine_fs_params = {
+		.cam_pos = HMM_V4V(camera.location, 1.0f),
+		.cam_forward = HMM_V4V(camera.forward, 0.0f),
+		.screen_size = HMM_V2((f32) in_state.window.render_width, (f32) in_state.window.render_height),
+		.focus_distance = in_state.dof.focus_distance,
+		.focus_range = in_state.dof.focus_range,
+		.max_coc_radius = in_state.dof.max_coc_radius,
+		.foreground_blur_scale = in_state.dof.foreground_blur_scale,
+		.background_blur_scale = in_state.dof.background_blur_scale,
+		.debug_mode = in_state.dof.debug_show_coc ? 1 : 0,
+	};
+	DescriptorWriter writer = dof_combine_pass.effect.writer(&in_state.vk, dof_combine_fs_params);
+	writer.sampled(1, dof_combine_pass.linear_sampler, graph.sampled(scene_color).view())
+		.sampled(2, dof_combine_pass.linear_sampler, graph.sampled(position).view())
+		.commit();
+
+	RenderPass& target = in_state.render_targets.get(RenderTargetId::DofCombine);
+	graph.execute(target, [&](i32) { dof_combine_pass.effect.draw(&in_state.vk); });
+	return frame_graph_color(target);
 }
 
 void dof_combine_pass_shutdown(VulkanContext* ctx)

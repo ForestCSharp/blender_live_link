@@ -5,7 +5,7 @@
 #include "render/core/render_types.h"
 #include "render/core/shader_module.h"
 #include "render/core/frame_data.h"
-#include "game_object/mesh.h"
+#include "render/core/mesh_draw.h"
 
 // Deferred geometry pass: writes the 4-attachment G-buffer (see
 // geometry.frag for the layout). Same descriptor set 0 (layout A) and push
@@ -25,13 +25,6 @@ struct GeometryPass
 	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	VkPipeline skinned_pipeline = VK_NULL_HANDLE;
-
-	// Bind-on-change trackers, reset each pass begin. Arena-resident meshes all
-	// share one buffer pair, so a pass over them binds once instead of per draw.
-	VkPipeline bound_pipeline = VK_NULL_HANDLE;
-	VkBuffer bound_vertex_buffer = VK_NULL_HANDLE;
-	VkBuffer bound_skinned_vertex_buffer = VK_NULL_HANDLE;
-	VkBuffer bound_index_buffer = VK_NULL_HANDLE;
 };
 
 static GeometryPass geometry_pass;
@@ -213,11 +206,6 @@ void geometry_pass_bind(VulkanContext* ctx, bool in_skinning_debug_view)
 {
 	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
 
-	geometry_pass.bound_pipeline = VK_NULL_HANDLE;
-	geometry_pass.bound_vertex_buffer = VK_NULL_HANDLE;
-	geometry_pass.bound_skinned_vertex_buffer = VK_NULL_HANDLE;
-	geometry_pass.bound_index_buffer = VK_NULL_HANDLE;
-
 	vkCmdBindDescriptorSets(
 		command_buffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -235,87 +223,6 @@ void geometry_pass_bind(VulkanContext* ctx, bool in_skinning_debug_view)
 		geometry_pass.pipeline_layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, sizeof(push_constants), &push_constants);
-}
-
-// Lazy GPU buffer creation happens here, on the main thread
-void geometry_pass_draw_mesh(VulkanContext* ctx, Mesh& in_mesh, i32 in_object_index)
-{
-	VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);
-
-	// Resolve arena residency before touching mesh_get_render_view: that call
-	// lazily creates this mesh's own VkBuffers, which an arena-resident mesh
-	// never binds. Asking first is what keeps the per-mesh allocations from
-	// being created at all.
-	MeshArenaSlice arena_slice;
-	const bool from_arena = mesh_get_arena_slice(in_mesh, arena_slice);
-
-	MeshRenderView render_view = {};
-	bool skinned = false;
-	if (!from_arena)
-	{
-		render_view = mesh_get_render_view(in_mesh);
-		skinned = in_mesh.has_skinned_vertices && !render_view.is_tessellated;
-		if (skinned && in_mesh.skin_matrix_arena_offset < 0)
-		{
-			return;
-		}
-	}
-
-	VkPipeline wanted_pipeline = skinned ? geometry_pass.skinned_pipeline : geometry_pass.pipeline;
-	if (geometry_pass.bound_pipeline != wanted_pipeline)
-	{
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted_pipeline);
-		geometry_pass.bound_pipeline = wanted_pipeline;
-	}
-
-	VkBuffer vertex_buffer = from_arena
-		? g_geometry_arena.vertex_buffer.get_gpu_buffer()
-		: render_view.vertex_buffer;
-	VkBuffer index_buffer = from_arena
-		? g_geometry_arena.index_buffer.get_gpu_buffer()
-		: render_view.index_buffer;
-
-	if (geometry_pass.bound_vertex_buffer != vertex_buffer)
-	{
-		VkDeviceSize vertex_buffer_offset = 0;
-		vulkan_cmd_bind_vertex_buffers(ctx, 0, 1, &vertex_buffer, &vertex_buffer_offset);
-		geometry_pass.bound_vertex_buffer = vertex_buffer;
-	}
-
-	if (skinned)
-	{
-		VkBuffer skinned_vertex_buffer = in_mesh.skinned_vertex_buffer.get_gpu_buffer();
-		if (geometry_pass.bound_skinned_vertex_buffer != skinned_vertex_buffer)
-		{
-			VkDeviceSize skinned_offset = 0;
-			vulkan_cmd_bind_vertex_buffers(ctx, 1, 1, &skinned_vertex_buffer, &skinned_offset);
-			geometry_pass.bound_skinned_vertex_buffer = skinned_vertex_buffer;
-		}
-	}
-
-	if (geometry_pass.bound_index_buffer != index_buffer)
-	{
-		vulkan_cmd_bind_index_buffer(ctx, index_buffer, 0, VK_INDEX_TYPE_UINT32);
-		geometry_pass.bound_index_buffer = index_buffer;
-	}
-
-	// firstInstance carries the object index; the shader reads gl_InstanceIndex.
-	if (from_arena)
-	{
-		vulkan_cmd_draw_indexed(ctx, arena_slice.index_count, 1,
-			arena_slice.first_index, (i32) arena_slice.vertex_offset, (u32) in_object_index);
-	}
-	else if (render_view.is_tessellated)
-	{
-		// The index count lives in a GPU-written command; the CPU only knows the
-		// capacity, which would draw past what was emitted.
-		vulkan_cmd_draw_indexed_indirect(ctx, render_view.draw_command_buffer, 0, 1,
-			sizeof(VkDrawIndexedIndirectCommand));
-	}
-	else
-	{
-		vulkan_cmd_draw_indexed(ctx, render_view.index_count, 1, 0, 0, (u32) in_object_index);
-	}
 }
 
 void geometry_pass_shutdown(VulkanContext* ctx)

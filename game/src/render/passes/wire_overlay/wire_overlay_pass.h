@@ -7,6 +7,7 @@
 #include "render/core/frame_data.h"
 #include "render/core/gpu_buffer.h"
 #include "render/core/culling.h"
+#include "render/core/frame_render_graph.h"
 
 // Shaded wireframe overlay: copies the current scene color, then alpha-blends
 // anti-aliased triangle edges on top. Wires only draw where the G-buffer
@@ -455,6 +456,29 @@ namespace WireOverlayPass
 			}
 			drawn_mesh_count += 1;
 		}
+	}
+
+	inline FrameGraphImage record(
+		FrameRenderGraph& graph, State& in_state, const Camera& camera,
+		const HMM_Mat4& view_projection, FrameGraphImage scene_color, FrameGraphImage geometry_position)
+	{
+		if (!in_state.wireframe.shaded_wireframe) return scene_color;
+
+		WireOverlayMeshFsParams wire_fs_params = {
+			.color = in_state.wireframe.color,
+			.camera_position = HMM_V4V(camera.location, 1.0f),
+			.camera_forward = HMM_V4V(HMM_NormV3(camera.forward), 0.0f),
+			.screen_size = HMM_V2((f32) in_state.window.render_width, (f32) in_state.window.render_height),
+			.width = in_state.wireframe.width,
+			.softness = in_state.wireframe.softness,
+			.opacity = in_state.wireframe.opacity,
+			.visibility_tolerance = in_state.wireframe.visibility_tolerance,
+		};
+		update(&in_state.vk, wire_fs_params, graph.sampled(scene_color).view(),
+			graph.sampled(geometry_position).view());
+		RenderPass& target = in_state.render_targets.get(RenderTargetId::WireOverlay);
+		graph.execute(target, [&](i32) { draw(&in_state.vk, in_state, view_projection); });
+		return frame_graph_color(target);
 	}
 
 	inline void shutdown(VulkanContext* ctx)
