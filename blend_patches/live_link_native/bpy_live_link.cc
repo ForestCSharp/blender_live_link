@@ -284,8 +284,6 @@ Depsgraph *depsgraph_from_py(PyObject *py_depsgraph)
   return static_cast<Depsgraph *>(ptr->data);
 }
 
-using ReferenceUidMap = std::unordered_map<int32_t, int32_t>;
-
 struct ExportRecordData {
   PyObject *py_object = nullptr;
   Object *object = nullptr;
@@ -295,20 +293,37 @@ struct ExportRecordData {
   std::string name;
   bool visibility = true;
   float matrix_world[4][4];
-  ReferenceUidMap reference_uid_map;
+  PyPtr reference_uid_map;
   bool raw_object_input = false;
   /* Blender.LiveLink.Object buffer holding only this object's components, packed by Python. */
   std::string components_bytes;
 };
 
-int32_t remap_object_uid(const ReferenceUidMap &reference_uid_map, const Object *object)
+bool resolve_armature_uid(PyObject *mapping, const Object *armature, int32_t &r_uid)
 {
-  if (!object) {
-    return -1;
+  r_uid = armature ? int32_t(armature->id.session_uid) : -1;
+  if (!armature || !mapping) {
+    return true;
   }
-  const int32_t source_uid = int32_t(object->id.session_uid);
-  const auto found = reference_uid_map.find(source_uid);
-  return found == reference_uid_map.end() ? source_uid : found->second;
+
+  PyPtr key(PyLong_FromLong(r_uid));
+  if (!key) {
+    return false;
+  }
+  PyObject *value = PyDict_GetItemWithError(mapping, key);
+  if (!value) {
+    return !PyErr_Occurred();  // An external armature retains its source UID.
+  }
+  const long uid = PyLong_AsLong(value);
+  if (PyErr_Occurred()) {
+    return false;
+  }
+  if (uid < INT32_MIN || uid > INT32_MAX) {
+    PyErr_SetString(PyExc_ValueError, "Remapped armature UID must fit in an int32");
+    return false;
+  }
+  r_uid = int32_t(uid);
+  return true;
 }
 
 std::string id_full_name(const ID &id)
@@ -345,30 +360,6 @@ bool matrix_world_from_record(PyObject *record, float r_matrix[4][4])
        * [column][row]. */
       r_matrix[column][row] = float(value);
     }
-  }
-  return true;
-}
-
-bool reference_uid_map_from_record(PyObject *record, ReferenceUidMap &r_map)
-{
-  PyPtr mapping(PyObject_GetAttrString(record, "reference_uid_map"));
-  if (!mapping) {
-    return false;
-  }
-  if (!PyDict_Check(mapping.value)) {
-    PyErr_SetString(PyExc_TypeError, "reference_uid_map must be a dict");
-    return false;
-  }
-  PyObject *key = nullptr;
-  PyObject *value = nullptr;
-  Py_ssize_t position = 0;
-  while (PyDict_Next(mapping.value, &position, &key, &value)) {
-    const long source_uid = PyLong_AsLong(key);
-    const long export_uid = PyLong_AsLong(value);
-    if (PyErr_Occurred()) {
-      return false;
-    }
-    r_map[int32_t(source_uid)] = int32_t(export_uid);
   }
   return true;
 }
@@ -436,9 +427,15 @@ bool export_record_from_py(PyObject *value,
   r_record.unique_id = int32_t(uid);
   r_record.name = py_string_attr(value, "name", id_name(r_record.object->id));
   r_record.visibility = py_bool_attr(value, "visibility", true);
-  if (!matrix_world_from_record(value, r_record.matrix_world) ||
-      !reference_uid_map_from_record(value, r_record.reference_uid_map))
-  {
+  if (!matrix_world_from_record(value, r_record.matrix_world)) {
+    return false;
+  }
+  r_record.reference_uid_map.value = PyObject_GetAttrString(value, "reference_uid_map");
+  if (!r_record.reference_uid_map) {
+    return false;
+  }
+  if (!PyDict_Check(r_record.reference_uid_map.value)) {
+    PyErr_SetString(PyExc_TypeError, "reference_uid_map must be a dict");
     return false;
   }
 
@@ -1032,7 +1029,7 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
                                           Object *mesh_armature,
                                           Main *bmain,
                                           Depsgraph *depsgraph,
-                                          const ReferenceUidMap &reference_uid_map,
+                                          const int32_t armature_id,
                                           ReferencedMaterials &referenced_materials)
 {
   if (!depsgraph || !object || !evaluation_object) {
@@ -1136,11 +1133,9 @@ flatbuffers::Offset<ll::Mesh> export_mesh(flatbuffers::FlatBufferBuilder &builde
     tag_object_geometry_update(bmain, depsgraph, evaluation_object);
   }
 
-  int32_t armature_id = -1;
   flatbuffers::Offset<ll::Matrix> mesh_to_armature_fb = 0;
   flatbuffers::Offset<ll::Matrix> armature_to_mesh_fb = 0;
   if (mesh_armature) {
-    armature_id = remap_object_uid(reference_uid_map, mesh_armature);
     float mesh_to_armature[4][4];
     float armature_to_mesh[4][4];
     mesh_armature_matrices(object, mesh_armature, mesh_to_armature, armature_to_mesh);
@@ -1290,14 +1285,19 @@ flatbuffers::Offset<ll::Object> export_object(flatbuffers::FlatBufferBuilder &bu
 
   flatbuffers::Offset<ll::Mesh> mesh_fb = 0;
   if (object_exports_as_mesh(object)) {
+    Object *armature = mesh_armature_object(object);
+    int32_t armature_id;
+    if (!resolve_armature_uid(record.reference_uid_map, armature, armature_id)) {
+      return 0;
+    }
     mesh_fb = export_mesh(
         builder,
         object,
         evaluation_object,
-        mesh_armature_object(object),
+        armature,
         bmain,
         depsgraph,
-        record.reference_uid_map,
+        armature_id,
         referenced_materials);
   }
 
@@ -2760,8 +2760,11 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
     if (!exported_object_ids.insert(record.unique_id).second) {
       continue;
     }
-    object_offsets.push_back(
-        export_object(builder, record, bmain, referenced_materials));
+    const auto exported = export_object(builder, record, bmain, referenced_materials);
+    if (exported.IsNull()) {
+      return nullptr;
+    }
+    object_offsets.push_back(exported);
   }
 
   std::vector<flatbuffers::Offset<ll::Material>> material_offsets;

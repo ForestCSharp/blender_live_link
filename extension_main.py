@@ -135,8 +135,6 @@ class OccurrenceSnapshot:
     unique_id: int
     matrix_world_values: tuple
     visibility: bool
-    dependency_ids: frozenset
-    instancer_path: tuple
 
     @classmethod
     def from_occurrence(cls, occurrence):
@@ -144,8 +142,6 @@ class OccurrenceSnapshot:
             unique_id=occurrence.unique_id,
             matrix_world_values=occurrence.matrix_world_values,
             visibility=occurrence.visibility,
-            dependency_ids=occurrence.dependency_ids,
-            instancer_path=occurrence.instancer_path,
         )
 
 
@@ -155,12 +151,10 @@ class InstanceUidRegistry:
     def __init__(self):
         self.key_to_uid = {}
         self.uid_to_key = {}
-        self.retired_uids = set()
 
     def clear(self):
         self.key_to_uid.clear()
         self.uid_to_key.clear()
-        self.retired_uids.clear()
 
     @staticmethod
     def candidate_for_key(key):
@@ -179,7 +173,6 @@ class InstanceUidRegistry:
         for key, uid in list(self.key_to_uid.items()):
             if uid not in reserved_uids:
                 continue
-            self.retired_uids.add(uid)
             del self.key_to_uid[key]
             self.uid_to_key.pop(uid, None)
 
@@ -194,11 +187,6 @@ class InstanceUidRegistry:
 
     def uid_for_key(self, key):
         return self.key_to_uid[key]
-
-    def take_retired_uids(self):
-        retired = set(self.retired_uids)
-        self.retired_uids.clear()
-        return retired
 
 
 class ExportStats(dict):
@@ -816,7 +804,7 @@ class LiveLinkConnection():
                 matrix_world=occurrence_matrix.copy(),
                 visibility=occurrence_visible,
                 dependency_graph=dependency_graph,
-                reference_uid_map=dict(scope_map),
+                reference_uid_map=scope_map,
                 occurrence_key=("INSTANCE", *source_key),
                 instancer_path=uid_path,
                 dependency_ids=self._object_dependency_ids(
@@ -1516,9 +1504,7 @@ class LiveLinkConnection():
                 instance_view_layer,
                 evaluation_objects,
             )
-            deleted_uids = set(int(uid) for uid in in_deleted_object_uids)
-            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
-            deleted_uids = sorted(deleted_uids)
+            deleted_uids = sorted({int(uid) for uid in in_deleted_object_uids})
 
             return self._serialize_occurrences(
                 occurrences,
@@ -1554,29 +1540,21 @@ class LiveLinkConnection():
                 for occurrence in all_occurrences
             }
             previous_snapshot = self.export_snapshot
-            deleted_uids = {
-                snapshot.unique_id
-                for key, snapshot in previous_snapshot.items()
-                if (
-                    key not in current_snapshot
-                    or current_snapshot[key].unique_id != snapshot.unique_id
-                )
-            }
-            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
+            deleted_uids = {old.unique_id for old in previous_snapshot.values()}
+            deleted_uids.difference_update(item.unique_id for item in current_snapshot.values())
 
-            selected = []
-            for occurrence in all_occurrences:
-                current = current_snapshot[occurrence.occurrence_key]
-                previous = previous_snapshot.get(occurrence.occurrence_key)
-                signature_changed = (
-                    previous is None
-                    or previous.unique_id != current.unique_id
-                    or previous.matrix_world_values != current.matrix_world_values
-                    or previous.visibility != current.visibility
-                )
-                dependency_changed = bool(current.dependency_ids.intersection(dirty_ids))
-                if force_full or signature_changed or dependency_changed:
-                    selected.append(occurrence)
+            # Mesh and attachment references in a placement use its occurrence UIDs.
+            remapped_placements = {
+                occurrence.instancer_path for occurrence in all_occurrences
+                if (old := previous_snapshot.get(occurrence.occurrence_key)) is not None
+                and old.unique_id != occurrence.unique_id
+            }
+            selected = [
+                occurrence for occurrence in all_occurrences
+                if force_full or occurrence.instancer_path in remapped_placements
+                or previous_snapshot.get(occurrence.occurrence_key) != current_snapshot[occurrence.occurrence_key]
+                or not occurrence.dependency_ids.isdisjoint(dirty_ids)
+            ]
 
             if not selected and not deleted_uids and not force_full:
                 return True
@@ -1724,7 +1702,6 @@ class LiveLinkConnection():
                 evaluation_objects,
             )
             deleted_uids = set(int(uid) for uid in in_deleted_object_uids)
-            deleted_uids.update(self.instance_uid_registry.take_retired_uids())
             return self._make_update_python_occurrences(
                 occurrences,
                 sorted(deleted_uids),

@@ -16,4 +16,4 @@ clang++ -std=c++20 -O0 -g -Wno-c99-designator -DWITH_DEBUG_UI=0 -DGAME_ENABLE_VA
   tests/live_link_parse_tests.cpp "${includes[@]}" \
   "$cache/libglfw.a" "$cache/libvma.a" "$cache/libjolt.a" "${system_libs[@]}" \
   -o "$out"
-"$out"
+"$out" "$@"

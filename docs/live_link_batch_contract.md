@@ -55,8 +55,9 @@ Direct objects retain Blender's positive `session_uid`. Expanded occurrences
 receive positive 31-bit IDs in `0x40000000..0x7fffffff`, derived from the root
 and nested instancer UID path plus the source-object UID. Allocation is stable
 for the loaded Blender session and probes around direct/occurrence collisions.
-If a direct object later claims an allocated value, the old occurrence UID is
-deleted and its replacement is sent. Expanded diagnostic names contain the
+If a direct object later claims an allocated value, the occurrence gets a new
+UID and the affected placement is resent to refresh its references. Deletions
+contain only UIDs missing from the current exported scene. Expanded diagnostic names contain the
 placement path, for example `RootInstance/NestedInstance/SourceObject`.
 
 The instance Empty's `enable_live_link` gates its complete subtree; each source

@@ -76,6 +76,7 @@ def validate_compression_registries(extension_module) -> None:
         ("CLOUD_SYSTEM", "cloud_system"),
         ("PHYSICS", "physics"),
         ("ENEMY", "enemy"),
+        ("TESSELLATION", "tessellation"),
     ]
     actual_components = [
         (component_class.type_name, group_name)
@@ -149,8 +150,6 @@ def validate_compression_registries(extension_module) -> None:
     collision_registry.prepare([key], {old_uid})
     if collision_registry.uid_for_key(key) == old_uid:
         raise AssertionError("A later direct UID collision did not reassign the occurrence")
-    if collision_registry.take_retired_uids() != {old_uid}:
-        raise AssertionError("Reassigned occurrence UID was not queued for deletion")
 
 
 def parse_update(extension_module, payload: bytes):
@@ -238,6 +237,7 @@ def create_synthetic_scene():
     add_component(weapon_object, "WEAPON").weapon.accepted_bone_label = "Hand"
 
     body_component = add_component(mesh_object, "PART")
+    add_component(mesh_object, "TESSELLATION").tessellation.max_factor_override = 2
     body_component.part.part_type = "BODY"
     mesh_object.hide_set(True)
 

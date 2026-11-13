@@ -1,7 +1,9 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
+#include "core/dynamic_array.h"
 #include "core/types.h"
 #include "game_object/camera.h"
 #include "game_object/game_object.h"
@@ -19,7 +21,7 @@ struct PendingImage
 	i32 unique_id = 0;
 	i32 width = 0;
 	i32 height = 0;
-	u8* pixels = nullptr;	// malloc'd RGBA8, width*height*4, validated at parse
+	std::vector<u8> pixels;	// Owned RGBA8, width * height * 4
 	u64 content_hash = 0;	// size + pixels; Blender resends unchanged images with every export
 };
 
@@ -44,6 +46,15 @@ struct PendingMaterial
 
 struct SceneUpdate
 {
+	SceneUpdate() = default;
+	SceneUpdate(SceneUpdate&&) noexcept = default;
+
+	// A decoded batch can be discarded before the main thread takes its objects.
+	~SceneUpdate()
+	{
+		for (Object& object : objects) object_cleanup(object);
+	}
+
 	struct ImportStats
 	{
 		u64 byte_count = 0;

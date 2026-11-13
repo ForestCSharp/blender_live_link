@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import bpy
@@ -240,6 +241,11 @@ def validate(extension_module, capture_path: Path, parse_update, host_fixture_pa
     ].unique_id:
         raise AssertionError("Two placements reused the same occurrence UID")
 
+    root_a_map = by_name["LL Root A/LL Asset Mesh"].reference_uid_map
+    if (root_a_map is not by_name["LL Root A/LL Asset Armature"].reference_uid_map
+            or root_a_map is by_name["LL Root B/LL Asset Mesh"].reference_uid_map):
+        raise AssertionError("Expected one shared UID map per placement")
+
     source_mesh = linked_collection.all_objects["LL Asset Mesh"]
     expected = (
         root_a.matrix_world
@@ -301,6 +307,24 @@ def validate(extension_module, capture_path: Path, parse_update, host_fixture_pa
         name: obj.UniqueId()
         for name, obj in _objects(parse_update(extension_module, captured[-1])).items()
     }
+
+    # Simulate the last delivered armature occurrence owning a UID that now
+    # belongs to a direct object. Blender assigns real session UIDs read-only.
+    armature = by_name["LL Root A/LL Asset Armature"]
+    direct = by_name["LL Root A"]
+    collision_snapshot = connection.export_snapshot.copy()
+    collision_snapshot.pop(direct.occurrence_key)
+    collision_snapshot[armature.occurrence_key] = replace(
+        collision_snapshot[armature.occurrence_key], unique_id=direct.unique_id)
+    connection.export_snapshot = collision_snapshot
+    connection.send_scene_changes(set(), "ci_reassigned_uid")
+    collision = parse_update(extension_module, captured[-1])
+    replacements = _objects(collision)
+    if (collision.DeletedObjectUidsLength() != 0
+            or replacements[direct.name].UniqueId() != direct.unique_id
+            or replacements[armature.name].UniqueId() != armature.unique_id
+            or replacements["LL Root A/LL Asset Mesh"].Mesh().ArmatureId() != armature.unique_id):
+        raise AssertionError("Reassigned UID lost its new owner or its placement references")
 
     root_a.location.x += 2.0
     bpy.context.view_layer.update()
