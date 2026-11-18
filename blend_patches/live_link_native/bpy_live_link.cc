@@ -2633,6 +2633,10 @@ CompareResult compare_update_buffers_native(const uint8_t *native_data,
   diffs.max_diffs = std::max(max_diffs, 1);
   compare_exact(diffs, "update.reset", native_update->reset(), python_update->reset());
   compare_editor_camera(diffs, native_update->editor_camera(), python_update->editor_camera());
+  compare_string(diffs,
+                 "update.scene_key",
+                 fb_string(native_update->scene_key()),
+                 fb_string(python_update->scene_key()));
   compare_exact_vector(
       diffs, "update.deleted_object_uids", native_update->deleted_object_uids(), python_update->deleted_object_uids());
 
@@ -2716,7 +2720,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
                                     bool reset,
                                     const char *update_reason,
                                     int sequence,
-                                    PyObject *editor_camera)
+                                    PyObject *editor_camera,
+                                    const char *scene_key)
 {
   auto start_time = std::chrono::steady_clock::now();
   Depsgraph *depsgraph = depsgraph_from_py(dependency_graph);
@@ -2803,7 +2808,8 @@ PyObject *BPY_live_link_make_update(PyObject *objects,
                                        builder.CreateVector(image_offsets),
                                        reset,
                                        generation_seconds,
-                                       editor_camera_offset);
+                                       editor_camera_offset,
+                                       builder.CreateString(scene_key ? scene_key : ""));
   ll::FinishSizePrefixedUpdateBuffer(builder, update);
 
   PySys_WriteStdout(

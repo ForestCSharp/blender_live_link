@@ -85,6 +85,16 @@ enum class EProbeRadianceMode : i32
 	MAX,
 };
 
+enum class EGiBakeStatus : i32
+{
+	NotBaked,	// probes unbaked; only the sky fallback probe is captured
+	Baking,
+	Baked,		// in memory only (no scene key, or persistence off)
+	Loaded,
+	Saved,
+	SaveFailed,
+};
+
 enum class ETessellationMode : i32
 {
 	Fixed = 0,
@@ -538,7 +548,15 @@ struct State
 		bool probe_isolation_enable = false;
 		i32 isolated_probe_index = -1;
 		bool compute_irradiance = true;
-		bool is_updating = true;
+		// Probes are only captured on request: bake_requested starts a full
+		// bake (is_updating while it runs); sky_probe_dirty recaptures just the
+		// sky fallback probe.
+		bool bake_requested = false;
+		bool is_updating = false;
+		bool sky_probe_dirty = true;
+		bool bake_persistence = true;	// load/save bin/gi_bakes/; automation turns it off
+		EGiBakeStatus bake_status = EGiBakeStatus::NotBaked;
+		std::string scene_key;			// "<blend stem>/<scene>" from live link
 	} gi;
 
 	struct TessellationState

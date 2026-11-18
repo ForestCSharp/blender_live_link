@@ -5,6 +5,7 @@
 # Running ./build.sh -web selects the browser renderer (combine with -g or -python)
 # Running ./build.sh -g only rebuilds the default Vulkan game and runs it
 # Running ./build.sh --package-only generates schemas and packages the extension without launching either application
+# Running ./build.sh -full also restores the Blender files the native patches touch and re-applies the patches (use after editing blend_patches/)
 # Running ./build.sh -port N puts Blender and the renderer on live link TCP port N instead of 65432
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -26,6 +27,7 @@ GAME_PATH=game
 GAME_LABEL="Game (Vulkan)"
 BUILD_ONLY_GAME=false
 PACKAGE_ONLY=false
+BLEND_SRC_ARGS=()
 BLENDER_BUILD_MODE=native
 BLENDER_BUILD_MODE_WAS_SET=false
 if [[ $OS = Linux ]]; then
@@ -452,7 +454,7 @@ run_blender_side_build_and_launch() {
 
 	if [[ $BLENDER_BUILD_MODE = native ]]; then
 		log_build "Blender branch: ensuring local Blender source/build"
-		"$SCRIPT_DIR/build_blend_src.sh" || return
+		"$SCRIPT_DIR/build_blend_src.sh" ${BLEND_SRC_ARGS[@]+"${BLEND_SRC_ARGS[@]}"} || return
 	fi
 
 	package_extension || return
@@ -865,6 +867,10 @@ while [[ $# -gt 0 ]]; do
     	shift # past argument
     	shift # past argument
     	;;
+    -full|--full)
+		BLEND_SRC_ARGS+=(--reset-patches)
+		shift # past argument
+		;;
     -port|--port)
 		if [[ $# -lt 2 ]]; then
 			echo "Error: $1 requires a TCP port"

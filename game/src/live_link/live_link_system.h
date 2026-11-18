@@ -401,7 +401,13 @@ namespace LiveLinkSystem
 			{
 				state.runtime.blender_data_loaded = true;
 			}
-	
+			if (!scene_update.scene_key.empty() && scene_update.scene_key != state.gi.scene_key)
+			{
+				// A different scene's GI bake may match this layout; rebuild to look it up.
+				state.gi.scene_key = std::move(scene_update.scene_key);
+				state.gi.layout_dirty = true;
+			}
+
 			if (!state.debug_camera.live_link_initialization_complete)
 			{
 				state.debug_camera.live_link_initialization_complete = true;

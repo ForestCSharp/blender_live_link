@@ -2,6 +2,7 @@
 
 #include <cstddef>
 
+#include "core/crash_handler.h"
 #include "core/types.h"
 #include "render/core/vulkan_context.h"
 #include "render/core/render_types.h"
@@ -253,14 +254,14 @@ void tonemapping_pass_init(VulkanContext* ctx)
 	if (!ACES2Tonemapping::load_lut((i32)profile_output_mode, &aces2_lut, &aces2_error))
 	{
 		printf("ACES 2.0 LUT load failed: %s\n", aces2_error.c_str());
-		exit(1);
+		fatal_exit(1);
 	}
 	AgXTonemapping::LoadedLUT agx_lut;
 	std::string agx_error;
 	if (!AgXTonemapping::load_lut((i32)profile_output_mode, &agx_lut, &agx_error))
 	{
 		printf("AgX LUT load failed: %s\n", agx_error.c_str());
-		exit(1);
+		fatal_exit(1);
 	}
 	assert(gt7_lut_pixels.length() == ACES2Tonemapping::LUT_PAYLOAD_SIZE / sizeof(u16));
 	assert(aces2_lut.pixels.length() == gt7_lut_pixels.length());

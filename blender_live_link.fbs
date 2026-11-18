@@ -417,6 +417,8 @@ table Update
 	reset 				: bool = false;
 	generation_seconds	: double = 0.0;
 	editor_camera		: EditorCamera;
+	// "<blend file stem>/<scene name>"; keys per-scene game data such as GI bakes.
+	scene_key			: string;
 }
 
 root_type Update;

@@ -8,6 +8,8 @@
 #include "core/types.h"
 #include "core/dynamic_array.h"
 #include "game_object/game_object.h"
+#include "render/core/geometry_arena_freelist.h"
+#include "render/passes/gi/gi_bake.h"
 #include "render/passes/gi/lighting_capture.h"
 
 #include "gi_helpers.h"
@@ -44,7 +46,8 @@ struct GI_Scene
 	// Probe Update State
 	LightingCapture lighting_capture;
 	i32 probe_idx_to_update = 0;
-	i32 next_atlas_index = 0;
+	bool pending_save = false;	// bake finished last frame; read back and save
+	GeometryContentHash probe_layout_hash;	// probes as built, before capture
 
 	// Dynamic Layout
 	BoundingBox scene_bounds = {};
@@ -59,18 +62,23 @@ struct GI_Scene
 	f32 max_occupied_cell_extent = 0.0f;
 
 	// Static Parameters
-	static constexpr i32 min_octree_depth = 1;
-	static constexpr i32 max_octree_depth = 6;
+	static constexpr i32 min_octree_depth = 2;
+	static constexpr i32 max_octree_depth = 12;
 	static constexpr f32 fallback_scene_extent = 30.0f;
 	static constexpr f32 minimum_scene_extent = 1.0f;
 	static constexpr f32 radial_depth_cell_scale = (f32) GI_RADIAL_DEPTH_CELL_SCALE;
-	static constexpr i32 cubemap_capture_size = 256;
+	static constexpr i32 cubemap_capture_size = 64; // ~2x the face size a 48^2 octahedral specular entry needs
 	static constexpr i32 atlas_total_size = 2048;
 	static constexpr i32 atlas_entry_size = 16;
 	static constexpr i32 specular_atlas_entry_size = 48;
 	static constexpr i32 specular_atlas_mip_count = 4;
-	static constexpr i32 maximum_lattice_probe_count = 4914; // 17^3 corners + fallback
-	static constexpr i32 maximum_specular_slots_per_dimension = 71;
+	// Probe budget: every slot of the octahedral atlas (128^2). The octree depth
+	// is capped at the deepest level whose probes fit (gi_scene_rebuild_layout).
+	// At the full budget the specular atlas is 6144^2 (~400 MiB RGBA16F with
+	// mips), past Vulkan's guaranteed 4096; gi_scene_init checks the device.
+	static constexpr i32 maximum_lattice_probe_count =
+		(atlas_total_size / atlas_entry_size) * (atlas_total_size / atlas_entry_size);
+	static constexpr i32 maximum_specular_slots_per_dimension = atlas_total_size / atlas_entry_size;
 	static constexpr i32 maximum_specular_atlas_size =
 		maximum_specular_slots_per_dimension * specular_atlas_entry_size;
 	static constexpr i32 probes_to_update_per_frame = 4;
@@ -78,11 +86,7 @@ struct GI_Scene
 static_assert(
 	GI_Scene::maximum_specular_slots_per_dimension * GI_Scene::maximum_specular_slots_per_dimension
 		>= GI_Scene::maximum_lattice_probe_count,
-	"Specular atlas grid must hold the maximum-depth probe lattice."
-);
-static_assert(
-	GI_Scene::maximum_specular_atlas_size <= 4096,
-	"Fixed-quality specular atlas must fit Vulkan's minimum 2D image dimension."
+	"Specular atlas grid must hold the probe budget."
 );
 
 #define GI_LOG_SCENE_INIT 0
@@ -474,52 +478,348 @@ void gi_scene_recreate_gpu_buffers(GI_Scene& out_gi_scene)
 	out_gi_scene.sh9_coefficients_buffer = GpuBuffer((GpuBufferDesc<HMM_Vec4>){
 		.data = out_gi_scene.sh9_coefficients.data(),
 		.size = sizeof(HMM_Vec4) * out_gi_scene.sh9_coefficients.length(),
-		.usage = { .storage_buffer = true },
+		.usage = { .storage_buffer = true, .transfer_src = true },	// GI bake readback
 		.label = "GI SH9 Coefficients Buffer",
 	});
 
 	out_gi_scene.sg9_lobes_buffer = GpuBuffer((GpuBufferDesc<GI_SG9_Lobe>){
 		.data = out_gi_scene.sg9_lobes.data(),
 		.size = sizeof(GI_SG9_Lobe) * out_gi_scene.sg9_lobes.length(),
-		.usage = { .storage_buffer = true },
+		.usage = { .storage_buffer = true, .transfer_src = true },	// GI bake readback
 		.label = "GI SG9 Lobes Buffer",
 	});
+}
+
+// ---- GI bake persistence (file format in gi_bake.h) ----
+
+u32 gi_bake_format_bytes(const VkFormat in_format)
+{
+	switch (in_format)
+	{
+		case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+		case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+		default: assert(false && "GI bake: unhandled atlas format"); return 0;
+	}
+}
+
+// Atlas index i is probe i, row-major, so probes occupy the leading rows.
+u32 gi_bake_octahedral_rows(const GI_Scene& in_gi_scene)
+{
+	const i32 entries_per_row = GI_Scene::atlas_total_size / GI_Scene::atlas_entry_size;
+	const i32 entry_rows = ((i32) in_gi_scene.probes.length() + entries_per_row - 1) / entries_per_row;
+	return (u32) (entry_rows * GI_Scene::atlas_entry_size);
+}
+
+GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_state)
+{
+	LightingCapture& capture = in_gi_scene.lighting_capture;
+	// Everything that changes how the stored bytes are laid out or interpreted.
+	const i32 params[] = {
+		in_gi_scene.octree_depth,
+		capture.desc.octahedral_total_size,
+		capture.desc.octahedral_entry_size,
+		capture.desc.specular_entry_size,
+		capture.desc.specular_mip_count,
+		capture.specular_atlas_total_size,
+		(i32) capture.color_format,
+		(i32) capture.specular_atlas.format,
+		(i32) in_state.gi.probe_occlusion_mode,
+	};
+	const GeometryContentHash hash = geometry_arena_hash_bytes(
+		params, sizeof(params), in_gi_scene.probe_layout_hash.low ^ in_gi_scene.probe_layout_hash.high);
+
+	GiBakeHeader header;
+	header.layout_hash[0] = hash.low;
+	header.layout_hash[1] = hash.high;
+	header.probe_count = in_gi_scene.probes.length();
+	const u64 octahedral_bytes = (u64) capture.desc.octahedral_total_size
+		* gi_bake_octahedral_rows(in_gi_scene) * gi_bake_format_bytes(capture.color_format);
+	header.blob_bytes[GI_BAKE_BLOB_IRRADIANCE] = octahedral_bytes;
+	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = octahedral_bytes;
+	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
+	{
+		const u64 size = (u64) capture.specular_atlas_total_size >> mip;
+		header.blob_bytes[GI_BAKE_BLOB_SPECULAR] += size * size * gi_bake_format_bytes(capture.specular_atlas.format);
+	}
+	header.blob_bytes[GI_BAKE_BLOB_SH9] = sizeof(HMM_Vec4) * in_gi_scene.sh9_coefficients.length();
+	header.blob_bytes[GI_BAKE_BLOB_SG9] = sizeof(GI_SG9_Lobe) * in_gi_scene.sg9_lobes.length();
+	return header;
+}
+
+// Records copies between the three atlases and a staging buffer laid out like
+// the file's image blobs; in_upload picks the direction. Leaves the atlases
+// SHADER_READ_ONLY as the lighting pass expects.
+void gi_bake_record_atlas_copies(
+	VkCommandBuffer in_command_buffer, GI_Scene& in_gi_scene, VkBuffer in_staging, const bool in_upload)
+{
+	LightingCapture& capture = in_gi_scene.lighting_capture;
+	const VkImageLayout transfer_layout = in_upload
+		? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	u64 offset = 0;
+	const auto copy = [&](GpuImage& in_image, const u32 in_mip, const u32 in_width, const u32 in_height)
+	{
+		const VkBufferImageCopy region = {
+			.bufferOffset = offset,
+			.imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = in_mip, .baseArrayLayer = 0, .layerCount = 1 },
+			.imageOffset = { 0, 0, 0 },
+			.imageExtent = { in_width, in_height, 1 },
+		};
+		if (in_upload)
+			vkCmdCopyBufferToImage(in_command_buffer, in_staging, in_image.image, transfer_layout, 1, &region);
+		else
+			vkCmdCopyImageToBuffer(in_command_buffer, in_image.image, transfer_layout, in_staging, 1, &region);
+		offset += (u64) in_width * in_height * gi_bake_format_bytes(in_image.format);
+	};
+
+	const u32 rows = gi_bake_octahedral_rows(in_gi_scene);
+	const u32 octahedral_size = (u32) capture.desc.octahedral_total_size;
+	for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+	{
+		GpuImage& atlas = capture.cube_to_oct_pass.get_color_output(output_idx);
+		gpu_image_transition(in_command_buffer, atlas, transfer_layout);
+		copy(atlas, 0, octahedral_size, rows);
+		gpu_image_transition(in_command_buffer, atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+	gpu_image_transition(in_command_buffer, capture.specular_atlas, transfer_layout);
+	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
+	{
+		const u32 size = (u32) capture.specular_atlas_total_size >> mip;
+		copy(capture.specular_atlas, (u32) mip, size, size);
+	}
+	gpu_image_transition(in_command_buffer, capture.specular_atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+struct GiBakeStaging
+{
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+	void* mapped = nullptr;
+};
+
+GiBakeStaging gi_bake_create_staging(VulkanContext* ctx, const u64 in_size, const bool in_readback)
+{
+	const VkBufferCreateInfo buffer_create_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = in_size,
+		.usage = in_readback ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	};
+	const VmaAllocationCreateInfo allocation_create_info = {
+		.flags = (VmaAllocationCreateFlags) ((in_readback
+			? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+			: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
+			| VMA_ALLOCATION_CREATE_MAPPED_BIT),
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+	GiBakeStaging staging;
+	VmaAllocationInfo allocation_info = {};
+	VK_CHECK(vmaCreateBuffer(ctx->allocator, &buffer_create_info, &allocation_create_info,
+		&staging.buffer, &staging.allocation, &allocation_info));
+	staging.mapped = allocation_info.pMappedData;
+	return staging;
+}
+
+// Called at the top of the frame after a bake's last capture was recorded:
+// nothing GI-related is recorded yet this frame, so a wait-idle + one-shot
+// readback sees the finished bake and leaves image layout tracking consistent.
+void gi_scene_save_bake(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
+{
+	const std::string path = gi_bake_path(in_state.gi.scene_key);
+	if (!in_state.gi.bake_persistence || path.empty())
+	{
+		in_state.gi.bake_status = EGiBakeStatus::Baked;
+		return;
+	}
+
+	const GiBakeHeader header = gi_bake_expected_header(in_gi_scene, in_state);
+	const u64 total_bytes = gi_bake_total_blob_bytes(header);
+	GiBakeStaging staging = gi_bake_create_staging(ctx, total_bytes, /*in_readback*/ true);
+	VK_CHECK(vulkan_device_wait_idle(ctx));
+	vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
+	{
+		// Projection compute wrote the SH9/SG9 buffers in earlier frames.
+		VkMemoryBarrier2 to_transfer = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+		};
+		VkDependencyInfo dependency = {
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.memoryBarrierCount = 1,
+			.pMemoryBarriers = &to_transfer,
+		};
+		vkCmdPipelineBarrier2(in_command_buffer, &dependency);
+
+		gi_bake_record_atlas_copies(in_command_buffer, in_gi_scene, staging.buffer, /*in_upload*/ false);
+		const VkBufferCopy sh9_copy = {
+			.dstOffset = gi_bake_blob_offset(header, GI_BAKE_BLOB_SH9),
+			.size = header.blob_bytes[GI_BAKE_BLOB_SH9],
+		};
+		vkCmdCopyBuffer(in_command_buffer, in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer(), staging.buffer, 1, &sh9_copy);
+		const VkBufferCopy sg9_copy = {
+			.dstOffset = gi_bake_blob_offset(header, GI_BAKE_BLOB_SG9),
+			.size = header.blob_bytes[GI_BAKE_BLOB_SG9],
+		};
+		vkCmdCopyBuffer(in_command_buffer, in_gi_scene.sg9_lobes_buffer.get_gpu_buffer(), staging.buffer, 1, &sg9_copy);
+
+		VkMemoryBarrier2 to_host = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+			.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+		};
+		dependency.pMemoryBarriers = &to_host;
+		vkCmdPipelineBarrier2(in_command_buffer, &dependency);
+	});
+	VK_CHECK(vmaInvalidateAllocation(ctx->allocator, staging.allocation, 0, VK_WHOLE_SIZE));
+	const bool saved = gi_bake_write(path, header, staging.mapped);
+	vmaDestroyBuffer(ctx->allocator, staging.buffer, staging.allocation);
+
+	in_state.gi.bake_status = saved ? EGiBakeStatus::Saved : EGiBakeStatus::SaveFailed;
+	printf("GI bake %s: %s (%.1f MiB)\n", saved ? "saved" : "SAVE FAILED", path.c_str(),
+		(f64) total_bytes / (1024.0 * 1024.0));
+}
+
+// Looks for a bake matching the freshly built layout. On a hit, fills the CPU
+// SH9/SG9 arrays and probe atlas indices (the GPU buffers are created from
+// them afterwards; they are static, so they cannot be updated in place) and
+// returns the file's blobs (atlas blobs first) for gi_scene_upload_bake_atlases.
+bool gi_scene_read_bake(GI_Scene& in_gi_scene, const State& in_state, DynamicArray<u8>& out_blobs, u64& out_atlas_bytes)
+{
+	const std::string path = gi_bake_path(in_state.gi.scene_key);
+	if (!in_state.gi.bake_persistence || path.empty())
+	{
+		return false;
+	}
+
+	const GiBakeHeader header = gi_bake_expected_header(in_gi_scene, in_state);
+	if (!gi_bake_read(path, header, out_blobs))
+	{
+		return false;
+	}
+
+	out_atlas_bytes = gi_bake_blob_offset(header, GI_BAKE_BLOB_SH9);
+	memcpy(in_gi_scene.sh9_coefficients.data(), out_blobs.data() + out_atlas_bytes,
+		header.blob_bytes[GI_BAKE_BLOB_SH9]);
+	memcpy(in_gi_scene.sg9_lobes.data(), out_blobs.data() + gi_bake_blob_offset(header, GI_BAKE_BLOB_SG9),
+		header.blob_bytes[GI_BAKE_BLOB_SG9]);
+	for (i32 probe_index = 0; probe_index < (i32) in_gi_scene.probes.length(); ++probe_index)
+	{
+		in_gi_scene.probes[probe_index].atlas_idx = probe_index;
+	}
+	printf("GI bake loaded: %s\n", path.c_str());
+	return true;
+}
+
+// Must run after resize_specular_atlas: that records a clear into the frame
+// command buffer, so the upload is recorded after it in the same buffer.
+void gi_scene_upload_bake_atlases(
+	VulkanContext* ctx, GI_Scene& in_gi_scene, const DynamicArray<u8>& in_blobs, const u64 in_atlas_bytes)
+{
+	GiBakeStaging staging = gi_bake_create_staging(ctx, in_atlas_bytes, /*in_readback*/ false);
+	memcpy(staging.mapped, in_blobs.data(), in_atlas_bytes);
+	VK_CHECK(vmaFlushAllocation(ctx->allocator, staging.allocation, 0, in_atlas_bytes));
+	if (vulkan_current_frame(ctx).recording)
+	{
+		gi_bake_record_atlas_copies(vulkan_current_command_buffer(ctx), in_gi_scene, staging.buffer, /*in_upload*/ true);
+		vulkan_context_retire(ctx, (RetiredResource) {
+			.type = RetiredResourceType::Buffer,
+			.buffer = staging.buffer,
+			.allocation = staging.allocation,
+		});
+	}
+	else
+	{
+		vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
+		{
+			gi_bake_record_atlas_copies(in_command_buffer, in_gi_scene, staging.buffer, /*in_upload*/ true);
+		});
+		vmaDestroyBuffer(ctx->allocator, staging.buffer, staging.allocation);
+	}
 }
 
 void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 {
 	out_gi_scene.octree_depth = std::clamp(in_state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
-	in_state.gi.octree_depth = out_gi_scene.octree_depth;
-	out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(out_gi_scene.octree_depth);
 	DynamicArray<BoundingBox> geometry_bounds;
 	const bool has_visible_geometry = gi_scene_collect_visible_mesh_bounds(in_state, geometry_bounds, out_gi_scene.scene_bounds);
-	out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32) out_gi_scene.leaf_divisions;
 
-	gi_scene_reset_layout_buffers(out_gi_scene);
-	if (has_visible_geometry)
+	// Probe count depends on how the geometry fills the octree, so a depth can
+	// only be checked against the probe budget by building it. Build upward and
+	// stop before the first depth over budget: building the requested depth
+	// first could mean millions of nodes at depth 12. The slider then shows the
+	// depth actually in use.
+	const auto build_layout = [&](const i32 in_depth)
 	{
-		ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
-		gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
-	}
-	else
+		out_gi_scene.octree_depth = in_depth;
+		out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(in_depth);
+		out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32) out_gi_scene.leaf_divisions;
+		gi_scene_reset_layout_buffers(out_gi_scene);
+		if (has_visible_geometry)
+		{
+			ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
+			gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
+		}
+		else
+		{
+			gi_scene_init_empty_octree(out_gi_scene);
+		}
+		gi_scene_add_fallback_probe(out_gi_scene);
+		return out_gi_scene.probes.length();
+	};
+	const i32 requested_depth = out_gi_scene.octree_depth;
+	i32 depth = GI_Scene::min_octree_depth;
+	i32 built_depth = -1;	// the layout currently in out_gi_scene, which may be the rejected one
+	while (depth < requested_depth)
 	{
-		gi_scene_init_empty_octree(out_gi_scene);
+		const size_t probe_count = build_layout(depth + 1);
+		built_depth = depth + 1;
+		if (probe_count > (size_t) GI_Scene::maximum_lattice_probe_count)
+		{
+			printf("GI octree depth %d needs %zu probes (budget %d); using depth %d\n",
+				depth + 1, probe_count, GI_Scene::maximum_lattice_probe_count, depth);
+			break;
+		}
+		depth += 1;
 	}
-	gi_scene_add_fallback_probe(out_gi_scene);
+	if (built_depth != depth)
+	{
+		build_layout(depth);
+	}
+	in_state.gi.octree_depth = out_gi_scene.octree_depth;
 	gi_scene_init_radiance_buffers(out_gi_scene);
 
+	assert(out_gi_scene.probes.length() <= (size_t) GI_Scene::maximum_lattice_probe_count);
 	assert(out_gi_scene.probes.length() <= (size_t) gi_scene_atlas_capacity());
 	assert(out_gi_scene.probes.length() > 0);
 	assert(out_gi_scene.octree_nodes.length() > 0);
 	assert(out_gi_scene.cells.length() > 0);
-	gi_scene_recreate_gpu_buffers(out_gi_scene);
+	out_gi_scene.probe_layout_hash = geometry_arena_hash_bytes(
+		out_gi_scene.probes.data(), sizeof(GI_Probe) * out_gi_scene.probes.length(), 0x4749424bull);
+	// Sized first: the bake header covers the specular atlas size and format.
 	out_gi_scene.lighting_capture.resize_specular_atlas(ctx, (i32)out_gi_scene.probes.length());
+	// Read before the GPU buffers exist so they are created with the baked data.
+	DynamicArray<u8> bake_blobs;
+	u64 bake_atlas_bytes = 0;
+	const bool bake_loaded = gi_scene_read_bake(out_gi_scene, in_state, bake_blobs, bake_atlas_bytes);
+	gi_scene_recreate_gpu_buffers(out_gi_scene);
+	if (bake_loaded)
+	{
+		gi_scene_upload_bake_atlases(ctx, out_gi_scene, bake_blobs, bake_atlas_bytes);
+	}
 
+	// A rebuild invalidates any bake in progress; probes stay unbaked unless a
+	// saved bake matches this exact layout.
 	out_gi_scene.probe_idx_to_update = 0;
-	out_gi_scene.next_atlas_index = 0;
+	out_gi_scene.pending_save = false;
 	in_state.gi.layout_dirty = false;
-	in_state.gi.is_updating = true;
+	in_state.gi.is_updating = false;
 	in_state.gi.isolated_probe_index = -1;
+	in_state.gi.bake_status = bake_loaded ? EGiBakeStatus::Loaded : EGiBakeStatus::NotBaked;
+	in_state.gi.sky_probe_dirty = true;
 
 	if (GI_LOG_SCENE_INIT)
 	{
@@ -593,13 +893,21 @@ void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 	gi_scene_rebuild_layout(ctx, out_gi_scene, in_state);
 }
 
-// Records this frame's probe captures into the command buffer (a few probes
-// per frame while is_updating). Call after begin_frame + descriptor updates,
-// before the main pass chain executes.
+// Records this frame's probe captures into the command buffer: a few probes
+// per frame while a requested bake runs, otherwise only the sky fallback probe
+// when the sky changed. Call after begin_frame + descriptor updates, before the
+// main pass chain executes.
 void gi_scene_update(
 	FrameRenderGraph& graph, VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
 {
 	in_gi_scene.lighting_capture.begin_frame(ctx);
+
+	// Before anything GI-related is recorded this frame (see gi_scene_save_bake).
+	if (in_gi_scene.pending_save)
+	{
+		in_gi_scene.pending_save = false;
+		gi_scene_save_bake(ctx, in_gi_scene, in_state);
+	}
 
 	if (in_state.gi.layout_dirty)
 	{
@@ -608,59 +916,63 @@ void gi_scene_update(
 		gi_scene_rebuild_layout(ctx, in_gi_scene, in_state);
 	}
 
-	if (!in_state.gi.is_updating)
+	if (in_state.gi.bake_requested)
 	{
-		return;
+		in_state.gi.bake_requested = false;
+		in_state.gi.is_updating = true;
+		in_state.gi.sky_probe_dirty = false;	// the bake captures the fallback too
+		in_state.gi.bake_status = EGiBakeStatus::Baking;
+		in_gi_scene.probe_idx_to_update = 0;
 	}
 
-	assert(in_gi_scene.probes.is_valid_index(in_gi_scene.probe_idx_to_update));
-
 	bool needs_gpu_update = false;
-	for (i32 i = 0; i < GI_Scene::probes_to_update_per_frame; ++i)
+	const auto capture_probe = [&](const i32 in_probe_index)
 	{
-		GI_Probe& probe_to_update = in_gi_scene.probes[in_gi_scene.probe_idx_to_update];
-
-		if (probe_to_update.atlas_idx < 0)
+		GI_Probe& probe = in_gi_scene.probes[in_probe_index];
+		if (probe.atlas_idx < 0)
 		{
-			assert(in_gi_scene.next_atlas_index < gi_scene_atlas_capacity());
-			probe_to_update.atlas_idx = in_gi_scene.next_atlas_index;
-			in_gi_scene.next_atlas_index += 1;
+			// Atlas slot == probe index, so a saved bake maps back without a table.
+			probe.atlas_idx = in_probe_index;
 			needs_gpu_update = true;
 		}
-
-		const HMM_Vec3 lighting_capture_position = probe_to_update.position.XYZ;
-		const bool should_render_geometry = in_gi_scene.probe_idx_to_update != in_gi_scene.fallback_probe_index;
 		in_gi_scene.lighting_capture.render(
 			graph, ctx,
 			in_state,
-			lighting_capture_position,
-			probe_to_update.atlas_idx,
-			should_render_geometry,
-			in_gi_scene.probe_idx_to_update,
-			probe_to_update.max_radial_depth,
+			probe.position.XYZ,
+			probe.atlas_idx,
+			in_probe_index != in_gi_scene.fallback_probe_index,
+			in_probe_index,
+			probe.max_radial_depth,
 			in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer(),
 			in_gi_scene.sg9_lobes_buffer.get_gpu_buffer()
 		);
-
 		if (GI_LOG_SCENE_UPDATE)
 		{
-			printf(
-				"Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
-				in_gi_scene.probe_idx_to_update,
-				in_gi_scene.probes.length(),
-				lighting_capture_position.X,
-				lighting_capture_position.Y,
-				lighting_capture_position.Z
-			);
+			printf("Updating GI Probe %i/%zu at Position: %f, %f, %f\n",
+				in_probe_index, in_gi_scene.probes.length(),
+				probe.position.X, probe.position.Y, probe.position.Z);
 		}
+	};
 
-		in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % (i32) in_gi_scene.probes.length();
-
-		if (in_gi_scene.probe_idx_to_update == 0)
+	if (in_state.gi.is_updating)
+	{
+		assert(in_gi_scene.probes.is_valid_index(in_gi_scene.probe_idx_to_update));
+		for (i32 i = 0; i < GI_Scene::probes_to_update_per_frame; ++i)
 		{
-			in_state.gi.is_updating = false;
-			break;
+			capture_probe(in_gi_scene.probe_idx_to_update);
+			in_gi_scene.probe_idx_to_update = (in_gi_scene.probe_idx_to_update + 1) % (i32) in_gi_scene.probes.length();
+			if (in_gi_scene.probe_idx_to_update == 0)
+			{
+				in_state.gi.is_updating = false;
+				in_gi_scene.pending_save = true;
+				break;
+			}
 		}
+	}
+	else if (in_state.gi.sky_probe_dirty && in_gi_scene.fallback_probe_index >= 0)
+	{
+		in_state.gi.sky_probe_dirty = false;
+		capture_probe(in_gi_scene.fallback_probe_index);
 	}
 
 	if (needs_gpu_update)

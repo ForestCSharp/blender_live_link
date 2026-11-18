@@ -150,7 +150,7 @@ inline bool sky_pass_update_atmosphere(
 	if (!state.scene.active_sky_controller_id)
 	{
 		if (sky_pass.has_active_atmosphere && state.gi.render_sky_to_probes)
-			state.gi.is_updating = true;
+			state.gi.sky_probe_dirty = true;
 		sky_pass.has_active_atmosphere = false;
 		sky_pass.has_probe_signature = false;
 		return false;
@@ -163,7 +163,7 @@ inline bool sky_pass_update_atmosphere(
 		|| !object_is_sun_light(found->second))
 	{
 		if (sky_pass.has_active_atmosphere && state.gi.render_sky_to_probes)
-			state.gi.is_updating = true;
+			state.gi.sky_probe_dirty = true;
 		sky_pass.has_active_atmosphere = false;
 		sky_pass.has_probe_signature = false;
 		return false;
@@ -192,7 +192,7 @@ inline bool sky_pass_update_atmosphere(
 				probe_signature, sky_pass.last_probe_signature))
 		&& state.gi.render_sky_to_probes)
 	{
-		state.gi.is_updating = true;
+		state.gi.sky_probe_dirty = true;
 	}
 
 	sky_pass.last_probe_signature = probe_signature;

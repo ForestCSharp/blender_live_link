@@ -41,6 +41,8 @@ public:
 		timeout_seconds = configured_timeout_seconds;
 		started_at = glfwGetTime();
 		owns_exit = !in_benchmark_owns_exit;
+		// Captures must not depend on whichever GI bake happens to be on disk.
+		in_state.gi.bake_persistence = false;
 
 		// An explicit GAME2_SCREENSHOT_FRAME means "frame N, whatever is on
 		// screen" - the CI smoke test wants that. Everything else wants a
@@ -108,13 +110,20 @@ public:
 			phase = Phase::WaitingForGi;
 		}
 
-		// GI advances one probe per frame, so converging a large scene costs a
-		// full pass over every probe - minutes, not seconds. Baseline captures
-		// need that determinism (build.sh exports GAME2_SCREENSHOT_WAIT_FOR_GI),
-		// but ad-hoc geometry checks do not, and previously had no way to opt out.
+		// GI only bakes on request, and a bake costs a full pass over every
+		// probe - minutes, not seconds. Baseline captures need that determinism
+		// (build.sh exports GAME2_SCREENSHOT_WAIT_FOR_GI), but ad-hoc geometry
+		// checks do not. A layout rebuild drops the bake, so re-request it.
+		const bool gi_idle = !in_state.gi.layout_dirty && !in_state.gi.bake_requested && !in_state.gi.is_updating;
+		if (phase == Phase::WaitingForGi && wait_for_gi && gi_idle
+			&& in_state.gi.bake_status == EGiBakeStatus::NotBaked)
+		{
+			in_state.gi.bake_requested = true;
+		}
 		if (phase == Phase::WaitingForGi
 			&& (!wait_for_gi
-				|| (!in_state.gi.layout_dirty && !in_state.gi.is_updating)))
+				|| (gi_idle && !in_gi_scene.pending_save
+					&& in_state.gi.bake_status == EGiBakeStatus::Baked)))
 		{
 			printf("Automated screenshot: %s\n",
 				wait_for_gi ? "GI update complete" : "skipping GI convergence wait");

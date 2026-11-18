@@ -470,6 +470,10 @@ namespace LiveLinkSystem
 		scene_update.stats.byte_count = payload.size();
 		scene_update.stats.generation_seconds = update->generation_seconds();
 		scene_update.stats.reset = scene_update.reset;
+		if (auto scene_key = update->scene_key())
+		{
+			scene_update.scene_key = scene_key->str();
+		}
 
 		if (auto editor_camera = update->editor_camera())
 		{

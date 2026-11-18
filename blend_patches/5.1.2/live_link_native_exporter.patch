@@ -45,7 +45,7 @@ index dc7afef1..c4b7908e 100644
  #include "bpy_app_alembic.hh"
  #include "bpy_app_build_options.hh"
  #include "bpy_app_ffmpeg.hh"
-@@ -752,6 +753,115 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
+@@ -752,6 +753,121 @@ static PyObject *bpy_app_is_job_running(PyObject * /*self*/, PyObject *args, PyO
    return PyBool_FromLong(WM_jobs_has_running_type(wm, job_type_enum.value));
  }
 
@@ -53,7 +53,7 @@ index dc7afef1..c4b7908e 100644
 +    /* Wrap. */
 +    bpy_app_live_link_make_update_doc,
 +    ".. staticmethod:: live_link_make_update(objects, deleted_object_uids, dependency_graph, "
-+    "reset=False, update_reason=\"unknown\", sequence=0, editor_camera=None)\n"
++    "reset=False, update_reason=\"unknown\", sequence=0, editor_camera=None, scene_key=\"\")\n"
 +    "\n"
 +    "   Build a native Blender Live Link update.\n"
 +    "\n"
@@ -71,6 +71,8 @@ index dc7afef1..c4b7908e 100644
 +    "   :type sequence: int\n"
 +    "   :param editor_camera: Optional location/forward/up sequence containing 9 floats.\n"
 +    "   :type editor_camera: sequence[float] | None\n"
++    "   :param scene_key: Blend file stem and scene name identifying the exported scene.\n"
++    "   :type scene_key: str\n"
 +    "   :return: Size-prefixed Live Link update bytes.\n"
 +    "   :rtype: bytes\n");
 +static PyObject *bpy_app_live_link_make_update(PyObject * /*self*/,
@@ -84,6 +86,7 @@ index dc7afef1..c4b7908e 100644
 +  const char *update_reason = "unknown";
 +  int sequence = 0;
 +  PyObject *editor_camera = Py_None;
++  const char *scene_key = "";
 +
 +  static const char *_keywords[] = {
 +      "objects",
@@ -93,9 +96,10 @@ index dc7afef1..c4b7908e 100644
 +      "update_reason",
 +      "sequence",
 +      "editor_camera",
++      "scene_key",
 +      nullptr};
 +  static _PyArg_Parser _parser = {
-+      "OOO|O&siO" /* `objects`, `deleted_object_uids`, `dependency_graph`, optional args. */
++      "OOO|O&siOs" /* `objects`, `deleted_object_uids`, `dependency_graph`, optional args. */
 +      ":live_link_make_update",
 +      _keywords,
 +      nullptr,
@@ -110,13 +114,15 @@ index dc7afef1..c4b7908e 100644
 +                                        &reset,
 +                                        &update_reason,
 +                                        &sequence,
-+                                        &editor_camera))
++                                        &editor_camera,
++                                        &scene_key))
 +  {
 +    return nullptr;
 +  }
 +
 +  return BPY_live_link_make_update(
-+      objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence, editor_camera);
++      objects, deleted_object_uids, dependency_graph, reset, update_reason, sequence, editor_camera,
++      scene_key);
 +}
 +
 +PyDoc_STRVAR(
@@ -161,7 +167,7 @@ index dc7afef1..c4b7908e 100644
  char *(*BPY_python_app_help_text_fn)(bool all) = nullptr;
 
  PyDoc_STRVAR(
-@@ -821,6 +931,14 @@ static PyMethodDef bpy_app_methods[] = {
+@@ -821,6 +937,14 @@ static PyMethodDef bpy_app_methods[] = {
       reinterpret_cast<PyCFunction>(bpy_app_is_job_running),
       METH_VARARGS | METH_KEYWORDS | METH_STATIC,
       bpy_app_is_job_running_doc},

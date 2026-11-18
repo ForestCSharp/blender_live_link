@@ -696,6 +696,7 @@ struct LightingCapture
 				.format = ctx->capabilities.scene_color_format,
 				.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
 					| VK_IMAGE_USAGE_SAMPLED_BIT
+					| VK_IMAGE_USAGE_TRANSFER_SRC_BIT	// GI bake readback
 					| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 				.aspect = VK_IMAGE_ASPECT_COLOR_BIT,
 				.mip_levels = (u32)desc.specular_mip_count,
@@ -1144,12 +1145,8 @@ struct LightingCapture
 		graph.make_sampled(cube_to_oct_pass);
 
 		// ---- SH9 / SG9 projection ----
-		const bool should_project_sh9 =
-			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SH9 ||
-			in_state.gi.probe_vis_mode == EProbeVisMode::SH9Irradiance;
-		const bool should_project_sg9 =
-			in_state.gi.probe_radiance_mode == EProbeRadianceMode::SG9 ||
-			in_state.gi.probe_vis_mode == EProbeVisMode::SG9Irradiance;
+		// Always both: captures only happen on explicit bakes, and a saved bake
+		// must still render after switching radiance or vis mode.
 
 		const auto project_probe_radiance = [&](EProbeRadianceMode in_radiance_mode)
 		{
@@ -1180,26 +1177,14 @@ struct LightingCapture
 			});
 		};
 
-		bool dispatched_projection = false;
-		if (should_project_sh9)
-		{
-			project_probe_radiance(EProbeRadianceMode::SH9);
-			dispatched_projection = true;
-		}
-		if (should_project_sg9)
-		{
-			project_probe_radiance(EProbeRadianceMode::SG9);
-			dispatched_projection = true;
-		}
+		project_probe_radiance(EProbeRadianceMode::SH9);
+		project_probe_radiance(EProbeRadianceMode::SG9);
 
-		if (dispatched_projection)
-		{
-			const VkPipelineStageFlags2 shader_stages =
-				VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
-				| VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-			graph.storage_read(frame_graph_buffer(in_sh9_buffer), shader_stages);
-			graph.storage_read(frame_graph_buffer(in_sg9_buffer), shader_stages);
-		}
+		const VkPipelineStageFlags2 shader_stages =
+			VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+			| VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+		graph.storage_read(frame_graph_buffer(in_sh9_buffer), shader_stages);
+		graph.storage_read(frame_graph_buffer(in_sg9_buffer), shader_stages);
 	}
 
 	void cleanup(VulkanContext* ctx)

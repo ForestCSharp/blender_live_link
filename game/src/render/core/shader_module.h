@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/crash_handler.h"
 #include "core/types.h"
 
 #include <cstdio>
@@ -43,7 +44,7 @@ VkShaderModule create_shader_module_from_file(VkDevice in_device, const char* in
 	if (!read_binary_file(in_filename, &shader_size, &shader_code))
 	{
 		printf("Failed to read shader file: %s (run from the game directory)\n", in_filename);
-		exit(1);
+		fatal_exit(1);
 	}
 
 	VkShaderModuleCreateInfo create_info = {

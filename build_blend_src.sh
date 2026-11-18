@@ -29,6 +29,7 @@ BLENDER_GIT_URL="${BLENDER_GIT_URL:-https://projects.blender.org/blender/blender
 DEFAULT_BLENDER_SOURCE_VERSION=5.1.2
 FAST_BUILD_CMAKE_ARGS="-DWITH_GTESTS=OFF -DWITH_COMPILER_ASAN=OFF -DWITH_ASSERT_RELEASE=OFF -DWITH_BUILDINFO=OFF -DWITH_OPENSUBDIV=ON -DCMAKE_INSTALL_PREFIX=$BLENDER_LITE_BUILD_DIR/bin -DBLENDER_LIVE_LINK_REPO_DIR=$SCRIPT_DIR"
 BLENDER_PATCHES_CHANGED=false
+RESET_BLENDER_PATCHES=false
 BLENDER_SOURCE_MODE=version
 BLENDER_SOURCE_VERSION_EXPLICIT=false
 REQUESTED_BLENDER_SOURCE_VERSION="$DEFAULT_BLENDER_SOURCE_VERSION"
@@ -44,6 +45,8 @@ and builds the local native Blender on macOS or Linux.
 Options:
   --latest          Use the highest stable Blender version with a tracked patch set.
   --version X.Y.Z  Use a specific Blender release version.
+  --reset-patches   Restore every file the release's patches touch from git, then
+                    re-apply them. Needed after editing a patch that is already applied.
   -h, --help       Show this help text.
 
 Default:
@@ -83,6 +86,10 @@ parse_args() {
 				BLENDER_SOURCE_VERSION_EXPLICIT=true
 				REQUESTED_BLENDER_SOURCE_VERSION="$2"
 				shift 2
+				;;
+			--reset-patches)
+				RESET_BLENDER_PATCHES=true
+				shift
 				;;
 			-h|--help)
 				usage
@@ -378,6 +385,29 @@ print_supported_blender_patch_versions() {
 	else
 		printf "%s\n" "$versions" | sed 's/^/  - /'
 	fi
+}
+
+# An edited patch can neither apply over its old version nor be recognized as
+# applied, so restore the files it touches to the checkout's HEAD first.
+reset_blender_patches() {
+	local release_patch_dir="$BLENDER_PATCH_DIR/$REQUESTED_BLENDER_SOURCE_VERSION"
+	local patched_files=()
+	local path
+	while IFS= read -r path; do
+		patched_files+=("$path")
+	done < <(awk '/^\+\+\+ b\// { sub(/^\+\+\+ b\//, ""); sub(/\t.*/, ""); print }' "$release_patch_dir"/*.patch | sort -u)
+
+	echo "Resetting Blender files touched by the $REQUESTED_BLENDER_SOURCE_VERSION patch set"
+	for path in "${patched_files[@]}"; do
+		if git -C "$BLENDER_SRC_DIR" cat-file -e "HEAD:$path" 2> /dev/null; then
+			git -C "$BLENDER_SRC_DIR" checkout -- "$path"
+		else
+			rm -f "$BLENDER_SRC_DIR/$path"	# created by a patch
+		fi
+		rm -f "$BLENDER_SRC_DIR/$path.orig" "$BLENDER_SRC_DIR/$path.rej"
+		echo "  reset $path"
+	done
+	rm -rf "$BLENDER_PATCH_SENTINEL_DIR/$REQUESTED_BLENDER_SOURCE_VERSION"
 }
 
 apply_blender_patches() {
@@ -711,6 +741,9 @@ case "$CURRENT_OS" in
 esac
 ensure_git_blender_source
 ensure_native_schema_inputs
+if [[ "$RESET_BLENDER_PATCHES" == "true" ]]; then
+	reset_blender_patches
+fi
 apply_blender_patches
 remove_retired_bmesh_dependency_patch
 sync_native_live_link_sources

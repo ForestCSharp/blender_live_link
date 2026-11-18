@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "core/dynamic_array.h"
@@ -84,6 +85,7 @@ struct SceneUpdate
 
 	DynamicArray<i32> deleted_object_uids;
 	std::optional<Camera> editor_camera;
+	std::string scene_key;	// empty when the sender predates the field
 	bool has_object_batch = false;
 	bool reset = false;
 };

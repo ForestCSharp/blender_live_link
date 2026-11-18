@@ -13,6 +13,7 @@
 #include <string>
 
 #include "ankerl/unordered_dense.h"
+#include "core/crash_handler.h"
 #include "core/types.h"
 #include "core/dynamic_array.h"
 #include "core/timings.h"
@@ -25,7 +26,7 @@
 	if (vk_check_result != VK_SUCCESS)                                              \
 	{                                                                               \
 		printf("VULKAN ERROR: %s RETURNED: %i LINE: %i\n", #f, vk_check_result, __LINE__); \
-		exit(1);                                                                    \
+		fatal_exit(1);                                                                    \
 	}                                                                               \
 }
 
@@ -1175,7 +1176,7 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 	if (!(surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
 	{
 		printf("Selected surface does not support color-attachment swapchain images\n");
-		exit(1);
+		fatal_exit(1);
 	}
 	VkImageUsageFlags image_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	ctx->screenshot_supported = (surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0
@@ -1258,7 +1259,7 @@ void vulkan_context_create_swapchain(VulkanContext* ctx)
 	if (ctx->swapchain_image_count < ctx->swapchain_min_image_count)
 	{
 		printf("Swapchain returned %u images, below required minimum %u\n", ctx->swapchain_image_count, ctx->swapchain_min_image_count);
-		exit(1);
+		fatal_exit(1);
 	}
 
 	ctx->swapchain_image_views.resize(swapchain_image_count);
@@ -1345,7 +1346,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 	if (!glfwVulkanSupported())
 	{
 		printf("GLFW reports Vulkan is not supported\n");
-		exit(1);
+		fatal_exit(1);
 	}
 
 	// Instance
@@ -1399,7 +1400,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		if (!glfw_extensions || glfw_extension_count == 0)
 		{
 			printf("GLFW did not provide the Vulkan surface extensions required by this platform\n");
-			exit(1);
+			fatal_exit(1);
 		}
 
 		DynamicArray<const char*> instance_extensions;
@@ -1413,7 +1414,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			if (!vulkan_has_extension(available_extensions, required_extension))
 			{
 				printf("Required Vulkan instance extension is unavailable: %s\n", required_extension);
-				exit(1);
+				fatal_exit(1);
 			}
 		}
 		ctx->portability_enumeration_enabled = vulkan_has_extension(available_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -1468,7 +1469,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		if (physical_device_count == 0)
 		{
 			printf("No Vulkan physical devices were found\n");
-			exit(1);
+			fatal_exit(1);
 		}
 		DynamicArray<VkPhysicalDevice> physical_devices;
 		physical_devices.resize(physical_device_count);
@@ -1492,7 +1493,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 		if (ctx->physical_device == VK_NULL_HANDLE)
 		{
 			printf("No compatible Vulkan 1.3 device was found\n");
-			exit(1);
+			fatal_exit(1);
 		}
 		ctx->physical_device_properties = ctx->capabilities.properties;
 		ctx->surface_format = ctx->capabilities.surface_format;

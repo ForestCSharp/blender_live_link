@@ -181,9 +181,24 @@ void test_decoded_image_owns_pixels()
 	assert(pixels == rgba);
 }
 
+void test_scene_key_decodes()
+{
+	flatbuffers::FlatBufferBuilder builder;
+	builder.FinishSizePrefixed(LL::CreateUpdate(builder, 0, 0, 0, 0, false, 0.0, 0,
+		builder.CreateString("level_01/Scene")));
+	auto decoded = LiveLinkSystem::decode_update({builder.GetBufferPointer(), builder.GetSize()});
+	assert(decoded && decoded->scene_key == "level_01/Scene");
+
+	builder.Reset();
+	builder.FinishSizePrefixed(LL::CreateUpdate(builder));
+	auto decoded_without_key = LiveLinkSystem::decode_update({builder.GetBufferPointer(), builder.GetSize()});
+	assert(decoded_without_key && decoded_without_key->scene_key.empty());
+}
+
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
+	test_scene_key_decodes();
 	test_light_with_missing_fields_drops_only_the_light();
 	test_animation_counts_must_match_matrix_data();
 	test_mesh_indices_must_address_existing_data();

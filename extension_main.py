@@ -283,6 +283,11 @@ def print(*args, **kwargs):
 def native_live_link_available():
     return hasattr(bpy.app, "live_link_make_update")
 
+def live_link_scene_key(scene):
+    # Keys per-scene game data (GI bakes); unsaved files share "untitled".
+    stem = bpy.path.display_name_from_filepath(bpy.data.filepath) or "untitled"
+    return f"{stem}/{scene.name}"
+
 def scene_uses_python_export_fallback(scene=None):
     if scene is None:
         scene = bpy.context.scene
@@ -1624,6 +1629,7 @@ class LiveLinkConnection():
             update_reason,
             sequence,
             editor_camera,
+            live_link_scene_key(self.active_export_scene or bpy.context.scene),
         )
         if not isinstance(output, (bytes, bytearray)):
             raise TypeError("bpy.app.live_link_make_update must return bytes")
@@ -1982,6 +1988,8 @@ class LiveLinkConnection():
             up_fb = Vec3.CreateVec3(builder, *editor_camera[6:9])
             EditorCamera.AddUp(builder, up_fb)
             editor_camera_fb = EditorCamera.End(builder)
+        scene_key_fb = builder.CreateString(
+            live_link_scene_key(self.active_export_scene or bpy.context.scene))
 
         # Begin writing top-level update table
         Update.Start(builder)
@@ -1994,6 +2002,7 @@ class LiveLinkConnection():
         Update.AddReset(builder, reset)
         if editor_camera_fb is not None:
             Update.AddEditorCamera(builder, editor_camera_fb)
+        Update.AddSceneKey(builder, scene_key_fb)
         export_stats["generation_seconds"] = time.perf_counter() - export_generation_start
         Update.AddGenerationSeconds(builder, export_stats["generation_seconds"])
 

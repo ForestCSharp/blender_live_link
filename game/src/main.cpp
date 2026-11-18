@@ -41,6 +41,7 @@ using std::optional;
 // Generated flatbuffer schema (from ../compiled_schemas/cpp)
 #include "blender_live_link_generated.h"
 
+#include "core/crash_handler.h"
 #include "core/types.h"
 #include "core/timings.h"
 #include "render/core/vulkan_context.h"
@@ -181,6 +182,7 @@ int main(int argc, char** argv)
 {
 	// Unbuffered stdout so logs survive crashes and external kills
 	setvbuf(stdout, nullptr, _IONBF, 0);
+	crash_handler_install();
 
 	cxxopts::Options options("Game", "Game that uses Blender as its tooling (Vulkan)");
 
