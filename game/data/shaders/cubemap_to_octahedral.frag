@@ -1,8 +1,8 @@
 #version 450
 
-// Projects a probe's lighting + radial-depth cubemaps into one padded
-// octahedral atlas entry. MRT 0 stores irradiance or lighting, and MRT 1
-// stores radial-depth moments.
+// Projects a probe's lighting or radial-depth cubemap into one padded
+// octahedral atlas entry. Irradiance (8^2 entries) and moments (16^2) live in
+// separate atlases, so each is its own draw; output_moments picks which.
 
 #include "octahedral_helpers.h"
 #include "sampling.h"
@@ -13,6 +13,7 @@ layout(push_constant) uniform fs_params
 	int atlas_entry_size;
 	int compute_irradiance;
 	int use_importance_sampling;
+	int output_moments;
 };
 
 layout(set = 0, binding = 1) uniform samplerCube cubemap_lighting_tex;
@@ -21,7 +22,6 @@ layout(set = 0, binding = 2) uniform samplerCube cubemap_depth_tex;
 layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 frag_color;
-layout(location = 1) out vec4 radial_depth;
 
 #define CUBE_MOMENT_BLUR_IMPORTANCE_SAMPLE_COUNT 64u
 #define CUBE_MOMENT_BLUR_POWER_COSINE_EXPONENT 32.0
@@ -73,6 +73,12 @@ void main()
 
 	// Convert octahedral coords to 3d cubemap direction vector
 	vec3 cubemap_dir = octahedral_decode(octahedral_coords);
+
+	if (output_moments != 0)
+	{
+		frag_color = compute_cube_moments(cubemap_dir);
+		return;
+	}
 
 	if (compute_irradiance != 0)
 	{
@@ -129,5 +135,4 @@ void main()
 		frag_color = vec4(sampled_color, 1.0);
 	}
 
-	radial_depth = compute_cube_moments(cubemap_dir);
 }

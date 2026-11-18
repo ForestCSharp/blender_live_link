@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 
 #include "ankerl/unordered_dense.h"
@@ -10,6 +11,7 @@
 #include "game_object/game_object.h"
 #include "render/core/geometry_arena_freelist.h"
 #include "render/passes/gi/gi_bake.h"
+#include "render/passes/gi/gi_triangle_box.h"
 #include "render/passes/gi/lighting_capture.h"
 
 #include "gi_helpers.h"
@@ -68,34 +70,37 @@ struct GI_Scene
 	static constexpr f32 minimum_scene_extent = 1.0f;
 	static constexpr f32 radial_depth_cell_scale = (f32) GI_RADIAL_DEPTH_CELL_SCALE;
 	static constexpr i32 cubemap_capture_size = 64; // ~2x the face size a 48^2 octahedral specular entry needs
-	static constexpr i32 atlas_total_size = 2048;
-	static constexpr i32 atlas_entry_size = 16;
+	static constexpr i32 irradiance_atlas_entry_size = 8;	// 6^2 interior, as in DDGI
+	static constexpr i32 moments_atlas_entry_size = 16;
 	static constexpr i32 specular_atlas_entry_size = 48;
 	static constexpr i32 specular_atlas_mip_count = 4;
-	// Probe budget: every slot of the octahedral atlas (128^2). The octree depth
-	// is capped at the deepest level whose probes fit (gi_scene_rebuild_layout).
-	// At the full budget the specular atlas is 6144^2 (~400 MiB RGBA16F with
-	// mips), past Vulkan's guaranteed 4096; gi_scene_init checks the device.
+	// Every atlas is sized to its probe count at layout rebuild and kept within
+	// 4096^2, Vulkan's guaranteed maximum. The octree depth is capped at the
+	// deepest level that fits both budgets (gi_scene_rebuild_layout).
+	static constexpr i32 maximum_image_size = 4096;
+	// Diffuse budget: the moments atlas (the larger entry) caps the slot grid.
+	static constexpr i32 maximum_octahedral_slots_per_dimension = maximum_image_size / moments_atlas_entry_size;
 	static constexpr i32 maximum_lattice_probe_count =
-		(atlas_total_size / atlas_entry_size) * (atlas_total_size / atlas_entry_size);
-	static constexpr i32 maximum_specular_slots_per_dimension = atlas_total_size / atlas_entry_size;
+		maximum_octahedral_slots_per_dimension * maximum_octahedral_slots_per_dimension;
+	// Specular budget: probes on coarse (depth D-1) cell corners, plus the fallback.
+	static constexpr i32 maximum_specular_slots_per_dimension = maximum_image_size / specular_atlas_entry_size;
+	static constexpr i32 maximum_specular_probe_count =
+		maximum_specular_slots_per_dimension * maximum_specular_slots_per_dimension;
 	static constexpr i32 maximum_specular_atlas_size =
 		maximum_specular_slots_per_dimension * specular_atlas_entry_size;
 	static constexpr i32 probes_to_update_per_frame = 4;
 };
-static_assert(
-	GI_Scene::maximum_specular_slots_per_dimension * GI_Scene::maximum_specular_slots_per_dimension
-		>= GI_Scene::maximum_lattice_probe_count,
-	"Specular atlas grid must hold the probe budget."
-);
+static_assert(GI_Scene::maximum_octahedral_slots_per_dimension * GI_Scene::irradiance_atlas_entry_size
+	<= GI_Scene::maximum_image_size, "Irradiance atlas must fit the image size limit.");
+static_assert(GI_Scene::maximum_specular_atlas_size <= GI_Scene::maximum_image_size,
+	"Specular atlas must fit the image size limit.");
 
 #define GI_LOG_SCENE_INIT 0
 #define GI_LOG_SCENE_UPDATE 0
 
 i32 gi_scene_atlas_capacity()
 {
-	const i32 atlas_entries_per_dimension = GI_Scene::atlas_total_size / GI_Scene::atlas_entry_size;
-	return atlas_entries_per_dimension * atlas_entries_per_dimension;
+	return GI_Scene::maximum_lattice_probe_count;
 }
 
 i32 gi_scene_leaf_divisions_from_depth(const i32 in_octree_depth)
@@ -223,7 +228,7 @@ GI_Probe gi_scene_make_probe(
 	probe.atlas_idx = -1;
 	probe.max_radial_depth = in_max_radial_depth;
 	probe.octree_level = in_octree_level;
-	probe.padding = 0;
+	probe.specular_atlas_idx = -1;
 	return probe;
 }
 
@@ -248,23 +253,70 @@ void gi_scene_add_fallback_probe(GI_Scene& out_gi_scene)
 	out_gi_scene.max_radial_depth = std::max(out_gi_scene.max_radial_depth, fallback_radial_depth);
 }
 
-bool gi_scene_bounds_intersect(const BoundingBox& in_a, const BoundingBox& in_b)
+// World-space triangles the probe octree subdivides on; padding widens the
+// cells a triangle may claim (tessellation displacement, as in culling).
+struct GiTriangle
 {
-	return in_a.min.X <= in_b.max.X && in_a.max.X >= in_b.min.X &&
-		in_a.min.Y <= in_b.max.Y && in_a.max.Y >= in_b.min.Y &&
-		in_a.min.Z <= in_b.max.Z && in_a.max.Z >= in_b.min.Z;
-}
+	HMM_Vec3 v[3];
+	HMM_Vec3 min;	// bounds of v, widened by padding
+	HMM_Vec3 max;
+	f32 padding;
+};
 
-bool gi_scene_bounds_intersect_any(const BoundingBox& in_bounds, const DynamicArray<BoundingBox>& in_geometry_bounds)
+void gi_scene_collect_triangles(const State& in_state, DynamicArray<GiTriangle>& out_triangles)
 {
-	for (const BoundingBox& geometry_bounds : in_geometry_bounds)
+	out_triangles.reset();
+	const f32 tessellation_padding = in_state.tessellation.enabled ? in_state.tessellation.bounds_padding : 0.0f;
+	for (auto const& [unique_id, object] : in_state.scene.objects)
 	{
-		if (gi_scene_bounds_intersect(in_bounds, geometry_bounds))
+		if (!object_contributes_to_gi_scene(object) || !object.mesh.vertices || !object.mesh.indices)
 		{
-			return true;
+			continue;
+		}
+		const Mesh& mesh = object.mesh;
+		const HMM_Mat4 model = object_get_model_matrix(object);
+		const f32 padding = object.has_tessellation ? tessellation_padding : 0.0f;
+		for (u32 index = 0; index + 2 < mesh.index_count; index += 3)
+		{
+			GiTriangle triangle;
+			for (i32 corner = 0; corner < 3; ++corner)
+			{
+				triangle.v[corner] = HMM_MulM4V4(model, mesh.vertices[mesh.indices[index + corner]].position).XYZ;
+			}
+			triangle.padding = padding;
+			const HMM_Vec3 pad = HMM_V3(padding, padding, padding);
+			triangle.min = HMM_V3(
+				std::min({ triangle.v[0].X, triangle.v[1].X, triangle.v[2].X }),
+				std::min({ triangle.v[0].Y, triangle.v[1].Y, triangle.v[2].Y }),
+				std::min({ triangle.v[0].Z, triangle.v[1].Z, triangle.v[2].Z })) - pad;
+			triangle.max = HMM_V3(
+				std::max({ triangle.v[0].X, triangle.v[1].X, triangle.v[2].X }),
+				std::max({ triangle.v[0].Y, triangle.v[1].Y, triangle.v[2].Y }),
+				std::max({ triangle.v[0].Z, triangle.v[1].Z, triangle.v[2].Z })) + pad;
+			out_triangles.add(triangle);
 		}
 	}
-	return false;
+}
+
+// One octree build attempt at a fixed depth.
+struct GiOctreeBuild
+{
+	const DynamicArray<GiTriangle>* triangles = nullptr;
+	ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
+	f32 cell_epsilon = 0.0f;	// slack so off-plane G-buffer positions stay in an occupied cell
+	i32 specular_depth = 0;		// depth of the coarse cells whose corners carry specular
+	i32 specular_count = 0;		// specular slots handed out so far (coarse cell corners)
+	bool over_budget = false;	// set past either probe budget; unwinds the build
+	bool over_specular_budget = false;	// which budget tripped (else diffuse)
+};
+
+bool gi_scene_triangle_overlaps_cell(const GiOctreeBuild& in_build, const GiTriangle& in_triangle, const BoundingBox& in_cell)
+{
+	const f32 slack = in_triangle.padding + in_build.cell_epsilon;
+	return gi_triangle_box_overlap(
+		(in_cell.min + in_cell.max) * 0.5f,
+		(in_cell.max - in_cell.min) * 0.5f + HMM_V3(slack, slack, slack),
+		in_triangle.v[0], in_triangle.v[1], in_triangle.v[2]);
 }
 
 BoundingBox gi_scene_child_bounds(const BoundingBox& in_bounds, const i32 in_child_x, const i32 in_child_y, const i32 in_child_z)
@@ -286,14 +338,14 @@ BoundingBox gi_scene_child_bounds(const BoundingBox& in_bounds, const i32 in_chi
 
 i32 gi_scene_get_or_create_probe(
 	GI_Scene& out_gi_scene,
-	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
+	GiOctreeBuild& io_build,
 	const GI_Coords in_max_depth_coords,
 	const f32 in_required_radial_depth,
 	const i32 in_octree_level)
 {
 	const u64 probe_key = gi_scene_probe_corner_key(in_max_depth_coords);
-	auto existing_probe = out_probe_indices_by_corner.find(probe_key);
-	if (existing_probe != out_probe_indices_by_corner.end())
+	auto existing_probe = io_build.probe_indices_by_corner.find(probe_key);
+	if (existing_probe != io_build.probe_indices_by_corner.end())
 	{
 		GI_Probe& probe = out_gi_scene.probes[existing_probe->second];
 		probe.max_radial_depth = std::max(probe.max_radial_depth, in_required_radial_depth);
@@ -305,13 +357,18 @@ i32 gi_scene_get_or_create_probe(
 	const HMM_Vec3 probe_position = gi_scene_lattice_position(out_gi_scene.scene_bounds, out_gi_scene.leaf_divisions, in_max_depth_coords);
 	out_gi_scene.probes.add(gi_scene_make_probe(
 		probe_position, in_required_radial_depth, in_octree_level));
-	out_probe_indices_by_corner[probe_key] = probe_index;
+	io_build.probe_indices_by_corner[probe_key] = probe_index;
+	// Leave a slot for the fallback probe added after the build.
+	if (out_gi_scene.probes.length() >= (size_t) GI_Scene::maximum_lattice_probe_count)
+	{
+		io_build.over_budget = true;
+	}
 	return probe_index;
 }
 
 i32 gi_scene_add_node_payload(
 	GI_Scene& out_gi_scene,
-	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
+	GiOctreeBuild& io_build,
 	const i32 in_depth,
 	const GI_Coords in_coords)
 {
@@ -346,7 +403,7 @@ i32 gi_scene_add_node_payload(
 				const i32 corner_index = corner_x + corner_y * 2 + corner_z * 4;
 				cell.probe_indices[corner_index] = gi_scene_get_or_create_probe(
 					out_gi_scene,
-					out_probe_indices_by_corner,
+					io_build,
 					probe_coords,
 					required_radial_depth,
 					in_depth);
@@ -367,7 +424,8 @@ GI_OctreeNode gi_scene_make_octree_node(const BoundingBox& in_bounds)
 	node.max = HMM_V4V(in_bounds.max, 1.0f);
 	node.is_leaf = 1;
 	node.payload_index = -1;
-	node.padding[0] = node.padding[1] = 0;
+	node.specular_payload_index = -1;
+	node.padding = 0;
 	for (i32 i = 0; i < 8; ++i)
 	{
 		node.child_indices[i] = -1;
@@ -381,16 +439,45 @@ void gi_scene_init_empty_octree(GI_Scene& out_gi_scene)
 	gi_scene_init_empty_cell_sentinel(out_gi_scene);
 }
 
+// Subdivides only cells that a triangle overlaps; in_triangle_indices are the
+// triangles overlapping in_bounds. Only max-depth cells get a payload (8 corner
+// probes): every surface point lies in one, and the shader lookup returns -1
+// (sky fallback probe) for points that stop in an empty part of the tree.
 i32 gi_scene_build_sparse_octree_node(
 	GI_Scene& out_gi_scene,
-	const DynamicArray<BoundingBox>& in_geometry_bounds,
-	ankerl::unordered_dense::map<u64, i32>& out_probe_indices_by_corner,
+	GiOctreeBuild& io_build,
+	const DynamicArray<u32>& in_triangle_indices,
 	const BoundingBox& in_bounds,
 	const i32 in_depth,
 	const GI_Coords in_coords)
 {
 	GI_OctreeNode node = gi_scene_make_octree_node(in_bounds);
-	node.payload_index = gi_scene_add_node_payload(out_gi_scene, out_probe_indices_by_corner, in_depth, in_coords);
+	if (in_depth >= out_gi_scene.octree_depth)
+	{
+		node.payload_index = gi_scene_add_node_payload(out_gi_scene, io_build, in_depth, in_coords);
+	}
+	else if (in_depth == io_build.specular_depth)
+	{
+		// Specular lives on coarser cells than diffuse (one level up unless the
+		// specular budget pushed it further; see gi_scene_rebuild_layout): these 8 corners carry it
+		// (slots assigned below). They are full probes because the
+		// shader weights specular by each corner's radial-depth moments too.
+		node.specular_payload_index = gi_scene_add_node_payload(out_gi_scene, io_build, in_depth, in_coords);
+		// Slots in build order: deterministic, so the layout hash and bakes are stable.
+		for (const i32 probe_index : out_gi_scene.cells[node.specular_payload_index].probe_indices)
+		{
+			if (out_gi_scene.probes[probe_index].specular_atlas_idx < 0)
+			{
+				out_gi_scene.probes[probe_index].specular_atlas_idx = io_build.specular_count++;
+			}
+		}
+		// Leave a slot for the fallback probe.
+		if (io_build.specular_count >= GI_Scene::maximum_specular_probe_count)
+		{
+			io_build.over_budget = true;
+			io_build.over_specular_budget = true;
+		}
+	}
 
 	const i32 node_index = (i32) out_gi_scene.octree_nodes.length();
 	out_gi_scene.octree_nodes.add(node);
@@ -400,6 +487,39 @@ i32 gi_scene_build_sparse_octree_node(
 		return node_index;
 	}
 
+	// Sort triangles into children by which side of the center planes their
+	// (slack-widened) bounds fall. A triangle confined to one octant overlaps
+	// that child for certain (it overlaps this cell, and its overlap lies in the
+	// octant); only triangles straddling a center plane need the exact test.
+	const DynamicArray<GiTriangle>& triangles = *io_build.triangles;
+	const HMM_Vec3 center = (in_bounds.min + in_bounds.max) * 0.5f;
+	DynamicArray<u32> child_triangle_indices[8];
+	for (u32 triangle_index : in_triangle_indices)
+	{
+		const GiTriangle& triangle = triangles[triangle_index];
+		const HMM_Vec3 slack = HMM_V3(io_build.cell_epsilon, io_build.cell_epsilon, io_build.cell_epsilon);
+		const HMM_Vec3 lo = triangle.min - slack;
+		const HMM_Vec3 hi = triangle.max + slack;
+		const i32 x0 = lo.X > center.X ? 1 : 0, x1 = hi.X >= center.X ? 1 : 0;
+		const i32 y0 = lo.Y > center.Y ? 1 : 0, y1 = hi.Y >= center.Y ? 1 : 0;
+		const i32 z0 = lo.Z > center.Z ? 1 : 0, z1 = hi.Z >= center.Z ? 1 : 0;
+		const bool single_octant = x0 == x1 && y0 == y1 && z0 == z1;
+		for (i32 child_z = z0; child_z <= z1; ++child_z)
+		{
+			for (i32 child_y = y0; child_y <= y1; ++child_y)
+			{
+				for (i32 child_x = x0; child_x <= x1; ++child_x)
+				{
+					if (single_octant || gi_scene_triangle_overlaps_cell(
+						io_build, triangle, gi_scene_child_bounds(in_bounds, child_x, child_y, child_z)))
+					{
+						child_triangle_indices[child_x + child_y * 2 + child_z * 4].add(triangle_index);
+					}
+				}
+			}
+		}
+	}
+
 	i32 child_count = 0;
 	for (i32 child_z = 0; child_z < 2; ++child_z)
 	{
@@ -407,19 +527,24 @@ i32 gi_scene_build_sparse_octree_node(
 		{
 			for (i32 child_x = 0; child_x < 2; ++child_x)
 			{
-				const BoundingBox child_bounds = gi_scene_child_bounds(in_bounds, child_x, child_y, child_z);
-				if (!gi_scene_bounds_intersect_any(child_bounds, in_geometry_bounds))
+				if (io_build.over_budget)
+				{
+					return node_index;
+				}
+				const i32 child_slot = child_x + child_y * 2 + child_z * 4;
+				if (child_triangle_indices[child_slot].length() == 0)
 				{
 					continue;
 				}
+				const BoundingBox child_bounds = gi_scene_child_bounds(in_bounds, child_x, child_y, child_z);
 
 				const GI_Coords child_coords = {
 					in_coords.x * 2 + child_x,
 					in_coords.y * 2 + child_y,
 					in_coords.z * 2 + child_z,
 				};
-				const i32 child_slot = child_x + child_y * 2 + child_z * 4;
-				const i32 child_index = gi_scene_build_sparse_octree_node(out_gi_scene, in_geometry_bounds, out_probe_indices_by_corner, child_bounds, in_depth + 1, child_coords);
+				const i32 child_index = gi_scene_build_sparse_octree_node(
+					out_gi_scene, io_build, child_triangle_indices[child_slot], child_bounds, in_depth + 1, child_coords);
 				out_gi_scene.octree_nodes[node_index].child_indices[child_slot] = child_index;
 				child_count += 1;
 			}
@@ -503,11 +628,12 @@ u32 gi_bake_format_bytes(const VkFormat in_format)
 }
 
 // Atlas index i is probe i, row-major, so probes occupy the leading rows.
-u32 gi_bake_octahedral_rows(const GI_Scene& in_gi_scene)
+// Both octahedral atlases share the slots-per-dimension grid.
+u32 gi_bake_octahedral_rows(const GI_Scene& in_gi_scene, const i32 in_entry_size)
 {
-	const i32 entries_per_row = GI_Scene::atlas_total_size / GI_Scene::atlas_entry_size;
+	const i32 entries_per_row = in_gi_scene.lighting_capture.octahedral_slots_per_dimension;
 	const i32 entry_rows = ((i32) in_gi_scene.probes.length() + entries_per_row - 1) / entries_per_row;
-	return (u32) (entry_rows * GI_Scene::atlas_entry_size);
+	return (u32) (entry_rows * in_entry_size);
 }
 
 GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_state)
@@ -516,8 +642,11 @@ GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_stat
 	// Everything that changes how the stored bytes are laid out or interpreted.
 	const i32 params[] = {
 		in_gi_scene.octree_depth,
-		capture.desc.octahedral_total_size,
-		capture.desc.octahedral_entry_size,
+		capture.irradiance_atlas_total_size,
+		capture.desc.irradiance_entry_size,
+		capture.moments_atlas_total_size,
+		capture.desc.moments_entry_size,
+		(i32) capture.irradiance_format,
 		capture.desc.specular_entry_size,
 		capture.desc.specular_mip_count,
 		capture.specular_atlas_total_size,
@@ -532,10 +661,12 @@ GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_stat
 	header.layout_hash[0] = hash.low;
 	header.layout_hash[1] = hash.high;
 	header.probe_count = in_gi_scene.probes.length();
-	const u64 octahedral_bytes = (u64) capture.desc.octahedral_total_size
-		* gi_bake_octahedral_rows(in_gi_scene) * gi_bake_format_bytes(capture.color_format);
-	header.blob_bytes[GI_BAKE_BLOB_IRRADIANCE] = octahedral_bytes;
-	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = octahedral_bytes;
+	header.blob_bytes[GI_BAKE_BLOB_IRRADIANCE] = (u64) capture.irradiance_atlas_total_size
+		* gi_bake_octahedral_rows(in_gi_scene, capture.desc.irradiance_entry_size)
+		* gi_bake_format_bytes(capture.irradiance_format);
+	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = (u64) capture.moments_atlas_total_size
+		* gi_bake_octahedral_rows(in_gi_scene, capture.desc.moments_entry_size)
+		* gi_bake_format_bytes(capture.color_format);
 	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
 	{
 		const u64 size = (u64) capture.specular_atlas_total_size >> mip;
@@ -571,15 +702,16 @@ void gi_bake_record_atlas_copies(
 		offset += (u64) in_width * in_height * gi_bake_format_bytes(in_image.format);
 	};
 
-	const u32 rows = gi_bake_octahedral_rows(in_gi_scene);
-	const u32 octahedral_size = (u32) capture.desc.octahedral_total_size;
-	for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+	const auto copy_octahedral = [&](GpuImage& in_atlas, const i32 in_total_size, const i32 in_entry_size)
 	{
-		GpuImage& atlas = capture.cube_to_oct_pass.get_color_output(output_idx);
-		gpu_image_transition(in_command_buffer, atlas, transfer_layout);
-		copy(atlas, 0, octahedral_size, rows);
-		gpu_image_transition(in_command_buffer, atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	}
+		gpu_image_transition(in_command_buffer, in_atlas, transfer_layout);
+		copy(in_atlas, 0, (u32) in_total_size, gi_bake_octahedral_rows(in_gi_scene, in_entry_size));
+		gpu_image_transition(in_command_buffer, in_atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	};
+	copy_octahedral(capture.cube_to_oct_pass.get_color_output(0),
+		capture.irradiance_atlas_total_size, capture.desc.irradiance_entry_size);
+	copy_octahedral(capture.moments_oct_pass.get_color_output(0),
+		capture.moments_atlas_total_size, capture.desc.moments_entry_size);
 	gpu_image_transition(in_command_buffer, capture.specular_atlas, transfer_layout);
 	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
 	{
@@ -747,60 +879,83 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 	DynamicArray<BoundingBox> geometry_bounds;
 	const bool has_visible_geometry = gi_scene_collect_visible_mesh_bounds(in_state, geometry_bounds, out_gi_scene.scene_bounds);
 
-	// Probe count depends on how the geometry fills the octree, so a depth can
-	// only be checked against the probe budget by building it. Build upward and
-	// stop before the first depth over budget: building the requested depth
-	// first could mean millions of nodes at depth 12. The slider then shows the
-	// depth actually in use.
-	const auto build_layout = [&](const i32 in_depth)
+	DynamicArray<GiTriangle> triangles;
+	gi_scene_collect_triangles(in_state, triangles);
+	DynamicArray<u32> all_triangle_indices;
+	for (u32 triangle_index = 0; triangle_index < (u32) triangles.length(); ++triangle_index)
 	{
-		out_gi_scene.octree_depth = in_depth;
-		out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(in_depth);
+		all_triangle_indices.add(triangle_index);
+	}
+
+	// Probe count depends on how the surfaces fill the octree, so a depth can
+	// only be checked against the budget by building it. Try the requested
+	// depth; a build aborts as soon as it passes the budget, so a failed attempt
+	// costs about one budget's worth of probes, then step one level shallower.
+	// The slider then shows the depth actually in use.
+	const auto build_start = std::chrono::steady_clock::now();
+	const i32 requested_depth = out_gi_scene.octree_depth;
+	i32 specular_probe_count = 0;
+	// Specular starts one level above the leaves and moves coarser while it is
+	// what overflows; only a diffuse overflow lowers the octree depth.
+	i32 specular_levels_up = 1;
+	for (;;)
+	{
+		out_gi_scene.leaf_divisions = gi_scene_leaf_divisions_from_depth(out_gi_scene.octree_depth);
 		out_gi_scene.leaf_cell_extent = (out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X) / (f32) out_gi_scene.leaf_divisions;
 		gi_scene_reset_layout_buffers(out_gi_scene);
-		if (has_visible_geometry)
+		GiOctreeBuild build;
+		build.triangles = &triangles;
+		build.specular_depth = out_gi_scene.octree_depth - specular_levels_up;
+		build.cell_epsilon = 0.05f * out_gi_scene.leaf_cell_extent;
+		if (has_visible_geometry && triangles.length() > 0)
 		{
-			ankerl::unordered_dense::map<u64, i32> probe_indices_by_corner;
-			gi_scene_build_sparse_octree_node(out_gi_scene, geometry_bounds, probe_indices_by_corner, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
+			gi_scene_build_sparse_octree_node(out_gi_scene, build, all_triangle_indices, out_gi_scene.scene_bounds, 0, (GI_Coords){0, 0, 0});
 		}
 		else
 		{
 			gi_scene_init_empty_octree(out_gi_scene);
 		}
-		gi_scene_add_fallback_probe(out_gi_scene);
-		return out_gi_scene.probes.length();
-	};
-	const i32 requested_depth = out_gi_scene.octree_depth;
-	i32 depth = GI_Scene::min_octree_depth;
-	i32 built_depth = -1;	// the layout currently in out_gi_scene, which may be the rejected one
-	while (depth < requested_depth)
-	{
-		const size_t probe_count = build_layout(depth + 1);
-		built_depth = depth + 1;
-		if (probe_count > (size_t) GI_Scene::maximum_lattice_probe_count)
+		specular_probe_count = build.specular_count;
+		if (!build.over_budget || out_gi_scene.octree_depth == GI_Scene::min_octree_depth)
 		{
-			printf("GI octree depth %d needs %zu probes (budget %d); using depth %d\n",
-				depth + 1, probe_count, GI_Scene::maximum_lattice_probe_count, depth);
 			break;
 		}
-		depth += 1;
+		if (build.over_specular_budget && build.specular_depth > 1)
+		{
+			printf("GI specular at depth %d needs more than %d probes; trying depth %d\n",
+				build.specular_depth, GI_Scene::maximum_specular_probe_count, build.specular_depth - 1);
+			specular_levels_up += 1;
+			continue;
+		}
+		printf("GI octree depth %d needs more than %d probes; trying depth %d\n",
+			out_gi_scene.octree_depth, GI_Scene::maximum_lattice_probe_count, out_gi_scene.octree_depth - 1);
+		out_gi_scene.octree_depth -= 1;
+		specular_levels_up = 1;
 	}
-	if (built_depth != depth)
+	if (out_gi_scene.cells.length() == 0)
 	{
-		build_layout(depth);
+		gi_scene_init_empty_cell_sentinel(out_gi_scene);	// keeps the cells buffer non-empty
 	}
+	gi_scene_add_fallback_probe(out_gi_scene);
+	out_gi_scene.probes[out_gi_scene.fallback_probe_index].specular_atlas_idx = specular_probe_count++;
+	printf("GI layout: depth %d (requested %d), %d cells, %zu probes (%d with specular at depth %d), %zu triangles, %.1f ms\n",
+		out_gi_scene.octree_depth, requested_depth, out_gi_scene.payload_count, out_gi_scene.probes.length(),
+		specular_probe_count, out_gi_scene.octree_depth - specular_levels_up, triangles.length(),
+		std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - build_start).count());
 	in_state.gi.octree_depth = out_gi_scene.octree_depth;
 	gi_scene_init_radiance_buffers(out_gi_scene);
 
 	assert(out_gi_scene.probes.length() <= (size_t) GI_Scene::maximum_lattice_probe_count);
 	assert(out_gi_scene.probes.length() <= (size_t) gi_scene_atlas_capacity());
+	assert(specular_probe_count <= GI_Scene::maximum_specular_probe_count);
 	assert(out_gi_scene.probes.length() > 0);
 	assert(out_gi_scene.octree_nodes.length() > 0);
 	assert(out_gi_scene.cells.length() > 0);
 	out_gi_scene.probe_layout_hash = geometry_arena_hash_bytes(
 		out_gi_scene.probes.data(), sizeof(GI_Probe) * out_gi_scene.probes.length(), 0x4749424bull);
-	// Sized first: the bake header covers the specular atlas size and format.
-	out_gi_scene.lighting_capture.resize_specular_atlas(ctx, (i32)out_gi_scene.probes.length());
+	// Sized first: the bake header covers the atlas sizes and formats.
+	out_gi_scene.lighting_capture.resize_octahedral_atlases(ctx, (i32) out_gi_scene.probes.length());
+	out_gi_scene.lighting_capture.resize_specular_atlas(ctx, specular_probe_count);
 	// Read before the GPU buffers exist so they are created with the baked data.
 	DynamicArray<u8> bake_blobs;
 	u64 bake_atlas_bytes = 0;
@@ -841,17 +996,6 @@ f32 gi_scene_debug_probe_radius(const GI_Scene& in_gi_scene)
 	return std::max(in_gi_scene.leaf_cell_extent * 0.1f, 0.025f);
 }
 
-f32 gi_scene_debug_probe_radius_for_probe(const GI_Scene& in_gi_scene, const i32 in_probe_index)
-{
-	assert(in_gi_scene.probes.is_valid_index(in_probe_index));
-	const i32 probe_level = in_gi_scene.probes[in_probe_index].octree_level;
-	const i32 levels_above_deepest = probe_level < 0
-		? in_gi_scene.octree_depth + 1
-		: std::clamp(in_gi_scene.octree_depth - probe_level, 0, in_gi_scene.octree_depth);
-	return gi_scene_debug_probe_radius(in_gi_scene)
-		* std::pow(1.1f, (f32) levels_above_deepest);
-}
-
 bool gi_scene_debug_probe_matches_level_filter(
 	const GI_Scene& in_gi_scene,
 	const i32 in_probe_index,
@@ -881,8 +1025,8 @@ void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 {
 	const LightingCaptureDesc lighting_capture_desc = {
 		.cubemap_render_size = GI_Scene::cubemap_capture_size,
-		.octahedral_total_size = GI_Scene::atlas_total_size,
-		.octahedral_entry_size = GI_Scene::atlas_entry_size,
+		.irradiance_entry_size = GI_Scene::irradiance_atlas_entry_size,
+		.moments_entry_size = GI_Scene::moments_atlas_entry_size,
 		.specular_entry_size = GI_Scene::specular_atlas_entry_size,
 		.specular_mip_count = GI_Scene::specular_atlas_mip_count,
 	};
@@ -940,6 +1084,7 @@ void gi_scene_update(
 			in_state,
 			probe.position.XYZ,
 			probe.atlas_idx,
+			probe.specular_atlas_idx,
 			in_probe_index != in_gi_scene.fallback_probe_index,
 			in_probe_index,
 			probe.max_radial_depth,
@@ -991,7 +1136,7 @@ VkImageView gi_scene_get_octahedral_lighting_view(GI_Scene& in_gi_scene)
 
 VkImageView gi_scene_get_octahedral_depth_view(GI_Scene& in_gi_scene)
 {
-	return in_gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1).view;
+	return in_gi_scene.lighting_capture.moments_oct_pass.get_color_output(0).view;
 }
 
 VkImageView gi_scene_get_specular_lighting_view(GI_Scene& in_gi_scene)

@@ -66,8 +66,13 @@ struct LightingFsParams
 	HMM_Mat4 shadow_view_projections[4];
 	// x = world extent in metres, y = enabled. The map is centered on view_position.xy.
 	HMM_Vec4 cloud_shadow_extent_enabled;
+	// atlas_total_size/entry_size above describe the irradiance atlas; the
+	// moments atlas has its own entry size (and so its own total size).
+	i32 moments_atlas_total_size;
+	i32 moments_atlas_entry_size;
+	i32 _pad4[2];
 };
-static_assert(sizeof(LightingFsParams) == 464, "Must match lighting.frag's std140 layout");
+static_assert(sizeof(LightingFsParams) == 480, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {

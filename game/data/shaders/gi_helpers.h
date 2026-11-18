@@ -26,7 +26,7 @@ struct GI_Probe
 	int atlas_idx;
 	float max_radial_depth;
 	int octree_level;
-	int padding;
+	int specular_atlas_idx;	// slot in the specular atlas; -1 = diffuse only
 };
 
 struct GI_OctreeNode
@@ -36,7 +36,8 @@ struct GI_OctreeNode
 	int is_leaf;
 	int child_indices[8];
 	int payload_index;
-	int padding[2];
+	int specular_payload_index;	// coarse cell (8 specular corners) on depth D-1 nodes; else -1
+	int padding;
 };
 
 #if !defined(__cplusplus)

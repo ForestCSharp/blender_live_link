@@ -16,6 +16,8 @@ layout(push_constant) uniform DebugParams
 	float specular_debug_roughness;
 	int probe_level_filter_enable;
 	int probe_level_filter_selection;
+	int moments_atlas_total_size;
+	int moments_atlas_entry_size;
 };
 
 #endif // GI_DEBUG_COMMON_H

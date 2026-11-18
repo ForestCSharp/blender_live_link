@@ -715,108 +715,107 @@ namespace ImGuiLayer
 					ImGui::Text("Last LUT CPU submit: %.2f ms",
 						bruneton_atmosphere_pass.last_precompute_ms);
 					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
-					ImGui::Separator();
-					ImGui::Indent();
-					if (ImGui::CollapsingHeader("Global Illumination"))
-					{
-						ImGui::Checkbox("GI", &state.gi.enable);
-						ImGui::Checkbox("GI Probe Influence Culling", &state.gi.probe_influence_culling);
-						ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
-						if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
-						{
-							state.gi.layout_dirty = true;
-						}
-						ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
-						ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
-						u64 specular_pixels = 0;
-						for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
-						{
-							const u64 dimension = (u64)gi_scene.lighting_capture.specular_atlas_total_size >> mip;
-							specular_pixels += dimension * dimension;
-						}
-						const u64 specular_bytes_per_pixel =
-							gi_scene.lighting_capture.specular_atlas.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 16;
-						ImGui::Text(
-							"Specular Atlas: %d x %d, tile %d, %d mips, %.1f MiB",
-							gi_scene.lighting_capture.specular_atlas_total_size,
-							gi_scene.lighting_capture.specular_atlas_total_size,
-							gi_scene.lighting_capture.desc.specular_entry_size,
-							gi_scene.lighting_capture.desc.specular_mip_count,
-							(f64)(specular_pixels * specular_bytes_per_pixel) / (1024.0 * 1024.0));
-						ImGui::Text("Bounds Min: %.2f %.2f %.2f", gi_scene.scene_bounds.min.X, gi_scene.scene_bounds.min.Y, gi_scene.scene_bounds.min.Z);
-						ImGui::Text("Bounds Max: %.2f %.2f %.2f", gi_scene.scene_bounds.max.X, gi_scene.scene_bounds.max.Y, gi_scene.scene_bounds.max.Z);
-						ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", gi_scene.min_occupied_cell_extent, gi_scene.max_occupied_cell_extent, gi_scene.max_radial_depth);
-						ImGui::Combo("Probe Radiance Mode", (i32*)&state.gi.probe_radiance_mode, "Octahedral\0SH9\0SG9\0");
-						// Baked moments are encoded per occlusion mode; rebuild to load that mode's bake.
-						if (ImGui::Combo("Probe Occlusion Mode", (i32*)&state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0"))
-							state.gi.layout_dirty = true;
-						if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes))
-							state.gi.sky_probe_dirty = true;
-						ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
-						ImGui::Checkbox("Show Probes", &state.gi.show_probes);
-						ImGui::Checkbox("Filter Probe Level", &state.gi.probe_level_filter_enable);
-						ImGui::SameLine();
-						state.gi.probe_level_filter_selection = CLAMP(
-							state.gi.probe_level_filter_selection, 0, gi_scene.octree_depth + 1);
-						char probe_level_label[48] = {};
-						if (state.gi.probe_level_filter_selection == 0)
-							snprintf(probe_level_label, sizeof(probe_level_label), "Fallback");
-						else if (state.gi.probe_level_filter_selection == 1)
-							snprintf(probe_level_label, sizeof(probe_level_label), "Level 0 (largest)");
-						else if (state.gi.probe_level_filter_selection == gi_scene.octree_depth + 1)
-							snprintf(probe_level_label, sizeof(probe_level_label),
-								"Level %d (deepest)", gi_scene.octree_depth);
-						else
-							snprintf(probe_level_label, sizeof(probe_level_label),
-								"Level %d", state.gi.probe_level_filter_selection - 1);
-						ImGui::BeginDisabled(!state.gi.probe_level_filter_enable);
-						ImGui::SetNextItemWidth(180.0f);
-						ImGui::SliderInt(
-							"##Probe Level",
-							&state.gi.probe_level_filter_selection,
-							0,
-							gi_scene.octree_depth + 1,
-							probe_level_label,
-							ImGuiSliderFlags_AlwaysClamp);
-						ImGui::EndDisabled();
-						if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable))
-						{
-							if (state.gi.probe_isolation_enable)
-							{
-								state.gi.show_probes = true;
-								InputSystem::set_mouse_locked(state, false);
-							}
-							else
-								state.gi.isolated_probe_index = -1;
-						}
-						if (state.gi.probe_isolation_enable)
-						{
-							state.gi.show_probes = true;
-							ImGui::SameLine();
-							if (ImGui::SmallButton("Clear"))
-								state.gi.isolated_probe_index = -1;
-							ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None");
-						}
-						ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
-						ImGui::BeginDisabled(state.gi.is_updating);
-						if (ImGui::Button("Bake GI"))
-							state.gi.bake_requested = true;
-						ImGui::EndDisabled();
-						ImGui::SameLine();
-						ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance);
-						static const char* bake_status_names[] = { "Not baked", "Baking", "Baked (not saved)", "Loaded", "Saved", "Save failed" };
-						if (state.gi.is_updating)
-							ImGui::Text("GI bake: baking %d / %zu", gi_scene.probe_idx_to_update, gi_scene.probes.length());
-						else
-							ImGui::Text("GI bake: %s", bake_status_names[(i32) state.gi.bake_status]);
-						ImGui::Text("Scene key: %s", state.gi.scene_key.empty() ? "(none; bakes are not saved)" : state.gi.scene_key.c_str());
-						ImGui::Combo("Probe Vis Mode", (i32*)&state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0");
-						if (state.gi.probe_vis_mode == EProbeVisMode::Specular)
-							ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
-						ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes);
-					}
-					ImGui::Unindent();
+					ImGui::Separator();	
 				}
+
+                if (ImGui::CollapsingHeader("Global Illumination"))
+                {
+                    ImGui::Checkbox("GI", &state.gi.enable);
+                    ImGui::Checkbox("GI Probe Influence Culling", &state.gi.probe_influence_culling);
+                    ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
+                    if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
+                    {
+                        state.gi.layout_dirty = true;
+                    }
+                    ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
+                    ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
+                    u64 specular_pixels = 0;
+                    for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
+                    {
+                        const u64 dimension = (u64)gi_scene.lighting_capture.specular_atlas_total_size >> mip;
+                        specular_pixels += dimension * dimension;
+                    }
+                    const u64 specular_bytes_per_pixel =
+                        gi_scene.lighting_capture.specular_atlas.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 16;
+                    ImGui::Text(
+                            "Specular Atlas: %d x %d, tile %d, %d mips, %.1f MiB",
+                            gi_scene.lighting_capture.specular_atlas_total_size,
+                            gi_scene.lighting_capture.specular_atlas_total_size,
+                            gi_scene.lighting_capture.desc.specular_entry_size,
+                            gi_scene.lighting_capture.desc.specular_mip_count,
+                            (f64)(specular_pixels * specular_bytes_per_pixel) / (1024.0 * 1024.0));
+                    ImGui::Text("Bounds Min: %.2f %.2f %.2f", gi_scene.scene_bounds.min.X, gi_scene.scene_bounds.min.Y, gi_scene.scene_bounds.min.Z);
+                    ImGui::Text("Bounds Max: %.2f %.2f %.2f", gi_scene.scene_bounds.max.X, gi_scene.scene_bounds.max.Y, gi_scene.scene_bounds.max.Z);
+                    ImGui::Text("Cell Extent: %.2f / %.2f  Max Radial Depth: %.2f", gi_scene.min_occupied_cell_extent, gi_scene.max_occupied_cell_extent, gi_scene.max_radial_depth);
+                    ImGui::Combo("Probe Radiance Mode", (i32*)&state.gi.probe_radiance_mode, "Octahedral\0SH9\0SG9\0");
+                    // Baked moments are encoded per occlusion mode; rebuild to load that mode's bake.
+                    if (ImGui::Combo("Probe Occlusion Mode", (i32*)&state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0"))
+                        state.gi.layout_dirty = true;
+                    if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes))
+                        state.gi.sky_probe_dirty = true;
+                    ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
+                    ImGui::Checkbox("Show Probes", &state.gi.show_probes);
+                    ImGui::Checkbox("Filter Probe Level", &state.gi.probe_level_filter_enable);
+                    ImGui::SameLine();
+                    state.gi.probe_level_filter_selection = CLAMP(
+                            state.gi.probe_level_filter_selection, 0, gi_scene.octree_depth + 1);
+                    char probe_level_label[48] = {};
+                    if (state.gi.probe_level_filter_selection == 0)
+                        snprintf(probe_level_label, sizeof(probe_level_label), "Fallback");
+                    else if (state.gi.probe_level_filter_selection == 1)
+                        snprintf(probe_level_label, sizeof(probe_level_label), "Level 0 (largest)");
+                    else if (state.gi.probe_level_filter_selection == gi_scene.octree_depth + 1)
+                        snprintf(probe_level_label, sizeof(probe_level_label),
+                                "Level %d (deepest)", gi_scene.octree_depth);
+                    else
+                        snprintf(probe_level_label, sizeof(probe_level_label),
+                                "Level %d", state.gi.probe_level_filter_selection - 1);
+                    ImGui::BeginDisabled(!state.gi.probe_level_filter_enable);
+                    ImGui::SetNextItemWidth(180.0f);
+                    ImGui::SliderInt(
+                            "##Probe Level",
+                            &state.gi.probe_level_filter_selection,
+                            0,
+                            gi_scene.octree_depth + 1,
+                            probe_level_label,
+                            ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::EndDisabled();
+                    if (ImGui::Checkbox("Probe Isolation", &state.gi.probe_isolation_enable))
+                    {
+                        if (state.gi.probe_isolation_enable)
+                        {
+                            state.gi.show_probes = true;
+                            InputSystem::set_mouse_locked(state, false);
+                        }
+                        else
+                            state.gi.isolated_probe_index = -1;
+                    }
+                    if (state.gi.probe_isolation_enable)
+                    {
+                        state.gi.show_probes = true;
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Clear"))
+                            state.gi.isolated_probe_index = -1;
+                        ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None");
+                    }
+                    ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
+                    ImGui::BeginDisabled(state.gi.is_updating);
+                    if (ImGui::Button("Bake GI"))
+                        state.gi.bake_requested = true;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance);
+                    static const char* bake_status_names[] = { "Not baked", "Baking", "Baked (not saved)", "Loaded", "Saved", "Save failed" };
+                    if (state.gi.is_updating)
+                        ImGui::Text("GI bake: baking %d / %zu", gi_scene.probe_idx_to_update, gi_scene.probes.length());
+                    else
+                        ImGui::Text("GI bake: %s", bake_status_names[(i32) state.gi.bake_status]);
+                    ImGui::Text("Scene key: %s", state.gi.scene_key.empty() ? "(none; bakes are not saved)" : state.gi.scene_key.c_str());
+                    ImGui::Combo("Probe Vis Mode", (i32*)&state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0Probe Level\0");
+                    if (state.gi.probe_vis_mode == EProbeVisMode::Specular)
+                        ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
+                    ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes);
+                }
 			};
 			const auto draw_cloud_controls = [&]()
 			{
@@ -987,7 +986,7 @@ namespace ImGuiLayer
 				ImGui::TreePop();
 			}
 			draw_texture(frame_data.linear_sampler, "Octahedral Atlas: Lighting", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(0), 256.0f);
-			draw_texture(frame_data.linear_sampler, "Octahedral Atlas: Depth", gi_scene.lighting_capture.cube_to_oct_pass.get_color_output(1), 256.0f);
+			draw_texture(frame_data.linear_sampler, "Octahedral Atlas: Depth", gi_scene.lighting_capture.moments_oct_pass.get_color_output(0), 256.0f);
 			for (i32 mip = 0; mip < gi_scene.lighting_capture.desc.specular_mip_count; ++mip)
 			{
 				char label[64];

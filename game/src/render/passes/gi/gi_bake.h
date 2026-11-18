@@ -16,8 +16,8 @@
 
 enum GiBakeBlob
 {
-	GI_BAKE_BLOB_IRRADIANCE,	// octahedral atlas rows holding probe entries
-	GI_BAKE_BLOB_MOMENTS,		// radial-depth moment atlas, same rows
+	GI_BAKE_BLOB_IRRADIANCE,	// irradiance atlas rows holding probe entries (8^2 entries)
+	GI_BAKE_BLOB_MOMENTS,		// radial-depth moment atlas rows (16^2 entries, same slot grid)
 	GI_BAKE_BLOB_SPECULAR,		// whole specular atlas, mips concatenated
 	GI_BAKE_BLOB_SH9,
 	GI_BAKE_BLOB_SG9,
@@ -25,7 +25,7 @@ enum GiBakeBlob
 };
 
 constexpr u32 GI_BAKE_MAGIC = 0x4B414247;	// "GBAK"
-constexpr u32 GI_BAKE_VERSION = 1;
+constexpr u32 GI_BAKE_VERSION = 2;	// 2: separate 8^2 irradiance / 16^2 moments atlases
 constexpr size_t GI_BAKE_MAX_KEY_LENGTH = 128;
 
 struct GiBakeHeader

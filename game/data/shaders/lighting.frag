@@ -49,6 +49,8 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	vec3 shadow_cascade_view_forward;
 	mat4 shadow_view_projections[4];
 	vec4 cloud_shadow_extent_enabled;
+	int moments_atlas_total_size;
+	int moments_atlas_entry_size;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D color_tex;
@@ -305,7 +307,7 @@ vec3 sample_probe_radiance(GI_Probe probe, int probe_index, vec3 normal)
 
 vec3 sample_probe_specular(GI_Probe probe, vec3 reflection_direction, float roughness)
 {
-	if (probe.atlas_idx < 0 || probe_specular_enable == 0 || specular_mip_count <= 0)
+	if (probe.specular_atlas_idx < 0 || probe_specular_enable == 0 || specular_mip_count <= 0)
 	{
 		return vec3(0.0);
 	}
@@ -318,19 +320,23 @@ vec3 sample_probe_specular(GI_Probe probe, vec3 reflection_direction, float roug
 	int low_total_size = specular_atlas_total_size >> low_mip;
 	int low_entry_size = specular_atlas_entry_size >> low_mip;
 	vec2 low_uv = padded_atlas_uv_from_normal(
-		reflection_direction, probe.atlas_idx, low_total_size, low_entry_size);
+		reflection_direction, probe.specular_atlas_idx, low_total_size, low_entry_size);
 	vec3 low_radiance = textureLod(specular_probe_atlas, low_uv, float(low_mip)).rgb;
 
 	int high_total_size = specular_atlas_total_size >> high_mip;
 	int high_entry_size = specular_atlas_entry_size >> high_mip;
 	vec2 high_uv = padded_atlas_uv_from_normal(
-		reflection_direction, probe.atlas_idx, high_total_size, high_entry_size);
+		reflection_direction, probe.specular_atlas_idx, high_total_size, high_entry_size);
 	vec3 high_radiance = textureLod(specular_probe_atlas, high_uv, float(high_mip)).rgb;
 	return mix(low_radiance, high_radiance, mip_alpha);
 }
 
-int find_gi_octree_payload_index(vec3 position)
+// Returns the deepest diffuse payload (leaf cell) containing position, or -1.
+// out_specular_payload_index: the coarse specular cell (depth D-1) passed on
+// the way down, or -1.
+int find_gi_octree_payload_index(vec3 position, out int out_specular_payload_index)
 {
+	out_specular_payload_index = -1;
 	if (gi_octree_node_count <= 0)
 	{
 		return -1;
@@ -346,6 +352,10 @@ int find_gi_octree_payload_index(vec3 position)
 	int payload_index = node.payload_index;
 	for (int i = 0; i < GI_MAX_OCTREE_SEARCH_DEPTH; ++i)
 	{
+		if (node.specular_payload_index >= 0)
+		{
+			out_specular_payload_index = node.specular_payload_index;
+		}
 		if (node.is_leaf != 0)
 		{
 			return payload_index;
@@ -362,6 +372,101 @@ int find_gi_octree_payload_index(vec3 position)
 		}
 	}
 	return payload_index;
+}
+
+// Blends one probe term over a cell's 8 corners: each corner weighted by how
+// much it faces the surface times its trilinear weight, then by radial-depth
+// visibility, and the unoccluded/occluded averages mixed by total visibility.
+// Diffuse uses the leaf cell, specular the coarser one. False if no weight.
+bool gi_blend_cell(
+	int in_cell_index, bool in_specular, vec3 position, vec3 normal,
+	vec3 reflection_direction, float roughness, out vec3 out_value)
+{
+	out_value = vec3(0.0);
+	bool probe_isolation_active = isolated_probe_index != -1;
+	GI_Cell cell = gi_cells[in_cell_index];
+	vec3 cell_min_pos = gi_probes[cell.probe_indices[0]].position.xyz;
+	vec3 cell_max_pos = gi_probes[cell.probe_indices[7]].position.xyz;
+	vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
+	vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
+	vec3 unoccluded_value = vec3(0.0);
+	float unoccluded_weight = 0.0;
+	vec3 occluded_value = vec3(0.0);
+	float occluded_weight = 0.0;
+
+	for (int i = 0; i < 8; ++i)
+	{
+		int probe_index = cell.probe_indices[i];
+		if (probe_index < 0 || (probe_isolation_active && probe_index != isolated_probe_index))
+		{
+			continue;
+		}
+		GI_Probe probe = gi_probes[probe_index];
+		if (probe.atlas_idx < 0)
+		{
+			continue;
+		}
+
+		vec3 probe_value = in_specular
+			? sample_probe_specular(probe, reflection_direction, roughness)
+			: sample_probe_radiance(probe, probe_index, normal);
+		vec3 position_to_probe = probe.position.xyz - position;
+		vec3 probe_to_position = -position_to_probe;
+		float distance_to_pixel = length(probe_to_position);
+		vec3 direction_to_probe = normalize(position_to_probe);
+		vec3 direction_from_probe = -direction_to_probe;
+		float weight = (dot(direction_to_probe, normal) + 1.0) * 0.5;
+
+		float x_side = float(i & 1);
+		float y_side = float((i >> 1) & 1);
+		float z_side = float((i >> 2) & 1);
+		float trilinear_weight =
+			(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
+			(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
+			(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
+		weight *= trilinear_weight + 0.001;
+
+		unoccluded_value += probe_value * weight;
+		unoccluded_weight += weight;
+
+		if (gi_probe_occlusion != 0)
+		{
+			vec2 depth_uv = padded_atlas_uv_from_normal(
+				direction_from_probe, probe.atlas_idx, moments_atlas_total_size, moments_atlas_entry_size);
+			vec4 moments = texture(octahedral_depth_texture, depth_uv);
+			if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
+			{
+				float normalized_depth = clamp(distance_to_pixel / max(probe.max_radial_depth, 0.00001), 0.0, 1.0);
+				vec2 warped_depth = evrp_warp_depth(normalized_depth);
+				float positive = chebyshev_upper_bound(moments.x, moments.y, warped_depth.x, 0.00001);
+				float negative = chebyshev_upper_bound(moments.z, moments.w, warped_depth.y, 0.00001);
+				weight *= reduce_light_bleeding(min(positive, negative), 0.2);
+			}
+			else if (distance_to_pixel > moments.x)
+			{
+				float variance = abs(square(moments.x) - moments.y);
+				weight *= variance / (variance + square(distance_to_pixel - moments.x));
+			}
+		}
+
+		const float threshold = 0.01;
+		if (weight < threshold)
+		{
+			weight *= square(weight) / square(threshold);
+		}
+		occluded_value += probe_value * weight;
+		occluded_weight += weight;
+	}
+
+	if (unoccluded_weight <= 0.0 || occluded_weight <= 0.0)
+	{
+		return false;
+	}
+	out_value = mix(
+		unoccluded_value / unoccluded_weight,
+		occluded_value / occluded_weight,
+		saturate(occluded_weight));
+	return true;
 }
 
 float slope_scaled_shadow_bias(vec3 in_surface_normal, vec3 in_light_direction)
@@ -607,7 +712,8 @@ void main()
 			{
 				const float gi_shadow_multiplier = mix(0.5, 1.0,
 					sample_gi_shadow_visibility(position, normal, first_sun_cascade_visibility));
-				int cell_index = find_gi_octree_payload_index(position);
+				int specular_cell_index = -1;
+				int cell_index = find_gi_octree_payload_index(position, specular_cell_index);
 				bool probe_isolation_active = isolated_probe_index != -1;
 
 				if (cell_index < 0)
@@ -630,94 +736,15 @@ void main()
 				}
 				else
 				{
-					GI_Cell cell = gi_cells[cell_index];
-					vec3 cell_min_pos = gi_probes[cell.probe_indices[0]].position.xyz;
-					vec3 cell_max_pos = gi_probes[cell.probe_indices[7]].position.xyz;
-					vec3 cell_extent = max(cell_max_pos - cell_min_pos, vec3(0.00001));
-					vec3 alpha = clamp((position - cell_min_pos) / cell_extent, 0.0, 1.0);
-					vec3 unoccluded_irradiance = vec3(0.0);
-					vec3 unoccluded_specular = vec3(0.0);
-					float unoccluded_weight = 0.0;
-					vec3 occluded_irradiance = vec3(0.0);
-					vec3 occluded_specular = vec3(0.0);
-					float occluded_weight = 0.0;
-
-					for (int i = 0; i < 8; ++i)
+					vec3 irradiance;
+					if (gi_blend_cell(cell_index, false, position, normal, reflection_direction, roughness, irradiance))
 					{
-						int probe_index = cell.probe_indices[i];
-						if (probe_index < 0 || (probe_isolation_active && probe_index != isolated_probe_index))
+						vec3 specular_radiance = vec3(0.0);
+						if (specular_cell_index >= 0)
 						{
-							continue;
+							gi_blend_cell(specular_cell_index, true, position, normal,
+								reflection_direction, roughness, specular_radiance);
 						}
-						GI_Probe probe = gi_probes[probe_index];
-						if (probe.atlas_idx < 0)
-						{
-							continue;
-						}
-
-						vec3 probe_radiance = sample_probe_radiance(probe, probe_index, normal);
-						vec3 probe_specular = sample_probe_specular(
-							probe, reflection_direction, roughness);
-						vec3 position_to_probe = probe.position.xyz - position;
-						vec3 probe_to_position = -position_to_probe;
-						float distance_to_pixel = length(probe_to_position);
-						vec3 direction_to_probe = normalize(position_to_probe);
-						vec3 direction_from_probe = -direction_to_probe;
-						float weight = (dot(direction_to_probe, normal) + 1.0) * 0.5;
-
-						float x_side = float(i & 1);
-						float y_side = float((i >> 1) & 1);
-						float z_side = float((i >> 2) & 1);
-						float trilinear_weight =
-							(x_side > 0.5 ? alpha.x : 1.0 - alpha.x) *
-							(y_side > 0.5 ? alpha.y : 1.0 - alpha.y) *
-							(z_side > 0.5 ? alpha.z : 1.0 - alpha.z);
-						weight *= trilinear_weight + 0.001;
-
-						unoccluded_irradiance += probe_radiance * weight;
-						unoccluded_specular += probe_specular * weight;
-						unoccluded_weight += weight;
-
-						if (gi_probe_occlusion != 0)
-						{
-							vec2 depth_uv = padded_atlas_uv_from_normal(
-								direction_from_probe, probe.atlas_idx, atlas_total_size, atlas_entry_size);
-							vec4 moments = texture(octahedral_depth_texture, depth_uv);
-							if (probe_occlusion_mode == PROBE_OCCLUSION_MODE_EVRP4)
-							{
-								float normalized_depth = clamp(distance_to_pixel / max(probe.max_radial_depth, 0.00001), 0.0, 1.0);
-								vec2 warped_depth = evrp_warp_depth(normalized_depth);
-								float positive = chebyshev_upper_bound(moments.x, moments.y, warped_depth.x, 0.00001);
-								float negative = chebyshev_upper_bound(moments.z, moments.w, warped_depth.y, 0.00001);
-								weight *= reduce_light_bleeding(min(positive, negative), 0.2);
-							}
-							else if (distance_to_pixel > moments.x)
-							{
-								float variance = abs(square(moments.x) - moments.y);
-								weight *= variance / (variance + square(distance_to_pixel - moments.x));
-							}
-						}
-
-						const float threshold = 0.01;
-						if (weight < threshold)
-						{
-							weight *= square(weight) / square(threshold);
-						}
-						occluded_irradiance += probe_radiance * weight;
-						occluded_specular += probe_specular * weight;
-						occluded_weight += weight;
-					}
-
-					if (unoccluded_weight > 0.0 && occluded_weight > 0.0)
-					{
-						vec3 irradiance = mix(
-							unoccluded_irradiance / unoccluded_weight,
-							occluded_irradiance / occluded_weight,
-							saturate(occluded_weight));
-						vec3 specular_radiance = mix(
-							unoccluded_specular / unoccluded_weight,
-							occluded_specular / occluded_weight,
-							saturate(occluded_weight));
 						vec3 indirect_diffuse = irradiance * color * environment_diffuse_weight;
 						vec3 indirect_specular = specular_radiance
 							* (environment_fresnel * environment_brdf.x + environment_brdf.y);

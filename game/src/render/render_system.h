@@ -174,7 +174,7 @@ namespace RenderSystem
 				camera.location,
 				ray_direction,
 				gi_scene_probe_position_from_index(g_gi_scene, probe_index),
-				gi_scene_debug_probe_radius_for_probe(g_gi_scene, probe_index),
+				gi_scene_debug_probe_radius(g_gi_scene),	// matches gi_debug.vert
 				t) && t < closest_t)
 			{
 				closest_t = t;
@@ -653,8 +653,10 @@ namespace RenderSystem
 			lighting_fs_params.specular_atlas_entry_size = g_gi_scene.lighting_capture.desc.specular_entry_size;
 			lighting_fs_params.specular_mip_count = g_gi_scene.lighting_capture.desc.specular_mip_count;
 			lighting_fs_params.gi_intensity = in_state.gi.intensity;
-			lighting_fs_params.atlas_total_size = GI_Scene::atlas_total_size;
-			lighting_fs_params.atlas_entry_size = GI_Scene::atlas_entry_size;
+			lighting_fs_params.atlas_total_size = g_gi_scene.lighting_capture.irradiance_atlas_total_size;
+			lighting_fs_params.atlas_entry_size = g_gi_scene.lighting_capture.desc.irradiance_entry_size;
+			lighting_fs_params.moments_atlas_total_size = g_gi_scene.lighting_capture.moments_atlas_total_size;
+			lighting_fs_params.moments_atlas_entry_size = g_gi_scene.lighting_capture.desc.moments_entry_size;
 			lighting_fs_params.gi_fallback_probe_index = g_gi_scene.fallback_probe_index;
 			lighting_fs_params.gi_octree_node_count = (i32) g_gi_scene.octree_nodes.length();
 			lighting_fs_params.isolated_probe_index = in_state.gi.probe_isolation_enable

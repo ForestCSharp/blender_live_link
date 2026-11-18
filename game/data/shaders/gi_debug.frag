@@ -51,9 +51,9 @@ vec3 sample_specular(GI_Probe probe, vec3 direction)
 	int high_total = specular_atlas_total_size >> high_mip;
 	int high_entry = specular_atlas_entry_size >> high_mip;
 	vec3 low = textureLod(specular_atlas,
-		padded_atlas_uv_from_normal(direction, probe.atlas_idx, low_total, low_entry), float(low_mip)).rgb;
+		padded_atlas_uv_from_normal(direction, probe.specular_atlas_idx, low_total, low_entry), float(low_mip)).rgb;
 	vec3 high = textureLod(specular_atlas,
-		padded_atlas_uv_from_normal(direction, probe.atlas_idx, high_total, high_entry), float(high_mip)).rgb;
+		padded_atlas_uv_from_normal(direction, probe.specular_atlas_idx, high_total, high_entry), float(high_mip)).rgb;
 	return mix(low, high, fract(lod));
 }
 
@@ -64,16 +64,29 @@ void main()
 	vec4 color = vec4(0.05, 0.05, 0.05, 1.0);
 	if (isolated_probe_index >= 0 && probe_index != isolated_probe_index)
 		color = vec4(1.0, 0.0, 0.0, 1.0);
+	else if (probe_vis_mode == 7)
+	{
+		// Probe Level: needs no bake. Leaf (diffuse) cyan, one level up orange,
+		// coarser magenta, sky fallback white. Specular corners are the coarsest
+		// non-fallback level present (one level up unless the budget pushed it further).
+		int levels_above_deepest = octree_depth - probe.octree_level;
+		color = probe.octree_level < 0 ? vec4(1.0)
+			: levels_above_deepest <= 0 ? vec4(0.1, 0.7, 1.0, 1.0)
+			: levels_above_deepest == 1 ? vec4(1.0, 0.55, 0.1, 1.0)
+			: vec4(0.9, 0.2, 0.9, 1.0);
+	}
 	else if (probe.atlas_idx >= 0)
 	{
 		vec2 atlas_uv = padded_atlas_uv_from_normal(normal, probe.atlas_idx, atlas_total_size, atlas_entry_size);
+		vec2 depth_uv = padded_atlas_uv_from_normal(normal, probe.atlas_idx, moments_atlas_total_size, moments_atlas_entry_size);
 		if (probe_vis_mode == 0) color = texture(lighting_atlas, atlas_uv);
 		else if (probe_vis_mode == 1) color = vec4(sample_sh9(probe_index, normal), 1.0);
 		else if (probe_vis_mode == 2) color = vec4(sample_sg9(probe_index, normal), 1.0);
-		else if (probe_vis_mode == 3) color = vec4(vec3(clamp(texture(depth_atlas, atlas_uv).x / max(probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
-		else if (probe_vis_mode == 4) color = vec4(vec3(clamp(texture(depth_atlas, atlas_uv).y / max(probe.max_radial_depth * probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
-		else if (probe_vis_mode == 5) color = vec4(vec3(clamp((texture(depth_atlas, atlas_uv).x - 1.0) / (exp(5.0) - 1.0), 0.0, 1.0)), 1.0);
-		else color = vec4(sample_specular(probe, normal), 1.0);
+		else if (probe_vis_mode == 3) color = vec4(vec3(clamp(texture(depth_atlas, depth_uv).x / max(probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
+		else if (probe_vis_mode == 4) color = vec4(vec3(clamp(texture(depth_atlas, depth_uv).y / max(probe.max_radial_depth * probe.max_radial_depth, 0.00001), 0.0, 1.0)), 1.0);
+		else if (probe_vis_mode == 5) color = vec4(vec3(clamp((texture(depth_atlas, depth_uv).x - 1.0) / (exp(5.0) - 1.0), 0.0, 1.0)), 1.0);
+		// Diffuse-only probes (no specular slot) show dark grey.
+		else color = probe.specular_atlas_idx >= 0 ? vec4(sample_specular(probe, normal), 1.0) : vec4(0.15, 0.15, 0.15, 1.0);
 	}
 	out_color = color;
 	out_position = world_position;

@@ -20,8 +20,12 @@ namespace GIDebugPass
 		f32 specular_debug_roughness = 0.0f;
 		i32 probe_level_filter_enable = 0;
 		i32 probe_level_filter_selection = 0;
+		i32 moments_atlas_total_size = 0;
+		i32 moments_atlas_entry_size = 0;
 	};
-	static_assert(sizeof(PushConstants) == 112, "GI debug push constants mismatch");
+	// 120 bytes of fields, padded to 128 by HMM_Mat4's 16-byte alignment; 128 is
+	// also Vulkan's guaranteed push-constant limit, so this block is now full.
+	static_assert(sizeof(PushConstants) == 128, "GI debug push constants mismatch");
 
 	inline VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
 	inline VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -297,8 +301,8 @@ namespace GIDebugPass
 			.view_projection = view_projection,
 			.octree_depth = gi_scene.octree_depth,
 			.probe_debug_radius = gi_scene_debug_probe_radius(gi_scene),
-			.atlas_total_size = GI_Scene::atlas_total_size,
-			.atlas_entry_size = GI_Scene::atlas_entry_size,
+			.atlas_total_size = gi_scene.lighting_capture.irradiance_atlas_total_size,
+			.atlas_entry_size = gi_scene.lighting_capture.desc.irradiance_entry_size,
 			.probe_vis_mode = (i32) state.gi.probe_vis_mode,
 			.isolated_probe_index = state.gi.probe_isolation_enable ? state.gi.isolated_probe_index : -1,
 			.specular_atlas_total_size = gi_scene.lighting_capture.specular_atlas_total_size,
@@ -307,6 +311,8 @@ namespace GIDebugPass
 			.specular_debug_roughness = state.gi.specular_debug_roughness,
 			.probe_level_filter_enable = state.gi.probe_level_filter_enable ? 1 : 0,
 			.probe_level_filter_selection = std::clamp(state.gi.probe_level_filter_selection, 0, gi_scene.octree_depth + 1),
+			.moments_atlas_total_size = gi_scene.lighting_capture.moments_atlas_total_size,
+			.moments_atlas_entry_size = gi_scene.lighting_capture.desc.moments_entry_size,
 		};
 
 		VkCommandBuffer command_buffer = vulkan_current_command_buffer(ctx);

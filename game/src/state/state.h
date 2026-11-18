@@ -67,6 +67,7 @@ enum class EProbeVisMode : i32
 	RadialDepthSquared = 4,
 	EVRPPositiveMoment = 5,
 	Specular = 6,
+	Level = 7,
 	MAX,
 };
 

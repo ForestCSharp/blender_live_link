@@ -31,11 +31,8 @@ void main()
 		return;
 	}
 
-	int levels_above_deepest = probe.octree_level < 0
-		? octree_depth + 1
-		: clamp(octree_depth - probe.octree_level, 0, octree_depth);
-	float radius = probe_debug_radius * pow(1.1, float(levels_above_deepest));
-	world_position = vec4(probe.position.xyz + position.xyz * radius, 1.0);
+	// One size for every probe; the Probe Level vis mode shows level by color.
+	world_position = vec4(probe.position.xyz + position.xyz * probe_debug_radius, 1.0);
 	world_normal = normal;
 	gl_Position = view_projection * world_position;
 }

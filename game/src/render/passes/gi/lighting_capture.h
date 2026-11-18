@@ -62,8 +62,8 @@ inline const HMM_Vec3 CUBE_FORWARD_AND_UP[NUM_CUBE_FACES][2] = {
 struct LightingCaptureDesc
 {
 	i32 cubemap_render_size = 256;
-	i32 octahedral_total_size = 1024;
-	i32 octahedral_entry_size = 16;
+	i32 irradiance_entry_size = 8;	// 6^2 interior + gutter; irradiance is low-frequency
+	i32 moments_entry_size = 16;	// visibility needs the finer grid
 	i32 specular_entry_size = 48;
 	i32 specular_mip_count = 4;
 };
@@ -112,6 +112,7 @@ struct CubeToOctPushConstants
 	i32 atlas_entry_size;
 	i32 compute_irradiance;
 	i32 use_importance_sampling;
+	i32 output_moments;
 };
 
 // Mirrors probe_radiance_projection.comp's push constants
@@ -139,7 +140,14 @@ struct LightingCapture
 	RenderPass geometry_pass;		// Multi: 6 face G-buffers
 	RenderPass lighting_pass;		// Cubemap: lit faces
 	RenderPass radial_depth_pass;	// Cubemap: distance moments
-	RenderPass cube_to_oct_pass;	// Single: padded octahedral atlas (2 MRT)
+	// Padded octahedral atlases, one slot per probe (slot == probe index), both
+	// sized to the probe count by resize_octahedral_atlases.
+	RenderPass cube_to_oct_pass;	// Single: irradiance atlas (irradiance_entry_size entries)
+	RenderPass moments_oct_pass;	// Single: radial-depth moments atlas (moments_entry_size entries)
+	i32 octahedral_slots_per_dimension = 0;
+	i32 irradiance_atlas_total_size = 0;
+	i32 moments_atlas_total_size = 0;
+	VkFormat irradiance_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 	// Capture geometry (push-constant camera, layout A)
 	VkPipelineLayout capture_geometry_pipeline_layout = VK_NULL_HANDLE;
@@ -167,7 +175,8 @@ struct LightingCapture
 	// Cube -> octahedral (static inputs: the capture cubemaps never resize)
 	DescriptorSetSchema cube_to_oct_descriptors;
 	EffectPipelineLayout cube_to_oct_pipeline_layout;
-	FullscreenPipeline cube_to_oct_pipeline;
+	FullscreenPipeline cube_to_oct_pipeline;	// irradiance format
+	FullscreenPipeline moments_oct_pipeline;	// moments format, same shader
 	VkDescriptorSet cube_to_oct_set = VK_NULL_HANDLE;
 
 	// Probe radiance projection compute (per-frame sets: sh9/sg9 buffers
@@ -368,16 +377,8 @@ struct LightingCapture
 			.debug_label = "GI Radial Depth",
 		});
 
-		cube_to_oct_pass.init((RenderPassDesc) {
-			.num_outputs = 2,
-			.outputs = {
-				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
-				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
-			},
-			.extent = render_target_extent_fixed(desc.octahedral_total_size, desc.octahedral_total_size),
-			.type = ERenderPassType::Single,
-			.debug_label = "GI Cube To Octahedral",
-		});
+		irradiance_format = ctx->capabilities.scene_color_format;
+		// cube_to_oct_pass / moments_oct_pass: created by resize_octahedral_atlases.
 
 		// ---- Set layouts ----
 		{
@@ -542,13 +543,21 @@ struct LightingCapture
 			});
 		}
 		{
-			VkFormat oct_formats[2] = { color_format, color_format };
+			VkFormat irradiance_formats[1] = { irradiance_format };
 			cube_to_oct_pipeline.init(ctx, {
 				.vertex_shader_path = "bin/shaders/cubemap_to_octahedral.vert.spv",
 				.fragment_shader_path = "bin/shaders/cubemap_to_octahedral.frag.spv",
 				.pipeline_layout = cube_to_oct_pipeline_layout.layout,
-				.color_formats = oct_formats,
-				.color_format_count = 2,
+				.color_formats = irradiance_formats,
+				.color_format_count = 1,
+			});
+			VkFormat moments_formats[1] = { color_format };
+			moments_oct_pipeline.init(ctx, {
+				.vertex_shader_path = "bin/shaders/cubemap_to_octahedral.vert.spv",
+				.fragment_shader_path = "bin/shaders/cubemap_to_octahedral.frag.spv",
+				.pipeline_layout = cube_to_oct_pipeline_layout.layout,
+				.color_formats = moments_formats,
+				.color_format_count = 1,
 			});
 		}
 		{
@@ -657,8 +666,47 @@ struct LightingCapture
 			writer.commit();
 		}
 
-		// Zero the octahedral atlas once so we never read garbage data
-		vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
+		is_initialized = true;
+		resize_octahedral_atlases(ctx, 1);
+	}
+
+	// Sizes both octahedral atlases to hold in_probe_count slots on a shared
+	// slots-per-dimension grid. Recreated atlases are zeroed and left
+	// SHADER_READ_ONLY, since the lighting pass binds them before any capture.
+	void resize_octahedral_atlases(VulkanContext* ctx, i32 in_probe_count)
+	{
+		assert(is_initialized);
+		const i32 slots_per_dimension = (i32)std::ceil(std::sqrt((f64)std::max(in_probe_count, 1)));
+		if (slots_per_dimension == octahedral_slots_per_dimension)
+		{
+			return;
+		}
+		octahedral_slots_per_dimension = slots_per_dimension;
+		irradiance_atlas_total_size = slots_per_dimension * desc.irradiance_entry_size;
+		moments_atlas_total_size = slots_per_dimension * desc.moments_entry_size;
+		assert(moments_atlas_total_size <= (i32)ctx->capabilities.properties.limits.maxImageDimension2D);
+
+		// init() retires the previous targets against the current frame fence.
+		cube_to_oct_pass.init((RenderPassDesc) {
+			.num_outputs = 1,
+			.outputs = {
+				{ .format = irradiance_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
+			},
+			.extent = render_target_extent_fixed(irradiance_atlas_total_size, irradiance_atlas_total_size),
+			.type = ERenderPassType::Single,
+			.debug_label = "GI Irradiance Atlas",
+		});
+		moments_oct_pass.init((RenderPassDesc) {
+			.num_outputs = 1,
+			.outputs = {
+				{ .format = color_format, .load_op = VK_ATTACHMENT_LOAD_OP_LOAD, .store_op = VK_ATTACHMENT_STORE_OP_STORE },
+			},
+			.extent = render_target_extent_fixed(moments_atlas_total_size, moments_atlas_total_size),
+			.type = ERenderPassType::Single,
+			.debug_label = "GI Moments Atlas",
+		});
+
+		auto clear_atlases = [&](VkCommandBuffer in_command_buffer)
 		{
 			const VkClearColorValue clear_value = {{ 0.0f, 0.0f, 0.0f, 0.0f }};
 			const VkImageSubresourceRange clear_range = {
@@ -668,16 +716,22 @@ struct LightingCapture
 				.baseArrayLayer = 0,
 				.layerCount = VK_REMAINING_ARRAY_LAYERS,
 			};
-			for (i32 output_idx = 0; output_idx < 2; ++output_idx)
+			for (RenderPass* pass : { &cube_to_oct_pass, &moments_oct_pass })
 			{
-				GpuImage& atlas_image = cube_to_oct_pass.get_color_output(output_idx);
-				gpu_image_transition(in_command_buffer, atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+				GpuImage& atlas_image = pass->get_color_output(0);
+				gpu_image_transition(in_command_buffer, atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
 				vkCmdClearColorImage(in_command_buffer, atlas_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_value, 1, &clear_range);
 				gpu_image_transition(in_command_buffer, atlas_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			}
-		});
-
-		is_initialized = true;
+		};
+		if (vulkan_current_frame(ctx).recording)
+		{
+			clear_atlases(vulkan_current_command_buffer(ctx));
+		}
+		else
+		{
+			vulkan_context_immediate_submit(ctx, clear_atlases);
+		}
 	}
 
 	void resize_specular_atlas(VulkanContext* ctx, i32 in_probe_count)
@@ -800,6 +854,7 @@ struct LightingCapture
 		State& in_state,
 		HMM_Vec3 in_location,
 		i32 in_atlas_idx,
+		i32 in_specular_atlas_idx,	// -1: diffuse-only probe, no prefilter
 		bool in_should_render_geometry,
 		i32 in_probe_idx,
 		f32 in_max_radial_depth,
@@ -1054,7 +1109,10 @@ struct LightingCapture
 			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
 		});
 		graph.make_sampled(lighting_pass);
-		render_specular_prefilter(graph, ctx, in_atlas_idx);
+		if (in_specular_atlas_idx >= 0)
+		{
+			render_specular_prefilter(graph, ctx, in_specular_atlas_idx);
+		}
 
 		// ---- Radial depth cubemap ----
 		graph.execute(radial_depth_pass, [&](i32 face_idx)
@@ -1099,50 +1157,55 @@ struct LightingCapture
 		});
 		graph.make_sampled(radial_depth_pass);
 
-		// ---- Octahedral atlas entry ----
-		graph.execute(cube_to_oct_pass, [&](i32)
+		// ---- Octahedral atlas entries (irradiance, then moments) ----
+		const auto draw_octahedral_entry = [&](RenderPass& in_pass, FullscreenPipeline& in_pipeline,
+			const i32 in_total_size, const i32 in_entry_size, const bool in_moments)
 		{
-			const AtlasViewport atlas_viewport = get_atlas_viewport(
-				desc.octahedral_total_size,
-				desc.octahedral_entry_size,
-				in_atlas_idx
-			);
+			graph.execute(in_pass, [&](i32)
+			{
+				const AtlasViewport atlas_viewport = get_atlas_viewport(in_total_size, in_entry_size, in_atlas_idx);
 
-			// Slot viewport, keeping the framework's negative-height Y flip
-			VkViewport slot_viewport = {
-				.x = (f32) atlas_viewport.x,
-				.y = (f32) (atlas_viewport.y + atlas_viewport.h),
-				.width = (f32) atlas_viewport.w,
-				.height = -(f32) atlas_viewport.h,
-				.minDepth = 0.0f,
-				.maxDepth = 1.0f,
-			};
-			vkCmdSetViewport(command_buffer, 0, 1, &slot_viewport);
-			VkRect2D slot_scissor = {
-				.offset = { atlas_viewport.x, atlas_viewport.y },
-				.extent = { (u32) atlas_viewport.w, (u32) atlas_viewport.h },
-			};
-			vkCmdSetScissor(command_buffer, 0, 1, &slot_scissor);
+				// Slot viewport, keeping the framework's negative-height Y flip
+				VkViewport slot_viewport = {
+					.x = (f32) atlas_viewport.x,
+					.y = (f32) (atlas_viewport.y + atlas_viewport.h),
+					.width = (f32) atlas_viewport.w,
+					.height = -(f32) atlas_viewport.h,
+					.minDepth = 0.0f,
+					.maxDepth = 1.0f,
+				};
+				vkCmdSetViewport(command_buffer, 0, 1, &slot_viewport);
+				VkRect2D slot_scissor = {
+					.offset = { atlas_viewport.x, atlas_viewport.y },
+					.extent = { (u32) atlas_viewport.w, (u32) atlas_viewport.h },
+				};
+				vkCmdSetScissor(command_buffer, 0, 1, &slot_scissor);
 
-			CubeToOctPushConstants push_constants = {
-				.cubemap_render_size = desc.cubemap_render_size,
-				.atlas_entry_size = desc.octahedral_entry_size,
-				.compute_irradiance = in_state.gi.compute_irradiance ? 1 : 0,
-				.use_importance_sampling = 1,
-			};
+				CubeToOctPushConstants push_constants = {
+					.cubemap_render_size = desc.cubemap_render_size,
+					.atlas_entry_size = in_entry_size,
+					.compute_irradiance = in_state.gi.compute_irradiance ? 1 : 0,
+					.use_importance_sampling = 1,
+					.output_moments = in_moments ? 1 : 0,
+				};
 
-			cube_to_oct_pipeline.bind(ctx);
-			vkCmdBindDescriptorSets(
-				command_buffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				cube_to_oct_pipeline_layout.layout,
-				0, 1, &cube_to_oct_set,
-				0, nullptr
-			);
-			cube_to_oct_pipeline_layout.push(ctx, push_constants);
-			vulkan_cmd_draw(ctx, 3, 1, 0, 0);
-		});
-		graph.make_sampled(cube_to_oct_pass);
+				in_pipeline.bind(ctx);
+				vkCmdBindDescriptorSets(
+					command_buffer,
+					VK_PIPELINE_BIND_POINT_GRAPHICS,
+					cube_to_oct_pipeline_layout.layout,
+					0, 1, &cube_to_oct_set,
+					0, nullptr
+				);
+				cube_to_oct_pipeline_layout.push(ctx, push_constants);
+				vulkan_cmd_draw(ctx, 3, 1, 0, 0);
+			});
+			graph.make_sampled(in_pass);
+		};
+		draw_octahedral_entry(cube_to_oct_pass, cube_to_oct_pipeline,
+			irradiance_atlas_total_size, desc.irradiance_entry_size, false);
+		draw_octahedral_entry(moments_oct_pass, moments_oct_pipeline,
+			moments_atlas_total_size, desc.moments_entry_size, true);
 
 		// ---- SH9 / SG9 projection ----
 		// Always both: captures only happen on explicit bakes, and a saved bake
@@ -1198,6 +1261,7 @@ struct LightingCapture
 		specular_prefilter_pipeline.shutdown(ctx);
 		projection_effect.shutdown(ctx);
 		cube_to_oct_pipeline.shutdown(ctx);
+		moments_oct_pipeline.shutdown(ctx);
 		radial_depth_pipeline.shutdown(ctx);
 		capture_lighting_pipeline.shutdown(ctx);
 		capture_sky_pipeline.shutdown(ctx);
@@ -1230,6 +1294,7 @@ struct LightingCapture
 		lighting_pass.cleanup();
 		radial_depth_pass.cleanup();
 		cube_to_oct_pass.cleanup();
+		moments_oct_pass.cleanup();
 		is_initialized = false;
 	}
 };
