@@ -16,16 +16,18 @@
 
 enum GiBakeBlob
 {
-	GI_BAKE_BLOB_IRRADIANCE,	// irradiance atlas rows holding probe entries (8^2 entries)
-	GI_BAKE_BLOB_MOMENTS,		// radial-depth moment atlas rows (16^2 entries, same slot grid)
-	GI_BAKE_BLOB_SPECULAR,		// whole specular atlas, mips concatenated
-	GI_BAKE_BLOB_SH9,
-	GI_BAKE_BLOB_SG9,
+	// All four share the moments slot grid (16^2 entries, slot == probe index).
+	// Lighting-derived data (irradiance, specular, SH9/SG9) is not stored:
+	// loading a bake relights it.
+	GI_BAKE_BLOB_MOMENTS,		// radial-depth moments
+	GI_BAKE_BLOB_CACHE_SURFACE,	// geometry cache: albedo, roughness
+	GI_BAKE_BLOB_CACHE_NORMAL,	// geometry cache: normal, metallic
+	GI_BAKE_BLOB_CACHE_HIT,		// geometry cache: hit distance, emission
 	GI_BAKE_BLOB_COUNT,
 };
 
 constexpr u32 GI_BAKE_MAGIC = 0x4B414247;	// "GBAK"
-constexpr u32 GI_BAKE_VERSION = 2;	// 2: separate 8^2 irradiance / 16^2 moments atlases
+constexpr u32 GI_BAKE_VERSION = 4;	// 4: geometry cache only; lighting is relit on load
 constexpr size_t GI_BAKE_MAX_KEY_LENGTH = 128;
 
 struct GiBakeHeader
@@ -36,7 +38,7 @@ struct GiBakeHeader
 	u64 probe_count = 0;
 	u64 blob_bytes[GI_BAKE_BLOB_COUNT] = {};
 };
-static_assert(sizeof(GiBakeHeader) == 72, "GiBakeHeader must have no padding so memcmp compares it");
+static_assert(sizeof(GiBakeHeader) == 64, "GiBakeHeader must have no padding so memcmp compares it");
 
 inline bool gi_bake_header_equal(const GiBakeHeader& in_a, const GiBakeHeader& in_b)
 {

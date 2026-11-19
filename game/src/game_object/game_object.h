@@ -75,6 +75,13 @@ struct RigidBody
 
 // Per-object tessellation overrides. Presence of the component is the opt-in;
 // these only tune how much an already-opted-in object gets.
+// GameplayComponentObjectRenderingProperties. Defaults mirror the schema:
+// every setting is off unless the component turns it on.
+struct ObjectRenderingProperties
+{
+	bool exclude_from_gi_bounds = false;	// still captured, lit and shadowing; just doesn't size the GI volume
+};
+
 struct TessellationSettings
 {
 	// Multiplies the material's displacement height for this object, on top of
@@ -341,6 +348,8 @@ struct Object
 	// resolve, so it is requested per object rather than scene-wide.
 	bool has_tessellation = false;
 	TessellationSettings tessellation;
+
+	ObjectRenderingProperties rendering_properties;
 
 	// Character Data, stored inline
 	bool has_character = false;

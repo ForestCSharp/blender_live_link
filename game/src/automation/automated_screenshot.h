@@ -123,6 +123,7 @@ public:
 		if (phase == Phase::WaitingForGi
 			&& (!wait_for_gi
 				|| (gi_idle && !in_gi_scene.pending_save
+					&& in_state.gi.relight_passes_remaining == 0
 					&& in_state.gi.bake_status == EGiBakeStatus::Baked)))
 		{
 			printf("Automated screenshot: %s\n",

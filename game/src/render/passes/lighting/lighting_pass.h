@@ -70,7 +70,8 @@ struct LightingFsParams
 	// moments atlas has its own entry size (and so its own total size).
 	i32 moments_atlas_total_size;
 	i32 moments_atlas_entry_size;
-	i32 _pad4[2];
+	i32 probe_relight;	// GI relight: inputs are the probe geometry cache (lighting_capture.h)
+	i32 _pad4;
 };
 static_assert(sizeof(LightingFsParams) == 480, "Must match lighting.frag's std140 layout");
 
@@ -323,9 +324,12 @@ void lighting_pass_init(VulkanContext* ctx, VkSampler in_linear_sampler)
 
 // Uploads fs_params + rewrites this frame's descriptor set (call after the
 // fence wait, before any binds record).
-void lighting_pass_update(
+// Writes every lighting.frag binding into in_set. The main lighting pass and
+// GI probe relighting (lighting_capture.h) share this layout.
+void lighting_pass_write_set(
 	VulkanContext* ctx,
-	const LightingFsParams& in_fs_params,
+	VkDescriptorSet in_set,
+	VkBuffer in_fs_params_ubo,
 	const GpuImage* in_gbuffer_outputs,	// 4 attachments
 	VkImageView in_shadow_moments_view,
 	VkImageView in_ssao_view,
@@ -347,12 +351,8 @@ void lighting_pass_update(
 	VkImageView in_cloud_shadow_view
 )
 {
-	const u32 frame_index = ctx->frame_index;
-
-	lighting_pass.fs_params_ubos[frame_index].update_gpu_buffer(&in_fs_params, sizeof(LightingFsParams));
-
 	VkDescriptorBufferInfo ubo_info = {
-		.buffer = lighting_pass.fs_params_ubos[frame_index].get_gpu_buffer(),
+		.buffer = in_fs_params_ubo,
 		.offset = 0,
 		.range = sizeof(LightingFsParams),
 	};
@@ -378,7 +378,7 @@ void lighting_pass_update(
 
 	writes[write_count++] = (VkWriteDescriptorSet) {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = lighting_pass.sets[frame_index],
+		.dstSet = in_set,
 		.dstBinding = 0,
 		.descriptorCount = 1,
 		.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -389,7 +389,7 @@ void lighting_pass_update(
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
+			.dstSet = in_set,
 			.dstBinding = 1 + attachment_idx,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -404,7 +404,7 @@ void lighting_pass_update(
 	};
 	writes[write_count++] = (VkWriteDescriptorSet) {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = lighting_pass.sets[frame_index],
+		.dstSet = in_set,
 		.dstBinding = 5,
 		.descriptorCount = 1,
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -418,7 +418,7 @@ void lighting_pass_update(
 	};
 	writes[write_count++] = (VkWriteDescriptorSet) {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = lighting_pass.sets[frame_index],
+		.dstSet = in_set,
 		.dstBinding = 9,
 		.descriptorCount = 1,
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -429,7 +429,7 @@ void lighting_pass_update(
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
+			.dstSet = in_set,
 			.dstBinding = 6 + light_type_idx,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -449,7 +449,7 @@ void lighting_pass_update(
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
+			.dstSet = in_set,
 			.dstBinding = gi_buffer_bindings[gi_buffer_idx],
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -465,7 +465,7 @@ void lighting_pass_update(
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
+			.dstSet = in_set,
 			.dstBinding = 13 + gi_image_idx,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -481,7 +481,7 @@ void lighting_pass_update(
 	{
 		writes[write_count++] = (VkWriteDescriptorSet) {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = lighting_pass.sets[frame_index],
+			.dstSet = in_set,
 			.dstBinding = 18 + specular_image_idx,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -492,20 +492,72 @@ void lighting_pass_update(
 	VkDescriptorBufferInfo atmosphere_buffer_info = descriptor_buffer(
 		in_atmosphere_parameters_buffer, sizeof(BrunetonAtmosphereGpu));
 	writes[write_count++] = descriptor_write_buffer(
-		lighting_pass.sets[frame_index], 20,
+		in_set, 20,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &atmosphere_buffer_info);
 	VkDescriptorImageInfo atmosphere_image_info = descriptor_sampled(
 		lighting_pass.linear_sampler, in_atmosphere_transmittance_view);
 	writes[write_count++] = descriptor_write_image(
-		lighting_pass.sets[frame_index], 21,
+		in_set, 21,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &atmosphere_image_info);
 	VkDescriptorImageInfo cloud_shadow_image_info = descriptor_sampled(
 		lighting_pass.linear_sampler, in_cloud_shadow_view);
 	writes[write_count++] = descriptor_write_image(
-		lighting_pass.sets[frame_index], 10,
+		in_set, 10,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloud_shadow_image_info);
 
 	vulkan_update_descriptor_sets(ctx, write_count, writes);
+}
+
+void lighting_pass_update(
+	VulkanContext* ctx,
+	const LightingFsParams& in_fs_params,
+	const GpuImage* in_gbuffer_outputs,	// 4 attachments
+	VkImageView in_shadow_moments_view,
+	VkImageView in_ssao_view,
+	VkBuffer in_point_lights_buffer,
+	VkBuffer in_spot_lights_buffer,
+	VkBuffer in_sun_lights_buffer,
+	VkBuffer in_gi_probes_buffer,
+	VkBuffer in_gi_cells_buffer,
+	VkImageView in_gi_lighting_view,
+	VkImageView in_gi_depth_view,
+	VkBuffer in_sh9_buffer,
+	VkBuffer in_sg9_buffer,
+	VkBuffer in_gi_octree_buffer,
+	VkSampler in_gi_specular_sampler,
+	VkImageView in_gi_specular_view,
+	VkImageView in_brdf_lut_view,
+	VkBuffer in_atmosphere_parameters_buffer,
+	VkImageView in_atmosphere_transmittance_view,
+	VkImageView in_cloud_shadow_view
+)
+{
+	const u32 frame_index = ctx->frame_index;
+	lighting_pass.fs_params_ubos[frame_index].update_gpu_buffer(&in_fs_params, sizeof(LightingFsParams));
+
+	lighting_pass_write_set(
+		ctx,
+		lighting_pass.sets[frame_index],
+		lighting_pass.fs_params_ubos[frame_index].get_gpu_buffer(),
+		in_gbuffer_outputs,
+		in_shadow_moments_view,
+		in_ssao_view,
+		in_point_lights_buffer,
+		in_spot_lights_buffer,
+		in_sun_lights_buffer,
+		in_gi_probes_buffer,
+		in_gi_cells_buffer,
+		in_gi_lighting_view,
+		in_gi_depth_view,
+		in_sh9_buffer,
+		in_sg9_buffer,
+		in_gi_octree_buffer,
+		in_gi_specular_sampler,
+		in_gi_specular_view,
+		in_brdf_lut_view,
+		in_atmosphere_parameters_buffer,
+		in_atmosphere_transmittance_view,
+		in_cloud_shadow_view);
 }
 
 // Bind + fullscreen draw (inside the framework's execute callback)

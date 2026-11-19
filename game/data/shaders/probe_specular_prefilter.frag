@@ -1,6 +1,6 @@
 #version 450
 
-// GGX-prefilters one probe cubemap into one padded octahedral atlas tile.
+// GGX-prefilters one probe's relit radiance entry into its specular atlas tile.
 
 #include "octahedral_helpers.h"
 #include "sampling.h"
@@ -10,10 +10,18 @@ layout(push_constant) uniform PrefilterParams
 	int atlas_entry_size;
 	float roughness;
 	int sample_count;
-	int padding0;
+	int probe_index;			// radiance atlas slot
+	int radiance_total_size;
+	int radiance_entry_size;
 };
 
-layout(set = 0, binding = 0) uniform samplerCube cubemap_lighting_tex;
+layout(set = 0, binding = 0) uniform sampler2D radiance_tex;
+
+vec3 sample_radiance(vec3 direction)
+{
+	return texture(radiance_tex, padded_atlas_uv_from_normal(
+		direction, probe_index, radiance_total_size, radiance_entry_size)).rgb;
+}
 
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 out_color;
@@ -25,7 +33,7 @@ void main()
 
 	if (roughness <= 0.00001)
 	{
-		out_color = vec4(texture(cubemap_lighting_tex, reflection_direction).rgb, 1.0);
+		out_color = vec4(sample_radiance(reflection_direction), 1.0);
 		return;
 	}
 
@@ -42,7 +50,7 @@ void main()
 		float n_dot_l = max(dot(normal, light), 0.0);
 		if (n_dot_l > 0.0)
 		{
-			accumulated += texture(cubemap_lighting_tex, light).rgb * n_dot_l;
+			accumulated += sample_radiance(light) * n_dot_l;
 			weight += n_dot_l;
 		}
 	}

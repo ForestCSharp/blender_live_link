@@ -57,7 +57,7 @@ namespace SceneSystem
 			}
 			mark_lighting_dirty(in_state);
 			in_state.shadow.force_recapture = true;
-			if (in_state.gi.render_sky_to_probes) in_state.gi.sky_probe_dirty = true;
+			if (in_state.gi.render_sky_to_probes) in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
 		}
 		if (candidate_count > 1 && candidate_count != previous_candidate_count)
 		{

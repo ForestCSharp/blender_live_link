@@ -1,8 +1,9 @@
 #version 450
 
 // Writes radial-distance moments for probe occlusion from the capture
-// G-buffer's world positions: Chebyshev uses 2 moments and EVRP4 uses 4
-// warped moments.
+// G-buffer's world positions (Chebyshev uses 2 moments and EVRP4 uses 4
+// warped moments), plus the probe's packed geometry cache for relighting:
+// what the probe sees in each direction, independent of lighting.
 
 layout(push_constant) uniform fs_params
 {
@@ -14,10 +15,16 @@ layout(push_constant) uniform fs_params
 };
 
 layout(set = 0, binding = 0) uniform sampler2D world_position_tex;
+layout(set = 0, binding = 1) uniform sampler2D color_tex;
+layout(set = 0, binding = 2) uniform sampler2D normal_tex;
+layout(set = 0, binding = 3) uniform sampler2D roughness_metallic_emissive_tex;
 
 layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 frag_color;
+layout(location = 1) out vec4 out_cache_surface;	// albedo.rgb, roughness
+layout(location = 2) out vec4 out_cache_normal;		// normal * 0.5 + 0.5, metallic
+layout(location = 3) out vec4 out_cache_hit;		// hit distance (0 = sky), emission strength
 
 const int PROBE_OCCLUSION_MODE_CHEBYSHEV = 0;
 const int PROBE_OCCLUSION_MODE_EVRP4 = 1;
@@ -64,4 +71,13 @@ void main()
 
 		frag_color = vec4(center_depth, (center_depth * center_depth) + derivative_bias, 0.0, 0.0);
 	}
+
+	// Geometry cache. The capture draws are 1:1 with the G-buffer, so these
+	// reads are exact texels; sky (position.w == 0) stores distance 0.
+	const vec4 world_position = texture(world_position_tex, uv);
+	const vec4 rme = texture(roughness_metallic_emissive_tex, uv);
+	const bool is_geometry = world_position.w > 0.0;
+	out_cache_surface = is_geometry ? vec4(clamp(texture(color_tex, uv).rgb, 0.0, 1.0), rme.r) : vec4(0.0);
+	out_cache_normal = is_geometry ? vec4(normalize(texture(normal_tex, uv).xyz) * 0.5 + 0.5, rme.g) : vec4(0.0);
+	out_cache_hit = is_geometry ? vec4(length(world_position.xyz - capture_location), rme.b, 0.0, 0.0) : vec4(0.0);
 }

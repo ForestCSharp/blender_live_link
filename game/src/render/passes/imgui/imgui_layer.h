@@ -709,12 +709,12 @@ namespace ImGuiLayer
 			{
 				if (ImGui::CollapsingHeader("Lighting"))
 				{
+					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
 					ImGui::Checkbox("Sky Rendering", &state.sky.rendering_enable);
 					ImGui::Text("LUT precomputes: %llu",
 						(unsigned long long) bruneton_atmosphere_pass.precompute_count);
 					ImGui::Text("Last LUT CPU submit: %.2f ms",
 						bruneton_atmosphere_pass.last_precompute_ms);
-					ImGui::Checkbox("Direct Lighting", &state.lighting.direct_enable);
 					ImGui::Separator();	
 				}
 
@@ -752,7 +752,7 @@ namespace ImGuiLayer
                     if (ImGui::Combo("Probe Occlusion Mode", (i32*)&state.gi.probe_occlusion_mode, "Chebyshev\0EVRP4\0"))
                         state.gi.layout_dirty = true;
                     if (ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes))
-                        state.gi.sky_probe_dirty = true;
+                        state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
                     ImGui::Checkbox("Probe Specular IBL", &state.gi.probe_specular_enable);
                     ImGui::Checkbox("Show Probes", &state.gi.show_probes);
                     ImGui::Checkbox("Filter Probe Level", &state.gi.probe_level_filter_enable);
@@ -810,6 +810,12 @@ namespace ImGuiLayer
                         ImGui::Text("GI bake: baking %d / %zu", gi_scene.probe_idx_to_update, gi_scene.probes.length());
                     else
                         ImGui::Text("GI bake: %s", bake_status_names[(i32) state.gi.bake_status]);
+                    if (state.gi.relight_passes_remaining > 0)
+                        ImGui::Text("Relighting: pass %d / %d",
+                            State::GiState::relight_pass_count - state.gi.relight_passes_remaining + 1,
+                            State::GiState::relight_pass_count);
+                    else
+                        ImGui::Text("Relighting: idle (lit)");
                     ImGui::Text("Scene key: %s", state.gi.scene_key.empty() ? "(none; bakes are not saved)" : state.gi.scene_key.c_str());
                     ImGui::Combo("Probe Vis Mode", (i32*)&state.gi.probe_vis_mode, "Irradiance\0SH9 Irradiance\0SG9 Irradiance\0Radial Depth\0Radial Depth Squared\0EVRP Positive Moment\0Specular\0Probe Level\0");
                     if (state.gi.probe_vis_mode == EProbeVisMode::Specular)

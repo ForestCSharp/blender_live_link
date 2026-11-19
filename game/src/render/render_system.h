@@ -644,24 +644,7 @@ namespace RenderSystem
 			lighting_fs_params.num_sun_lights = (i32) in_state.lighting.sun_lights.length();
 			lighting_fs_params.direct_lighting_enable = in_state.lighting.direct_enable ? 1 : 0;
 			lighting_fs_params.ssao_enable = in_state.ssao.enable ? 1 : 0;
-			lighting_fs_params.gi_enable = in_state.gi.enable ? 1 : 0;
-			lighting_fs_params.gi_probe_occlusion = in_state.gi.probe_occlusion ? 1 : 0;
-			lighting_fs_params.probe_occlusion_mode = (i32) in_state.gi.probe_occlusion_mode;
-			lighting_fs_params.probe_radiance_mode = (i32) in_state.gi.probe_radiance_mode;
-			lighting_fs_params.probe_specular_enable = in_state.gi.probe_specular_enable ? 1 : 0;
-			lighting_fs_params.specular_atlas_total_size = g_gi_scene.lighting_capture.specular_atlas_total_size;
-			lighting_fs_params.specular_atlas_entry_size = g_gi_scene.lighting_capture.desc.specular_entry_size;
-			lighting_fs_params.specular_mip_count = g_gi_scene.lighting_capture.desc.specular_mip_count;
-			lighting_fs_params.gi_intensity = in_state.gi.intensity;
-			lighting_fs_params.atlas_total_size = g_gi_scene.lighting_capture.irradiance_atlas_total_size;
-			lighting_fs_params.atlas_entry_size = g_gi_scene.lighting_capture.desc.irradiance_entry_size;
-			lighting_fs_params.moments_atlas_total_size = g_gi_scene.lighting_capture.moments_atlas_total_size;
-			lighting_fs_params.moments_atlas_entry_size = g_gi_scene.lighting_capture.desc.moments_entry_size;
-			lighting_fs_params.gi_fallback_probe_index = g_gi_scene.fallback_probe_index;
-			lighting_fs_params.gi_octree_node_count = (i32) g_gi_scene.octree_nodes.length();
-			lighting_fs_params.isolated_probe_index = in_state.gi.probe_isolation_enable
-				? (in_state.gi.isolated_probe_index >= 0 ? in_state.gi.isolated_probe_index : -2)
-				: -1;
+			gi_scene_fill_lighting_fs_params(lighting_fs_params, g_gi_scene, in_state);
 			lighting_fs_params.shadow_bias = in_state.shadow.shadow_bias;
 			lighting_fs_params.shadow_map_texel_size = HMM_V2(
 				1.0f / (f32) ShadowDepthPass::ShadowMapResolution,

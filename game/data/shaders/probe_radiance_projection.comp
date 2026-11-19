@@ -1,18 +1,21 @@
 #version 450
 
-// Projects a probe's lighting cubemap onto SH9 coefficients or fits SG9
-// lobes. One workgroup processes each probe, and lanes 0-8 each own one
-// coefficient or lobe.
+// Projects probes' relit radiance entries onto SH9 coefficients or fits SG9
+// lobes. One workgroup per probe (base_probe_index + workgroup), and lanes
+// 0-8 each own one coefficient or lobe.
 
 #include "probe_radiance.h"
+#include "octahedral_helpers.h"
 #include "sampling.h"
 
 layout(push_constant) uniform cs_params
 {
-	int probe_index;
+	int base_probe_index;
 	int radiance_mode;
 	int sample_count;
-	int _padding0;
+	int probe_count;
+	int radiance_total_size;
+	int radiance_entry_size;
 };
 
 layout(set = 0, binding = 0) buffer SH9CoefficientsBuffer
@@ -25,7 +28,7 @@ layout(set = 0, binding = 1) buffer SG9LobesBuffer
 	ProbeSGLobe sg9_lobes[];
 };
 
-layout(set = 0, binding = 2) uniform samplerCube cubemap_lighting_tex;
+layout(set = 0, binding = 2) uniform sampler2D radiance_tex;
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
@@ -49,6 +52,11 @@ float sg9_basis_sum(vec3 dir)
 
 void main()
 {
+	if (int(gl_WorkGroupID.x) >= probe_count)
+	{
+		return;
+	}
+	const int probe_index = base_probe_index + int(gl_WorkGroupID.x);
 	uint coefficient_index = gl_LocalInvocationID.x;
 	bool has_lobe = coefficient_index < 9u;
 
@@ -66,7 +74,7 @@ void main()
 		for (uint i = 0u; i < num_samples; ++i)
 		{
 			vec3 dir = sampling_uniform_sphere(sampling_hammersley(i, num_samples));
-			vec3 radiance = texture(cubemap_lighting_tex, dir).rgb;
+			vec3 radiance = texture(radiance_tex, padded_atlas_uv_from_normal(dir, probe_index, radiance_total_size, radiance_entry_size)).rgb;
 			accumulated += radiance * sh9_basis(int(coefficient_index), dir);
 		}
 
@@ -131,7 +139,7 @@ void main()
 		for (uint i = 0u; i < num_samples; ++i)
 		{
 			vec3 dir = sampling_uniform_sphere(sampling_hammersley(i, num_samples));
-			vec3 radiance = texture(cubemap_lighting_tex, dir).rgb;
+			vec3 radiance = texture(radiance_tex, padded_atlas_uv_from_normal(dir, probe_index, radiance_total_size, radiance_entry_size)).rgb;
 			float basis = sg_lobe_diffuse_response(final_axis, final_sharpness, dir);
 			float responsibility = basis / sg9_basis_sum(dir);
 

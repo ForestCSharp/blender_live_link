@@ -360,6 +360,14 @@ namespace LiveLinkSystem
 				};
 				break;
 			}
+			case LL::GameplayComponent_GameplayComponentObjectRenderingProperties:
+			{
+				const auto* rendering_component = component.value_as_GameplayComponentObjectRenderingProperties();
+				game_object.rendering_properties = (ObjectRenderingProperties) {
+					.exclude_from_gi_bounds = rendering_component->exclude_from_gi_bounds(),
+				};
+				break;
+			}
 			case LL::GameplayComponent_GameplayComponentTessellation:
 			{
 				const auto* tessellation_component = component.value_as_GameplayComponentTessellation();

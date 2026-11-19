@@ -195,10 +195,33 @@ void test_scene_key_decodes()
 	assert(decoded_without_key && decoded_without_key->scene_key.empty());
 }
 
+void test_object_rendering_properties_decode()
+{
+	flatbuffers::FlatBufferBuilder builder;
+	const LL::Vec3 zero(0, 0, 0), one(1, 1, 1);
+	const LL::Quat identity(0, 0, 0, 1);
+	const auto properties = LL::CreateGameplayComponentObjectRenderingProperties(builder, true);
+	const auto container = LL::CreateGameplayComponentContainer(builder,
+		LL::GameplayComponent_GameplayComponentObjectRenderingProperties, properties.Union());
+	const flatbuffers::Offset<LL::Object> objects[] = {
+		LL::CreateObject(builder, 0, 501, true, &zero, &one, &identity, 0, 0, 0, builder.CreateVector(&container, 1)),
+		LL::CreateObject(builder, 0, 502, true, &zero, &one, &identity),
+	};
+	builder.FinishSizePrefixed(LL::CreateUpdate(builder, builder.CreateVector(objects, 2)));
+	auto decoded = LiveLinkSystem::decode_update({builder.GetBufferPointer(), builder.GetSize()});
+	assert(decoded && decoded->objects.length() == 2);
+	for (const Object& object : decoded->objects)
+	{
+		// Only the object carrying the component is excluded; the default is off.
+		assert(object.rendering_properties.exclude_from_gi_bounds == (object.unique_id == 501));
+	}
+}
+
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 	test_scene_key_decodes();
+	test_object_rendering_properties_decode();
 	test_light_with_missing_fields_drops_only_the_light();
 	test_animation_counts_must_match_matrix_data();
 	test_mesh_indices_must_address_existing_data();

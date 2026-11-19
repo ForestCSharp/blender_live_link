@@ -49,6 +49,13 @@ struct GI_Scene
 	LightingCapture lighting_capture;
 	i32 probe_idx_to_update = 0;
 	bool pending_save = false;	// bake finished last frame; read back and save
+
+	// Relighting: slot-row cursor over all probes, plus a cursor over the
+	// specular probes (specular_probes[slot] = probe index).
+	i32 relight_row_cursor = 0;
+	i32 specular_relight_cursor = 0;
+	DynamicArray<i32> specular_probes;
+	DynamicArray<i32> specular_slots;	// 0..n-1, so a cursor range is a contiguous pointer pair
 	GeometryContentHash probe_layout_hash;	// probes as built, before capture
 
 	// Dynamic Layout
@@ -70,7 +77,7 @@ struct GI_Scene
 	static constexpr f32 minimum_scene_extent = 1.0f;
 	static constexpr f32 radial_depth_cell_scale = (f32) GI_RADIAL_DEPTH_CELL_SCALE;
 	static constexpr i32 cubemap_capture_size = 64; // ~2x the face size a 48^2 octahedral specular entry needs
-	static constexpr i32 irradiance_atlas_entry_size = 8;	// 6^2 interior, as in DDGI
+	static constexpr i32 irradiance_atlas_entry_size = 10;	// 6^2 interior inside the 2-texel gutter
 	static constexpr i32 moments_atlas_entry_size = 16;
 	static constexpr i32 specular_atlas_entry_size = 48;
 	static constexpr i32 specular_atlas_mip_count = 4;
@@ -88,7 +95,9 @@ struct GI_Scene
 		maximum_specular_slots_per_dimension * maximum_specular_slots_per_dimension;
 	static constexpr i32 maximum_specular_atlas_size =
 		maximum_specular_slots_per_dimension * specular_atlas_entry_size;
-	static constexpr i32 probes_to_update_per_frame = 4;
+	static constexpr i32 probes_to_update_per_frame = 4;		// geometry captures (bake)
+	static constexpr i32 relight_probes_per_frame = 2048;		// whole slot rows, rounded up
+	static constexpr i32 relight_specular_probes_per_frame = 256;
 };
 static_assert(GI_Scene::maximum_octahedral_slots_per_dimension * GI_Scene::irradiance_atlas_entry_size
 	<= GI_Scene::maximum_image_size, "Irradiance atlas must fit the image size limit.");
@@ -141,10 +150,26 @@ bool gi_scene_collect_visible_mesh_bounds(
 	out_geometry_bounds.reset();
 	out_scene_bounds = bounding_box_init();
 
+	// Objects marked exclude_from_gi_bounds (e.g. a huge ground plane) don't
+	// size the volume; they still place probes inside it, are captured and
+	// cast GI shadows. If every GI object is excluded, include them all, so
+	// excluding the only object can't empty the GI.
+	bool any_included = false;
+	for (auto const& [unique_id, object] : in_state.scene.objects)
+	{
+		any_included = any_included || (object_contributes_to_gi_scene(object)
+			&& !object.rendering_properties.exclude_from_gi_bounds);
+	}
+
 	for (auto const& [unique_id, object] : in_state.scene.objects)
 	{
 		if (!object_contributes_to_gi_scene(object))
 		{
+			continue;
+		}
+		if (any_included && object.rendering_properties.exclude_from_gi_bounds)
+		{
+			printf("GI bounds: excluding '%s'\n", object.name ? object.name : "?");
 			continue;
 		}
 
@@ -621,6 +646,8 @@ u32 gi_bake_format_bytes(const VkFormat in_format)
 {
 	switch (in_format)
 	{
+		case VK_FORMAT_R8G8B8A8_UNORM: return 4;
+		case VK_FORMAT_R32G32_SFLOAT: return 8;
 		case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
 		case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
 		default: assert(false && "GI bake: unhandled atlas format"); return 0;
@@ -642,16 +669,12 @@ GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_stat
 	// Everything that changes how the stored bytes are laid out or interpreted.
 	const i32 params[] = {
 		in_gi_scene.octree_depth,
-		capture.irradiance_atlas_total_size,
-		capture.desc.irradiance_entry_size,
 		capture.moments_atlas_total_size,
 		capture.desc.moments_entry_size,
-		(i32) capture.irradiance_format,
-		capture.desc.specular_entry_size,
-		capture.desc.specular_mip_count,
-		capture.specular_atlas_total_size,
 		(i32) capture.color_format,
-		(i32) capture.specular_atlas.format,
+		(i32) GI_CACHE_SURFACE_FORMAT,
+		(i32) GI_CACHE_NORMAL_FORMAT,
+		(i32) GI_CACHE_HIT_FORMAT,
 		(i32) in_state.gi.probe_occlusion_mode,
 	};
 	const GeometryContentHash hash = geometry_arena_hash_bytes(
@@ -661,25 +684,18 @@ GiBakeHeader gi_bake_expected_header(GI_Scene& in_gi_scene, const State& in_stat
 	header.layout_hash[0] = hash.low;
 	header.layout_hash[1] = hash.high;
 	header.probe_count = in_gi_scene.probes.length();
-	header.blob_bytes[GI_BAKE_BLOB_IRRADIANCE] = (u64) capture.irradiance_atlas_total_size
-		* gi_bake_octahedral_rows(in_gi_scene, capture.desc.irradiance_entry_size)
-		* gi_bake_format_bytes(capture.irradiance_format);
-	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = (u64) capture.moments_atlas_total_size
-		* gi_bake_octahedral_rows(in_gi_scene, capture.desc.moments_entry_size)
-		* gi_bake_format_bytes(capture.color_format);
-	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
-	{
-		const u64 size = (u64) capture.specular_atlas_total_size >> mip;
-		header.blob_bytes[GI_BAKE_BLOB_SPECULAR] += size * size * gi_bake_format_bytes(capture.specular_atlas.format);
-	}
-	header.blob_bytes[GI_BAKE_BLOB_SH9] = sizeof(HMM_Vec4) * in_gi_scene.sh9_coefficients.length();
-	header.blob_bytes[GI_BAKE_BLOB_SG9] = sizeof(GI_SG9_Lobe) * in_gi_scene.sg9_lobes.length();
+	const u64 moments_grid_texels = (u64) capture.moments_atlas_total_size
+		* gi_bake_octahedral_rows(in_gi_scene, capture.desc.moments_entry_size);
+	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = moments_grid_texels * gi_bake_format_bytes(capture.color_format);
+	header.blob_bytes[GI_BAKE_BLOB_CACHE_SURFACE] = moments_grid_texels * gi_bake_format_bytes(GI_CACHE_SURFACE_FORMAT);
+	header.blob_bytes[GI_BAKE_BLOB_CACHE_NORMAL] = moments_grid_texels * gi_bake_format_bytes(GI_CACHE_NORMAL_FORMAT);
+	header.blob_bytes[GI_BAKE_BLOB_CACHE_HIT] = moments_grid_texels * gi_bake_format_bytes(GI_CACHE_HIT_FORMAT);
 	return header;
 }
 
-// Records copies between the three atlases and a staging buffer laid out like
-// the file's image blobs; in_upload picks the direction. Leaves the atlases
-// SHADER_READ_ONLY as the lighting pass expects.
+// Records copies between the four moments-grid atlases (moments + geometry
+// cache) and a staging buffer laid out like the file's blobs; in_upload picks
+// the direction. Leaves the atlases SHADER_READ_ONLY.
 void gi_bake_record_atlas_copies(
 	VkCommandBuffer in_command_buffer, GI_Scene& in_gi_scene, VkBuffer in_staging, const bool in_upload)
 {
@@ -708,17 +724,11 @@ void gi_bake_record_atlas_copies(
 		copy(in_atlas, 0, (u32) in_total_size, gi_bake_octahedral_rows(in_gi_scene, in_entry_size));
 		gpu_image_transition(in_command_buffer, in_atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	};
-	copy_octahedral(capture.cube_to_oct_pass.get_color_output(0),
-		capture.irradiance_atlas_total_size, capture.desc.irradiance_entry_size);
-	copy_octahedral(capture.moments_oct_pass.get_color_output(0),
-		capture.moments_atlas_total_size, capture.desc.moments_entry_size);
-	gpu_image_transition(in_command_buffer, capture.specular_atlas, transfer_layout);
-	for (i32 mip = 0; mip < capture.desc.specular_mip_count; ++mip)
+	for (i32 output_idx = 0; output_idx < 4; ++output_idx)
 	{
-		const u32 size = (u32) capture.specular_atlas_total_size >> mip;
-		copy(capture.specular_atlas, (u32) mip, size, size);
+		copy_octahedral(capture.moments_oct_pass.get_color_output(output_idx),
+			capture.moments_atlas_total_size, capture.desc.moments_entry_size);
 	}
-	gpu_image_transition(in_command_buffer, capture.specular_atlas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 struct GiBakeStaging
@@ -769,7 +779,6 @@ void gi_scene_save_bake(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_sta
 	VK_CHECK(vulkan_device_wait_idle(ctx));
 	vulkan_context_immediate_submit(ctx, [&](VkCommandBuffer in_command_buffer)
 	{
-		// Projection compute wrote the SH9/SG9 buffers in earlier frames.
 		VkMemoryBarrier2 to_transfer = {
 			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
 			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -785,16 +794,6 @@ void gi_scene_save_bake(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_sta
 		vkCmdPipelineBarrier2(in_command_buffer, &dependency);
 
 		gi_bake_record_atlas_copies(in_command_buffer, in_gi_scene, staging.buffer, /*in_upload*/ false);
-		const VkBufferCopy sh9_copy = {
-			.dstOffset = gi_bake_blob_offset(header, GI_BAKE_BLOB_SH9),
-			.size = header.blob_bytes[GI_BAKE_BLOB_SH9],
-		};
-		vkCmdCopyBuffer(in_command_buffer, in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer(), staging.buffer, 1, &sh9_copy);
-		const VkBufferCopy sg9_copy = {
-			.dstOffset = gi_bake_blob_offset(header, GI_BAKE_BLOB_SG9),
-			.size = header.blob_bytes[GI_BAKE_BLOB_SG9],
-		};
-		vkCmdCopyBuffer(in_command_buffer, in_gi_scene.sg9_lobes_buffer.get_gpu_buffer(), staging.buffer, 1, &sg9_copy);
 
 		VkMemoryBarrier2 to_host = {
 			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -815,10 +814,9 @@ void gi_scene_save_bake(VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_sta
 		(f64) total_bytes / (1024.0 * 1024.0));
 }
 
-// Looks for a bake matching the freshly built layout. On a hit, fills the CPU
-// SH9/SG9 arrays and probe atlas indices (the GPU buffers are created from
-// them afterwards; they are static, so they cannot be updated in place) and
-// returns the file's blobs (atlas blobs first) for gi_scene_upload_bake_atlases.
+// Looks for a bake matching the freshly built layout. On a hit, enables every
+// probe (atlas_idx) and returns the file's blobs for
+// gi_scene_upload_bake_atlases; relighting then fills in the lighting.
 bool gi_scene_read_bake(GI_Scene& in_gi_scene, const State& in_state, DynamicArray<u8>& out_blobs, u64& out_atlas_bytes)
 {
 	const std::string path = gi_bake_path(in_state.gi.scene_key);
@@ -833,11 +831,7 @@ bool gi_scene_read_bake(GI_Scene& in_gi_scene, const State& in_state, DynamicArr
 		return false;
 	}
 
-	out_atlas_bytes = gi_bake_blob_offset(header, GI_BAKE_BLOB_SH9);
-	memcpy(in_gi_scene.sh9_coefficients.data(), out_blobs.data() + out_atlas_bytes,
-		header.blob_bytes[GI_BAKE_BLOB_SH9]);
-	memcpy(in_gi_scene.sg9_lobes.data(), out_blobs.data() + gi_bake_blob_offset(header, GI_BAKE_BLOB_SG9),
-		header.blob_bytes[GI_BAKE_BLOB_SG9]);
+	out_atlas_bytes = gi_bake_total_blob_bytes(header);
 	for (i32 probe_index = 0; probe_index < (i32) in_gi_scene.probes.length(); ++probe_index)
 	{
 		in_gi_scene.probes[probe_index].atlas_idx = probe_index;
@@ -881,10 +875,22 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 
 	DynamicArray<GiTriangle> triangles;
 	gi_scene_collect_triangles(in_state, triangles);
+	// The octree build assumes every triangle handed to a node overlaps it, so
+	// the root list keeps only triangles touching the GI cube; objects excluded
+	// from the bounds can extend far outside it.
 	DynamicArray<u32> all_triangle_indices;
-	for (u32 triangle_index = 0; triangle_index < (u32) triangles.length(); ++triangle_index)
 	{
-		all_triangle_indices.add(triangle_index);
+		const HMM_Vec3 cube_center = (out_gi_scene.scene_bounds.min + out_gi_scene.scene_bounds.max) * 0.5f;
+		const HMM_Vec3 cube_half_extent = (out_gi_scene.scene_bounds.max - out_gi_scene.scene_bounds.min) * 0.5f;
+		for (u32 triangle_index = 0; triangle_index < (u32) triangles.length(); ++triangle_index)
+		{
+			const GiTriangle& triangle = triangles[triangle_index];
+			const HMM_Vec3 slack = HMM_V3(triangle.padding, triangle.padding, triangle.padding);
+			if (gi_triangle_box_overlap(cube_center, cube_half_extent + slack, triangle.v[0], triangle.v[1], triangle.v[2]))
+			{
+				all_triangle_indices.add(triangle_index);
+			}
+		}
 	}
 
 	// Probe count depends on how the surfaces fill the octree, so a depth can
@@ -938,9 +944,29 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 	}
 	gi_scene_add_fallback_probe(out_gi_scene);
 	out_gi_scene.probes[out_gi_scene.fallback_probe_index].specular_atlas_idx = specular_probe_count++;
-	printf("GI layout: depth %d (requested %d), %d cells, %zu probes (%d with specular at depth %d), %zu triangles, %.1f ms\n",
+	// The fallback sees only sky, which is exactly what a cleared cache holds,
+	// so it needs no capture: relighting alone keeps it current.
+	out_gi_scene.probes[out_gi_scene.fallback_probe_index].atlas_idx = out_gi_scene.fallback_probe_index;
+	out_gi_scene.specular_probes.reset();
+	out_gi_scene.specular_slots.reset();
+	out_gi_scene.specular_probes.resize(specular_probe_count, -1);
+	for (i32 slot = 0; slot < specular_probe_count; ++slot)
+	{
+		out_gi_scene.specular_slots.add(slot);
+	}
+	for (i32 probe_index = 0; probe_index < (i32) out_gi_scene.probes.length(); ++probe_index)
+	{
+		const i32 specular_slot = out_gi_scene.probes[probe_index].specular_atlas_idx;
+		if (specular_slot >= 0)
+		{
+			out_gi_scene.specular_probes[specular_slot] = probe_index;
+		}
+	}
+	printf("GI layout: depth %d (requested %d), %d cells, %zu probes (%d with specular at depth %d), %zu/%zu triangles in volume, extent %.1f, %.1f ms\n",
 		out_gi_scene.octree_depth, requested_depth, out_gi_scene.payload_count, out_gi_scene.probes.length(),
-		specular_probe_count, out_gi_scene.octree_depth - specular_levels_up, triangles.length(),
+		specular_probe_count, out_gi_scene.octree_depth - specular_levels_up,
+		all_triangle_indices.length(), triangles.length(),
+		out_gi_scene.scene_bounds.max.X - out_gi_scene.scene_bounds.min.X,
 		std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - build_start).count());
 	in_state.gi.octree_depth = out_gi_scene.octree_depth;
 	gi_scene_init_radiance_buffers(out_gi_scene);
@@ -974,7 +1000,9 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 	in_state.gi.is_updating = false;
 	in_state.gi.isolated_probe_index = -1;
 	in_state.gi.bake_status = bake_loaded ? EGiBakeStatus::Loaded : EGiBakeStatus::NotBaked;
-	in_state.gi.sky_probe_dirty = true;
+	out_gi_scene.relight_row_cursor = 0;
+	out_gi_scene.specular_relight_cursor = 0;
+	in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
 
 	if (GI_LOG_SCENE_INIT)
 	{
@@ -1037,6 +1065,102 @@ void gi_scene_init(VulkanContext* ctx, GI_Scene& out_gi_scene, State& in_state)
 	gi_scene_rebuild_layout(ctx, out_gi_scene, in_state);
 }
 
+// GI fields of lighting.frag's fs_params, shared by the main lighting pass
+// and probe relighting.
+void gi_scene_fill_lighting_fs_params(LightingFsParams& out_fs_params, GI_Scene& in_gi_scene, const State& in_state)
+{
+	LightingCapture& capture = in_gi_scene.lighting_capture;
+	out_fs_params.gi_enable = in_state.gi.enable ? 1 : 0;
+	out_fs_params.gi_probe_occlusion = in_state.gi.probe_occlusion ? 1 : 0;
+	out_fs_params.probe_occlusion_mode = (i32) in_state.gi.probe_occlusion_mode;
+	out_fs_params.probe_radiance_mode = (i32) in_state.gi.probe_radiance_mode;
+	out_fs_params.probe_specular_enable = in_state.gi.probe_specular_enable ? 1 : 0;
+	out_fs_params.specular_atlas_total_size = capture.specular_atlas_total_size;
+	out_fs_params.specular_atlas_entry_size = capture.desc.specular_entry_size;
+	out_fs_params.specular_mip_count = capture.desc.specular_mip_count;
+	out_fs_params.gi_intensity = in_state.gi.intensity;
+	out_fs_params.atlas_total_size = capture.irradiance_atlas_total_size;
+	out_fs_params.atlas_entry_size = capture.desc.irradiance_entry_size;
+	out_fs_params.moments_atlas_total_size = capture.moments_atlas_total_size;
+	out_fs_params.moments_atlas_entry_size = capture.desc.moments_entry_size;
+	out_fs_params.gi_fallback_probe_index = in_gi_scene.fallback_probe_index;
+	out_fs_params.gi_octree_node_count = (i32) in_gi_scene.octree_nodes.length();
+	out_fs_params.isolated_probe_index = in_state.gi.probe_isolation_enable
+		? (in_state.gi.isolated_probe_index >= 0 ? in_state.gi.isolated_probe_index : -2)
+		: -1;
+}
+
+// Relights the next band of slot rows (and the next batch of specular probes).
+// A wrap of the row cursor completes one pass; each pass adds a bounce,
+// because relighting samples the probes' current irradiance at each hit.
+void gi_scene_relight_step(FrameRenderGraph& graph, VulkanContext* ctx, GI_Scene& in_gi_scene, State& in_state)
+{
+	LightingCapture& capture = in_gi_scene.lighting_capture;
+	const i32 probe_count = (i32) in_gi_scene.probes.length();
+	const i32 slots_per_row = capture.octahedral_slots_per_dimension;
+	if (probe_count <= 0 || slots_per_row <= 0)
+	{
+		return;
+	}
+	const i32 total_rows = (probe_count + slots_per_row - 1) / slots_per_row;
+	const i32 rows_per_frame = std::max(1, (GI_Scene::relight_probes_per_frame + slots_per_row - 1) / slots_per_row);
+	in_gi_scene.relight_row_cursor = std::clamp(in_gi_scene.relight_row_cursor, 0, total_rows - 1);
+
+	ProbeRelightBand band = {};
+	band.first_row = in_gi_scene.relight_row_cursor;
+	band.row_count = std::min(rows_per_frame, total_rows - band.first_row);
+	band.first_probe = band.first_row * slots_per_row;
+	band.probe_count = std::min(band.row_count * slots_per_row, probe_count - band.first_probe);
+
+	const i32 specular_total = (i32) in_gi_scene.specular_probes.length();
+	in_gi_scene.specular_relight_cursor = specular_total > 0 ? in_gi_scene.specular_relight_cursor % specular_total : 0;
+	band.specular_count = std::min(GI_Scene::relight_specular_probes_per_frame, specular_total - in_gi_scene.specular_relight_cursor);
+	band.specular_probes = in_gi_scene.specular_probes.data() + in_gi_scene.specular_relight_cursor;
+	band.specular_slots = in_gi_scene.specular_slots.data() + in_gi_scene.specular_relight_cursor;
+
+	LightingFsParams& fs = band.fs_params;
+	gi_scene_fill_lighting_fs_params(fs, in_gi_scene, in_state);
+	fs.probe_relight = 1;
+	fs.gi_enable = 1;						// hit points sample the probes: one more bounce per pass
+	fs.isolated_probe_index = -1;
+	fs.ssao_enable = 0;
+	fs.direct_lighting_enable = 1;
+	fs.num_point_lights = (i32) in_state.lighting.point_lights.length();
+	fs.num_spot_lights = (i32) in_state.lighting.spot_lights.length();
+	fs.num_sun_lights = (i32) in_state.lighting.sun_lights.length();
+	fs.atmosphere_sun_index = in_state.lighting.active_atmosphere_sun_index;
+	fs.atmosphere_enabled = sky_pass.has_active_atmosphere
+		&& bruneton_atmosphere_pass.has_precomputed
+		&& in_state.lighting.active_atmosphere_sun_index >= 0 ? 1 : 0;
+	fs.atmosphere_planet_center_z = sky_pass.active_parameters.planet_center_z_m;
+	fs.cloud_shadow_extent_enabled = HMM_V4(8000.0f, 0.0f, 0.0f, 0.0f);
+	fs.shadow_bias = 0.001f;
+	fs.shadow_map_texel_size = HMM_V2(1.0f / GIShadowMap::resolution, 1.0f / GIShadowMap::resolution);
+	if (GIShadowMap::valid)
+	{
+		// One centered-square cascade covering the whole GI scene.
+		fs.shadow_map_enable = 1;
+		fs.shadow_num_cascades = 1;
+		fs.shadow_cascade_placement_mode = (i32) EShadowCascadePlacementMode::CenteredSquares;
+		fs.shadow_view_projections[0] = GIShadowMap::view_projection;
+	}
+
+	band.probes_buffer = in_gi_scene.probes_buffer.get_gpu_buffer();
+	band.cells_buffer = in_gi_scene.cells_buffer.get_gpu_buffer();
+	band.octree_buffer = in_gi_scene.octree_nodes_buffer.get_gpu_buffer();
+	band.sh9_buffer = in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer();
+	band.sg9_buffer = in_gi_scene.sg9_lobes_buffer.get_gpu_buffer();
+	capture.relight_band(graph, ctx, in_state, band);
+
+	in_gi_scene.specular_relight_cursor += band.specular_count;
+	in_gi_scene.relight_row_cursor += band.row_count;
+	if (in_gi_scene.relight_row_cursor >= total_rows)
+	{
+		in_gi_scene.relight_row_cursor = 0;
+		in_state.gi.relight_passes_remaining -= 1;
+	}
+}
+
 // Records this frame's probe captures into the command buffer: a few probes
 // per frame while a requested bake runs, otherwise only the sky fallback probe
 // when the sky changed. Call after begin_frame + descriptor updates, before the
@@ -1053,18 +1177,22 @@ void gi_scene_update(
 		gi_scene_save_bake(ctx, in_gi_scene, in_state);
 	}
 
+	const bool layout_rebuilt = in_state.gi.layout_dirty;
 	if (in_state.gi.layout_dirty)
 	{
 		printf("GI Scene Layout Dirty. Rebuilding...\n");
 		// Replaced buffers/images retire against the current frame fence.
 		gi_scene_rebuild_layout(ctx, in_gi_scene, in_state);
 	}
+	if (GIShadowMap::update(graph, ctx, in_state, in_gi_scene.scene_bounds, layout_rebuilt))
+	{
+		in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
+	}
 
 	if (in_state.gi.bake_requested)
 	{
 		in_state.gi.bake_requested = false;
 		in_state.gi.is_updating = true;
-		in_state.gi.sky_probe_dirty = false;	// the bake captures the fallback too
 		in_state.gi.bake_status = EGiBakeStatus::Baking;
 		in_gi_scene.probe_idx_to_update = 0;
 	}
@@ -1084,12 +1212,8 @@ void gi_scene_update(
 			in_state,
 			probe.position.XYZ,
 			probe.atlas_idx,
-			probe.specular_atlas_idx,
 			in_probe_index != in_gi_scene.fallback_probe_index,
-			in_probe_index,
-			probe.max_radial_depth,
-			in_gi_scene.sh9_coefficients_buffer.get_gpu_buffer(),
-			in_gi_scene.sg9_lobes_buffer.get_gpu_buffer()
+			probe.max_radial_depth
 		);
 		if (GI_LOG_SCENE_UPDATE)
 		{
@@ -1110,14 +1234,17 @@ void gi_scene_update(
 			{
 				in_state.gi.is_updating = false;
 				in_gi_scene.pending_save = true;
+				// Geometry changed under every probe: light it from scratch.
+				in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
+				in_gi_scene.relight_row_cursor = 0;
 				break;
 			}
 		}
 	}
-	else if (in_state.gi.sky_probe_dirty && in_gi_scene.fallback_probe_index >= 0)
+
+	if (in_state.gi.relight_passes_remaining > 0)
 	{
-		in_state.gi.sky_probe_dirty = false;
-		capture_probe(in_gi_scene.fallback_probe_index);
+		gi_scene_relight_step(graph, ctx, in_gi_scene, in_state);
 	}
 
 	if (needs_gpu_update)

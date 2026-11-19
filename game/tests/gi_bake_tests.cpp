@@ -24,9 +24,9 @@ static GiBakeHeader make_header()
 	header.layout_hash[0] = 0x1234;
 	header.layout_hash[1] = 0x5678;
 	header.probe_count = 3;
-	header.blob_bytes[GI_BAKE_BLOB_IRRADIANCE] = 8;
-	header.blob_bytes[GI_BAKE_BLOB_SPECULAR] = 4;
-	header.blob_bytes[GI_BAKE_BLOB_SG9] = 2;
+	header.blob_bytes[GI_BAKE_BLOB_MOMENTS] = 8;
+	header.blob_bytes[GI_BAKE_BLOB_CACHE_NORMAL] = 4;
+	header.blob_bytes[GI_BAKE_BLOB_CACHE_HIT] = 2;
 	return header;
 }
 
@@ -35,8 +35,8 @@ static void test_round_trip_and_rejections(const std::string& in_directory)
 	const std::string path = gi_bake_path("round/trip", in_directory.c_str());
 	const GiBakeHeader header = make_header();
 	assert(gi_bake_total_blob_bytes(header) == 14);
-	assert(gi_bake_blob_offset(header, GI_BAKE_BLOB_SPECULAR) == 16 - 8);
-	assert(gi_bake_blob_offset(header, GI_BAKE_BLOB_SG9) == 12);
+	assert(gi_bake_blob_offset(header, GI_BAKE_BLOB_CACHE_NORMAL) == 8);
+	assert(gi_bake_blob_offset(header, GI_BAKE_BLOB_CACHE_HIT) == 12);
 
 	u8 blobs[14];
 	for (u8 i = 0; i < sizeof(blobs); ++i) blobs[i] = (u8) (i * 7);
@@ -56,7 +56,7 @@ static void test_round_trip_and_rejections(const std::string& in_directory)
 	other_count.probe_count += 1;
 	assert(!gi_bake_read(path, other_count, read));
 	GiBakeHeader other_size = header;
-	other_size.blob_bytes[GI_BAKE_BLOB_MOMENTS] = 4;
+	other_size.blob_bytes[GI_BAKE_BLOB_CACHE_SURFACE] = 4;
 	assert(!gi_bake_read(path, other_size, read));
 
 	// Truncated and over-long files are rejected even with a matching header.

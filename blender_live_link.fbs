@@ -315,6 +315,16 @@ table GameplayComponentTessellation
 	max_factor_override		: int = 0;
 }
 
+// Per-object rendering settings. Every field defaults to "off", so adding the
+// component for one setting never changes the others; extend with new fields.
+table GameplayComponentObjectRenderingProperties
+{
+	// Ignore this object when sizing the GI probe volume. It is still seen by
+	// probes, lit and casts GI shadows; it just no longer sets the volume's
+	// extent (for huge ground planes or backdrops around a small play area).
+	exclude_from_gi_bounds	: bool = false;
+}
+
 // TODO: Other Gameplay Components
 
 union GameplayComponent
@@ -329,7 +339,8 @@ union GameplayComponent
 	GameplayComponentWeapon,
 	GameplayComponentPhysics,
 	GameplayComponentEnemy,
-	GameplayComponentTessellation
+	GameplayComponentTessellation,
+	GameplayComponentObjectRenderingProperties
 }
 
 table GameplayComponentContainer

@@ -54,6 +54,7 @@ from .compiled_schemas.python.Blender.LiveLink import GameplayComponentWeapon
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPhysics
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentEnemy
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentTessellation
+from .compiled_schemas.python.Blender.LiveLink import GameplayComponentObjectRenderingProperties
 from .compiled_schemas.python.Blender.LiveLink import GameplayComponentPart
 from .compiled_schemas.python.Blender.LiveLink import CloudLayer
 from .compiled_schemas.python.Blender.LiveLink import CloudLayerProfile
@@ -2931,6 +2932,22 @@ class Component_Tessellation(Component):
     )
 
 
+class Component_ObjectRenderingProperties(Component):
+    # Blender UI Info
+    type_name = 'OBJECT_RENDERING_PROPERTIES'
+    label = 'Object Rendering Properties'
+    fb_t = GameplayComponentObjectRenderingProperties.GameplayComponentObjectRenderingPropertiesT
+
+    # Properties (each defaults to off, so adding the component changes nothing by itself)
+    exclude_from_gi_bounds: BoolProperty(
+        name="Exclude From GI Bounds",
+        description="Ignore this object when sizing the GI probe volume; it is "
+                    "still lit, captured by probes and casts GI shadows",
+        default=False,
+        update=gameplay_component_property_update,
+    )
+
+
 COMPONENT_SPECS = [
     (Component_Character, 'player'),
     (Component_CameraControl, 'camera_control'),
@@ -2943,6 +2960,7 @@ COMPONENT_SPECS = [
     (Component_Physics, 'physics'),
     (Component_Enemy, 'enemy'),
     (Component_Tessellation, 'tessellation'),
+    (Component_ObjectRenderingProperties, 'object_rendering_properties'),
 ]
 
 COMPONENT_CLASSES = [component_class for component_class, _group_name in COMPONENT_SPECS]
@@ -2973,6 +2991,7 @@ class ComponentContainer(PropertyGroup):
     physics:        PointerProperty(type=Component_Physics)
     enemy:          PointerProperty(type=Component_Enemy)
     tessellation:   PointerProperty(type=Component_Tessellation)
+    object_rendering_properties: PointerProperty(type=Component_ObjectRenderingProperties)
 
     # Simply forwards to relevant component data to create flatbuffer object
     def create_flatbuffers_object(

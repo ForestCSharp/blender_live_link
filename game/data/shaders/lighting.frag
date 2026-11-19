@@ -51,6 +51,7 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	vec4 cloud_shadow_extent_enabled;
 	int moments_atlas_total_size;
 	int moments_atlas_entry_size;
+	int probe_relight;	// GI relight: inputs are the probe geometry cache, not the G-buffer
 };
 
 layout(set = 0, binding = 1) uniform sampler2D color_tex;
@@ -591,29 +592,46 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 
 #endif // SHADOWS_ENABLED
 
-// in_cached_visibility < 0 means the sun loop did not sample the first casting sun.
-float sample_gi_shadow_visibility(vec3 surface_position, vec3 surface_normal, float in_cached_visibility)
-{
-	for (int i = 0; i < num_sun_lights; ++i)
-	{
-		if (sun_lights[i].cast_shadows != 0)
-		{
-			float visibility = in_cached_visibility >= 0.0
-				? in_cached_visibility
-				: sample_shadow_visibility(surface_position, surface_normal, sun_lights[i].direction.xyz);
-			float normal_light = saturate(dot(normalize(surface_normal), normalize(-sun_lights[i].direction.xyz)));
-			return visibility * normal_light;
-		}
-	}
-	return 1.0;
-}
-
 void main()
 {
 	vec4 final_color = vec4(0);
 
-	vec4 sampled_color = texture(color_tex, uv);
-	vec4 sampled_normal = texture(normal_tex, uv);
+	vec4 sampled_color;
+	vec4 sampled_normal;
+	vec4 sampled_position;
+	vec4 sampled_rme;
+	vec3 eye_position = view_position;
+	if (probe_relight != 0)
+	{
+		// One radiance texel of one probe: the slot (== probe index) and the
+		// octahedral direction come from the pixel; the cache says what the
+		// probe sees there (color_tex = surface, normal_tex = normal,
+		// position_tex = hit). Sky texels keep the sky pass's radiance.
+		const ivec2 texel = ivec2(gl_FragCoord.xy);
+		const ivec2 slot = texel / moments_atlas_entry_size;
+		const int probe_index = slot.y * (moments_atlas_total_size / moments_atlas_entry_size) + slot.x;
+		const vec4 hit = texelFetch(position_tex, texel, 0);
+		if (hit.x <= 0.0)
+		{
+			discard;
+		}
+		const vec2 entry_uv = (vec2(texel - slot * moments_atlas_entry_size) + 0.5) / float(moments_atlas_entry_size);
+		const vec3 direction = octahedral_decode(make_padded_atlas_uv(entry_uv, float(moments_atlas_entry_size)));
+		const vec4 surface = texelFetch(color_tex, texel, 0);
+		const vec4 packed_normal = texelFetch(normal_tex, texel, 0);
+		eye_position = gi_probes[probe_index].position.xyz;
+		sampled_color = vec4(surface.rgb, 1.0);
+		sampled_normal = vec4(packed_normal.xyz * 2.0 - 1.0, 0.0);
+		sampled_position = vec4(eye_position + direction * hit.x, 1.0);
+		sampled_rme = vec4(surface.a, packed_normal.a, hit.y, 0.0);
+	}
+	else
+	{
+		sampled_color = texture(color_tex, uv);
+		sampled_normal = texture(normal_tex, uv);
+		sampled_position = texture(position_tex, uv);
+		sampled_rme = texture(roughness_metallic_emissive_tex, uv);
+	}
 
 	if (sampled_normal == vec4(0))
 	{
@@ -622,8 +640,6 @@ void main()
 	}
 	else
 	{
-		vec4 sampled_position = texture(position_tex, uv);
-		vec4 sampled_rme = texture(roughness_metallic_emissive_tex, uv);
 		float roughness = sampled_rme.r;
 		float metallic = sampled_rme.g;
 		float emission_strength = sampled_rme.b;
@@ -640,7 +656,7 @@ void main()
 			const vec3 position = sampled_position.xyz;
 			const vec3 normal = normalize(sampled_normal.xyz);
 			const vec3 color = sampled_color.xyz;
-			const vec3 view_direction = normalize(view_position - position);
+			const vec3 view_direction = normalize(eye_position - position);
 			const vec3 reflection_direction = reflect(-view_direction, normal);
 			const float n_dot_v = max(dot(normal, view_direction), 0.0);
 			const vec3 f0 = mix(vec3(0.04), color, vec3(metallic));
@@ -656,22 +672,19 @@ void main()
 			}
 #endif
 
-			// Cascade visibility of the first shadow-casting sun, reused by GI below.
-			float first_sun_cascade_visibility = -1.0;
-
 			if (direct_lighting_enable != 0)
 			{
 				for (int i = 0; i < num_point_lights; ++i)
 				{
 					final_color.xyz += sample_point_light(
-						point_lights[i], view_position, position, normal,
+						point_lights[i], eye_position, position, normal,
 						color, roughness, metallic);
 				}
 
 				for (int i = 0; i < num_spot_lights; ++i)
 				{
 					final_color.xyz += sample_spot_light(
-						spot_lights[i], view_position, position, normal,
+						spot_lights[i], eye_position, position, normal,
 						color, roughness, metallic);
 				}
 
@@ -680,11 +693,6 @@ void main()
 					float sun_shadow_visibility = sun_lights[i].cast_shadows != 0
 						? sample_shadow_visibility(position, normal, sun_lights[i].direction.xyz)
 						: 1.0;
-					if (first_sun_cascade_visibility < 0.0 && sun_lights[i].cast_shadows != 0)
-					{
-						first_sun_cascade_visibility = sun_shadow_visibility;
-					}
-
 					if (cloud_shadow_extent_enabled.y > 0.5
 						&& i == atmosphere_sun_index
 						&& sun_lights[i].cast_shadows != 0)
@@ -703,15 +711,15 @@ void main()
 					}
 
 					final_color.xyz += sun_shadow_visibility * sample_sun_light(
-						sun_lights[i], i, view_position, position, normal,
+						sun_lights[i], i, eye_position, position, normal,
 						color, roughness, metallic);
 				}
 			}
 
 			if (gi_enable != 0)
 			{
-				const float gi_shadow_multiplier = mix(0.5, 1.0,
-					sample_gi_shadow_visibility(position, normal, first_sun_cascade_visibility));
+				// No receiver-side sun darkening: probes are now captured with sun
+				// shadows (GIShadowMap), so their light already accounts for it.
 				int specular_cell_index = -1;
 				int cell_index = find_gi_octree_payload_index(position, specular_cell_index);
 				bool probe_isolation_active = isolated_probe_index != -1;
@@ -730,7 +738,7 @@ void main()
 							vec3 indirect_specular = specular_radiance
 								* (environment_fresnel * environment_brdf.x + environment_brdf.y);
 							final_color.xyz += (indirect_diffuse + indirect_specular)
-								* gi_intensity * gi_shadow_multiplier;
+								* gi_intensity;
 						}
 					}
 				}
@@ -749,7 +757,7 @@ void main()
 						vec3 indirect_specular = specular_radiance
 							* (environment_fresnel * environment_brdf.x + environment_brdf.y);
 						final_color.xyz += (indirect_diffuse + indirect_specular)
-							* gi_intensity * gi_shadow_multiplier;
+							* gi_intensity;
 					}
 				}
 			}

@@ -549,12 +549,15 @@ struct State
 		bool probe_isolation_enable = false;
 		i32 isolated_probe_index = -1;
 		bool compute_irradiance = true;
-		// Probes are only captured on request: bake_requested starts a full
-		// bake (is_updating while it runs); sky_probe_dirty recaptures just the
-		// sky fallback probe.
+		// Probe geometry is only captured on request: bake_requested starts a
+		// full bake (is_updating while it runs). Lighting is relit
+		// automatically: any lighting, sky or GI-shadow change sets
+		// relight_passes_remaining, and each full pass over the probes adds a
+		// bounce. The sky fallback probe needs no capture (its cache is all sky).
+		static constexpr i32 relight_pass_count = 3;
 		bool bake_requested = false;
 		bool is_updating = false;
-		bool sky_probe_dirty = true;
+		i32 relight_passes_remaining = relight_pass_count;
 		bool bake_persistence = true;	// load/save bin/gi_bakes/; automation turns it off
 		EGiBakeStatus bake_status = EGiBakeStatus::NotBaked;
 		std::string scene_key;			// "<blend stem>/<scene>" from live link
@@ -1147,6 +1150,7 @@ GpuBuffer<HMM_Mat4>& get_skin_matrix_arena_buffer(State& in_state)
 void mark_lighting_dirty(State& in_state)
 {
 	in_state.lighting.needs_data_update = true;
+	in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
 }
 
 void scene_invalidate_cached_object_ids(State& in_state, i32 in_unique_id)
