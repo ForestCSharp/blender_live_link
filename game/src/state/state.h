@@ -94,6 +94,7 @@ enum class EGiBakeStatus : i32
 	Loaded,
 	Saved,
 	SaveFailed,
+	Edited,		// objects changed since the bake; nearby probes recaptured, not saved
 };
 
 enum class ETessellationMode : i32
@@ -561,6 +562,9 @@ struct State
 		bool bake_persistence = true;	// load/save bin/gi_bakes/; automation turns it off
 		EGiBakeStatus bake_status = EGiBakeStatus::NotBaked;
 		std::string scene_key;			// "<blend stem>/<scene>" from live link
+		// World bounds of GI objects edited since the bake; gi_scene_update
+		// recaptures the probes that can see them. A layout rebuild clears it.
+		DynamicArray<BoundingBox> dirty_regions;
 	} gi;
 
 	struct TessellationState
@@ -1184,18 +1188,37 @@ void scene_invalidate_cached_object_ids(State& in_state, i32 in_unique_id)
 	}
 }
 
+// Before a bake there is nothing to keep, so a GI geometry edit rebuilds the
+// layout. After one, the object's bounds queue the probes that can see it for
+// recapture instead (gi_scene_update), keeping the rest of the bake.
+// shortcut: the layout itself is not updated, so geometry added far from
+// existing probes only gets coarse ones until the next Bake.
+void scene_mark_gi_geometry_changed(State& in_state, const Object& in_object)
+{
+	if (!object_contributes_to_gi_scene(in_object))
+	{
+		return;
+	}
+	if (in_state.gi.bake_status == EGiBakeStatus::NotBaked)
+	{
+		in_state.gi.layout_dirty = true;
+		return;
+	}
+	in_state.gi.dirty_regions.add(object_get_bounding_box(in_object));
+}
+
 void scene_insert_or_replace_object(State& in_state, Object&& in_object)
 {
 	const i32 unique_id = in_object.unique_id;
 	bool lighting_changed = in_object.has_light;
-	bool gi_scene_geometry_changed = object_contributes_to_gi_scene(in_object);
+	scene_mark_gi_geometry_changed(in_state, in_object);
 
 	auto found = in_state.scene.objects.find(unique_id);
 	if (found != in_state.scene.objects.end())
 	{
 		lighting_changed = lighting_changed || found->second.has_light;
-		gi_scene_geometry_changed =
-			gi_scene_geometry_changed || object_contributes_to_gi_scene(found->second);
+		// Old bounds too: probes that saw it where it was must drop it.
+		scene_mark_gi_geometry_changed(in_state, found->second);
 		scene_invalidate_cached_object_ids(in_state, unique_id);
 		object_cleanup(found->second);
 		found->second = std::move(in_object);
@@ -1210,10 +1233,6 @@ void scene_insert_or_replace_object(State& in_state, Object&& in_object)
 	{
 		mark_lighting_dirty(in_state);
 	}
-	if (gi_scene_geometry_changed)
-	{
-		in_state.gi.layout_dirty = true;
-	}
 }
 
 bool scene_remove_object(State& in_state, i32 in_unique_id)
@@ -1225,7 +1244,7 @@ bool scene_remove_object(State& in_state, i32 in_unique_id)
 	}
 
 	const bool lighting_changed = found->second.has_light;
-	const bool gi_scene_geometry_changed = object_contributes_to_gi_scene(found->second);
+	scene_mark_gi_geometry_changed(in_state, found->second);
 	scene_invalidate_cached_object_ids(in_state, in_unique_id);
 	object_cleanup(found->second);
 	in_state.scene.objects.erase(found);
@@ -1234,10 +1253,6 @@ bool scene_remove_object(State& in_state, i32 in_unique_id)
 	if (lighting_changed)
 	{
 		mark_lighting_dirty(in_state);
-	}
-	if (gi_scene_geometry_changed)
-	{
-		in_state.gi.layout_dirty = true;
 	}
 	return true;
 }

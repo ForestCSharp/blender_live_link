@@ -723,9 +723,20 @@ namespace ImGuiLayer
                     ImGui::Checkbox("GI", &state.gi.enable);
                     ImGui::Checkbox("GI Probe Influence Culling", &state.gi.probe_influence_culling);
                     ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
-                    if (ImGui::SliderInt("GI Octree Depth", &state.gi.octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth))
+                    // -/+ apply at once; typed digits wait until Enter or the field
+                    // loses focus, so "10" doesn't rebuild at 1 first. (InputInt
+                    // asserts on EnterReturnsTrue, hence the WantTextInput check.)
+                    i32 octree_depth = state.gi.octree_depth;
+                    const bool depth_changed = ImGui::InputInt("GI Octree Depth", &octree_depth);
+                    const bool depth_typing = ImGui::IsItemActive() && ImGui::GetIO().WantTextInput;
+                    if (depth_changed && !depth_typing)
                     {
-                        state.gi.layout_dirty = true;
+                        octree_depth = std::clamp(octree_depth, GI_Scene::min_octree_depth, GI_Scene::max_octree_depth);
+                        if (octree_depth != state.gi.octree_depth)
+                        {
+                            state.gi.octree_depth = octree_depth;
+                            state.gi.layout_dirty = true;
+                        }
                     }
                     ImGui::Text("Octree: depth %d  nodes %zu  payloads %d  probes %d", gi_scene.octree_depth, gi_scene.octree_nodes.length(), gi_scene.payload_count, gi_scene.non_fallback_probe_count);
                     ImGui::Text("Atlas: %zu / %d", gi_scene.probes.length(), gi_scene_atlas_capacity());
@@ -805,11 +816,14 @@ namespace ImGuiLayer
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::Checkbox("Compute Irradiance", &state.gi.compute_irradiance);
-                    static const char* bake_status_names[] = { "Not baked", "Baking", "Baked (not saved)", "Loaded", "Saved", "Save failed" };
+                    static const char* bake_status_names[] = { "Not baked", "Baking", "Baked (not saved)", "Loaded", "Saved", "Save failed", "Edited (Bake to save)" };
                     if (state.gi.is_updating)
                         ImGui::Text("GI bake: baking %d / %zu", gi_scene.probe_idx_to_update, gi_scene.probes.length());
                     else
                         ImGui::Text("GI bake: %s", bake_status_names[(i32) state.gi.bake_status]);
+                    if (gi_scene.recapture_cursor < (i32) gi_scene.recapture_queue.length())
+                        ImGui::Text("Recapturing: %zu probes",
+                            gi_scene.recapture_queue.length() - (size_t) gi_scene.recapture_cursor);
                     if (state.gi.relight_passes_remaining > 0)
                         ImGui::Text("Relighting: pass %d / %d",
                             State::GiState::relight_pass_count - state.gi.relight_passes_remaining + 1,

@@ -50,6 +50,12 @@ struct GI_Scene
 	i32 probe_idx_to_update = 0;
 	bool pending_save = false;	// bake finished last frame; read back and save
 
+	// Probes to recapture after an object edit (State::GiState::dirty_regions),
+	// drained a few per frame; pending flags keep a drag from re-queuing them.
+	DynamicArray<u8> probe_recapture_pending;
+	DynamicArray<i32> recapture_queue;
+	i32 recapture_cursor = 0;
+
 	// Relighting: slot-row cursor over all probes, plus a cursor over the
 	// specular probes (specular_probes[slot] = probe index).
 	i32 relight_row_cursor = 0;
@@ -1003,6 +1009,15 @@ void gi_scene_rebuild_layout(VulkanContext* ctx, GI_Scene& out_gi_scene, State& 
 	out_gi_scene.relight_row_cursor = 0;
 	out_gi_scene.specular_relight_cursor = 0;
 	in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
+	// Fresh layout: earlier edits are already in it.
+	in_state.gi.dirty_regions.reset();
+	out_gi_scene.recapture_queue.reset();
+	out_gi_scene.recapture_cursor = 0;
+	out_gi_scene.probe_recapture_pending.reset();
+	for (size_t i = 0; i < out_gi_scene.probes.length(); ++i)
+	{
+		out_gi_scene.probe_recapture_pending.add(0);
+	}
 
 	if (GI_LOG_SCENE_INIT)
 	{
@@ -1184,7 +1199,36 @@ void gi_scene_update(
 		// Replaced buffers/images retire against the current frame fence.
 		gi_scene_rebuild_layout(ctx, in_gi_scene, in_state);
 	}
-	if (GIShadowMap::update(graph, ctx, in_state, in_gi_scene.scene_bounds, layout_rebuilt))
+	// Edited objects: queue every probe whose capture sphere reaches them
+	// (the same test capture culling uses, so no probe that saw it is missed).
+	const bool geometry_edited = in_state.gi.dirty_regions.length() > 0;
+	if (geometry_edited)
+	{
+		i32 queued = 0;
+		for (const BoundingBox& region : in_state.gi.dirty_regions)
+		{
+			for (i32 probe_index = 0; probe_index < (i32) in_gi_scene.probes.length(); ++probe_index)
+			{
+				const GI_Probe& probe = in_gi_scene.probes[probe_index];
+				if (probe_index == in_gi_scene.fallback_probe_index
+					|| in_gi_scene.probe_recapture_pending[probe_index]
+					|| bounding_box_outside_sphere(region, { probe.position.XYZ, probe.max_radial_depth }))
+				{
+					continue;
+				}
+				in_gi_scene.probe_recapture_pending[probe_index] = 1;
+				in_gi_scene.recapture_queue.add(probe_index);
+				queued += 1;
+			}
+		}
+		in_state.gi.dirty_regions.reset();
+		in_state.gi.bake_status = EGiBakeStatus::Edited;
+		printf("GI: %d probes queued for recapture (%zu pending)\n",
+			queued, in_gi_scene.recapture_queue.length() - (size_t) in_gi_scene.recapture_cursor);
+	}
+
+	// The GI shadow map holds static casters, so an edit re-renders it too.
+	if (GIShadowMap::update(graph, ctx, in_state, in_gi_scene.scene_bounds, layout_rebuilt || geometry_edited))
 	{
 		in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
 	}
@@ -1239,6 +1283,25 @@ void gi_scene_update(
 				in_gi_scene.relight_row_cursor = 0;
 				break;
 			}
+		}
+	}
+
+	// Edit recaptures wait for a running bake, which captures every probe anyway.
+	if (!in_state.gi.is_updating && in_gi_scene.recapture_cursor < (i32) in_gi_scene.recapture_queue.length())
+	{
+		for (i32 i = 0; i < GI_Scene::probes_to_update_per_frame
+			&& in_gi_scene.recapture_cursor < (i32) in_gi_scene.recapture_queue.length(); ++i)
+		{
+			const i32 probe_index = in_gi_scene.recapture_queue[in_gi_scene.recapture_cursor++];
+			in_gi_scene.probe_recapture_pending[probe_index] = 0;
+			capture_probe(probe_index);
+		}
+		if (in_gi_scene.recapture_cursor == (i32) in_gi_scene.recapture_queue.length())
+		{
+			in_gi_scene.recapture_queue.reset();
+			in_gi_scene.recapture_cursor = 0;
+			// New geometry, old lighting until relit; restart for the bounces.
+			in_state.gi.relight_passes_remaining = State::GiState::relight_pass_count;
 		}
 	}
 
