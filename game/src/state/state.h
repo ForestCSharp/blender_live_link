@@ -86,6 +86,25 @@ enum class EProbeRadianceMode : i32
 	MAX,
 };
 
+// Order is the GI Method combo's order (SDF listed first).
+enum class EGiMethod : i32
+{
+	SdfLumen,		// camera clipmap SDF + voxel radiance + screen-probe gather (sdf_gi.h)
+	ProbeOctree,	// baked sparse probe octree, relit on lighting changes (gi.h)
+};
+
+enum class ESdfGiDebugView : i32
+{
+	None,
+	SdfNormals,
+	SdfSteps,
+	VoxelAlbedo,
+	VoxelRadiance,
+	ProbeRadiance,
+	IrradianceOnly,
+	Reflections,	// final specular: SDF reflections, or the probe SH where too rough
+};
+
 enum class EGiBakeStatus : i32
 {
 	NotBaked,	// probes unbaked; only the sky fallback probe is captured
@@ -565,7 +584,27 @@ struct State
 		// World bounds of GI objects edited since the bake; gi_scene_update
 		// recaptures the probes that can see them. A layout rebuild clears it.
 		DynamicArray<BoundingBox> dirty_regions;
+		EGiMethod method = EGiMethod::SdfLumen;
 	} gi;
+
+	// Settings + status for the SDF GI method (render/passes/sdf_gi/sdf_gi.h).
+	struct SdfGiState
+	{
+		f32 base_voxel_size = 0.25f;	// level 0; level N is base * 2^N
+		bool rebuild_requested = true;
+		ESdfGiDebugView debug_view = ESdfGiDebugView::None;
+		bool sdf_shadows = true;		// voxel lighting: SDF-traced sun/light shadows
+		bool voxel_bounce = true;		// voxel lighting: indirect rays (multi-bounce)
+		bool temporal = true;			// screen probes: temporal accumulation
+		bool spatial_filter = true;		// screen probes: 3x3 neighbor filter
+		bool reflections = true;		// traced reflections below SDF_REFLECTION_MAX_ROUGHNESS (else probe SH)
+		// World bounds of GI objects edited since the levels were built.
+		DynamicArray<BoundingBox> dirty_regions;
+		// Status, written by SdfGi
+		i32 levels_ready = 0;
+		i32 level_rebuild_count = 0;
+		i32 frames_since_rebuild = 0;
+	} sdf_gi;
 
 	struct TessellationState
 	{
@@ -1199,6 +1238,7 @@ void scene_mark_gi_geometry_changed(State& in_state, const Object& in_object)
 	{
 		return;
 	}
+	in_state.sdf_gi.dirty_regions.add(object_get_bounding_box(in_object));
 	if (in_state.gi.bake_status == EGiBakeStatus::NotBaked)
 	{
 		in_state.gi.layout_dirty = true;
@@ -1283,6 +1323,7 @@ void scene_clear_objects(State& in_state)
 	scene_reset_indexes(in_state);
 	mark_lighting_dirty(in_state);
 	in_state.gi.layout_dirty = true;
+	in_state.sdf_gi.rebuild_requested = true;
 }
 
 // Fixed-size light SSBO rings, created once at init (bindings must always

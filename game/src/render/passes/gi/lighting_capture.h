@@ -1016,6 +1016,8 @@ struct LightingCapture
 			bruneton_atmosphere_pass.has_precomputed
 				? bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 				: default_image.view,
+			default_image.view,
+			default_image.view,		// SDF GI: unused while relighting probes
 			default_image.view);
 
 		// ---- R1 inputs ----

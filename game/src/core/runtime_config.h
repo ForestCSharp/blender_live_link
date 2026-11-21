@@ -35,6 +35,9 @@ namespace RuntimeConfig
 		// GPU-driven tessellation path impossible to exercise headlessly.
 		bool tessellation = false;
 		bool print_gpu_timings = false;
+		// "sdf" or "octree": picks the GI method headlessly (captures, A/B benchmarks).
+		std::optional<std::string> gi_method;
+		std::optional<std::string> sdf_gi_debug_view;	// ESdfGiDebugView index, for debug captures
 	};
 
 	inline const char* environment_value(const char* in_name)
@@ -90,6 +93,8 @@ namespace RuntimeConfig
 		config.present_mode = string_value("GAME_PRESENT_MODE", "GAME2_PRESENT_MODE");
 		config.pipeline_cache_path = string_value("GAME_PIPELINE_CACHE", "GAME2_PIPELINE_CACHE");
 		config.print_gpu_timings = is_set("GAME2_PRINT_GPU_TIMINGS");
+		config.gi_method = string_value("GAME2_GI_METHOD");
+		config.sdf_gi_debug_view = string_value("GAME2_SDF_GI_DEBUG_VIEW");
 		return config;
 	}
 

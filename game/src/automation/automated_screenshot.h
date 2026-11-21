@@ -9,6 +9,7 @@
 
 #include "core/runtime_config.h"
 #include "render/passes/gi/gi.h"
+#include "render/passes/sdf_gi/sdf_gi.h"
 #include "state/state.h"
 
 class AutomatedScreenshot
@@ -114,17 +115,20 @@ public:
 		// probe - minutes, not seconds. Baseline captures need that determinism
 		// (build.sh exports GAME2_SCREENSHOT_WAIT_FOR_GI), but ad-hoc geometry
 		// checks do not. A layout rebuild drops the bake, so re-request it.
+		// The SDF method has no bake: it is ready once every clipmap level is
+		// built and the screen probes have had time to accumulate.
+		const bool octree = in_state.gi.method == EGiMethod::ProbeOctree;
 		const bool gi_idle = !in_state.gi.layout_dirty && !in_state.gi.bake_requested && !in_state.gi.is_updating;
-		if (phase == Phase::WaitingForGi && wait_for_gi && gi_idle
+		if (phase == Phase::WaitingForGi && wait_for_gi && octree && gi_idle
 			&& in_state.gi.bake_status == EGiBakeStatus::NotBaked)
 		{
 			in_state.gi.bake_requested = true;
 		}
+		const bool octree_ready = gi_idle && !in_gi_scene.pending_save
+			&& in_state.gi.relight_passes_remaining == 0
+			&& in_state.gi.bake_status == EGiBakeStatus::Baked;
 		if (phase == Phase::WaitingForGi
-			&& (!wait_for_gi
-				|| (gi_idle && !in_gi_scene.pending_save
-					&& in_state.gi.relight_passes_remaining == 0
-					&& in_state.gi.bake_status == EGiBakeStatus::Baked)))
+			&& (!wait_for_gi || (octree ? octree_ready : SdfGi::is_converged(in_state))))
 		{
 			printf("Automated screenshot: %s\n",
 				wait_for_gi ? "GI update complete" : "skipping GI convergence wait");

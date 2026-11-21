@@ -720,7 +720,38 @@ namespace ImGuiLayer
 
                 if (ImGui::CollapsingHeader("Global Illumination"))
                 {
+                    // Method first; everything below it belongs to the selected method.
+                    ImGui::Combo("GI Method", (i32*)&state.gi.method, "SDF (Lumen-style)\0Probe Octree\0");
                     ImGui::Checkbox("GI", &state.gi.enable);
+                    ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
+                    ImGui::Separator();
+                    if (state.gi.method == EGiMethod::SdfLumen)
+                    {
+                        State::SdfGiState& sdf = state.sdf_gi;
+                        if (ImGui::SliderFloat("Voxel Size (level 0)", &sdf.base_voxel_size, 0.05f, 2.0f, "%.2f m",
+                                ImGuiSliderFlags_Logarithmic))
+                            sdf.rebuild_requested = true;
+                        ImGui::Text("Clipmap: %d levels x %d^3, level 0 spans %.1f m, level %d spans %.1f m",
+                            SdfGi::LEVEL_COUNT, SdfGi::LEVEL_RES,
+                            sdf.base_voxel_size * SdfGi::LEVEL_RES, SdfGi::LEVEL_COUNT - 1,
+                            sdf.base_voxel_size * SdfGi::LEVEL_RES * (f32) (1 << (SdfGi::LEVEL_COUNT - 1)));
+                        ImGui::Text("Levels ready: %d / %d  rebuilds: %d", sdf.levels_ready, SdfGi::LEVEL_COUNT, sdf.level_rebuild_count);
+                        ImGui::Text("Screen probes: %d x %d (1 per %d px tile, %d rays each)",
+                            SdfGi::pass.probe_grid_width, SdfGi::pass.probe_grid_height, SdfGi::PROBE_TILE,
+                            SdfGi::PROBE_RES * SdfGi::PROBE_RES);
+                        if (ImGui::Button("Rebuild SDF"))
+                            sdf.rebuild_requested = true;
+                        ImGui::Checkbox("SDF Shadows (voxel lighting)", &sdf.sdf_shadows);
+                        ImGui::Checkbox("Voxel Bounce (multi-bounce)", &sdf.voxel_bounce);
+                        ImGui::Checkbox("Probe Temporal", &sdf.temporal);
+                        ImGui::Checkbox("Probe Spatial Filter", &sdf.spatial_filter);
+                        ImGui::Checkbox("SDF Reflections", &sdf.reflections);
+                        ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes);
+                        ImGui::Combo("SDF Debug View", (i32*)&sdf.debug_view,
+                            "None\0SDF Normals\0SDF Trace Steps\0Voxel Albedo\0Voxel Radiance\0Probe Radiance\0Irradiance Only\0Reflections\0");
+                    }
+                    else
+                    {
                     ImGui::Checkbox("GI Probe Influence Culling", &state.gi.probe_influence_culling);
                     ImGui::Checkbox("GI Probe Occlusion", &state.gi.probe_occlusion);
                     // -/+ apply at once; typed digits wait until Enter or the field
@@ -809,7 +840,6 @@ namespace ImGuiLayer
                             state.gi.isolated_probe_index = -1;
                         ImGui::Text("Isolated Probe: %s", state.gi.isolated_probe_index >= 0 ? std::to_string(state.gi.isolated_probe_index).c_str() : "None");
                     }
-                    ImGui::SliderFloat("GI Intensity", &state.gi.intensity, 0.0f, 10.0f, "%.2f");
                     ImGui::BeginDisabled(state.gi.is_updating);
                     if (ImGui::Button("Bake GI"))
                         state.gi.bake_requested = true;
@@ -835,6 +865,7 @@ namespace ImGuiLayer
                     if (state.gi.probe_vis_mode == EProbeVisMode::Specular)
                         ImGui::SliderFloat("Specular Debug Roughness", &state.gi.specular_debug_roughness, 0.0f, 1.0f, "%.2f");
                     ImGui::Checkbox("Debug Constant White Probes", &state.gi.debug_constant_white_probes);
+                    }
                 }
 			};
 			const auto draw_cloud_controls = [&]()

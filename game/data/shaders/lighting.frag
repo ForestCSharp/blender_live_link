@@ -52,7 +52,11 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	int moments_atlas_total_size;
 	int moments_atlas_entry_size;
 	int probe_relight;	// GI relight: inputs are the probe geometry cache, not the G-buffer
+	int gi_method;		// EGiMethod: 0 = SDF (screen-probe gather), 1 = probe octree
 };
+
+#define GI_METHOD_SDF 0
+#define GI_METHOD_SDF_DEBUG 2	// SDF debug view: show sdf_gi_irradiance_tex as-is
 
 layout(set = 0, binding = 1) uniform sampler2D color_tex;
 layout(set = 0, binding = 2) uniform sampler2D position_tex;
@@ -103,6 +107,9 @@ layout(set = 0, binding = 17, std430) readonly buffer GIOctreeNodesBlock
 layout(set = 0, binding = 18) uniform sampler2D specular_probe_atlas;
 layout(set = 0, binding = 19) uniform sampler2D brdf_lut;
 layout(set = 0, binding = 21) uniform sampler2D atmosphere_transmittance_tex;
+// SDF GI method: per-pixel irradiance and reflection radiance (sdf_gi_resolve.comp)
+layout(set = 0, binding = 22) uniform sampler2D sdf_gi_irradiance_tex;
+layout(set = 0, binding = 23) uniform sampler2D sdf_gi_specular_tex;
 
 layout(set = 0, binding = 7, std430) readonly buffer SpotLightsBlock
 {
@@ -594,6 +601,11 @@ float sample_shadow_visibility(vec3 in_surface_position, vec3 in_surface_normal,
 
 void main()
 {
+	if (gi_method == GI_METHOD_SDF_DEBUG && probe_relight == 0)
+	{
+		frag_color = vec4(texture(sdf_gi_irradiance_tex, uv).rgb, 1.0);
+		return;
+	}
 	vec4 final_color = vec4(0);
 
 	vec4 sampled_color;
@@ -716,7 +728,16 @@ void main()
 				}
 			}
 
-			if (gi_enable != 0)
+			if (gi_enable != 0 && gi_method == GI_METHOD_SDF && probe_relight == 0)
+			{
+				vec3 irradiance = texture(sdf_gi_irradiance_tex, uv).rgb;
+				vec3 specular_radiance = texture(sdf_gi_specular_tex, uv).rgb;
+				vec3 indirect_diffuse = irradiance * color * environment_diffuse_weight;
+				vec3 indirect_specular = specular_radiance
+					* (environment_fresnel * environment_brdf.x + environment_brdf.y);
+				final_color.xyz += (indirect_diffuse + indirect_specular) * gi_intensity;
+			}
+			else if (gi_enable != 0)
 			{
 				// No receiver-side sun darkening: probes are now captured with sun
 				// shadows (GIShadowMap), so their light already accounts for it.

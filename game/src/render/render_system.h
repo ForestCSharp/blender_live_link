@@ -17,6 +17,7 @@
 #include "render/passes/geometry/geometry_pass.h"
 #include "render/passes/gi/gi.h"
 #include "render/passes/gi/gi_debug_pass.h"
+#include "render/passes/sdf_gi/sdf_gi.h"
 #include "render/passes/gpu_skinning/gpu_skinning.h"
 #include "render/passes/imgui/imgui_layer.h"
 #include "render/passes/lighting/lighting_pass.h"
@@ -223,6 +224,7 @@ namespace RenderSystem
 			skin_matrix_arena_ensure_capacity(in_state, 1);
 			init_lighting_buffers(in_state);
 			gi_scene_init(&in_state.vk, g_gi_scene, in_state);
+			SdfGi::init(&in_state.vk);
 			GIDebugPass::init(&in_state.vk);
 		
 		// Register render passes and size their targets
@@ -618,9 +620,17 @@ namespace RenderSystem
 				cloud_shadow_render_pass.get_color_output(0));
 			// Incrementally capture and project GI probes after GPU skinning and the
 			// atmosphere update, before the main pass chain samples the probe atlas.
+			// The SDF method skips the octree entirely: no bake, relight or recapture cost.
+			const bool sdf_gi_active = in_state.gi.enable && in_state.gi.method == EGiMethod::SdfLumen;
+			if (in_state.gi.method == EGiMethod::ProbeOctree)
 			{
 				CPU_TIMING_SCOPE("GI Scene Update");
 				gi_scene_update(graph, &in_state.vk, g_gi_scene, in_state);
+			}
+			else if (sdf_gi_active)
+			{
+				SdfGi::update_volumes(graph, &in_state.vk, in_state, camera, view_projection_matrix,
+					{ (u32) geometry_render_pass.current_width, (u32) geometry_render_pass.current_height });
 			}
 		
 			// Cascade matrices are CPU-side inputs to both the shadow draw and the
@@ -645,6 +655,8 @@ namespace RenderSystem
 			lighting_fs_params.direct_lighting_enable = in_state.lighting.direct_enable ? 1 : 0;
 			lighting_fs_params.ssao_enable = in_state.ssao.enable ? 1 : 0;
 			gi_scene_fill_lighting_fs_params(lighting_fs_params, g_gi_scene, in_state);
+			lighting_fs_params.gi_method = !sdf_gi_active ? (i32) EGiMethod::ProbeOctree
+				: in_state.sdf_gi.debug_view != ESdfGiDebugView::None ? 2 : (i32) EGiMethod::SdfLumen;
 			lighting_fs_params.shadow_bias = in_state.shadow.shadow_bias;
 			lighting_fs_params.shadow_map_texel_size = HMM_V2(
 				1.0f / (f32) ShadowDepthPass::ShadowMapResolution,
@@ -720,7 +732,9 @@ namespace RenderSystem
 				bruneton_atmosphere_pass.has_precomputed
 					? bruneton_atmosphere_pass.transmittance_pass.get_color_output(0).view
 					: cloud_shadow_render_pass.get_color_output(0).view,
-				cloud_shadow_render_pass.get_color_output(0).view
+				cloud_shadow_render_pass.get_color_output(0).view,
+				sdf_gi_active ? SdfGi::pass.irradiance.view : g_gi_scene.lighting_capture.default_image.view,
+				sdf_gi_active ? SdfGi::pass.specular.view : g_gi_scene.lighting_capture.default_image.view
 			);
 		
 			ssao_pass_update(
@@ -811,7 +825,10 @@ namespace RenderSystem
 				}
 		
 				// Sky composite fills the background at the far plane
-				GIDebugPass::draw(&in_state.vk, g_gi_scene, in_state, view_projection_matrix);
+				if (in_state.gi.method == EGiMethod::ProbeOctree)
+				{
+					GIDebugPass::draw(&in_state.vk, g_gi_scene, in_state, view_projection_matrix);
+				}
 		
 				// Sky composite fills the background at the far plane
 				if (in_state.sky.rendering_enable)
@@ -852,6 +869,17 @@ namespace RenderSystem
 			}
 			graph.sampled(frame_graph_color(in_state.shadow.blur_enable
 				? shadow_blurred : shadow_render_pass));
+			if (sdf_gi_active)
+			{
+				SdfGi::gather(graph, &in_state.vk, in_state,
+					frame_graph_color(geometry_render_pass, 1), frame_graph_color(geometry_render_pass, 2),
+					frame_graph_color(geometry_render_pass, 3),
+					// Last frame's TAA output (resolved history), the colour of screen-traced reflection hits.
+					frame_graph_color(in_state.render_targets.get(in_state.temporal_aa.history_index == 0
+						? RenderTargetId::TemporalAAHistory1 : RenderTargetId::TemporalAAHistory0), 1),
+					in_state.temporal_aa.enable && in_state.temporal_aa.history_valid,
+					view_projection_matrix);
+			}
 			graph.sampled(frame_graph_color(ssao_blurred));
 			graph.sampled(frame_graph_color(cloud_shadow_render_pass));
 			graph.execute(lighting_render_pass, [&](i32)
@@ -882,6 +910,30 @@ namespace RenderSystem
 				? frame_graph_color(cloud_composite_render_pass, 1) : geometry_position;
 			FrameGraphImage scene_color = cloud_render_active
 				? frame_graph_color(cloud_composite_render_pass) : lit_color;
+			// SDF debug views are raw data: keep fog, auto exposure and auto white
+			// balance off them for this frame (restored when the frame scope ends).
+			struct ScopedSdfDebugPost
+			{
+				State& state;
+				bool active, fog, exposure, white_balance;
+				ScopedSdfDebugPost(State& in_state, bool in_active)
+					: state(in_state), active(in_active), fog(in_state.fog.debug_active),
+					exposure(in_state.tonemapping.auto_exposure_enabled),
+					white_balance(in_state.tonemapping.auto_white_balance_enabled)
+				{
+					if (!active) return;
+					state.fog.debug_active = false;
+					state.tonemapping.auto_exposure_enabled = false;
+					state.tonemapping.auto_white_balance_enabled = false;
+				}
+				~ScopedSdfDebugPost()
+				{
+					if (!active) return;
+					state.fog.debug_active = fog;
+					state.tonemapping.auto_exposure_enabled = exposure;
+					state.tonemapping.auto_white_balance_enabled = white_balance;
+				}
+			} sdf_debug_post(in_state, sdf_gi_active && in_state.sdf_gi.debug_view != ESdfGiDebugView::None);
 			scene_color = fog_pass_record(graph, in_state, per_frame_data, scene_color,
 				geometry_position, lit_color, cloud_render_active
 					? frame_graph_color(cloud_composite_render_pass, 3) : FrameGraphImage{});
@@ -1042,6 +1094,7 @@ namespace RenderSystem
 		ImGuiLayer::shutdown();
 		GIDebugPass::shutdown(&in_state.vk);
 		gi_scene_cleanup(&in_state.vk, g_gi_scene);
+		SdfGi::shutdown(&in_state.vk);
 
 		in_state.render_targets.cleanup();
 

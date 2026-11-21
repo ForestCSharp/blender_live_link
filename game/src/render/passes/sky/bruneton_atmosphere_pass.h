@@ -146,11 +146,13 @@ struct BrunetonAtmospherePass
 		});
 
 		DescriptorBindingSpec bindings[9] = {};
-		bindings[0] = { .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
+		// Compute-visible too: SDF GI evaluates the sky in sdf_sky.comp.
+		const VkShaderStageFlags stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+		bindings[0] = { .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .stages = stages };
 		for (u32 binding = 1; binding < 9; ++binding)
 		{
 			bindings[binding] = { .binding = binding,
-				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .stages = stages };
 		}
 		descriptors.init(ctx, bindings, 9,
 			EDescriptorSetAllocation::PersistentPerFrame);

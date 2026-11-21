@@ -997,6 +997,7 @@ VulkanCapabilities vulkan_evaluate_device(VkPhysicalDevice in_device, VkSurfaceK
 	if (!result.features_1_2.descriptorBindingPartiallyBound) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "descriptorBindingPartiallyBound missing");
 	if (!result.features_1_2.shaderSampledImageArrayNonUniformIndexing) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "sampled-image non-uniform indexing missing");
 	if (!result.features.independentBlend) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "independentBlend missing");
+	if (!result.features.fragmentStoresAndAtomics) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "fragmentStoresAndAtomics missing (SDF GI voxelization)");
 	if (result.properties.limits.maxPerStageDescriptorSampledImages < 128 || result.properties.limits.maxDescriptorSetSampledImages < 128)
 		vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "128 sampled-image descriptors unsupported");
 	if (result.scene_color_format == VK_FORMAT_UNDEFINED) vulkan_append_rejection(result.rejection_reason, sizeof(result.rejection_reason), "scene-color format unsupported");
@@ -1584,6 +1585,7 @@ void vulkan_context_init(VulkanContext* ctx, GLFWwindow* in_window)
 			.drawIndirectFirstInstance =
 				ctx->capabilities.draw_indirect_first_instance ? VK_TRUE : VK_FALSE,
 			.independentBlend = VK_TRUE,
+			.fragmentStoresAndAtomics = VK_TRUE,	// SDF GI voxelization writes volumes from the fragment stage
 		};
 
 		VkDeviceCreateInfo device_create_info = {
