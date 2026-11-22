@@ -9,7 +9,7 @@
 
 #include <random>
 
-#include "ssao_constants.h"
+#include "ssao/ssao_constants.h"
 
 // Hemisphere-kernel SSAO over the G-buffer at half render resolution.
 // The raw

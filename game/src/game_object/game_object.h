@@ -9,7 +9,7 @@
 #include "handmade_math/HandmadeMath.h"
 
 // ObjectData (shared with shaders)
-#include "shader_common.h"
+#include "shared/shader_common.h"
 
 // Physics System so we can add/remove bodies
 #include "physics/physics_system.h"

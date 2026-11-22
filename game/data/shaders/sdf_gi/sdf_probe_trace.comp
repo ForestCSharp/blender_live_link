@@ -1,0 +1,95 @@
+#version 450
+
+// SDF GI screen probes, tracing: one 8x8 workgroup per probe, one ray per
+// world-space octahedral texel (jittered per frame). A texel whose direction is
+// below the surface traces its mirror image above it instead, and every texel
+// averages the samples that landed in it, so all 64 rays are useful (about 2
+// per upper-hemisphere texel). Texels that received none get a = 0. Each ray tries a short screen trace first (contact
+// detail, skinned meshes), then continues in the SDF (voxel radiance cache),
+// then the sky.
+
+#define SDF_PARAMS_SET 1
+#include "sdf_gi/sdf_common.h"
+#include "sdf_gi/sdf_screen_trace.h"
+
+layout(local_size_x = SDF_PROBE_RES, local_size_y = SDF_PROBE_RES, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D probe_position_image;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D probe_normal_image;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D trace_image;
+layout(set = 0, binding = 3) uniform sampler2D gbuffer_position_tex;
+layout(set = 0, binding = 4) uniform sampler2D gbuffer_normal_tex;
+layout(set = 0, binding = 5) uniform sampler2D previous_color_tex;	// last frame's TAA history (pre-tonemap)
+
+layout(push_constant) uniform Push
+{
+	ivec4 flags;	// z = screen trace on (enabled and TAA history valid)
+} push;
+
+shared vec3 sample_radiance[SDF_PROBE_RES * SDF_PROBE_RES];
+shared uint sample_texel[SDF_PROBE_RES * SDF_PROBE_RES];
+
+// Diffuse wants contact detail, not long rays (and there are 64 per probe).
+#define SCREEN_STEPS 16
+#define SCREEN_MAX_DISTANCE 3.0
+
+void main()
+{
+	ivec2 probe = ivec2(gl_WorkGroupID.xy);
+	ivec2 local = ivec2(gl_LocalInvocationID.xy);
+	ivec2 texel = probe * SDF_PROBE_RES + local;
+	vec4 position = imageLoad(probe_position_image, probe);
+	if (position.w < 0.5)
+	{
+		imageStore(trace_image, texel, vec4(0.0));
+		return;
+	}
+	vec3 normal = imageLoad(probe_normal_image, probe).xyz;
+	uvec3 seed = uvec3(uvec2(texel), uint(sdf.counts.z));
+	vec2 jitter = vec2(sdf_hash(seed), sdf_hash(seed.yxz + 3u));
+	vec3 dir = octahedral_decode((vec2(local) + jitter) / float(SDF_PROBE_RES) * 2.0 - 1.0);
+	uint target = gl_LocalInvocationIndex;
+	float below = dot(dir, normal);
+	if (below <= 0.0)
+	{
+		// Mirror across the surface plane: uniform below maps to uniform above.
+		dir = normalize(dir - (2.0 * below - 1e-3) * normal);
+		ivec2 mirrored = clamp(ivec2((octahedral_encode(dir) * 0.5 + 0.5) * float(SDF_PROBE_RES)),
+			ivec2(0), ivec2(SDF_PROBE_RES - 1));
+		target = uint(mirrored.y * SDF_PROBE_RES + mirrored.x);
+	}
+	vec3 screen_radiance = vec3(0.0);
+	float confidence = 0.0;
+	float t_clear = 0.0;
+	if (push.flags.z != 0)
+	{
+		vec3 screen_origin = position.xyz + normal * (0.002 * length(sdf.camera_position.xyz - position.xyz) + 0.01);
+		confidence = sdf_screen_trace(gbuffer_position_tex, gbuffer_normal_tex, previous_color_tex,
+			screen_origin, dir, SCREEN_MAX_DISTANCE, SCREEN_STEPS, sdf_hash(seed.zxy + 13u), screen_radiance, t_clear);
+	}
+	vec3 radiance = screen_radiance;
+	if (confidence < 1.0)
+	{
+		int level = max(sdf_finest_level(position.xyz), 0);
+		float voxel = sdf_voxel_size(level);
+		// Continue past what the screen trace cleared; the normal offset keeps the SDF off its own surface.
+		vec3 origin = position.xyz + normal * (1.5 * voxel) + dir * t_clear;
+		SdfHit hit;
+		vec3 world = sdf_trace(origin, dir, 1.0e4, hit)
+			? sdf_sample_hit_radiance(hit.level, hit.position, dir).rgb
+			: sdf_sample_sky(dir);
+		radiance = mix(world, screen_radiance, confidence);
+	}
+	sample_radiance[gl_LocalInvocationIndex] = radiance;
+	sample_texel[gl_LocalInvocationIndex] = target;
+	barrier();
+	vec3 sum = vec3(0.0);
+	float count = 0.0;
+	for (uint i = 0u; i < uint(SDF_PROBE_RES * SDF_PROBE_RES); ++i)
+	{
+		if (sample_texel[i] != gl_LocalInvocationIndex) continue;
+		sum += sample_radiance[i];
+		count += 1.0;
+	}
+	imageStore(trace_image, texel, count > 0.0 ? vec4(sum / count, 1.0) : vec4(0.0));
+}

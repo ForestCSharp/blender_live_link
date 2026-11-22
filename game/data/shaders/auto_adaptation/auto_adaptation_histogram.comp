@@ -1,0 +1,45 @@
+#version 450
+
+#include "auto_adaptation/auto_adaptation.h"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D scene_color;
+
+layout(std430, set = 0, binding = 1) buffer HistogramBuffer
+{
+	HistogramBin bins[AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT];
+};
+
+const mat3 LINEAR_SRGB_TO_XYZ = mat3(
+	vec3(0.4124564, 0.2126729, 0.0193339),
+	vec3(0.3575761, 0.7151522, 0.1191920),
+	vec3(0.1804375, 0.0721750, 0.9503041));
+
+void main()
+{
+	uvec2 pixel = gl_GlobalInvocationID.xy;
+	if (any(greaterThanEqual(pixel, AUTO_ADAPTATION_METER_SIZE))) return;
+	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(AUTO_ADAPTATION_METER_SIZE);
+	vec3 color = textureLod(scene_color, uv, 0.0).rgb;
+	if (any(isnan(color)) || any(isinf(color)) || any(lessThan(color, vec3(0.0)))) return;
+	vec3 xyz = LINEAR_SRGB_TO_XYZ * color;
+	float luminance = xyz.y;
+	float xyz_sum = xyz.x + xyz.y + xyz.z;
+	if (!(luminance > 0.0) || !(xyz_sum > 0.0)
+		|| isnan(luminance) || isinf(luminance)
+		|| isnan(xyz_sum) || isinf(xyz_sum)) return;
+
+	float ev = log2(luminance / AUTO_ADAPTATION_MIDDLE_GRAY);
+	float normalized = (ev - AUTO_ADAPTATION_MIN_EV)
+		/ (AUTO_ADAPTATION_MAX_EV - AUTO_ADAPTATION_MIN_EV);
+	uint bin_index = uint(clamp(
+		floor(normalized * float(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT)),
+		0.0,
+		float(AUTO_ADAPTATION_HISTOGRAM_BIN_COUNT - 1u)));
+	float x = clamp(xyz.x / xyz_sum, 0.0, 1.0);
+	float y = clamp(xyz.y / xyz_sum, 0.0, 1.0);
+	atomicAdd(bins[bin_index].count, 1u);
+	atomicAdd(bins[bin_index].sum_x, uint(round(x * AUTO_ADAPTATION_FIXED_SCALE)));
+	atomicAdd(bins[bin_index].sum_y, uint(round(y * AUTO_ADAPTATION_FIXED_SCALE)));
+}

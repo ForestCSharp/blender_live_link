@@ -1,0 +1,67 @@
+#version 450
+
+// SDF GI screen probes, temporal: blends each texel with the previous frame's
+// probe that sat on the same surface (reprojected through the previous
+// view-projection, rejected on plane distance / normal mismatch).
+
+#define SDF_PARAMS_SET 1
+#include "sdf_gi/sdf_common.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D probe_position_image;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D probe_normal_image;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D trace_image;
+layout(set = 0, binding = 3, rgba16f) uniform readonly image2D previous_history_image;
+layout(set = 0, binding = 4, rgba32f) uniform readonly image2D previous_probe_position_image;
+layout(set = 0, binding = 5, rgba16f) uniform readonly image2D previous_probe_normal_image;
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D history_image;
+
+float surface_tolerance(vec3 p)
+{
+	return 0.02 * length(p - sdf.camera_position.xyz) + 0.1;
+}
+
+void main()
+{
+	ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(texel, sdf.screen.zw * SDF_PROBE_RES))) return;
+	ivec2 probe = texel / SDF_PROBE_RES;
+	ivec2 oct = texel - probe * SDF_PROBE_RES;
+	vec4 current = imageLoad(trace_image, texel);
+	vec4 position = imageLoad(probe_position_image, probe);
+	if (position.w < 0.5 || sdf.debug.y == 0 || sdf.debug.w == 0)
+	{
+		imageStore(history_image, texel, current);
+		return;
+	}
+	vec3 normal = imageLoad(probe_normal_image, probe).xyz;
+	vec4 previous_clip = sdf.prev_view_projection * vec4(position.xyz, 1.0);
+	vec4 result = current;
+	if (previous_clip.w > 0.0)
+	{
+		vec2 ndc = previous_clip.xy / previous_clip.w;
+		vec2 previous_uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);	// temporal_aa.frag convention
+		if (all(greaterThanEqual(previous_uv, vec2(0.0))) && all(lessThan(previous_uv, vec2(1.0))))
+		{
+			ivec2 previous_probe = clamp(ivec2(previous_uv * vec2(sdf.screen.xy)) / SDF_PROBE_TILE,
+				ivec2(0), sdf.screen.zw - 1);
+			vec4 previous_position = imageLoad(previous_probe_position_image, previous_probe);
+			vec3 previous_normal = imageLoad(previous_probe_normal_image, previous_probe).xyz;
+			float tolerance = surface_tolerance(position.xyz);
+			if (previous_position.w > 0.5
+				&& abs(dot(previous_position.xyz - position.xyz, normal)) < tolerance
+				&& dot(previous_normal, normal) > 0.8
+				&& distance(previous_position.xyz, position.xyz) < tolerance * 8.0)
+			{
+				vec4 history = imageLoad(previous_history_image, previous_probe * SDF_PROBE_RES + oct);
+				if (history.a > 0.0)
+				{
+					// A texel with no sample this frame (near the horizon) keeps its history.
+					result = current.a > 0.0 ? vec4(mix(history.rgb, current.rgb, 1.0 - sdf.settings.y), 1.0) : history;
+				}
+			}
+		}
+	}
+	imageStore(history_image, texel, result);
+}

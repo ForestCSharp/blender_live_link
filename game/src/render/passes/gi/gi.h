@@ -14,7 +14,7 @@
 #include "render/passes/gi/gi_triangle_box.h"
 #include "render/passes/gi/lighting_capture.h"
 
-#include "gi_helpers.h"
+#include "gi/gi_helpers.h"
 
 // GI probe scene: a sparse octree over the
 // static scene geometry, probes at occupied-cell corners, radiance captured

@@ -1,0 +1,54 @@
+#version 450
+
+// SDF GI screen probes, SH9 projection: one workgroup per probe. Each texel
+// contributes radiance * Y_i * (its solid angle on the sphere; octahedral
+// texels are not equal-area). Stores radiance SH; the resolve convolves it.
+
+#define SDF_PARAMS_SET 1
+#include "sdf_gi/sdf_common.h"
+#include "gi/probe_radiance.h"
+
+layout(local_size_x = SDF_PROBE_RES, local_size_y = SDF_PROBE_RES, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D probe_position_image;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D filtered_image;
+layout(set = 0, binding = 2, std430) writeonly buffer ShBlock { vec4 probe_sh[]; };	// 9 per probe
+
+shared vec3 partial[SDF_PROBE_RES * SDF_PROBE_RES][9];
+
+vec3 texel_direction(vec2 center)
+{
+	return octahedral_decode(center / float(SDF_PROBE_RES) * 2.0 - 1.0);
+}
+
+void main()
+{
+	ivec2 probe = ivec2(gl_WorkGroupID.xy);
+	ivec2 local = ivec2(gl_LocalInvocationID.xy);
+	uint index = gl_LocalInvocationIndex;
+	vec4 value = imageLoad(filtered_image, probe * SDF_PROBE_RES + local);
+	vec2 center = vec2(local) + 0.5;
+	vec3 dir = texel_direction(center);
+	vec3 du = texel_direction(center + vec2(0.5, 0.0)) - texel_direction(center - vec2(0.5, 0.0));
+	vec3 dv = texel_direction(center + vec2(0.0, 0.5)) - texel_direction(center - vec2(0.0, 0.5));
+	float solid_angle = length(cross(du, dv));
+	for (int i = 0; i < 9; ++i)
+	{
+		partial[index][i] = value.a > 0.0 ? value.rgb * (sh9_basis(i, dir) * solid_angle) : vec3(0.0);
+	}
+	barrier();
+	for (uint stride = (SDF_PROBE_RES * SDF_PROBE_RES) / 2u; stride > 0u; stride >>= 1u)
+	{
+		if (index < stride)
+		{
+			for (int i = 0; i < 9; ++i) partial[index][i] += partial[index + stride][i];
+		}
+		barrier();
+	}
+	if (index < 9u)
+	{
+		uint probe_index = uint(probe.y * sdf.screen.z + probe.x);
+		bool valid = imageLoad(probe_position_image, probe).w > 0.5;
+		probe_sh[probe_index * 9u + index] = valid ? vec4(partial[0][index], 1.0) : vec4(0.0);
+	}
+}

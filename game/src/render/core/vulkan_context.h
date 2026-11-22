@@ -18,7 +18,7 @@
 #include "core/dynamic_array.h"
 #include "core/timings.h"
 #include "core/runtime_config.h"
-#include "shader_common.h"
+#include "shared/shader_common.h"
 
 #define VK_CHECK(f)                                                                 \
 {                                                                                   \

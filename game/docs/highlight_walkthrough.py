@@ -26,17 +26,17 @@ SOURCE_SUFFIXES = frozenset({".cpp", ".h", ".vert", ".frag", ".comp"})
 WALKTHROUGH_SOURCE_EXCLUSIONS = frozenset({
     "render/bruneton_atmosphere_pass.h",
     "render/sky_atmosphere_dirty.h",
-    "data/shaders/bruneton_atmosphere.h",
-    "data/shaders/bruneton_definitions.h",
-    "data/shaders/bruneton_direct_irradiance.frag",
-    "data/shaders/bruneton_functions.h",
-    "data/shaders/bruneton_indirect_irradiance.frag",
-    "data/shaders/bruneton_multiple_scattering.frag",
-    "data/shaders/bruneton_parameters.h",
-    "data/shaders/bruneton_scattering_density.frag",
-    "data/shaders/bruneton_single_scattering.frag",
-    "data/shaders/bruneton_transmittance.frag",
-    "data/shaders/bruneton_precompute.vert",
+    "data/shaders/sky/bruneton_atmosphere.h",
+    "data/shaders/sky/bruneton_definitions.h",
+    "data/shaders/sky/bruneton_direct_irradiance.frag",
+    "data/shaders/sky/bruneton_functions.h",
+    "data/shaders/sky/bruneton_indirect_irradiance.frag",
+    "data/shaders/sky/bruneton_multiple_scattering.frag",
+    "data/shaders/sky/bruneton_parameters.h",
+    "data/shaders/sky/bruneton_scattering_density.frag",
+    "data/shaders/sky/bruneton_single_scattering.frag",
+    "data/shaders/sky/bruneton_transmittance.frag",
+    "data/shaders/sky/bruneton_precompute.vert",
 })
 
 ROW_RE = re.compile(

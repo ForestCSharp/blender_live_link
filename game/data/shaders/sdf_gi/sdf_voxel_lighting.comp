@@ -1,0 +1,131 @@
+#version 450
+
+// SDF GI surface cache: lights every occupied voxel of one clipmap level, on
+// both sides of its surface (front = +n, back = -n, so thin walls don't leak).
+// Direct sun / point / spot with optional SDF shadows, emission, plus two
+// cosine rays into the previous radiance (multi-bounce builds up over frames,
+// as relight passes do for the probe octree). Lambertian: L = albedo/pi * E.
+
+#define SDF_PARAMS_SET 0
+#define SDF_RADIANCE_STORAGE
+#include "sdf_gi/sdf_common.h"
+#include "shared/sampling.h"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// Mirrors shader_common.h (not included: it declares the scene's set-0 bindings).
+struct PointLightData { vec4 location; vec4 color; float power; float _pad0; float _pad1; float _pad2; };
+struct SpotLightData { vec4 location; vec4 color; float power; float spot_angle_radians; float edge_blend; float _pad0; vec4 direction; };
+
+layout(set = 0, binding = 7, std430) readonly buffer PointLightsBlock { PointLightData point_lights[]; };
+layout(set = 0, binding = 8, std430) readonly buffer SpotLightsBlock { SpotLightData spot_lights[]; };
+layout(set = 0, binding = 9, std430) readonly buffer SunBlock { vec4 sun_irradiance; };
+
+layout(push_constant) uniform PushConstants { ivec4 level; } pc;
+
+float light_visibility(vec3 p, vec3 to_light, float light_distance)
+{
+	if (sdf.settings.z <= 0.0) return 1.0;
+	return sdf_visibility(p, to_light, light_distance);
+}
+
+vec3 direct_irradiance(vec3 p, vec3 n, float voxel)
+{
+	vec3 origin = p + n * (1.5 * voxel);
+	vec3 irradiance = vec3(0.0);
+	if (sdf.sun_direction.w > 0.0)
+	{
+		vec3 l = normalize(sdf.sun_direction.xyz);
+		float ndl = dot(n, l);
+		if (ndl > 0.0)
+		{
+			irradiance += sun_irradiance.rgb * ndl * light_visibility(origin, l, 1.0e4);
+		}
+	}
+	for (int i = 0; i < sdf.counts.x; ++i)
+	{
+		vec3 to_light = point_lights[i].location.xyz - p;
+		float distance_squared = max(dot(to_light, to_light), 1e-4);
+		vec3 l = to_light * inversesqrt(distance_squared);
+		float ndl = dot(n, l);
+		if (ndl <= 0.0) continue;
+		vec3 e = point_lights[i].color.xyz * (point_lights[i].power / (4.0 * M_PI * distance_squared)) * ndl;
+		if (max(e.r, max(e.g, e.b)) < 1e-5) continue;
+		irradiance += e * light_visibility(origin, l, sqrt(distance_squared));
+	}
+	for (int i = 0; i < sdf.counts.y; ++i)
+	{
+		vec3 to_light = spot_lights[i].location.xyz - p;
+		float distance_squared = max(dot(to_light, to_light), 1e-4);
+		vec3 l = to_light * inversesqrt(distance_squared);
+		float ndl = dot(n, l);
+		// Hard cone edge, matching lighting.frag's sample_spot_light.
+		if (ndl <= 0.0 || dot(-l, normalize(spot_lights[i].direction.xyz)) <= cos(spot_lights[i].spot_angle_radians)) continue;
+		vec3 e = spot_lights[i].color.xyz * (spot_lights[i].power / (4.0 * M_PI * distance_squared)) * ndl;
+		if (max(e.r, max(e.g, e.b)) < 1e-5) continue;
+		irradiance += e * light_visibility(origin, l, sqrt(distance_squared));
+	}
+	return irradiance;
+}
+
+// Mean incoming radiance over the cosine lobe: two jittered rays.
+vec3 indirect_mean_radiance(vec3 p, vec3 n, float voxel, uvec3 seed)
+{
+	vec3 origin = p + n * (1.5 * voxel);
+	vec3 sum = vec3(0.0);
+	for (uint i = 0u; i < 2u; ++i)
+	{
+		vec2 xi = vec2(sdf_hash(seed + uvec3(i * 7u, 0u, 0u)), sdf_hash(seed + uvec3(0u, i * 13u + 1u, 0u)));
+		vec3 dir = sampling_cosine_hemisphere(xi, n);
+		SdfHit hit;
+		if (sdf_trace(origin, dir, 1.0e4, hit))
+		{
+			sum += sdf_sample_hit_radiance(hit.level, hit.position, dir).rgb;
+		}
+		else
+		{
+			sum += sdf_sample_sky(dir);
+		}
+	}
+	return sum * 0.5;
+}
+
+void main()
+{
+	const int level = pc.level.x;
+	ivec3 voxel = ivec3(gl_GlobalInvocationID);
+	ivec3 texel = sdf_level_texel(level, voxel);
+	vec4 albedo = texelFetch(sdf_albedo_tex, texel, 0);
+	if (albedo.a <= 0.0) return;
+	vec4 normal_emission = texelFetch(sdf_normal_emission_tex, texel, 0);
+	float emission = sdf_decode_emission(normal_emission.a);
+	float voxel_size = sdf_voxel_size(level);
+	vec3 p = sdf.level_origin_voxel[level].xyz + (vec3(voxel) + 0.5) * voxel_size;
+	vec3 n = normalize(normal_emission.xyz * 2.0 - 1.0);
+	uvec3 seed = uvec3(voxel) * uvec3(3u, 5u, 7u) + uvec3(uint(sdf.counts.z) * 17u);
+
+	for (int side = 0; side < 2; ++side)
+	{
+		vec3 ns = side == 0 ? n : -n;
+		vec3 radiance;
+		if (emission > 0.0)
+		{
+			radiance = albedo.rgb * emission;	// lighting.frag: emissive surfaces only emit
+		}
+		else
+		{
+			radiance = albedo.rgb * (1.0 / M_PI) * direct_irradiance(p, ns, voxel_size);
+			if (sdf.settings.w > 0.0)
+			{
+				radiance += albedo.rgb * indirect_mean_radiance(p, ns, voxel_size, seed + uvec3(uint(side) * 101u));
+			}
+		}
+		vec4 previous = side == 0 ? SDF_FETCH_RADIANCE_FRONT(texel) : SDF_FETCH_RADIANCE_BACK(texel);
+		// Running average for the first frames after a rebuild, then hysteresis.
+		float count = previous.a + 1.0;
+		float blend = max(1.0 / count, 1.0 - sdf.settings.x);
+		vec4 result = vec4(mix(previous.rgb, radiance, blend), min(count, 64.0));
+		if (side == 0) imageStore(sdf_radiance_front_image, texel, result);
+		else imageStore(sdf_radiance_back_image, texel, result);
+	}
+}

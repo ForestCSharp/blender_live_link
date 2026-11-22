@@ -17,8 +17,8 @@
 #include "render/core/render_pass.h"
 
 // ObjectData (shared with shaders)
-#include "shader_common.h"
-#include "tonemapping_shared.h"
+#include "shared/shader_common.h"
+#include "tonemapping/tonemapping_shared.h"
 
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_BUFFER_COUNT = 3;
 static constexpr i32 RENDER_OBJECT_SNAPSHOT_INITIAL_CAPACITY = 64;
@@ -597,6 +597,7 @@ struct State
 		bool voxel_bounce = true;		// voxel lighting: indirect rays (multi-bounce)
 		bool temporal = true;			// screen probes: temporal accumulation
 		bool spatial_filter = true;		// screen probes: 3x3 neighbor filter
+		bool probe_screen_trace = true;	// screen probes: G-buffer march before the SDF (contact detail, skinned meshes)
 		bool reflections = true;		// traced reflections below SDF_REFLECTION_MAX_ROUGHNESS (else probe SH)
 		// World bounds of GI objects edited since the levels were built.
 		DynamicArray<BoundingBox> dirty_regions;

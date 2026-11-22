@@ -266,7 +266,10 @@ and GI. Feature-specific environment overrides and scripted resize are removed.
 - A negative-height viewport flips Y; the `RenderPass` framework applies the
   convention uniformly in every pass.
 - Shaders are plain GLSL 450 compiled by `glslc` with `#include` support
-  (`-I data/shaders`); `shader_common.h` is shared between GLSL and C++.
+  (`-I data/shaders`). Shaders live in one subdirectory per feature (matching
+  `src/render/passes/`), with generic helpers in `data/shaders/shared/`; includes
+  are written relative to `data/shaders/` (e.g. `#include "shared/shader_common.h"`).
+  `shared/shader_common.h` is shared between GLSL and C++.
 - Rendering goes through a `RenderPass` framework on dynamic rendering. The
   reverse-Z render chain uses cascaded EVSM shadow maps (2048²×4 layered Array
   pass + 21-tap

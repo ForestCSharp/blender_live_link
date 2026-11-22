@@ -745,6 +745,7 @@ namespace ImGuiLayer
                         ImGui::Checkbox("Voxel Bounce (multi-bounce)", &sdf.voxel_bounce);
                         ImGui::Checkbox("Probe Temporal", &sdf.temporal);
                         ImGui::Checkbox("Probe Spatial Filter", &sdf.spatial_filter);
+                        ImGui::Checkbox("Probe Screen Trace", &sdf.probe_screen_trace);
                         ImGui::Checkbox("SDF Reflections", &sdf.reflections);
                         ImGui::Checkbox("render sky to probes", &state.gi.render_sky_to_probes);
                         ImGui::Combo("SDF Debug View", (i32*)&sdf.debug_view,

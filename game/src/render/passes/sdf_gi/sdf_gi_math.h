@@ -5,7 +5,7 @@
 #include "core/types.h"
 
 // Clipmap placement for SDF GI (sdf_gi.h; tests/sdf_gi_math_tests.cpp).
-// Mirrored by data/shaders/sdf_common.h's SDF_LEVEL_* constants.
+// Mirrored by data/shaders/sdf_gi/sdf_common.h's SDF_LEVEL_* constants.
 namespace SdfGi
 {
 	constexpr i32 LEVEL_COUNT = 4;		// SDF_LEVEL_COUNT

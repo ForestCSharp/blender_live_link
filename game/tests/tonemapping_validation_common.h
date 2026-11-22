@@ -9,7 +9,7 @@
 #include "render/passes/tonemapping/aces2_tonemapping.h"
 #include "render/passes/tonemapping/agx_tonemapping.h"
 #include "render/passes/tonemapping/gt7_tonemapping.h"
-#include "tonemapping_shared.h"
+#include "tonemapping/tonemapping_shared.h"
 
 namespace TonemappingValidation
 {

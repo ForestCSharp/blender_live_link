@@ -877,7 +877,9 @@ namespace RenderSystem
 					// Last frame's TAA output (resolved history), the colour of screen-traced reflection hits.
 					frame_graph_color(in_state.render_targets.get(in_state.temporal_aa.history_index == 0
 						? RenderTargetId::TemporalAAHistory1 : RenderTargetId::TemporalAAHistory0), 1),
-					in_state.temporal_aa.enable && in_state.temporal_aa.history_valid,
+					// In SDF debug views last frame's image is the debug output, not the lit scene.
+					in_state.temporal_aa.enable && in_state.temporal_aa.history_valid
+						&& in_state.sdf_gi.debug_view == ESdfGiDebugView::None,
 					view_projection_matrix);
 			}
 			graph.sampled(frame_graph_color(ssao_blurred));

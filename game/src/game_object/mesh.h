@@ -3,7 +3,7 @@
 #include "render/core/gpu_buffer.h"
 #include "render/core/geometry_arena.h"
 #include "render/core/render_types.h"
-#include "tessellation_common.h"
+#include "tessellation/tessellation_common.h"
 
 static_assert(sizeof(Vertex) == 48, "Vertex must match TessellationVertex shader layout");
 static_assert(sizeof(TessellationPatch) == 80, "TessellationPatch shader layout mismatch");

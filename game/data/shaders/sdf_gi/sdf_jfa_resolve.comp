@@ -1,0 +1,26 @@
+#version 450
+
+// Jump flood, resolve: unsigned distance to the nearest occupied voxel, in
+// world units, measured centre to centre minus half a voxel (the surface).
+
+#include "sdf_gi/sdf_common.h"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage3D seeds_in;
+layout(set = 0, binding = 1, r16f) uniform writeonly image3D distance_image;
+
+layout(push_constant) uniform PushConstants { ivec4 level; vec4 voxel_size; } pc;
+
+void main()
+{
+	ivec3 voxel = ivec3(gl_GlobalInvocationID);
+	uint seed = imageLoad(seeds_in, voxel).r;
+	float distance_world = 60000.0;	// no geometry in this level
+	if (seed != SDF_JFA_INVALID)
+	{
+		vec3 delta = vec3(sdf_jfa_unpack(seed) - voxel);
+		distance_world = max(length(delta) - 0.5, 0.0) * pc.voxel_size.x;
+	}
+	imageStore(distance_image, ivec3(voxel.xy, voxel.z + pc.level.x * SDF_LEVEL_RES), vec4(distance_world));
+}

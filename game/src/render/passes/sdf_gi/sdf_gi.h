@@ -51,7 +51,7 @@ namespace SdfGi
 	static_assert(sizeof(GpuParams) == 352, "Must match sdf_common.h SdfGiParams");
 
 	struct LevelPush { i32 level[4]; };
-	struct ReflectionPush { i32 offset[4]; };	// xy = traced pixel in each 2x2 block, z = flag
+	struct ScreenTracePush { i32 offset[4]; };	// xy = traced pixel in each 2x2 block (reflections), z = flag
 	struct JfaStepPush { i32 step[4]; };
 	struct JfaResolvePush { i32 level[4]; HMM_Vec4 voxel_size; };
 	struct VoxelizePush { HMM_Mat4 view_projection; HMM_Vec4 level_origin_voxel; i32 level[4]; };
@@ -389,8 +389,11 @@ namespace SdfGi
 			init_compute(ctx, pass.probe_place_pipeline, "bin/shaders/sdf_probe_place.comp.spv", bindings, 4, 0, true);
 		}
 		{
-			const DescriptorBindingSpec bindings[] = { compute_binding(0, STORAGE), compute_binding(1, STORAGE), compute_binding(2, STORAGE) };
-			init_compute(ctx, pass.probe_trace_pipeline, "bin/shaders/sdf_probe_trace.comp.spv", bindings, 3, 0, true);
+			const DescriptorBindingSpec bindings[] = {
+				compute_binding(0, STORAGE), compute_binding(1, STORAGE), compute_binding(2, STORAGE),
+				compute_binding(3, SAMPLED), compute_binding(4, SAMPLED), compute_binding(5, SAMPLED),
+			};
+			init_compute(ctx, pass.probe_trace_pipeline, "bin/shaders/sdf_probe_trace.comp.spv", bindings, 6, sizeof(ScreenTracePush), true);
 		}
 		{
 			const DescriptorBindingSpec bindings[] = {
@@ -421,14 +424,14 @@ namespace SdfGi
 				compute_binding(0, SAMPLED), compute_binding(1, SAMPLED), compute_binding(2, SAMPLED),
 				compute_binding(3, SAMPLED), compute_binding(4, STORAGE),
 			};
-			init_compute(ctx, pass.reflection_trace_pipeline, "bin/shaders/sdf_reflection_trace.comp.spv", bindings, 5, sizeof(ReflectionPush), true);
+			init_compute(ctx, pass.reflection_trace_pipeline, "bin/shaders/sdf_reflection_trace.comp.spv", bindings, 5, sizeof(ScreenTracePush), true);
 		}
 		{
 			const DescriptorBindingSpec bindings[] = {
 				compute_binding(0, SAMPLED), compute_binding(1, SAMPLED), compute_binding(2, SAMPLED), compute_binding(3, STORAGE),
 				compute_binding(4, SAMPLED), compute_binding(5, STORAGE), compute_binding(6, STORAGE), compute_binding(7, STORAGE),
 			};
-			init_compute(ctx, pass.reflection_resolve_pipeline, "bin/shaders/sdf_reflection_resolve.comp.spv", bindings, 8, sizeof(ReflectionPush), true);
+			init_compute(ctx, pass.reflection_resolve_pipeline, "bin/shaders/sdf_reflection_resolve.comp.spv", bindings, 8, sizeof(ScreenTracePush), true);
 		}
 		create_voxelize_pipeline(ctx);
 		pass.initialized = true;
@@ -926,15 +929,23 @@ namespace SdfGi
 		graph.storage_write(frame_graph_image(pass.probe_normal[current]), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 		graph.compute([&]() { dispatch_shared(ctx, pass.probe_place_pipeline, place_writer.set, shared, (grid_w + 7) / 8, (grid_h + 7) / 8); });
 
-		// 2. Trace
+		// 2. Trace (screen first, then SDF)
+		const ScreenTracePush probe_trace_push = { { 0, 0, in_state.sdf_gi.probe_screen_trace && in_previous_color_valid ? 1 : 0, 0 } };
 		DescriptorWriter trace_writer = pass.probe_trace_pipeline.writer(ctx);
 		trace_writer.storage_image(0, pass.probe_position[current].view)
 			.storage_image(1, pass.probe_normal[current].view)
-			.storage_image(2, pass.trace.view).commit();
+			.storage_image(2, pass.trace.view)
+			.sampled(3, pass.nearest_sampler, in_gbuffer_position.view())
+			.sampled(4, pass.nearest_sampler, in_gbuffer_normal.view())
+			.sampled(5, pass.linear_sampler, in_previous_color.view()).commit();
 		graph.storage_read(frame_graph_image(pass.probe_position[current]));
 		graph.storage_read(frame_graph_image(pass.probe_normal[current]));
+		graph.sampled(in_previous_color, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 		graph.storage_write(frame_graph_image(pass.trace), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
-		graph.compute([&]() { dispatch_shared(ctx, pass.probe_trace_pipeline, trace_writer.set, shared, grid_w, grid_h); });
+		graph.compute([&]()
+		{
+			dispatch_shared(ctx, pass.probe_trace_pipeline, trace_writer.set, shared, grid_w, grid_h, &probe_trace_push);
+		});
 
 		// 3. Temporal (reads last frame's probes + history; a cleared history is never read: history_valid)
 		DescriptorWriter temporal_writer = pass.probe_temporal_pipeline.writer(ctx);
@@ -998,8 +1009,8 @@ namespace SdfGi
 		{
 			static constexpr i32 BLOCK_OFFSETS[4][2] = { { 0, 0 }, { 1, 1 }, { 1, 0 }, { 0, 1 } };
 			const i32* block_offset = BLOCK_OFFSETS[pass.frame_counter & 3];
-			const ReflectionPush trace_push = { { block_offset[0], block_offset[1], in_previous_color_valid ? 1 : 0, 0 } };
-			const ReflectionPush resolve_push = { { block_offset[0], block_offset[1], pass.reflection_history_valid ? 1 : 0, 0 } };
+			const ScreenTracePush trace_push = { { block_offset[0], block_offset[1], in_previous_color_valid ? 1 : 0, 0 } };
+			const ScreenTracePush resolve_push = { { block_offset[0], block_offset[1], pass.reflection_history_valid ? 1 : 0, 0 } };
 			DescriptorWriter reflection_trace_writer = pass.reflection_trace_pipeline.writer(ctx);
 			reflection_trace_writer.sampled(0, pass.nearest_sampler, in_gbuffer_position.view())
 				.sampled(1, pass.nearest_sampler, in_gbuffer_normal.view())
@@ -1007,7 +1018,6 @@ namespace SdfGi
 				.sampled(3, pass.linear_sampler, in_previous_color.view())
 				.storage_image(4, pass.reflection_trace.view).commit();
 			graph.sampled(in_gbuffer_rme, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-			graph.sampled(in_previous_color, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 			graph.storage_write(frame_graph_image(pass.reflection_trace), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 			const u32 half_w = (pass.screen_extent.width + 1) / 2;
 			const u32 half_h = (pass.screen_extent.height + 1) / 2;

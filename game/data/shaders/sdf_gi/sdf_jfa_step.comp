@@ -1,0 +1,36 @@
+#version 450
+
+// Jump flood, one step: adopt the nearest seed among the 27 voxels at +-step.
+
+#include "sdf_gi/sdf_common.h"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage3D seeds_in;
+layout(set = 0, binding = 1, r32ui) uniform writeonly uimage3D seeds_out;
+
+layout(push_constant) uniform PushConstants { ivec4 step_size; } pc;
+
+void main()
+{
+	ivec3 voxel = ivec3(gl_GlobalInvocationID);
+	uint best = SDF_JFA_INVALID;
+	int best_distance = 0x7FFFFFFF;
+	for (int z = -1; z <= 1; ++z)
+	for (int y = -1; y <= 1; ++y)
+	for (int x = -1; x <= 1; ++x)
+	{
+		ivec3 neighbor = voxel + ivec3(x, y, z) * pc.step_size.x;
+		if (any(lessThan(neighbor, ivec3(0))) || any(greaterThanEqual(neighbor, ivec3(SDF_LEVEL_RES)))) continue;
+		uint seed = imageLoad(seeds_in, neighbor).r;
+		if (seed == SDF_JFA_INVALID) continue;
+		ivec3 delta = sdf_jfa_unpack(seed) - voxel;
+		int distance_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+		if (distance_squared < best_distance)
+		{
+			best_distance = distance_squared;
+			best = seed;
+		}
+	}
+	imageStore(seeds_out, voxel, uvec4(best));
+}

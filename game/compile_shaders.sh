@@ -70,6 +70,13 @@ fi
 # forward.vert -> bin/shaders/forward.vert.spv
 SHADERS_SCANNED=0
 SHADERS_COMPILED=0
+INCLUDE_FILES=$(find data/shaders -name "*.h")
+# Shaders live in per-feature subdirs but compile to a flat bin/shaders/, so basenames must be unique.
+DUPLICATES=$(find data/shaders -name "*.vert" -o -name "*.frag" -o -name "*.comp" | xargs -n1 basename | sort | uniq -d)
+if [ -n "$DUPLICATES" ]; then
+	echo "Error: duplicate shader file names: $DUPLICATES"
+	exit 1
+fi
 for ext in vert frag comp; do
 	while read -r f; do
 		SHADERS_SCANNED=$((SHADERS_SCANNED + 1))
@@ -77,7 +84,7 @@ for ext in vert frag comp; do
 		compiled_file="bin/shaders/$file_name.spv"
 		NEEDS_REBUILD=$REBUILD_ALL
 		if [ ! -f "$compiled_file" ] || [ "$f" -nt "$compiled_file" ]; then NEEDS_REBUILD=1; fi
-		for include_file in data/shaders/*.h; do
+		for include_file in $INCLUDE_FILES; do
 			if [ "$include_file" -nt "$compiled_file" ]; then NEEDS_REBUILD=1; fi
 		done
 		if [ $NEEDS_REBUILD -eq 1 ]; then

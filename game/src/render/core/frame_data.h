@@ -5,7 +5,7 @@
 #include "render/core/gpu_buffer.h"
 
 // GLSL-shared struct definitions (PerFrameData, ObjectData)
-#include "shader_common.h"
+#include "shared/shader_common.h"
 
 static_assert(sizeof(PerFrameData) == 320, "PerFrameData must match its std140 layout (vec4/mat4 members only)");
 static_assert(sizeof(ObjectData) == 144, "ObjectData must match the geometry shader SSBO stride");

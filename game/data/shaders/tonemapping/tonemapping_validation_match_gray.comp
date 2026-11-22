@@ -1,0 +1,5 @@
+#version 450
+
+#define PBR_NEUTRAL_MATCH_EXISTING_MIDDLE_GRAY 1
+#include "tonemapping/tonemapping_operators.h"
+#include "tonemapping/tonemapping_validation_common.h"
