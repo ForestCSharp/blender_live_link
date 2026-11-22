@@ -51,7 +51,7 @@ namespace SdfGi
 	static_assert(sizeof(GpuParams) == 352, "Must match sdf_common.h SdfGiParams");
 
 	struct LevelPush { i32 level[4]; };
-	struct ScreenTracePush { i32 offset[4]; };	// xy = traced pixel in each 2x2 block (reflections), z = flag
+	struct ScreenTracePush { i32 offset[4]; };	// ivec4 push for the screen-trace and resolve passes; meaning per shader Push block
 	struct JfaStepPush { i32 step[4]; };
 	struct JfaResolvePush { i32 level[4]; HMM_Vec4 voxel_size; };
 	struct VoxelizePush { HMM_Mat4 view_projection; HMM_Vec4 level_origin_voxel; i32 level[4]; };
@@ -106,6 +106,7 @@ namespace SdfGi
 		GpuImage specular = {};
 		GpuImage reflection_trace = {};			// half resolution
 		GpuImage reflection_history[2] = {};	// a = view depth
+		GpuImage diffuse_history[2] = {};		// per-pixel irradiance, a = view depth
 
 		// Pipelines
 		DescriptorSetSchema shared_set;		// SDF params + sampled volumes; set 1 of the probe passes
@@ -137,6 +138,7 @@ namespace SdfGi
 		u64 frame_counter = 0;
 		bool history_valid = false;
 		bool reflection_history_valid = false;
+		bool diffuse_history_valid = false;
 		HMM_Mat4 prev_view_projection = HMM_M4D(1.0f);
 		GeometryContentHash lighting_signature = {};
 		i32 fast_response_frames = 0;
@@ -416,8 +418,9 @@ namespace SdfGi
 			const DescriptorBindingSpec bindings[] = {
 				compute_binding(0, SAMPLED), compute_binding(1, SAMPLED), compute_binding(2, STORAGE), compute_binding(3, STORAGE),
 				compute_binding(4, SSBO), compute_binding(5, STORAGE), compute_binding(6, STORAGE), compute_binding(7, STORAGE),
+				compute_binding(8, SAMPLED), compute_binding(9, STORAGE),
 			};
-			init_compute(ctx, pass.resolve_pipeline, "bin/shaders/sdf_gi_resolve.comp.spv", bindings, 8, 0, true);
+			init_compute(ctx, pass.resolve_pipeline, "bin/shaders/sdf_gi_resolve.comp.spv", bindings, 10, sizeof(ScreenTracePush), true);
 		}
 		{
 			const DescriptorBindingSpec bindings[] = {
@@ -446,6 +449,7 @@ namespace SdfGi
 			vulkan_context_retire_image(ctx, pass.probe_normal[i]);
 			vulkan_context_retire_image(ctx, pass.history[i]);
 			vulkan_context_retire_image(ctx, pass.reflection_history[i]);
+			vulkan_context_retire_image(ctx, pass.diffuse_history[i]);
 		}
 		vulkan_context_retire_image(ctx, pass.trace);
 		vulkan_context_retire_image(ctx, pass.filtered);
@@ -471,6 +475,7 @@ namespace SdfGi
 			pass.probe_normal[i] = make_image(ctx, grid_w, grid_h, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Normal");
 			pass.history[i] = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe History");
 			pass.reflection_history[i] = make_image(ctx, extent.width, extent.height, 1, VK_FORMAT_R16G16B16A16_SFLOAT, STORAGE_SAMPLED, "SDF GI Reflection History");
+			pass.diffuse_history[i] = make_image(ctx, extent.width, extent.height, 1, VK_FORMAT_R16G16B16A16_SFLOAT, STORAGE_SAMPLED, "SDF GI Diffuse History");
 		}
 		pass.trace = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Trace");
 		pass.filtered = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Filtered");
@@ -486,6 +491,7 @@ namespace SdfGi
 		pass.probe_sh.get_gpu_buffer();
 		pass.history_valid = false;
 		pass.reflection_history_valid = false;
+		pass.diffuse_history_valid = false;
 	}
 
 	inline void shutdown(VulkanContext* ctx)
@@ -985,7 +991,9 @@ namespace SdfGi
 		graph.storage_write(frame_graph_buffer(sh_buffer));
 		graph.compute([&]() { dispatch_shared(ctx, pass.probe_sh_pipeline, sh_writer.set, shared, grid_w, grid_h); });
 
-		// 6. Resolve
+		// 6. Resolve (+ per-pixel irradiance temporal; a never-written history is only bound, not read)
+		const bool pixel_temporal = in_state.sdf_gi.pixel_temporal;
+		const ScreenTracePush gi_resolve_push = { { pass.diffuse_history_valid ? 1 : 0, pixel_temporal ? 1 : 0, 0, 0 } };
 		DescriptorWriter resolve_writer = pass.resolve_pipeline.writer(ctx);
 		resolve_writer.sampled(0, pass.nearest_sampler, in_gbuffer_position.view())
 			.sampled(1, pass.nearest_sampler, in_gbuffer_normal.view())
@@ -994,15 +1002,20 @@ namespace SdfGi
 			.buffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sh_buffer)
 			.storage_image(5, pass.irradiance.view)
 			.storage_image(6, pass.specular.view)
-			.storage_image(7, pass.filtered.view).commit();
+			.storage_image(7, pass.filtered.view)
+			.sampled(8, pass.linear_sampler, pass.diffuse_history[previous].view)
+			.storage_image(9, pass.diffuse_history[current].view).commit();
 		graph.storage_read(frame_graph_buffer(sh_buffer));
+		graph.sampled(frame_graph_image(pass.diffuse_history[previous]), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.storage_write(frame_graph_image(pass.diffuse_history[current]), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 		graph.storage_write(frame_graph_image(pass.irradiance), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 		graph.storage_write(frame_graph_image(pass.specular), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
 		graph.compute([&]()
 		{
 			dispatch_shared(ctx, pass.resolve_pipeline, resolve_writer.set, shared,
-				(pass.screen_extent.width + 7) / 8, (pass.screen_extent.height + 7) / 8);
+				(pass.screen_extent.width + 7) / 8, (pass.screen_extent.height + 7) / 8, &gi_resolve_push);
 		});
+		pass.diffuse_history_valid = pixel_temporal;
 
 		// 7. Reflections: half-res trace (screen -> SDF -> sky), full-res denoise over the specular
 		if (in_state.sdf_gi.reflections)

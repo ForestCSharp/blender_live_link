@@ -597,6 +597,7 @@ struct State
 		bool voxel_bounce = true;		// voxel lighting: indirect rays (multi-bounce)
 		bool temporal = true;			// screen probes: temporal accumulation
 		bool spatial_filter = true;		// screen probes: 3x3 neighbor filter
+		bool pixel_temporal = true;		// resolve: jittered probe lookup + per-pixel irradiance history
 		bool probe_screen_trace = true;	// screen probes: G-buffer march before the SDF (contact detail, skinned meshes)
 		bool reflections = true;		// traced reflections below SDF_REFLECTION_MAX_ROUGHNESS (else probe SH)
 		// World bounds of GI objects edited since the levels were built.
