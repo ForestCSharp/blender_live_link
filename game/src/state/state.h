@@ -30,7 +30,7 @@ static constexpr i32 DEFAULT_RENDER_RESOLUTION_PERCENTAGE = 50;
 
 // Frame-order pass registry and render limits shared across scene state and
 // render passes.
-static constexpr i32 MAX_SHADOW_CASCADES = 4;
+// MAX_SHADOW_CASCADES lives in shared/shader_common.h (lighting UBO arrays use it).
 
 enum CullEntryFlag : u32
 {
@@ -596,7 +596,7 @@ struct State
 		bool sdf_shadows = true;		// voxel lighting: SDF-traced sun/light shadows
 		bool voxel_bounce = true;		// voxel lighting: indirect rays (multi-bounce)
 		bool temporal = true;			// screen probes: temporal accumulation
-		bool spatial_filter = true;		// screen probes: 3x3 neighbor filter
+		bool spatial_filter = true;		// screen probes: 3 passes of 3x3 neighbours, hit-angle tested
 		bool pixel_temporal = true;		// resolve: jittered probe lookup + per-pixel irradiance history
 		bool probe_screen_trace = true;	// screen probes: G-buffer march before the SDF (contact detail, skinned meshes)
 		bool reflections = true;		// traced reflections below SDF_REFLECTION_MAX_ROUGHNESS (else probe SH)
@@ -659,8 +659,8 @@ struct State
 		// sampling the stale map with its frozen matrices)
 		bool depth_freeze = false;
 		bool force_recapture = false;
-		i32 num_cascades = 3;
-		f32 frustum_cascade_distance_scale = 1.0f;
+		i32 num_cascades = 4;
+		f32 frustum_cascade_distance_scale = 0.5f;
 		f32 centered_square_cascade_distance_scale = 0.25f;
 		EShadowCascadePlacementMode cascade_placement_mode = EShadowCascadePlacementMode::Frustum;
 		HMM_Vec3 centered_square_center = HMM_V3(0.0f, 0.0f, 0.0f);

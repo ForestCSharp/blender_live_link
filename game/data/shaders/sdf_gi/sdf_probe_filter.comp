@@ -1,7 +1,10 @@
 #version 450
 
-// SDF GI screen probes, spatial filter: averages each texel with the same
-// direction of up to 8 neighbouring probes on the same surface.
+// SDF GI screen probes, spatial filter (one of several passes): averages each
+// texel with the same direction of the 8 neighbouring probes on the same
+// surface. A neighbour's ray is only shared when the point it hit, seen from
+// this probe, lies within SDF_FILTER_MAX_HIT_ANGLE of the same direction
+// (a = hit distance), so far lighting is shared and contact occlusion is not.
 
 #define SDF_PARAMS_SET 1
 #include "sdf_gi/sdf_common.h"
@@ -10,8 +13,10 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D probe_position_image;
 layout(set = 0, binding = 1, rgba16f) uniform readonly image2D probe_normal_image;
-layout(set = 0, binding = 2, rgba16f) uniform readonly image2D history_image;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D input_image;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D filtered_image;
+
+#define SDF_FILTER_COS_MAX_HIT_ANGLE 0.985	// cos(10 degrees), as in Lumen
 
 void main()
 {
@@ -19,7 +24,7 @@ void main()
 	if (any(greaterThanEqual(texel, sdf.screen.zw * SDF_PROBE_RES))) return;
 	ivec2 probe = texel / SDF_PROBE_RES;
 	ivec2 oct = texel - probe * SDF_PROBE_RES;
-	vec4 center = imageLoad(history_image, texel);
+	vec4 center = imageLoad(input_image, texel);
 	vec4 position = imageLoad(probe_position_image, probe);
 	if (position.w < 0.5 || center.a <= 0.0 || sdf.debug.z == 0)
 	{
@@ -27,6 +32,7 @@ void main()
 		return;
 	}
 	vec3 normal = imageLoad(probe_normal_image, probe).xyz;
+	vec3 dir = octahedral_decode((vec2(oct) + 0.5) / float(SDF_PROBE_RES) * 2.0 - 1.0);
 	float tolerance = 0.02 * length(position.xyz - sdf.camera_position.xyz) + 0.1;
 	vec3 sum = center.rgb;
 	float weight_sum = 1.0;
@@ -39,10 +45,12 @@ void main()
 		if (neighbor_position.w < 0.5) continue;
 		vec3 neighbor_normal = imageLoad(probe_normal_image, neighbor).xyz;
 		if (dot(neighbor_normal, normal) < 0.7 || abs(dot(neighbor_position.xyz - position.xyz, normal)) > tolerance) continue;
-		vec4 value = imageLoad(history_image, neighbor * SDF_PROBE_RES + oct);
+		vec4 value = imageLoad(input_image, neighbor * SDF_PROBE_RES + oct);
 		if (value.a <= 0.0) continue;
-		sum += value.rgb * 0.5;
-		weight_sum += 0.5;
+		vec3 to_hit = neighbor_position.xyz + dir * value.a - position.xyz;
+		if (dot(to_hit, dir) < SDF_FILTER_COS_MAX_HIT_ANGLE * length(to_hit)) continue;
+		sum += value.rgb;
+		weight_sum += 1.0;
 	}
-	imageStore(filtered_image, texel, vec4(sum / weight_sum, 1.0));
+	imageStore(filtered_image, texel, vec4(sum / weight_sum, center.a));
 }

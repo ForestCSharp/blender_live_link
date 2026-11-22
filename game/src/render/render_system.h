@@ -668,17 +668,12 @@ namespace RenderSystem
 				lighting_fs_params.shadow_num_cascades = ShadowDepthPass::get_active_cascade_count(in_state);
 				lighting_fs_params.shadow_cascade_placement_mode = (i32) in_state.shadow.cascade_placement_mode;
 				lighting_fs_params.shadow_debug_show_cascade_selection = in_state.shadow.debug_show_cascade_selection ? 1 : 0;
-				lighting_fs_params.shadow_cascade_distances = HMM_V4(
-					ShadowDepthPass::cascade_distances[0],
-					ShadowDepthPass::cascade_distances[1],
-					ShadowDepthPass::cascade_distances[2],
-					ShadowDepthPass::cascade_distances[3]
-				);
 				lighting_fs_params.shadow_cascade_view_position = ShadowDepthPass::cascade_view_position;
 				lighting_fs_params.shadow_cascade_view_forward = ShadowDepthPass::cascade_view_forward;
 				for (i32 cascade_idx = 0; cascade_idx < MAX_SHADOW_CASCADES; ++cascade_idx)
 				{
 					lighting_fs_params.shadow_view_projections[cascade_idx] = ShadowDepthPass::shadow_view_projections[cascade_idx];
+					lighting_fs_params.shadow_cascade_distances[cascade_idx / 4].Elements[cascade_idx % 4] = ShadowDepthPass::cascade_distances[cascade_idx];
 				}
 			}
 		

@@ -58,12 +58,12 @@ struct LightingFsParams
 	i32 atmosphere_enabled;
 	f32 atmosphere_planet_center_z;
 	HMM_Vec2 shadow_map_texel_size;
-	HMM_Vec4 shadow_cascade_distances;
+	HMM_Vec4 shadow_cascade_distances[MAX_SHADOW_CASCADES / 4];	// cascade i = [i / 4][i % 4]
 	HMM_Vec3 shadow_cascade_view_position;
 	f32 _pad2;
 	HMM_Vec3 shadow_cascade_view_forward;
 	f32 _pad3;
-	HMM_Mat4 shadow_view_projections[4];
+	HMM_Mat4 shadow_view_projections[MAX_SHADOW_CASCADES];
 	// x = world extent in metres, y = enabled. The map is centered on view_position.xy.
 	HMM_Vec4 cloud_shadow_extent_enabled;
 	// atlas_total_size/entry_size above describe the irradiance atlas; the
@@ -74,7 +74,8 @@ struct LightingFsParams
 	i32 gi_method;		// EGiMethod
 
 };
-static_assert(sizeof(LightingFsParams) == 480, "Must match lighting.frag's std140 layout");
+static_assert(MAX_SHADOW_CASCADES % 4 == 0, "shadow_cascade_distances packs 4 per vec4");
+static_assert(sizeof(LightingFsParams) == 208 + 68 * MAX_SHADOW_CASCADES, "Must match lighting.frag's std140 layout");
 
 struct LightingPass
 {

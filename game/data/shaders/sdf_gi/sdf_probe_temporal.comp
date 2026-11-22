@@ -58,7 +58,8 @@ void main()
 				if (history.a > 0.0)
 				{
 					// A texel with no sample this frame (near the horizon) keeps its history.
-					result = current.a > 0.0 ? vec4(mix(history.rgb, current.rgb, 1.0 - sdf.settings.y), 1.0) : history;
+					// a (hit distance) blends with the colour.
+					result = current.a > 0.0 ? mix(history, current, 1.0 - sdf.settings.y) : history;
 				}
 			}
 		}

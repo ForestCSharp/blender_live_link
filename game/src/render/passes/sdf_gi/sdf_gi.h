@@ -32,6 +32,8 @@ namespace SdfGi
 	constexpr i32 SKY_RES = 32;				// SDF_SKY_RES
 	constexpr i32 CONVERGE_FRAMES = 48;		// automation: frames after the last rebuild before "converged"
 	constexpr i32 FAST_RESPONSE_FRAMES = 16;	// lower hysteresis this long after a lighting change
+	constexpr i32 PROBE_FILTER_PASSES = 3;	// odd: the last pass lands in `filtered` (Lumen also uses 3)
+	static_assert(PROBE_FILTER_PASSES % 2 == 1);
 	constexpr i32 JFA_PASSES = 8;			// steps 64..1 plus one extra step of 1
 
 	// std140, mirrors sdf_common.h SdfGiParams.
@@ -101,6 +103,7 @@ namespace SdfGi
 		GpuImage trace = {};
 		GpuImage history[2] = {};
 		GpuImage filtered = {};
+		GpuImage filtered_scratch = {};		// spatial filter ping-pong
 		GpuBuffer<HMM_Vec4> probe_sh;
 		GpuImage irradiance = {};
 		GpuImage specular = {};
@@ -453,6 +456,7 @@ namespace SdfGi
 		}
 		vulkan_context_retire_image(ctx, pass.trace);
 		vulkan_context_retire_image(ctx, pass.filtered);
+		vulkan_context_retire_image(ctx, pass.filtered_scratch);
 		vulkan_context_retire_image(ctx, pass.irradiance);
 		vulkan_context_retire_image(ctx, pass.specular);
 		vulkan_context_retire_image(ctx, pass.reflection_trace);
@@ -479,6 +483,7 @@ namespace SdfGi
 		}
 		pass.trace = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Trace");
 		pass.filtered = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Filtered");
+		pass.filtered_scratch = make_image(ctx, grid_w * PROBE_RES, grid_h * PROBE_RES, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Probe Filtered Scratch");
 		pass.irradiance = make_image(ctx, extent.width, extent.height, 1, VK_FORMAT_R16G16B16A16_SFLOAT, STORAGE_SAMPLED, "SDF GI Irradiance");
 		pass.specular = make_image(ctx, extent.width, extent.height, 1, VK_FORMAT_R16G16B16A16_SFLOAT, STORAGE_SAMPLED, "SDF GI Specular");
 		pass.reflection_trace = make_image(ctx, (extent.width + 1) / 2, (extent.height + 1) / 2, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, "SDF GI Reflection Trace");
@@ -971,15 +976,21 @@ namespace SdfGi
 		const u32 texel_groups_y = (grid_h * PROBE_RES + 7) / 8;
 		graph.compute([&]() { dispatch_shared(ctx, pass.probe_temporal_pipeline, temporal_writer.set, shared, texel_groups_x, texel_groups_y); });
 
-		// 4. Spatial filter
-		DescriptorWriter filter_writer = pass.probe_filter_pipeline.writer(ctx);
-		filter_writer.storage_image(0, pass.probe_position[current].view)
-			.storage_image(1, pass.probe_normal[current].view)
-			.storage_image(2, pass.history[current].view)
-			.storage_image(3, pass.filtered.view).commit();
-		graph.storage_read(frame_graph_image(pass.history[current]));
-		graph.storage_write(frame_graph_image(pass.filtered), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
-		graph.compute([&]() { dispatch_shared(ctx, pass.probe_filter_pipeline, filter_writer.set, shared, texel_groups_x, texel_groups_y); });
+		// 4. Spatial filter: history -> filtered -> scratch -> filtered (one pass when off: a copy)
+		const i32 filter_passes = in_state.sdf_gi.spatial_filter ? PROBE_FILTER_PASSES : 1;
+		for (i32 filter_pass = 0; filter_pass < filter_passes; ++filter_pass)
+		{
+			GpuImage& input = filter_pass == 0 ? pass.history[current] : (filter_pass % 2 == 1 ? pass.filtered : pass.filtered_scratch);
+			GpuImage& output = filter_pass % 2 == 0 ? pass.filtered : pass.filtered_scratch;
+			DescriptorWriter filter_writer = pass.probe_filter_pipeline.writer(ctx);
+			filter_writer.storage_image(0, pass.probe_position[current].view)
+				.storage_image(1, pass.probe_normal[current].view)
+				.storage_image(2, input.view)
+				.storage_image(3, output.view).commit();
+			graph.storage_read(frame_graph_image(input));
+			graph.storage_write(frame_graph_image(output), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, true);
+			graph.compute([&]() { dispatch_shared(ctx, pass.probe_filter_pipeline, filter_writer.set, shared, texel_groups_x, texel_groups_y); });
+		}
 
 		// 5. SH9
 		const VkBuffer sh_buffer = pass.probe_sh.get_gpu_buffer();

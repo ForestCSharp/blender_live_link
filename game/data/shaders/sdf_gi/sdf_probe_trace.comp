@@ -4,7 +4,8 @@
 // world-space octahedral texel (jittered per frame). A texel whose direction is
 // below the surface traces its mirror image above it instead, and every texel
 // averages the samples that landed in it, so all 64 rays are useful (about 2
-// per upper-hemisphere texel). Texels that received none get a = 0. Each ray tries a short screen trace first (contact
+// per upper-hemisphere texel). a = mean hit distance (sky: SKY_HIT_DISTANCE),
+// which the spatial filter uses for parallax; texels that received none get a = 0. Each ray tries a short screen trace first (contact
 // detail, skinned meshes), then continues in the SDF (voxel radiance cache),
 // then the sky.
 
@@ -28,6 +29,9 @@ layout(push_constant) uniform Push
 
 shared vec3 sample_radiance[SDF_PROBE_RES * SDF_PROBE_RES];
 shared uint sample_texel[SDF_PROBE_RES * SDF_PROBE_RES];
+shared float sample_distance[SDF_PROBE_RES * SDF_PROBE_RES];
+
+#define SKY_HIT_DISTANCE 1.0e4
 
 // Diffuse wants contact detail, not long rays (and there are 64 per probe).
 #define SCREEN_STEPS 16
@@ -68,6 +72,7 @@ void main()
 			screen_origin, dir, SCREEN_MAX_DISTANCE, SCREEN_STEPS, sdf_hash(seed.zxy + 13u), screen_radiance, t_clear);
 	}
 	vec3 radiance = screen_radiance;
+	float hit_distance = t_clear;	// a screen hit stops just past its last clear step
 	if (confidence < 1.0)
 	{
 		int level = max(sdf_finest_level(position.xyz), 0);
@@ -75,21 +80,24 @@ void main()
 		// Continue past what the screen trace cleared; the normal offset keeps the SDF off its own surface.
 		vec3 origin = position.xyz + normal * (1.5 * voxel) + dir * t_clear;
 		SdfHit hit;
-		vec3 world = sdf_trace(origin, dir, 1.0e4, hit)
-			? sdf_sample_hit_radiance(hit.level, hit.position, dir).rgb
-			: sdf_sample_sky(dir);
+		bool found = sdf_trace(origin, dir, 1.0e4, hit);
+		vec3 world = found ? sdf_sample_hit_radiance(hit.level, hit.position, dir).rgb : sdf_sample_sky(dir);
 		radiance = mix(world, screen_radiance, confidence);
+		if (confidence < 0.5) hit_distance = found ? distance(hit.position, position.xyz) : SKY_HIT_DISTANCE;
 	}
 	sample_radiance[gl_LocalInvocationIndex] = radiance;
 	sample_texel[gl_LocalInvocationIndex] = target;
+	sample_distance[gl_LocalInvocationIndex] = hit_distance;
 	barrier();
 	vec3 sum = vec3(0.0);
+	float distance_sum = 0.0;
 	float count = 0.0;
 	for (uint i = 0u; i < uint(SDF_PROBE_RES * SDF_PROBE_RES); ++i)
 	{
 		if (sample_texel[i] != gl_LocalInvocationIndex) continue;
 		sum += sample_radiance[i];
+		distance_sum += sample_distance[i];
 		count += 1.0;
 	}
-	imageStore(trace_image, texel, count > 0.0 ? vec4(sum / count, 1.0) : vec4(0.0));
+	imageStore(trace_image, texel, count > 0.0 ? vec4(sum, max(distance_sum, 1.0e-3 * count)) / count : vec4(0.0));
 }

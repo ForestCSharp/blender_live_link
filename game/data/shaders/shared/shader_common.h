@@ -17,6 +17,9 @@
 
 #define MAX_MATERIALS 1024
 
+// Sizes the lighting UBO's cascade arrays; distances pack 4 per vec4, so keep it a multiple of 4.
+#define MAX_SHADOW_CASCADES 8
+
 // Shared numeric contract for the copy-to-swapchain push constant. Keep these
 // as preprocessor constants so the same definitions compile as C++ and GLSL.
 #define DISPLAY_OUTPUT_MODE_SDR 0

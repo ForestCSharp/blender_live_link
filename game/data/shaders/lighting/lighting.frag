@@ -44,10 +44,10 @@ layout(set = 0, binding = 0, std140) uniform LightingParamsBlock
 	int atmosphere_enabled;
 	float atmosphere_planet_center_z;
 	vec2 shadow_map_texel_size;
-	vec4 shadow_cascade_distances;
+	vec4 shadow_cascade_distances[MAX_SHADOW_CASCADES / 4];
 	vec3 shadow_cascade_view_position;
 	vec3 shadow_cascade_view_forward;
-	mat4 shadow_view_projections[4];
+	mat4 shadow_view_projections[MAX_SHADOW_CASCADES];
 	vec4 cloud_shadow_extent_enabled;
 	int moments_atlas_total_size;
 	int moments_atlas_entry_size;
@@ -525,7 +525,7 @@ int select_shadow_cascade(vec3 in_surface_position)
 	);
 	for (int cascade_idx = 0; cascade_idx < shadow_num_cascades; ++cascade_idx)
 	{
-		if (receiver_camera_distance <= shadow_cascade_distances[cascade_idx])
+		if (receiver_camera_distance <= shadow_cascade_distances[cascade_idx >> 2][cascade_idx & 3])
 		{
 			return cascade_idx;
 		}
@@ -540,6 +540,10 @@ vec3 debug_shadow_cascade_color(vec3 in_surface_position)
 	if (cascade_idx == 1) { return vec3(0.0, 1.0, 0.0); }
 	if (cascade_idx == 2) { return vec3(0.0, 0.0, 1.0); }
 	if (cascade_idx == 3) { return vec3(1.0, 1.0, 0.0); }
+	if (cascade_idx == 4) { return vec3(1.0, 0.0, 1.0); }
+	if (cascade_idx == 5) { return vec3(0.0, 1.0, 1.0); }
+	if (cascade_idx == 6) { return vec3(1.0, 0.5, 0.0); }
+	if (cascade_idx == 7) { return vec3(1.0, 1.0, 1.0); }
 	return vec3(0.0);
 }
 
